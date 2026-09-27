@@ -1,0 +1,35 @@
+# OpenRouter model registry
+# ---------------------------------------------------------------------------
+# Maps the internal --agentic-model name to its OpenRouter model slug.
+#
+# An entry here means: "this agent is available on OpenRouter — prefer the
+# hosted API over a local vLLM server (0 local GPU)."  Omit or comment out a
+# model to force the local vLLM path.
+#
+# Routing also requires the OPENROUTER_API_KEY env var to be set; if it is
+# missing, the agent falls back to vLLM even when listed here
+# (see utils.config.resolve_agent_backend).
+#
+# Agents with no local vLLM alternative still belong here: the slug
+# is what resolve_agent_backend reports as the run's backend, and that answer is
+# written into the output directory name, run_config.json and the GPU plan.
+# Omitting one does not make it fall back -- it makes the run record itself as
+# "vllm" when it is really hitting the hosted API.  For such an agent the entry
+# must agree with utils.config.AGENTIC_MODEL_TO_LLM, which carries the same slug
+# with the "openrouter/" prefix that selects the API generator.
+#
+# Fill in the exact slugs as you confirm them at https://openrouter.ai/models
+models:
+  oss_20b:  openai/gpt-oss-20b:free
+  oss_120b: openai/gpt-oss-120b:free
+  glm: z-ai/glm-4.7-flash
+  # tongyi: alibaba/tongyi-deepresearch-30b-a3b
+  belief: qwen/qwen3.6-27b
+  webweaver: qwen/qwen3.6-35b-a3b
+
+# Optional curated short labels used in output directory names, keyed by the
+# full model id (--llm-model / AGENTIC_MODEL_TO_LLM value).  When a model is
+# absent here, the label falls back to the last path segment, lowercased
+# (e.g. zai-org/GLM-4.7-Flash -> glm-4.7-flash).
+display_names:
+  # zai-org/GLM-4.7-Flash: glm-4.7-flash

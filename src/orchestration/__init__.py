@@ -1,0 +1,681 @@
+"""Pipeline orchestration: retriever/controller factories and multi-GPU workers.
+
+This is the wiring layer that assembles heavy component packages
+(``controller_component``, ``searcher_component``, ``deep_research_agents``,
+``evaluation``) into a runnable agent. It is consumed by the ``run_pipeline``
+entry point in ``experiments/dra_inference.py``.
+
+Leaf-level helpers (LLM-client factory, CLI arg resolution, output naming) live
+in ``utils`` so this module is the only place that depends on the heavy
+component packages — keeping ``utils`` a true leaf layer.
+
+The worker functions (_build_components_from_config, _init_worker, gpu_worker)
+must stay at module level to be picklable by multiprocessing.spawn.
+"""
+
+import contextlib
+import logging
+import os
+import sys
+import traceback
+from pathlib import Path
+from typing import Optional
+
+from utils.config import (
+    OPENROUTER_BASE_URL,
+    SELF_MANAGED_LLM_AGENTS,
+    _RetrieverConfig,
+    get_reranker_configs,
+    is_local_finetuned,
+    resolve_agent_backend,
+)
+from reasoner_component import create_generator
+from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
+from utils.trajectory_logger import TrajectoryLogger
+
+logger = logging.getLogger(__name__)
+
+
+# ===========================================================================
+# Retriever factory
+# ===========================================================================
+
+def setup_retriever_from_args(args):
+    """Instantiate the local retriever from parsed CLI args."""
+    from searcher_component.retriever import (
+        BM25Retriever, RerankRetriever, DenseRetriever, SPLADERetriever,
+    )
+
+    config = _RetrieverConfig(
+        retriever_name=args.retriever,
+        index_dir=args.index_dir,
+        corpus_path=args.corpus_path,
+        topk=args.top_k,
+    )
+    if args.dataset == "browsecomp_plus" and args.retriever.startswith("qwen3_emb"):
+        config.retrieval_query_max_length = 8196
+    if args.dataset == "browsecomp_plus" and args.retriever == "agentir_4b":
+        config.retrieval_query_max_length = 8196
+    if args.retriever == "bm25":
+        return BM25Retriever(config)
+    elif args.retriever in ("spladepp", "spladev3"):
+        return SPLADERetriever(config)
+    elif args.retriever in ["rerank_l6", "rerank_l12"]:
+        return RerankRetriever(config)
+    else:
+        return DenseRetriever(config)
+
+
+# ===========================================================================
+# Controller factory
+# ===========================================================================
+
+def build_controller(
+    controller_mode: str,
+    retriever=None,
+    qrels=None,
+    seen_top_k: int = 5,
+    llm_controller: Optional[str] = None,
+    llm_intervene: Optional[str] = None,
+    agent=None,
+    agentic_model: Optional[str] = None,
+    strict: bool = True,
+    controller_history_window: Optional[int] = None,
+    controller_prompt_variant: str = "nov_cov_sim",
+    max_iteration: Optional[int] = None,
+    criteria_coverage_mode: str = "dynamic",
+    criteria_coverage_max_criteria: int = 8,
+    llm_criteria_coverage: Optional[str] = None,
+    ac_temperature: float = 0.0,
+    dataset: Optional[str] = None,
+):
+    """Build a Controller with controller and answer candidate generator.
+
+    Shared by both the main process (run_pipeline) and spawned GPU workers.
+
+    Args:
+        controller_mode: "off", "monitor", or "action".
+        retriever: Retriever instance (for encoding function).
+        qrels: Ground-truth relevance judgements.
+        seen_top_k: Number of docs considered "seen" per step.
+        llm_controller: Model name for controller LLM.
+        llm_intervene: Model name for critical thinking generator LLM.
+        agent: Agent instance (to wire up answer candidate generator).
+        agentic_model: Agent type name (for format selection).
+        strict: If True, raise ValueError for missing required params.
+        criteria_coverage_mode: "static" or "dynamic".
+        criteria_coverage_max_criteria: Soft cap on the number of criteria.
+        llm_criteria_coverage: Model name for criteria coverage LLM. Falls
+            back to llm_controller or llm_intervene if not set.
+
+    Returns:
+        Controller instance, or None if controller_mode is "off".
+    """
+    if controller_mode == "off":
+        return None
+
+    from controller_component import (
+        Controller, LLMCriticalThinkingGenerator, LLMControllerPolicy,
+        encode_fn_from_retriever,
+    )
+    from controller_component.prompts.answer_prompts import get_candidate_format
+
+    _intervention_mode = "none" if controller_mode == "monitor" else "active"
+
+    _critical_thinking_gen = None
+    if controller_mode == "action":
+        if llm_intervene:
+            _intervene_llm_client = create_generator(llm_intervene, backend="api")
+            _critical_thinking_gen = LLMCriticalThinkingGenerator(llm_client=_intervene_llm_client)
+        elif strict:
+            raise ValueError("--llm-intervene is required when using intervene action")
+
+    _controller_policy = None
+    _controller_llm_model = llm_controller or llm_intervene
+    if _controller_llm_model:
+        _controller_llm_client = create_generator(_controller_llm_model, backend="api")
+        _controller_policy = LLMControllerPolicy(llm_client=_controller_llm_client, history_window=controller_history_window, controller_prompt_variant=controller_prompt_variant, max_iteration=max_iteration)
+    elif controller_mode == "action" and strict:
+        raise ValueError(
+            "--llm-controller (or --llm-intervene) is required "
+            "when --controller=action"
+        )
+
+    # Criteria coverage signal (optional).
+    _criteria_coverage_signal = None
+    _ac_llm_model = llm_criteria_coverage or llm_controller or llm_intervene
+    if _ac_llm_model:
+        from controller_component import CriteriaCoverageSignal
+        _ac_llm_client = create_generator(_ac_llm_model, backend="api")
+        _criteria_coverage_signal = CriteriaCoverageSignal(
+            llm_client=_ac_llm_client,
+            mode=criteria_coverage_mode,
+            max_criteria=criteria_coverage_max_criteria,
+            temperature=ac_temperature,
+        )
+        print(f"Criteria coverage signal enabled: mode={criteria_coverage_mode}, model={_ac_llm_model}")
+    else:
+        logger.warning("No LLM model available for criteria coverage; signal disabled")
+
+    # Answer candidate function (optional, sourced from the agent).
+    _answer_candidate_fn = None
+    if agent is not None and agentic_model is not None:
+        _cfg = getattr(agent, "inference_config", None)
+        if _cfg is not None:
+            _cfg.format_instructions = get_candidate_format(agentic_model)
+
+        if dataset == "browsecomp_plus" and agentic_model != "cpm_report":
+            if hasattr(agent, "generate_answer_candidate"):
+                _answer_candidate_fn = agent.generate_answer_candidate
+                _model_id = _cfg.model_name if _cfg else "unknown"
+                print(f"Answer candidate via agent.generate_answer_candidate: {_model_id}")
+
+    controller = Controller(
+        intervention_mode=_intervention_mode,
+        critical_thinking_generator=_critical_thinking_gen,
+        encode_fn=encode_fn_from_retriever(retriever) if retriever else None,
+        qrels=qrels or {},
+        seen_top_k=seen_top_k,
+        controller_policy=_controller_policy,
+        criteria_coverage_signal=_criteria_coverage_signal,
+        answer_candidate_fn=_answer_candidate_fn,
+    )
+
+    return controller
+
+
+# ===========================================================================
+# Agent factory
+# ===========================================================================
+
+def build_agent(
+    agentic_model: str,
+    llm_model: str,
+    llm_client=None,
+    retriever=None,
+    *,
+    agentic_model_cli: Optional[str] = None,
+    dataset: Optional[str] = None,
+    max_iteration: int = 100,
+    seen_top_k: int = 5,
+    verbose: bool = False,
+    search_tool=None,
+    use_plan: bool = False,
+    max_output_tokens_total: int = 40000,
+    temperature: float = 0.0,
+    max_extend_steps: int = 5,
+    max_retries: int = 3,
+    hard_mode: bool = True,
+    max_passage_chars: int = 4000,
+    belief_max_turns: int = 8,
+    belief_max_passage_chars: int = 1500,
+    belief_max_format_retries: int = 2,
+    belief_max_tokens_per_call: int = 4096,
+    belief_disable_native_thinking: bool = True,
+    belief_show_novelty: bool = True,
+    belief_show_criteria: bool = True,
+    belief_criteria_mode: str = "auto",
+    belief_criteria_model: str = "",
+    belief_max_criteria: int = 8,
+    belief_stabilization_window: int = 15,
+    belief_criteria_max_tokens: int = 1024,
+    belief_evidence_top_k: int = 5,
+    belief_evidence_chars: int = 1500,
+):
+    """Instantiate an agent and attach its search tool.
+
+    Shared by both the main process (run_pipeline, single-GPU) and spawned GPU
+    workers (_init_worker) so the per-agent construction logic lives in one
+    place.
+
+    The agent-specific keyword arguments are assembled into ``_reasoning_extra``
+    based on ``agentic_model`` and forwarded to the agent constructor.
+    """
+    from deep_research_agents.agents import AGENT_MAP
+
+    model_class = AGENT_MAP[agentic_model]
+    # Backend (API vs vLLM) is resolved on the user-facing CLI name because the
+    # OpenRouter registry distinguishes oss_20b / oss_120b, which both collapse
+    # to the internal agent name "oss".
+    _cli_name = agentic_model_cli or agentic_model
+    _reasoning_extra: dict = {}
+    if use_plan and agentic_model == "react":
+        _reasoning_extra["use_plan"] = True
+    if agentic_model == "glm":
+        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 20000)
+        # Prefer OpenRouter when the agent is in the registry (0 local GPU);
+        # otherwise fall through to the agent's vLLM defaults (localhost:6008).
+        _backend, _slug = resolve_agent_backend(_cli_name)
+        if _backend == "api":
+            _reasoning_extra["model_url"] = OPENROUTER_BASE_URL
+            _reasoning_extra["model_name"] = _slug
+            _reasoning_extra["api_key"] = os.getenv("OPENROUTER_API_KEY")
+    elif agentic_model == "oss":
+        # Cap per-call output like GLM so the prompt/history still fits inside
+        # the 131072-token vLLM window (gpt-oss native max = OpenRouter's max).
+        # On the OpenRouter Responses path truncation:"auto" reclaims the full
+        # window regardless of this ceiling.
+        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 20000)
+        # Prefer OpenRouter (Responses API) when oss_20b / oss_120b is in the
+        # registry; otherwise use the agent's local vLLM defaults (localhost:6008).
+        _backend, _slug = resolve_agent_backend(_cli_name)
+        if _backend == "api":
+            _reasoning_extra["model_url"] = OPENROUTER_BASE_URL
+            _reasoning_extra["model_name"] = _slug
+            _reasoning_extra["api_key"] = os.getenv("OPENROUTER_API_KEY")
+        else:
+            _reasoning_extra["model_name"] = f"openai/{llm_model}"
+    elif agentic_model == "tongyi":
+        _reasoning_extra["max_tokens_per_step"] = min(max_output_tokens_total, 20000)
+    elif agentic_model == "cpm_explore":
+        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 16384)
+        # The run's resolved temperature (utils.config.resolve_temperature),
+        # not a falsy-guarded default: 0.0 is a temperature a user can ask for.
+        _reasoning_extra["temperature"] = temperature
+    elif agentic_model == "cpm_report":
+        _reasoning_extra["max_extend_steps"] = max_extend_steps
+        _reasoning_extra["max_retries"] = max_retries
+        _reasoning_extra["hard_mode"] = hard_mode
+        _reasoning_extra["max_passage_chars"] = max_passage_chars
+        _reasoning_extra["model_name"] = llm_model
+    elif agentic_model == "belief":
+        _reasoning_extra["max_turns"] = belief_max_turns
+        _reasoning_extra["max_passage_chars"] = belief_max_passage_chars
+        _reasoning_extra["max_format_retries"] = belief_max_format_retries
+        _reasoning_extra["max_tokens_per_call"] = belief_max_tokens_per_call
+        _reasoning_extra["disable_native_thinking"] = belief_disable_native_thinking
+        _reasoning_extra["show_novelty"] = belief_show_novelty
+        _reasoning_extra["show_criteria"] = belief_show_criteria
+        _reasoning_extra["criteria_mode"] = belief_criteria_mode
+        _reasoning_extra["dataset"] = dataset
+        _reasoning_extra["criteria_model"] = belief_criteria_model or ""
+        _reasoning_extra["max_criteria"] = belief_max_criteria
+        _reasoning_extra["stabilization_window"] = belief_stabilization_window
+        _reasoning_extra["criteria_max_tokens"] = belief_criteria_max_tokens
+        _reasoning_extra["evidence_top_k"] = belief_evidence_top_k
+        _reasoning_extra["evidence_chars"] = belief_evidence_chars
+        if belief_criteria_model:
+            # A separate criteria updater; empty means the policy backbone.
+            _reasoning_extra["criteria_llm_client"] = create_generator(
+                belief_criteria_model,
+                temperature=0.0,
+                metadata={"model": belief_criteria_model},
+            )
+
+    agent = model_class(
+        llm_client=llm_client,
+        retriever=retriever,
+        max_iteration=max_iteration,
+        seen_top_k=seen_top_k,
+        verbose=verbose,
+        **_reasoning_extra,
+    )
+
+    # Inject search tool into agents that inherit from BasicAgent
+    # (avoids modifying every subclass constructor).
+    if search_tool is not None and hasattr(agent, "search_tool"):
+        agent.search_tool = search_tool
+
+    return agent
+
+
+# ===========================================================================
+# Multi-GPU workers (must remain top-level for multiprocessing.spawn pickling)
+# ===========================================================================
+
+def _build_components_from_config(worker_config: dict):
+    """Rebuild LLM client and retriever from a serializable config dict.
+
+    Called inside spawned worker processes to avoid pickling live objects.
+
+    Returns:
+        (llm_client, retriever)  — llm_client may be None for self-managed agents.
+    """
+    agentic_model = worker_config["agentic_model"]
+    llm_model     = worker_config["llm_model"]
+    dataset       = worker_config["dataset"]
+
+    llm_client = None
+
+    if agentic_model in SELF_MANAGED_LLM_AGENTS:
+        pass
+    elif is_local_finetuned(agentic_model, llm_model):
+        hf_model = llm_model
+        api_base = os.getenv("VLLM_API_BASE", "http://127.0.0.1:6008/v1")
+        llm_client = create_generator(
+            hf_model,
+            backend="vllm",
+            api_base=api_base,
+            api_key="EMPTY",
+            litellm_prefix="openai",  # preserve model string "openai/<hf_model>"
+            temperature=worker_config["llm_temperature"],
+            max_tokens=worker_config["llm_max_tokens_per_call"],
+            request_timeout=worker_config.get("request_timeout", 300),
+        )
+    else:
+        # Let create_generator infer the backend from the model name: an
+        # ``hf/``-prefixed (or registered) model routes to HFGenerator, ordinary
+        # slugs route to APIGenerator.
+        llm_client = create_generator(
+            llm_model,
+            temperature=worker_config["llm_temperature"],
+            top_p=worker_config["llm_top_p"],
+            max_completion_tokens=worker_config["llm_max_tokens_per_call"],
+            metadata={"model": llm_model},
+            request_timeout=worker_config.get("request_timeout"),
+        )
+
+    from searcher_component.retriever import (
+        BM25Retriever, RerankRetriever, DenseRetriever, SPLADERetriever,
+    )
+
+    cfg = _RetrieverConfig(
+        retriever_name=worker_config["retriever_type"],
+        index_dir=worker_config.get("index_dir"),
+        corpus_path=worker_config.get("corpus_path"),
+        topk=worker_config["top_k"],
+    )
+    if dataset == "browsecomp_plus" and worker_config["retriever_type"].startswith("qwen3_emb"):
+        cfg.retrieval_query_max_length = 8196
+    retriever_type = worker_config["retriever_type"]
+    if retriever_type == "bm25":
+        retriever = BM25Retriever(cfg)
+    elif retriever_type in ("spladepp", "spladev3"):
+        retriever = SPLADERetriever(cfg)
+    elif retriever_type in ["rerank_l6", "rerank_l12"]:
+        retriever = RerankRetriever(cfg)
+    else:
+        retriever = DenseRetriever(cfg)
+
+    return llm_client, retriever
+
+
+def _silence_hf_progress_bars() -> None:
+    """Turn off HuggingFace/datasets tqdm bars and downgrade their loggers.
+
+    Called from the quiet path of :func:`_init_worker` (and from the main
+    process) so model/corpus loading stays silent in non-interactive runs.
+    Each import is guarded: the helper must never be the reason a worker dies.
+    """
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    for mod, attr in (
+        ("transformers.utils.logging", "disable_progress_bar"),
+        ("datasets.utils.logging", "disable_progress_bar"),
+        ("huggingface_hub.utils", "disable_progress_bars"),
+    ):
+        try:
+            __import__(mod)
+            getattr(sys.modules[mod], attr)()
+        except Exception:
+            pass
+    for name in ("transformers", "datasets", "sentence_transformers", "faiss"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+
+
+def _init_worker(worker_id: int, worker_config: dict):
+    """Initialise a GPU worker: pin GPU, load models, build agent.
+
+    Returns:
+        (agent, search_tool, verbose)
+    """
+    gpu_ids = worker_config.get("gpu_ids", [])
+    verbose  = worker_config.get("verbose", False)
+    if worker_config.get("quiet", False):
+        logging.getLogger("agents").setLevel(logging.ERROR)
+        logging.getLogger("agent_tools").setLevel(logging.ERROR)
+        logging.getLogger("utils").setLevel(logging.ERROR)
+        logging.getLogger("prompts").setLevel(logging.ERROR)
+        # The retriever's from_pretrained() draws a 398-step "Loading weights"
+        # tqdm bar per worker.  Under sbatch stdout is not a TTY, so every
+        # redraw is appended verbatim and four workers alone add ~1 MB of
+        # carriage-return noise to the .out file.
+        _silence_hf_progress_bars()
+    if gpu_ids and worker_id < len(gpu_ids):
+        physical_gpu = gpu_ids[worker_id]
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_gpu)
+        print(f"[Worker {worker_id}] CUDA_VISIBLE_DEVICES={physical_gpu}", flush=True)
+        import torch
+        if torch.cuda.is_available():
+            n_visible = torch.cuda.device_count()
+            if n_visible == 1:
+                torch.cuda.set_device(0)
+            else:
+                torch.cuda.set_device(physical_gpu)
+            print(f"[Worker {worker_id}] torch.cuda.current_device()={torch.cuda.current_device()}, "
+                  f"device_count={n_visible}", flush=True)
+    else:
+        print(f"[Worker {worker_id}] No specific GPU assigned (gpu_ids={gpu_ids})", flush=True)
+
+    import shutil
+    _java_bin = shutil.which("java")
+    if _java_bin:
+        _java_real = os.path.realpath(_java_bin)
+        _java_home = os.path.dirname(os.path.dirname(_java_real))
+        _jvm_so = os.path.join(_java_home, "lib", "server", "libjvm.so")
+        if os.path.isfile(_jvm_so):
+            os.environ["JAVA_HOME"] = _java_home
+            os.environ["JVM_PATH"] = _jvm_so
+
+    # By this point the JVM is normally already up: "spawn" re-imports __main__
+    # in the worker, which reaches searcher_component.retriever and boots the VM
+    # at import time -- applying these same options there.  Calling add_options()
+    # on a running VM raises ValueError (not ImportError), which used to kill
+    # every worker before it processed a single query, so guard on vm_running.
+    try:
+        import jnius_config
+        if not jnius_config.vm_running:
+            jnius_config.add_options(
+                '-Xmx2g',
+                '-Xms512m',
+                '-XX:ParallelGCThreads=4',
+                '-XX:ConcGCThreads=2',
+            )
+    except ImportError:
+        pass
+
+    print(f"[Worker {worker_id}] Building components (LLM, retriever)...", flush=True)
+    llm_client, retriever = _build_components_from_config(worker_config)
+    print(f"[Worker {worker_id}] Components built", flush=True)
+
+    agentic_model = worker_config["agentic_model"]
+    dataset = worker_config["dataset"]
+
+    from searcher_component import RetrievalSearchTool
+    from searcher_component.rerankers import build_reranker_from_config
+
+    _reranker_configs = get_reranker_configs(worker_config.get("rerank_top_k", 100))
+
+    _post_ret_type = worker_config.get("post_retrieval_reranker_type", "null")
+    _post_fus_type = worker_config.get("post_fusion_reranker_type", "null")
+    _post_ret_reranker = build_reranker_from_config(_post_ret_type, _reranker_configs) if _post_ret_type != "null" else None
+    _post_fus_reranker = build_reranker_from_config(_post_fus_type, _reranker_configs) if _post_fus_type != "null" else None
+
+    search_tool = None
+    if retriever is not None:
+        search_tool = RetrievalSearchTool(
+            retriever=retriever,
+            post_retrieval_reranker=_post_ret_reranker,
+            post_fusion_reranker=_post_fus_reranker,
+            top_k=worker_config.get("top_k", 100),
+            rerank_top_k=worker_config.get("rerank_top_k", 100),
+            retrieval_input=worker_config.get("retrieval_input", "subquery"),
+            post_fusion_reranker_input=worker_config.get("post_fusion_reranker_input", "original_query"),
+            ensure_novel_seen_docs=worker_config.get("ensure_novel_seen_docs", False),
+            seen_top_k=worker_config.get("seen_top_k", 5),
+        )
+
+    print(f"[Worker {worker_id}] Creating agent ({agentic_model})...", flush=True)
+    llm_model = worker_config["llm_model"]
+    agent = build_agent(
+        agentic_model=agentic_model,
+        agentic_model_cli=worker_config.get("agentic_model_cli", agentic_model),
+        dataset=worker_config["dataset"],
+        llm_model=llm_model,
+        llm_client=llm_client,
+        retriever=retriever,
+        max_iteration=worker_config.get("max_iteration", 100),
+        seen_top_k=worker_config.get("seen_top_k", 5),
+        verbose=verbose,
+        search_tool=search_tool,
+        use_plan=worker_config.get("use_plan", False),
+        max_output_tokens_total=worker_config.get("max_output_tokens_total", 40000),
+        temperature=worker_config.get("temperature", 0.7),
+        max_extend_steps=worker_config.get("max_extend_steps", 5),
+        max_retries=worker_config.get("max_retries", 3),
+        hard_mode=worker_config.get("hard_mode", True),
+        max_passage_chars=worker_config.get("max_passage_chars", 4000),
+        belief_max_turns=worker_config.get("belief_max_turns", 8),
+        belief_max_passage_chars=worker_config.get("belief_max_passage_chars", 1500),
+        belief_max_format_retries=worker_config.get("belief_max_format_retries", 2),
+        belief_max_tokens_per_call=worker_config.get("belief_max_tokens_per_call", 4096),
+        belief_disable_native_thinking=worker_config.get("belief_disable_native_thinking", True),
+        belief_show_novelty=worker_config.get("belief_show_novelty", True),
+        belief_show_criteria=worker_config.get("belief_show_criteria", True),
+        belief_criteria_mode=worker_config.get("belief_criteria_mode", "auto"),
+        belief_criteria_model=worker_config.get("belief_criteria_model", ""),
+        belief_max_criteria=worker_config.get("belief_max_criteria", 8),
+        belief_stabilization_window=worker_config.get("belief_stabilization_window", 15),
+        belief_criteria_max_tokens=worker_config.get("belief_criteria_max_tokens", 1024),
+        belief_evidence_top_k=worker_config.get("belief_evidence_top_k", 5),
+        belief_evidence_chars=worker_config.get("belief_evidence_chars", 1500),
+    )
+
+    _controller_mode = worker_config.get("controller", "monitor")
+    controller = build_controller(
+        controller_mode=_controller_mode,
+        retriever=retriever,
+        qrels=worker_config.get("qrels"),
+        seen_top_k=worker_config.get("seen_top_k", 5),
+        llm_controller=worker_config.get("llm_controller"),
+        llm_intervene=worker_config.get("llm_intervene"),
+        agent=agent if hasattr(agent, "controller") else None,
+        agentic_model=agentic_model,
+        strict=False,
+        controller_history_window=worker_config.get("controller_history_window"),
+        ac_temperature=worker_config.get("temperature", 0.7),
+        controller_prompt_variant=worker_config.get("controller_prompt_variant", "nov_cov_sim"),
+        max_iteration=worker_config.get("max_iteration"),
+        criteria_coverage_mode=worker_config.get("criteria_coverage_mode", "dynamic"),
+        criteria_coverage_max_criteria=worker_config.get("criteria_coverage_max_criteria", 8),
+        llm_criteria_coverage=worker_config.get("llm_criteria_coverage"),
+        dataset=dataset,
+    )
+    if controller is not None and hasattr(agent, "controller"):
+        agent.controller = controller
+
+    print(f"[Worker {worker_id}] Initialisation complete", flush=True)
+    return agent, search_tool, verbose
+
+
+def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_config: dict, progress_queue=None, init_lock=None) -> dict:
+    """Worker process: pin to one GPU, rebuild the agent, process queries, save files."""
+    _lock_ctx = init_lock if init_lock is not None else contextlib.nullcontext()
+
+    try:
+        with _lock_ctx:
+            agent, search_tool, verbose = _init_worker(
+                worker_id, worker_config,
+            )
+    except Exception as exc:
+        print(f"[Worker {worker_id}] INIT FAILED: {exc}", flush=True)
+        traceback.print_exc()
+        if progress_queue is not None:
+            progress_queue.put(None)
+        return {}
+
+    temp_dir       = Path(temp_dir_str)
+    retrieval_dir  = str(temp_dir / "retrieval" / "surfaced")
+    generation_dir = str(temp_dir / "generation")
+    trajectory_dir = str(temp_dir / "trajectory")
+    cited_doc_dir  = str(temp_dir / "retrieval" / "cited")
+    seen_doc_dir   = str(temp_dir / "retrieval" / "seen")
+    controller_dir = str(temp_dir / "controller")
+    tables_dir     = str(temp_dir / "tables")
+    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, controller_dir, tables_dir]:
+        Path(_d).mkdir(parents=True, exist_ok=True)
+
+    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, ControllerEvaluator, CitedDocEvaluator, SeenDocEvaluator, TableEvaluator
+    _ret_eval        = SurfacedDocEvaluator(qrels={}, k_values=[])
+    _gen_eval        = GenerationEvaluator()
+    _traj_eval       = TrajectoryEvaluator()
+    _controller_eval = ControllerEvaluator()
+    _cited_eval      = CitedDocEvaluator(qrels={}, k_values=[])
+    _seen_eval       = SeenDocEvaluator(qrels={}, k_values=[])
+    # Needs the agent name so ``save_item`` groups the trajectory's ``phase``
+    # tags under the vocabulary this agent actually uses.  Without it a worker
+    # writes an empty ``phases`` line, and --eval-only cannot recover it.
+    _table_eval      = TableEvaluator(agentic_model=worker_config.get("agentic_model"))
+
+    results     = {}
+    temperature = worker_config.get("temperature", 0.7)
+    total       = len(query_items)
+    max_iteration = worker_config.get("max_iteration", "?")
+
+    _cb_state = [None, 0]
+
+    def _status_cb(stage: str, iteration: int):
+        if progress_queue is not None:
+            progress_queue.put(
+                (worker_id, _cb_state[0], _cb_state[1], total, "update",
+                 (stage, iteration, max_iteration))
+            )
+
+    for idx, (query_id, query_text) in enumerate(query_items, 1):
+        _cb_state[0] = query_id
+        _cb_state[1] = idx
+        if search_tool is not None:
+            search_tool.reset()
+        if progress_queue is not None:
+            progress_queue.put((worker_id, query_id, idx, total, "processing", None))
+        if verbose:
+            print(
+                f"  [Worker {worker_id}] [{idx}/{len(query_items)}] Processing query: {query_id}\n    Query text: {query_text}",
+                flush=True,
+            )
+        # Streams each step to trajectory/{qid}.jsonl + .md as it happens, so a
+        # worker that dies mid-query still leaves that query's work on disk.
+        traj_logger = TrajectoryLogger(
+            trajectory_dir, query_id, query_text,
+            agent_name=worker_config.get("agentic_model", ""),
+            model=worker_config.get("llm_model", ""),
+        )
+        result = agent.run_single(
+            query_id=query_id,
+            query_text=query_text,
+            temperature=temperature,
+            status_callback=_status_cb if progress_queue is not None else None,
+            trajectory_logger=traj_logger,
+        )
+        if result is None:
+            if verbose:
+                print(f"  [Worker {worker_id}] ✗ Skipping {query_id}", flush=True)
+            if progress_queue is not None:
+                progress_queue.put((worker_id, query_id, idx, total, "skipped", None))
+            continue
+        result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
+        references = build_references_section(result)
+        if references:
+            result["generation"] = result["generation"].rstrip() + references
+        results[query_id] = result
+        _ret_eval.save_item(query_id, result, retrieval_dir)
+        _gen_eval.save_item(query_id, result, generation_dir)
+        _traj_eval.save_item(query_id, query_text, result, trajectory_dir)
+        _cited_eval.save_item(query_id, result, cited_doc_dir)
+        _seen_eval.save_item(query_id, result, seen_doc_dir)
+        _controller_eval.save_item(query_id, query_text, result, controller_dir)
+        _table_eval.save_item(query_id, query_text, result, tables_dir)
+        if progress_queue is not None:
+            num_iters = result.get("num_iterations", "?")
+            progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))
+        if verbose:
+            print(f"  [Worker {worker_id}] ✓ Saved: {query_id}", flush=True)
+
+    agent.cleanup()
+    if verbose:
+        print(
+            f"[Worker {worker_id}] Completed {len(results)}/{len(query_items)} queries",
+            flush=True,
+        )
+    if progress_queue is not None:
+        progress_queue.put(None)
+    return results

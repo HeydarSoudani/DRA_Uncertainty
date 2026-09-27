@@ -1,0 +1,356 @@
+"""Pipeline constants, lightweight config objects, and inference configuration.
+
+No heavy imports — this module must be safe to import from anywhere
+without triggering circular dependencies.
+"""
+
+import functools
+import logging
+import os
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Model maps and agent categories
+# ---------------------------------------------------------------------------
+
+# Maps agentic-model name → HuggingFace model ID for vLLM-served finetuned models
+FINETUNED_MODEL_MAP: Dict[str, str] = {
+    "drtulu":     "rl-research/DR-Tulu-8B",
+    "webweaver":  "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
+    "tongyi":     "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
+    "cpm_report": "openbmb/AgentCPM-Report",
+    "searchr1":   "PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-it-em-grpo-v0.3",
+    "research":   "agentrl/ReSearch-Qwen-7B-Instruct",
+    "stepsearch": "Zill1/StepSearch-7B-Instruct",
+}
+
+
+def is_local_finetuned(agentic_model: str, llm_model: str) -> bool:
+    """True when llm_model matches the agent's known HF model name."""
+    return llm_model == FINETUNED_MODEL_MAP.get(agentic_model)
+
+
+# Single source of truth: CLI --agentic-model value → the LLM it runs on.
+# --llm-model is no longer a CLI input; it is derived from this map.
+# Some agents are exposed under multiple CLI names so different model sizes are
+# selectable (oss_20b / oss_120b → "oss"); AGENTIC_MODEL_ALIAS maps each back to
+# the internal agent name used by AGENT_MAP / SELF_MANAGED_LLM_AGENTS.
+AGENTIC_MODEL_TO_LLM: Dict[str, str] = {
+    # self-managed (vLLM)
+    "cpm_report":  "openbmb/AgentCPM-Report",
+    "cpm_explore": "openbmb/AgentCPM-Explore",
+    "glm":         "zai-org/GLM-4.7-Flash",
+    "tongyi":      "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
+    "oss_20b":     "gpt-oss-20b",
+    "oss_120b":    "gpt-oss-120b",
+    # local-finetuned (vLLM)
+    "drtulu":      "rl-research/DR-Tulu-8B",
+    "searchr1":    "PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-it-em-grpo-v0.3",
+    "research":    "agentrl/ReSearch-Qwen-7B-Instruct",
+    "stepsearch":  "Zill1/StepSearch-7B-Instruct",
+    # API-backed instruction-tuned reasoning agents
+    "react":       "claude-sonnet-4-6",
+    "selfask":     "claude-sonnet-4-6",
+    "searcho1":    "claude-sonnet-4-6",
+    # WebWeaver runs on the Qwen3.6-35B-A3B MoE served by OpenRouter.  Its local
+    # Tongyi-30B entry survives in FINETUNED_MODEL_MAP: is_local_finetuned
+    # compares against this map's value, so that entry stays inert until this
+    # line is pointed back at the HF slug, which is all it takes to return the
+    # agent to local vLLM.
+    "webweaver":   "openrouter/qwen/qwen3.6-35b-a3b",
+    # The belief agent runs on an open-weight backbone served by OpenRouter,
+    # with the model's own reasoning mode switched off.  The ``openrouter/``
+    # prefix selects the API generator; the bare slug is ALSO listed in
+    # openrouter_registry.yaml, and the two must agree.
+    "belief":      "openrouter/qwen/qwen3.6-27b",
+}
+
+# Agent-specific result keys carried in the trajectory meta line: they are
+# persisted nowhere else (WebWeaver's memory bank / query outputs, the belief
+# agent's criteria and records), so dropping them there loses them for good.
+AGENT_META_KEYS: Tuple[str, ...] = (
+    "memory_bank", "query_outputs",
+    "belief_criteria", "belief_criteria_raw", "belief_records",
+    "belief_doc_labels", "belief_outcome",
+)
+
+
+# CLI --agentic-model value → internal agent name (when they differ).
+AGENTIC_MODEL_ALIAS: Dict[str, str] = {
+    "oss_20b":  "oss",
+    "oss_120b": "oss",
+}
+
+
+# Sampling temperature per agent, keyed by the internal agent name (the value
+# AGENTIC_MODEL_ALIAS resolves to, not the CLI name).  Each agent was tuned at a
+# different point: the values here are the ones its own constructor defaults to,
+# lifted into one table so a run cannot silently override them.
+#
+# Absent from the map means DEFAULT_AGENT_TEMPERATURE -- greedy decoding, which
+# is what the deterministic agents want.  It is not a safe blanket default: a
+# thinking model decoded greedily can fall into a repetition loop and spend its
+# whole token budget inside <think> without ever emitting an action, which the
+# calling phase then sees as a malformed (empty) response.  An agent that shows
+# that behaviour belongs in this table, not on the default.
+DEFAULT_AGENT_TEMPERATURE: float = 0.0
+AGENT_TEMPERATURE: Dict[str, float] = {
+    "cpm_report":  0.7,
+    "cpm_explore": 1.0,
+    "tongyi":      0.6,
+    # Same backbone; its reasoning mode is off, but sampling keeps the policy
+    # from repeating one turn verbatim.  Criteria extraction uses 0.0.
+    "belief":      0.6,
+}
+
+
+def resolve_temperature(agentic_model: str, explicit: Optional[float] = None) -> float:
+    """The temperature a run of ``agentic_model`` uses.
+
+    ``explicit`` is the run config's ``llm_temperature``: ``None`` means the
+    user left it on auto and the agent's own value applies, any float means they
+    asked for that value and it wins for every agent.
+    """
+    if explicit is not None:
+        return float(explicit)
+    internal = AGENTIC_MODEL_ALIAS.get(agentic_model, agentic_model)
+    return AGENT_TEMPERATURE.get(internal, DEFAULT_AGENT_TEMPERATURE)
+
+
+# Canonical dataset root — single source of truth in indexing_corpus_dataset.layout
+# (import-light, so this stays safe to import from anywhere).
+from indexing_corpus_dataset.layout import DATA_ROOT as _IR_ROOT
+
+# Agents that manage their own LLM connection (direct vLLM/OpenAI clients)
+SELF_MANAGED_LLM_AGENTS = frozenset({"oss", "tongyi", "glm", "cpm_explore", "cpm_report"})
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter routing (prefer hosted API over local GPU)
+# ---------------------------------------------------------------------------
+
+# OpenAI-compatible OpenRouter endpoint.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Rough VRAM footprint (GB, fp16) of the fixed dense retriever (qwen3_emb_4b):
+# ~8 GB weights + activations for batched 8196-token queries.  FAISS lives on
+# CPU, so the retriever only needs this much GPU and can co-reside on a worker
+# GPU.  Used for the GPU-plan log; tune once measured.
+RETRIEVER_VRAM_GB = 14
+
+# Path to the static OpenRouter slug registry (filled in by the user).
+_OPENROUTER_REGISTRY_PATH = (
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    + "/experiments/configs/openrouter_registry.yaml"
+)
+
+
+@functools.lru_cache(maxsize=1)
+def load_openrouter_registry() -> Dict[str, str]:
+    """Load the agentic-model → OpenRouter-slug map from the registry file.
+
+    Returns an empty dict if the file is missing or empty, so every agent
+    safely falls back to the local vLLM path until slugs are filled in.
+    """
+    try:
+        import yaml  # lazy: keep this module import-light
+        with open(_OPENROUTER_REGISTRY_PATH) as fh:
+            data = yaml.safe_load(fh) or {}
+    except (FileNotFoundError, ImportError):
+        return {}
+    models = data.get("models") or {}
+    return {str(k): str(v) for k, v in models.items() if v}
+
+
+@functools.lru_cache(maxsize=1)
+def load_model_display_names() -> Dict[str, str]:
+    """Load the optional ``display_names`` overrides from the registry file.
+
+    Maps a full model id (e.g. ``zai-org/GLM-4.7-Flash``) to a short, curated
+    label used in output directory names.  Empty when the section is absent.
+    """
+    try:
+        import yaml  # lazy: keep this module import-light
+        with open(_OPENROUTER_REGISTRY_PATH) as fh:
+            data = yaml.safe_load(fh) or {}
+    except (FileNotFoundError, ImportError):
+        return {}
+    names = data.get("display_names") or {}
+    return {str(k): str(v) for k, v in names.items() if v}
+
+
+def model_display_name(model: str) -> str:
+    """Short, filesystem-friendly label for a model id.
+
+    Uses a curated override from the registry's ``display_names`` section when
+    present; otherwise falls back to the last path segment, lowercased
+    (``zai-org/GLM-4.7-Flash`` -> ``glm-4.7-flash``).
+    """
+    if not model:
+        return "default"
+    override = load_model_display_names().get(model)
+    if override:
+        return override
+    return model.split("/")[-1].lower()
+
+
+def resolve_agent_backend(agentic_model: str) -> Tuple[str, Optional[str]]:
+    """Decide how an agent's LLM is served.
+
+    Priority: if the agent is in the OpenRouter registry AND OPENROUTER_API_KEY
+    is set, use the hosted API (no local GPU).  Otherwise fall back to vLLM.
+
+    Returns:
+        ("api", openrouter_slug) or ("vllm", None).
+    """
+    slug = load_openrouter_registry().get(agentic_model)
+
+    # The same slug is spelled twice for agents addressed directly through
+    # AGENTIC_MODEL_TO_LLM: once bare in the registry (which decides the
+    # reported backend) and once "openrouter/"-prefixed here (which selects the
+    # generator).  Drift between them is silent and ships a run recorded
+    # against the wrong model, so say so loudly instead.
+    configured = AGENTIC_MODEL_TO_LLM.get(agentic_model, "")
+    if configured.startswith("openrouter/"):
+        bare = configured.removeprefix("openrouter/")
+        if slug is None:
+            logging.getLogger(__name__).warning(
+                "Agent %r runs on OpenRouter (%s) but is missing from %s; the run "
+                "will record itself as backend 'vllm'.  Add '%s: %s' to its models "
+                "section.", agentic_model, configured,
+                os.path.basename(_OPENROUTER_REGISTRY_PATH), agentic_model, bare,
+            )
+        elif slug != bare:
+            logging.getLogger(__name__).warning(
+                "OpenRouter slug mismatch for %r: registry says %r, "
+                "AGENTIC_MODEL_TO_LLM says %r.  The registry value is reported as "
+                "the backend; the latter is what actually gets called.",
+                agentic_model, slug, bare,
+            )
+
+    if slug and os.getenv("OPENROUTER_API_KEY"):
+        return "api", slug
+    return "vllm", None
+
+
+# ---------------------------------------------------------------------------
+# Retriever config
+# ---------------------------------------------------------------------------
+
+class _RetrieverConfig:
+    """Lightweight config object for local retrievers (BM25, Dense, Rerank, SPLADE)."""
+
+    def __init__(self, retriever_name, index_dir, corpus_path, topk):
+        self.retriever_name = retriever_name
+        self.index_dir = index_dir
+        self.corpus_path = corpus_path
+        self.retrieval_topk = topk
+        self.bm25_k1 = 0.9
+        self.bm25_b = 0.4
+        self.faiss_gpu = False
+        self.retrieval_query_max_length = 512
+        self.retrieval_use_fp16 = True
+        self.retrieval_batch_size = 32
+        # SPLADE-specific
+        self.splade_max_length = 256
+        self.device = None  # auto-detected by SPLADERetriever
+
+
+def get_reranker_configs(rerank_top_k: int = 100) -> dict:
+    """Return the canonical reranker configuration dict."""
+    return {
+        "batched_reranker_config": {
+            "reranker_model": "claude-sonnet-4-5",
+            "max_chars_per_document": 4096,
+            # Optional score-threshold selector (dynamic-length output). Disabled
+            # by default; set enable_selector=True to keep only high-scoring docs.
+            "enable_selector": False,
+            "selector_score_threshold": 3.0,
+            "selector_min_keep": 0,
+        },
+        "rankllama_reranker_config": {
+            "model_name": "castorini/rankllama-v1-7b-lora-passage",
+            "top_k": rerank_top_k,
+            "batch_size": 1,
+            "rerank_max_len": 256,
+        },
+        "rank1_reranker_config": {
+            "model_name": "jhu-clsp/rank1-7b",
+            "backend": "api",
+            "api_url": "http://localhost:8000/v1",
+            "api_model_name": "jhu-clsp/rank1-7b",
+            "top_k": rerank_top_k,
+            "batch_size": 100,
+            "context_size": 128,
+            "max_output_tokens": 200,
+        },
+        "qwen3_reranker_config": {
+            "model_name": None,
+            "size": "4B",
+            "api_url": "http://localhost:8000/v1",
+            "api_key": "EMPTY",
+            "batch_size": 32,
+            "top_k": rerank_top_k,
+            "enable_thinking": False,
+        },
+        "listwise_reranker_config": {
+            "model_name": "castorini/rank_zephyr_7b_v1_full",
+            "api_url": "http://localhost:8000/v1",
+            "api_key": "EMPTY",
+            "template": "rankzephyr",
+            "top_k": rerank_top_k,
+            "window_size": 20,
+            "stride": 10,
+            "use_sliding_window": True,
+            "max_passage_words": 300,
+            "max_tokens": 200,
+            "temperature": 0.0,
+            "enable_thinking": False,
+        },
+        "rank_r1_reranker_config": {
+            "api_url": "http://localhost:8001/v1",
+            "api_model_name": "rank-r1",
+            "api_key": "EMPTY",
+            "num_child": 19,
+            "k": 10,
+            "max_tokens": 2048,
+            "top_k": rerank_top_k,
+            "context_size": 450,
+        },
+        "monot5_reranker_config": {
+            "model_name": "castorini/monot5-base-msmarco",
+            "use_mt5": False,
+            "batch_size": 32,
+            "top_k": rerank_top_k,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inference configuration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InferenceConfig:
+    """Immutable bundle of parameters shared by the main loop, force answer,
+    and answer candidate components of an agent."""
+
+    # API dispatch
+    api_type: str = "chat_completion"  # "responses_api" | "chat_completion"
+
+    # Model identity
+    model_name: str = ""
+    api_base: Optional[str] = None
+    api_key: str = "EMPTY"
+
+    # Generation limits
+    max_output_tokens: int = 20000
+
+    # Reasoning (Responses API only; None disables the reasoning block)
+    reasoning_effort: Optional[str] = "high"
+
+    # Prompt scaffolding
+    system_prompt: Optional[str] = None
+    format_instructions: str = ""

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────────────────────
+# Start a vLLM server for the OpenAI gpt-oss-20b model.
+#
+# Usage:
+#   bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh              # defaults: gpt-oss-20b, port 6008
+#   bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh 120b         # serve gpt-oss-120b instead
+#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh    # custom port
+#
+# Requirements:
+#   - vLLM installed with gpt-oss support.
+#   - GPU(s): both variants are mxfp4-quantized MoE.  20b (~13 GB) fits on a
+#     single GPU; 120b (~63 GB) fits on a single 80+ GB H100 (TP=1 on the
+#     180 GB card here), TP=2 only on 40 GB A100s.  TP is auto-sized from
+#     detected GPU memory, keeping 120b on one GPU so the rest stay free for
+#     retrieval workers.
+# ──────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+VARIANT="${1:-20b}"                         # "20b" or "120b"
+PORT="${PORT:-6008}"
+MODEL="openai/gpt-oss-${VARIANT}"
+
+if [[ "$VARIANT" == "120b" ]]; then
+    TP_SIZE="${TP_SIZE:-$(auto_tp 63 "1,2,4")}"
+else
+    TP_SIZE="${TP_SIZE:-1}"                  # 20b:  single GPU is enough (mxfp4)
+fi
+
+# Pin vLLM to the first TP_SIZE GPUs (0..TP_SIZE-1) so the remaining GPUs
+# stay free for retrieval workers.
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TP_SIZE - 1)))}"
+
+# ── Check vLLM is installed ───────────────────────────────────────────────────
+VLLM_VERSION=$(python -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "none")
+if [[ "$VLLM_VERSION" == "none" ]]; then
+    echo "ERROR: vLLM is not installed. Run: pip install vllm"
+    exit 1
+fi
+echo "Using vLLM ${VLLM_VERSION}"
+
+# ── Launch ────────────────────────────────────────────────────────────────────
+echo ""
+echo "Starting vLLM server:"
+echo "  Model : ${MODEL}"
+echo "  Port  : ${PORT}"
+echo "  TP    : ${TP_SIZE}"
+echo "  GPUs  : ${CUDA_VISIBLE_DEVICES}"
+echo ""
+
+exec vllm serve "$MODEL" \
+    --port "$PORT" \
+    --tensor-parallel-size "$TP_SIZE" \
+    --download-dir "$DOWNLOAD_DIR" \
+    --trust-remote-code \
+    --max-model-len 131072 \
+    --max-num-seqs 16 \
+    --gpu-memory-utilization 0.90 \
+    --enable-prefix-caching

@@ -1,0 +1,17 @@
+
+After the results of each search, you also receive a <belief> block that tracks the progress of your search. You never write it; read it before you think.
+
+<belief step="1">
+  <novelty new="3" shown="5"/>
+  <criteria covered="1" partial="1" not_covered="1" total="3">
+    <k1 status="covered">its conservation status is 'endangered'</k1>
+    <k2 status="partial">it is the only representative of its genus in the country</k2>
+    <k3 status="not_covered">one of its local names roughly translates to 'devil's basket'</k3>
+  </criteria>
+</belief>
+
+- `step` is 0 after your first search, then 1, 2, ...
+- <novelty new="a" shown="b"/>: a of the b passages in the last <information> were never shown to you before. A low value means your searches keep returning what you already have.
+- <criteria> lists the conditions a correct answer must satisfy, with the evidence found so far across all searches: `covered` (the passages directly establish it), `partial` (only a clue or indirect evidence), `not_covered` (nothing found yet).
+
+Use the belief to decide your next step: search for criteria that are still `not_covered` or `partial`, change your search when novelty stays low, and answer once the criteria are covered or further searching stops finding new passages.
