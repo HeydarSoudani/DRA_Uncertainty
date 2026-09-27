@@ -1,9 +1,9 @@
 """Text-only LLM calls through ``reasoner_component`` (READ-ONLY reuse).
 
 Used where training needs a model that is NOT the policy being trained: an
-environment's auxiliary model (e.g. the belief agent's criteria updater), or a
+environment's auxiliary model (e.g. the uncertainty-aware agent's criteria updater), or a
 teacher generating SFT trajectories.  Both must behave as in inference, so the
-call mirrors ``BeliefAgent._call``: the same generator factory, the same
+call mirrors ``UncertaintyAwareAgent._call``: the same generator factory, the same
 ``complete`` kwargs, and the same switch that turns the model's own reasoning
 mode off.
 """
@@ -17,7 +17,7 @@ def no_thinking_extra_body(generator) -> Optional[Dict[str, Any]]:
     """``extra_body`` that switches a model's own reasoning off.
 
     Copies the configured body (OpenRouter provider pin) and extends it, as
-    ``BeliefAgent._no_thinking_body`` does: OpenRouter takes
+    ``UncertaintyAwareAgent._no_thinking_body`` does: OpenRouter takes
     ``reasoning.enabled``, a self-hosted vLLM model takes the chat-template
     switch.  Other APIs get nothing (they may reject the vLLM kwarg).
     """

@@ -7,7 +7,7 @@
 #SBATCH --time=03:00:00
 #SBATCH --mem=480GB
 #SBATCH --output=script_logging/%x_%j.out
-# GPU plan for THIS config: `belief` is listed in experiments/configs/openrouter_registry.yaml
+# GPU plan for THIS config: `uncertainty_aware` is listed in experiments/configs/openrouter_registry.yaml
 # (qwen/qwen3.6-27b) and OPENROUTER_API_KEY is set in .env, so resolve_agent_backend()
 # returns "api": NO local vLLM server is started and no GPU is reserved for the LLM.
 # All 4 GPUs therefore become pipeline workers — one process per GPU, each holding its
@@ -31,7 +31,7 @@ export OMP_NUM_THREADS=16
 DATASET=trqa                       # trqa | neuclir | browsecomp_plus
 SUBSET=wiki2                       # trqa: wiki1|wiki2|ecommerce (eval split defaults to 'test')
 RETRIEVER=qwen3_emb_4b
-AGENT=belief                       # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
+AGENT=uncertainty_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 CONTROLLER=off                     # off | monitor | action
 CONTROLLER_PROMPT_VARIANT=nov_cov_sim   # unused while CONTROLLER=off
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
@@ -53,7 +53,7 @@ python experiments/dra_inference.py \
 # file — that alone was ~1 MB of the 2.3 MB GLM log).  What remains is the GPU plan, the
 # worker split, one "[Worker i] n/m done" line per finished query, and the eval summary.
 #
-# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/belief_api_qwen3.6-27b/ctrl-off/
+# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/uncertainty_aware_api_qwen3.6-27b/ctrl-off/
 # Resume is automatic: queries that already have retrieval/surfaced/{qid}.trec are skipped,
 # and --limit is applied to what REMAINS, so a re-submit continues rather than restarts.
 #
@@ -64,5 +64,5 @@ python experiments/dra_inference.py \
 # Its 4 queries are real results and are kept: resume skips them, so the follow-up
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.
 #
-# Smoke test: python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model belief --limit 1 --num-gpus 1
-# Eval only:  python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model belief --eval-only --num-gpus 0
+# Smoke test: python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model uncertainty_aware --limit 1 --num-gpus 1
+# Eval only:  python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model uncertainty_aware --eval-only --num-gpus 0

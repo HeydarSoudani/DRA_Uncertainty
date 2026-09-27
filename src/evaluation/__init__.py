@@ -21,11 +21,6 @@ trajectory_evaluator
     Per-step trajectory statistics (incl. token usage) and persistence.
 controller_evaluator
     Per-iteration controller-signal persistence and aggregation.
-table (package)
-    ``table.TableEvaluator`` -- persists the per-stage grid snapshots a
-    grid-shaped agent builds (``tables/{qid}.jsonl``) and scores them against
-    the dataset's gold intermediate information.  Gated on the shape of the
-    result, not on the agent's name.
 
 Per-query/per-step token usage is recorded by the agents (via
 ``utils.token_meter.TokenMeter`` attached to the LLM clients) and aggregated by
@@ -67,9 +62,6 @@ from .trajectory_evaluator import TrajectoryEvaluator
 # Controller evaluation (per-iteration signal persistence)
 from .controller_evaluator import ControllerEvaluator
 
-# Table evaluation (per-stage grid persistence + scoring)
-from .table import TableEvaluator
-
 __all__ = [
     # Retrieval evaluation
     "compute_trec_metrics",
@@ -95,6 +87,4 @@ __all__ = [
     "TrajectoryEvaluator",
     # Controller evaluation
     "ControllerEvaluator",
-    # Table evaluation
-    "TableEvaluator",
 ]

@@ -87,16 +87,6 @@ def queries_base(data_path: Path | str, split: str) -> Path:
     return Path(data_path) / "queries" / f"queries_{split}"
 
 
-def intermediate_info_path(data_path: Path | str, split: str) -> Path:
-    """Return the gold intermediate-info path for a split.
-
-    E.g. ``.../queries/queries_wiki1_test_intermediate_info.jsonl`` -- the
-    per-query entity set and property that the answer is aggregated from.  Only
-    TRQA ships one; the reader returns ``{}`` when the file is absent.
-    """
-    return Path(data_path) / "queries" / f"queries_{split}_intermediate_info.jsonl"
-
-
 def qrels_base(data_path: Path | str, split: str) -> Path:
     """Return the suffix-less qrels path, e.g. ``.../qrels/qrels_test``."""
     return Path(data_path) / "qrels" / f"qrels_{split}"

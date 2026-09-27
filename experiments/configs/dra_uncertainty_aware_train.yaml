@@ -1,7 +1,7 @@
-# Belief agent training config (SFT cold start + GRPO).
+# Uncertainty-aware agent training config (SFT cold start + GRPO).
 #
 # Mostly-fixed knobs live here; frequently-varied ones are CLI flags on
-# experiments/dra_belief_train.py and are merged on top of this file.
+# experiments/dra_uncertainty_aware_train.py and are merged on top of this file.
 # Unknown keys are rejected, so a typo fails loudly.
 #
 # Defaults describe a real run (TRQA wiki1 validation, local retriever, vLLM
@@ -10,7 +10,7 @@
 
 stage: rl                 # rl | sft (teacher trajectories -> SFT data, then the SFT backend)
 verbose: true
-output_dir: null          # null = run_outputs/training/belief/<stage>_<time>
+output_dir: null          # null = run_outputs/training/uncertainty_aware/<stage>_<time>
 save_rollouts: true       # every scored group under output_dir/rollouts (sft: output_dir/sft/rollouts)
 
 data:
@@ -48,7 +48,7 @@ rollout:
   group_size: 8           # rollouts per prompt (GRPO group)
   concurrency: 32
 
-# The belief agent: BeliefAgentConfig fields, defaults of the belief_* keys in
+# The uncertainty-aware agent: UncertaintyAwareAgentConfig fields, defaults of the ua_* keys in
 # dra_inference.yaml.
 agent:
   max_turns: 8

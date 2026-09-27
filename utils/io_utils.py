@@ -16,38 +16,6 @@ except ImportError:
     _json_loads = _json.loads
 
 
-def load_json_from_path(path: Union[str, Path], default=None):
-    """Load a JSON file, returning *default* if missing.
-
-    Args:
-        path: Local path to a ``.json`` file.
-        default: Value to return when the file does not exist.
-                 Defaults to ``None``; pass ``{}`` or ``[]`` as needed.
-
-    Returns:
-        Parsed JSON object, or *default* on missing/error.
-    """
-    if default is None:
-        default = {}
-    try:
-        return _json_loads(Path(path).read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError):
-        return default
-    except Exception:
-        return default
-
-
-def save_json_to_path(path: Union[str, Path], data, *, indent: int = 2) -> None:
-    """Serialize *data* as JSON and write to a local path.
-
-    Args:
-        path: Destination local path.
-        data: JSON-serializable object.
-        indent: Pretty-print indent (default 2).
-    """
-    Path(path).write_text(_json.dumps(data, indent=indent), encoding="utf-8")
-
-
 def setup_output_dirs(
     run_dir: Union[str, Path],
     subdirs: List[str],
@@ -371,20 +339,20 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "llm_model": llm_model,
             "model_display": model_display_name(llm_model),
             "use_plan": kwargs.get("use_plan", False),
-            "belief_max_turns": kwargs.get("belief_max_turns", 8),
-            "belief_max_passage_chars": kwargs.get("belief_max_passage_chars", 1500),
-            "belief_max_format_retries": kwargs.get("belief_max_format_retries", 2),
-            "belief_max_tokens_per_call": kwargs.get("belief_max_tokens_per_call", 4096),
-            "belief_disable_native_thinking": kwargs.get("belief_disable_native_thinking", True),
-            "belief_show_novelty": kwargs.get("belief_show_novelty", True),
-            "belief_show_criteria": kwargs.get("belief_show_criteria", True),
-            "belief_criteria_mode": kwargs.get("belief_criteria_mode", "auto"),
-            "belief_criteria_model": kwargs.get("belief_criteria_model", ""),
-            "belief_max_criteria": kwargs.get("belief_max_criteria", 8),
-            "belief_stabilization_window": kwargs.get("belief_stabilization_window", 15),
-            "belief_criteria_max_tokens": kwargs.get("belief_criteria_max_tokens", 1024),
-            "belief_evidence_top_k": kwargs.get("belief_evidence_top_k", 5),
-            "belief_evidence_chars": kwargs.get("belief_evidence_chars", 1500),
+            "ua_max_turns": kwargs.get("ua_max_turns", 8),
+            "ua_max_passage_chars": kwargs.get("ua_max_passage_chars", 1500),
+            "ua_max_format_retries": kwargs.get("ua_max_format_retries", 2),
+            "ua_max_tokens_per_call": kwargs.get("ua_max_tokens_per_call", 4096),
+            "ua_disable_native_thinking": kwargs.get("ua_disable_native_thinking", True),
+            "ua_show_novelty": kwargs.get("ua_show_novelty", True),
+            "ua_show_criteria": kwargs.get("ua_show_criteria", True),
+            "ua_criteria_mode": kwargs.get("ua_criteria_mode", "auto"),
+            "ua_criteria_model": kwargs.get("ua_criteria_model", ""),
+            "ua_max_criteria": kwargs.get("ua_max_criteria", 8),
+            "ua_stabilization_window": kwargs.get("ua_stabilization_window", 15),
+            "ua_criteria_max_tokens": kwargs.get("ua_criteria_max_tokens", 1024),
+            "ua_evidence_top_k": kwargs.get("ua_evidence_top_k", 5),
+            "ua_evidence_chars": kwargs.get("ua_evidence_chars", 1500),
         },
         "searcher": {
             "retriever_name": kwargs.get("retriever_name", "e5"),

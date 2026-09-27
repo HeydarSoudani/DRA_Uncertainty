@@ -1,8 +1,8 @@
-"""Criteria progress for the belief agent: init once per query, update per search.
+"""Criteria progress for the uncertainty-aware agent: init once per query, update per search.
 
 A copy of the controller's criteria-coverage signal
 (``controller_component.signals.CriteriaCoverageSignal`` and the helpers in
-``controller_component.prompts.criteria_coverage``), kept here so the belief
+``controller_component.prompts.criteria_coverage``), kept here so the uncertainty-aware
 agent does not depend on the controller.  The update logic is unchanged.
 What differs:
 
@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from utils.text_utils import doc_text, doc_title
-from deep_research_agents.prompts.belief.criteria import (
+from deep_research_agents.prompts.uncertainty_aware.criteria import (
     CRITERIA_INIT_DYNAMIC_SYSTEM,
     CRITERIA_INIT_DYNAMIC_USER_TEMPLATE,
     CRITERIA_INIT_STATIC_SYSTEM,
@@ -162,11 +162,11 @@ def extract_criteria_coverage(raw: str) -> Optional[CriteriaCoverageSummary]:
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError:
-        logger.warning("BeliefCriteria: JSON parse failed for init output")
+        logger.warning("UACriteria: JSON parse failed for init output")
         return None
 
     if not isinstance(data, dict) or "criteria" not in data:
-        logger.warning("BeliefCriteria: no 'criteria' key found in JSON")
+        logger.warning("UACriteria: no 'criteria' key found in JSON")
         return None
 
     reasoning = data.get("reasoning", "")
@@ -180,7 +180,7 @@ def extract_criteria_coverage(raw: str) -> Optional[CriteriaCoverageSummary]:
             criteria.append(Criterion.from_dict(item))
 
     if not criteria:
-        logger.warning("BeliefCriteria: parsed JSON but no valid criteria found")
+        logger.warning("UACriteria: parsed JSON but no valid criteria found")
         return None
 
     return CriteriaCoverageSummary(criteria=criteria, reasoning=reasoning)
@@ -198,11 +198,11 @@ def extract_criterion_actions(raw: str) -> Optional[CriterionActionResult]:
     try:
         data = json.loads(stripped)
     except json.JSONDecodeError:
-        logger.warning("BeliefCriteria: JSON parse failed for update output")
+        logger.warning("UACriteria: JSON parse failed for update output")
         return None
 
     if not isinstance(data, dict) or "actions" not in data:
-        logger.warning("BeliefCriteria: no 'actions' key found in JSON")
+        logger.warning("UACriteria: no 'actions' key found in JSON")
         return None
 
     reasoning = data.get("reasoning", "")
@@ -256,7 +256,7 @@ def _normalise_status(raw_status: str) -> str:
         return normalised
     if normalised in _STATUS_ALIASES:
         return _STATUS_ALIASES[normalised]
-    logger.warning("BeliefCriteria: unrecognized status '%s', defaulting to 'not_covered'", raw_status)
+    logger.warning("UACriteria: unrecognized status '%s', defaulting to 'not_covered'", raw_status)
     return "not_covered"
 
 
@@ -285,11 +285,11 @@ def apply_criterion_actions(
                 if act.evidence:
                     criteria_by_name[resolved].evidence = act.evidence[:_MAX_EVIDENCE_LENGTH]
             else:
-                logger.warning("BeliefCriteria: tick for unknown criterion '%s', skipping", act.name)
+                logger.warning("UACriteria: tick for unknown criterion '%s', skipping", act.name)
 
         elif act.action == "add":
             if frozen:
-                logger.info("BeliefCriteria: ignoring 'add' action while frozen")
+                logger.info("UACriteria: ignoring 'add' action while frozen")
                 continue
             resolved = _resolve_criterion_name(act.name, criteria_by_name)
             if resolved is None and len(criteria_by_name) < max_criteria:
@@ -305,7 +305,7 @@ def apply_criterion_actions(
 
         elif act.action == "remove":
             if frozen:
-                logger.info("BeliefCriteria: ignoring 'remove' action while frozen")
+                logger.info("UACriteria: ignoring 'remove' action while frozen")
                 continue
             resolved = _resolve_criterion_name(act.name, criteria_by_name)
             if resolved is not None:
@@ -489,7 +489,7 @@ class CriteriaTracker:
     # ------------------------------------------------------------------
 
     def _fail(self, message: str, iter_num: int, raw: str = "") -> CriteriaCoverageSummary:
-        logger.warning("BeliefCriteria (iter %d): %s", iter_num, message)
+        logger.warning("UACriteria (iter %d): %s", iter_num, message)
         self.errors.append(f"iter {iter_num}: {message}")
         summary = self._build_summary(iter_num=iter_num)
         summary.error = message

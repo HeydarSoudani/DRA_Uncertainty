@@ -15,7 +15,7 @@ Every mainstream SFT trainer (TRL, LLaMA-Factory, veRL multi-turn SFT) trains on
 the final assistant message only, which is the masking this layout needs: the
 context, with every observation in it, is never trained on.  The assistant
 content is the environment's normalised turn (``Turn.info["target_text"]``,
-e.g. the belief agent's ``<think>…</think>\\n<search>…</search>``) when it
+e.g. the uncertainty-aware agent's ``<think>…</think>\\n<search>…</search>``) when it
 provides one, else the raw generation.
 """
 

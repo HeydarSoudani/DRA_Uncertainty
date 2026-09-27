@@ -9,7 +9,7 @@ These dataclasses are the *spine* every service agrees on:
     RewardBreakdown— the reward's verdict for a trajectory
 
 Per-turn samples.  The agents keep the whole run in the prompt they send each
-turn (for the belief agent: one growing user message), so turn t+1's context
+turn (for the uncertainty-aware agent: one growing user message), so turn t+1's context
 is not turn t's context followed by its output.  Each turn is therefore its own
 training sample, ``prompt_token_ids ++ gen_token_ids``, and every turn of a
 trajectory gets the trajectory's advantage.  Retrieved passages and any other

@@ -1,4 +1,4 @@
-"""BeliefAgent: a SearchR1-style search agent that reads a progress belief.
+"""UncertaintyAwareAgent: a SearchR1-style search agent that reads a progress belief.
 
 Loop, per query::
 
@@ -17,7 +17,7 @@ The policy never writes the belief.  The belief carries two things:
                  not_covered (the updater's evidence notes are logged, not shown)
 
 The criteria updater is a copy of the controller's criteria-coverage signal
-(``deep_research_agents.agent_tools.belief_criteria``); the agent does not
+(``deep_research_agents.agent_tools.uncertainty_aware_criteria``); the agent does not
 import the controller.  Its mode is ``static`` (criteria copied from the
 query, list fixed) or ``dynamic`` (query decomposed, list may change until it
 stabilises); ``auto`` picks static for BrowseComp-Plus and dynamic otherwise.
@@ -25,14 +25,14 @@ stabilises); ``auto`` picks static for BrowseComp-Plus and dynamic otherwise.
 The run is one growing transcript in the user message, as in the SearchR1
 family.  ``run_single`` and retrieval come from :class:`BasicAgent`, the
 trajectory streams through the standard logger, and the belief data rides on
-the result under ``belief_*`` keys, which the trajectory meta line persists
+the result under ``ua_*`` keys, which the trajectory meta line persists
 (``utils.config.AGENT_META_KEYS``).  As in the other API agents, a controller
 attached by ``--controller`` is reset and reported by the base hooks but never
 consulted.
 
-Settings come from the ``belief_*`` keys of ``dra_inference.yaml``.  The
+Settings come from the ``ua_*`` keys of ``dra_inference.yaml``.  The
 pipeline's ``seen_top_k`` (passages per search) and run temperature apply; its
-``max_iteration`` does not: this agent's turn cap is ``belief_max_turns``.
+``max_iteration`` does not: this agent's turn cap is ``ua_max_turns``.
 """
 
 import logging
@@ -43,12 +43,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils.config import InferenceConfig
 from utils.text_utils import doc_text, doc_title
-from deep_research_agents.prompts.belief import (
+from deep_research_agents.prompts.uncertainty_aware import (
     render_format_error,
     render_system,
     render_user,
 )
-from deep_research_agents.agent_tools.belief_criteria import (
+from deep_research_agents.agent_tools.uncertainty_aware_criteria import (
     MODES,
     CriteriaCoverageSummary,
     CriteriaTracker,
@@ -259,12 +259,12 @@ def resolve_criteria_mode(mode: str, dataset: Optional[str]) -> str:
     if mode == "auto":
         return "static" if dataset == "browsecomp_plus" else "dynamic"
     if mode not in MODES:
-        raise ValueError(f"belief criteria mode must be auto, static or dynamic, got {mode!r}")
+        raise ValueError(f"criteria mode must be auto, static or dynamic, got {mode!r}")
     return mode
 
 
 @dataclass
-class BeliefAgentConfig:
+class UncertaintyAwareAgentConfig:
     # Generation steps before the run counts as a failure.
     max_turns: int = 8
     # Characters of one passage shown inside <information>.
@@ -290,8 +290,8 @@ class BeliefAgentConfig:
     evidence_chars: int = 1500
 
 
-class BeliefAgent(BasicAgent):
-    AGENT_NAME = "Belief"
+class UncertaintyAwareAgent(BasicAgent):
+    AGENT_NAME = "UncertaintyAware"
 
     def __init__(self, llm_client, retriever: Optional[Any] = None, max_iteration: int = 100,
                  seen_top_k: int = 5, verbose: bool = True, max_turns: int = 8,
@@ -305,7 +305,7 @@ class BeliefAgent(BasicAgent):
                  evidence_chars: int = 1500):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
-        self.cfg = BeliefAgentConfig(
+        self.cfg = UncertaintyAwareAgentConfig(
             max_turns=max_turns,
             max_passage_chars=max_passage_chars,
             max_format_retries=max_format_retries,
@@ -565,11 +565,11 @@ class BeliefAgent(BasicAgent):
 
         final = last_summary
         self._extras = {
-            "belief_criteria": [c.to_dict() for c in init.criteria],
-            "belief_criteria_raw": init.raw,
-            "belief_records": records,
-            "belief_doc_labels": dict(registry.doc_of),
-            "belief_outcome": {
+            "ua_criteria": [c.to_dict() for c in init.criteria],
+            "ua_criteria_raw": init.raw,
+            "ua_records": records,
+            "ua_doc_labels": dict(registry.doc_of),
+            "ua_outcome": {
                 "end": end,
                 "answer": prediction or None,
                 "num_turns": turns,

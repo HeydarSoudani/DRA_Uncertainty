@@ -1,18 +1,18 @@
-"""Train the belief agent (SFT cold start + GRPO).
+"""Train the uncertainty-aware agent (SFT cold start + GRPO).
 
-The training sibling of ``experiments/dra_inference.py --agentic-model belief``.
+The training sibling of ``experiments/dra_inference.py --agentic-model uncertainty_aware``.
 The common training pipeline lives in ``src/training``; this file holds what is
-specific to the belief agent and plugs it in:
+specific to the uncertainty-aware agent and plugs it in:
 
-  * ``BeliefEnv``: one rollout of the belief agent's protocol (system prompt,
+  * ``UncertaintyAwareEnv``: one rollout of the uncertainty-aware agent's protocol (system prompt,
     one growing transcript in the user message, format re-asks, retrieval,
     doc novelty, criteria updater, ``<belief>`` block).  Its pieces are
     imported from the inference agent (``deep_research_agents.agents.
-    belief_agent``, READ-ONLY), so the policy is trained on exactly the context
+    uncertainty_aware_agent``, READ-ONLY), so the policy is trained on exactly the context
     it reads at inference; ``--selftest`` checks that against the inference
     agent itself.
-  * the ``agent:`` config section: the ``BeliefAgentConfig`` fields, with the
-    inference defaults (``belief_*`` keys of ``dra_inference.yaml``).
+  * the ``agent:`` config section: the ``UncertaintyAwareAgentConfig`` fields, with the
+    inference defaults (``ua_*`` keys of ``dra_inference.yaml``).
   * the criteria updater: a frozen model (``agent.criteria_model``, default
     qwen3.6-27b on OpenRouter, the inference backbone), never the policy
     being trained.
@@ -23,7 +23,7 @@ reward is the outcome only (answer correct: 1, else 0; see
 
 Stages
 ------
-  sft  the teacher (``sft.teacher_model``) runs through BeliefEnv; correct
+  sft  the teacher (``sft.teacher_model``) runs through UncertaintyAwareEnv; correct
        trajectories become per-turn chat samples (``{output_dir}/sft``).
   rl   GRPO on the policy served by vLLM (``rollout.server_url``).  The GRPO
        update (veRL) is still a TODO: ``trainer.backend: mock`` runs the whole
@@ -32,15 +32,15 @@ Stages
 Examples
 --------
   # CPU smoke test (mock policy / retrieval / updater / trainer):
-  python experiments/dra_belief_train.py --smoke
-  python experiments/dra_belief_train.py --smoke --mode async
-  python experiments/dra_belief_train.py --smoke --stage sft
-  # Parity of BeliefEnv with the inference BeliefAgent (CPU, scripted LLMs):
-  python experiments/dra_belief_train.py --selftest
+  python experiments/dra_uncertainty_aware_train.py --smoke
+  python experiments/dra_uncertainty_aware_train.py --smoke --mode async
+  python experiments/dra_uncertainty_aware_train.py --smoke --stage sft
+  # Parity of UncertaintyAwareEnv with the inference UncertaintyAwareAgent (CPU, scripted LLMs):
+  python experiments/dra_uncertainty_aware_train.py --selftest
   # SFT data from the teacher on TRQA wiki1 validation (retriever on GPU):
-  python experiments/dra_belief_train.py --stage sft --limit 200
+  python experiments/dra_uncertainty_aware_train.py --stage sft --limit 200
   # RL rollouts against a vLLM policy server (mock trainer until veRL):
-  python experiments/dra_belief_train.py --stage rl --server-url http://127.0.0.1:8000
+  python experiments/dra_uncertainty_aware_train.py --stage rl --server-url http://127.0.0.1:8000
 """
 
 import argparse
@@ -72,32 +72,32 @@ from training.data.schema import PromptRecord
 from training.rollout.env import AgentEnv, EnvFactory, GenParams, StepResult
 from training.rollout.tool_env import ToolEnv
 
-logger = logging.getLogger("dra_belief_train")
+logger = logging.getLogger("dra_uncertainty_aware_train")
 
-_CONFIG_DEFAULT = str(Path(__file__).resolve().parent / "configs" / "dra_belief_train.yaml")
+_CONFIG_DEFAULT = str(Path(__file__).resolve().parent / "configs" / "dra_uncertainty_aware_train.yaml")
 DEFAULT_CRITERIA_MODEL = "openrouter/qwen/qwen3.6-27b"
 
 
-def _belief():
-    """The inference belief agent's module (heavy import: loads every agent)."""
-    from deep_research_agents.agents import belief_agent
-    return belief_agent
+def _agent_module():
+    """The inference uncertainty-aware agent's module (heavy import: loads every agent)."""
+    from deep_research_agents.agents import uncertainty_aware_agent
+    return uncertainty_aware_agent
 
 
 # ── Agent config ──────────────────────────────────────────────────────────────
 
-def belief_config(agent: Dict[str, Any]):
-    """``BeliefAgentConfig`` from the ``agent:`` section (unknown keys rejected).
+def uncertainty_aware_config(agent: Dict[str, Any]):
+    """``UncertaintyAwareAgentConfig`` from the ``agent:`` section (unknown keys rejected).
 
     ``criteria_mode`` stays unresolved (``auto`` is resolved per prompt, from
     its dataset, as inference resolves it from ``--dataset``).
     """
-    b = _belief()
-    known = {f.name for f in fields(b.BeliefAgentConfig)}
+    b = _agent_module()
+    known = {f.name for f in fields(b.UncertaintyAwareAgentConfig)}
     unknown = set(agent) - known
     if unknown:
-        raise ValueError(f"unknown agent keys for the belief agent: {sorted(unknown)}")
-    cfg = b.BeliefAgentConfig(**{"criteria_mode": "auto", **agent})
+        raise ValueError(f"unknown agent keys for the uncertainty-aware agent: {sorted(unknown)}")
+    cfg = b.UncertaintyAwareAgentConfig(**{"criteria_mode": "auto", **agent})
     if not cfg.criteria_model:
         # Inference falls back to the policy backbone; in training the policy
         # changes every update, so the updater must be a fixed model.
@@ -133,18 +133,18 @@ def build_criteria_llm(bcfg) -> Callable[[List[Dict[str, str]]], str]:
     if bcfg.criteria_model == "mock":
         return MockCriteriaLLM()
     from training.rollout.env_llm import TextLLM
-    # As BeliefAgent._criteria_complete: greedy, reasoning off, <think> stripped.
+    # As UncertaintyAwareAgent._criteria_complete: greedy, reasoning off, <think> stripped.
     return TextLLM(bcfg.criteria_model, temperature=0.0, max_tokens=bcfg.criteria_max_tokens,
                    disable_native_thinking=bcfg.disable_native_thinking, strip_think=True)
 
 
 # ── Environment ───────────────────────────────────────────────────────────────
 
-class BeliefEnv(AgentEnv):
-    """One belief-agent run; mirrors ``BeliefAgent.inference`` step by step."""
+class UncertaintyAwareEnv(AgentEnv):
+    """One uncertainty-aware-agent run; mirrors ``UncertaintyAwareAgent.inference`` step by step."""
 
     def __init__(self, tool: ToolEnv, criteria_llm: Callable, bcfg, seen_top_k: int) -> None:
-        self.b = _belief()
+        self.b = _agent_module()
         self.tool = tool
         self.criteria_llm = criteria_llm
         self.cfg = bcfg
@@ -173,7 +173,7 @@ class BeliefEnv(AgentEnv):
         self.prediction = ""
 
     def messages(self) -> List[Dict[str, str]]:
-        return self.b.BeliefAgent._messages(self.system, self.transcript) + self.extra
+        return self.b.UncertaintyAwareAgent._messages(self.system, self.transcript) + self.extra
 
     def gen_params(self) -> GenParams:
         return GenParams(max_tokens=self.cfg.max_tokens_per_call, stop=list(self.b.STOP_SEQUENCES))
@@ -247,10 +247,10 @@ class BeliefEnv(AgentEnv):
     def summary(self) -> Dict[str, Any]:
         b, final = self.b, self.last_summary
         return {
-            "belief_criteria": [c.to_dict() for c in self.init.criteria],
-            "belief_records": self.records,
-            "belief_doc_labels": dict(self.registry.doc_of),
-            "belief_outcome": {
+            "ua_criteria": [c.to_dict() for c in self.init.criteria],
+            "ua_records": self.records,
+            "ua_doc_labels": dict(self.registry.doc_of),
+            "ua_outcome": {
                 "end": self.end, "answer": self.prediction or None,
                 "num_turns": self.turns, "num_searches": self.step_no,
                 "format_retries": sum(r.get("format_retries", 0) for r in self.records),
@@ -264,16 +264,16 @@ class BeliefEnv(AgentEnv):
         }
 
 
-def make_belief_env(cfg: TrainingConfig, tool: ToolEnv) -> EnvFactory:
-    """``pipeline.MakeEnv`` for the belief agent: one shared updater, a fresh env per rollout."""
-    bcfg = belief_config(cfg.agent)
+def make_uncertainty_aware_env(cfg: TrainingConfig, tool: ToolEnv) -> EnvFactory:
+    """``pipeline.MakeEnv`` for the uncertainty-aware agent: one shared updater, a fresh env per rollout."""
+    bcfg = uncertainty_aware_config(cfg.agent)
     criteria_llm = build_criteria_llm(bcfg)
-    print(f"[dra_belief_train] belief env | max_turns={bcfg.max_turns} criteria={bcfg.criteria_mode} "
+    print(f"[dra_uncertainty_aware_train] env | max_turns={bcfg.max_turns} criteria={bcfg.criteria_mode} "
           f"updater={bcfg.criteria_model} novelty={bcfg.show_novelty} criteria_shown={bcfg.show_criteria}")
-    return lambda: BeliefEnv(tool, criteria_llm, bcfg, seen_top_k=cfg.rollout.top_k_docs)
+    return lambda: UncertaintyAwareEnv(tool, criteria_llm, bcfg, seen_top_k=cfg.rollout.top_k_docs)
 
 
-# ── Self-test: BeliefEnv == BeliefAgent ───────────────────────────────────────
+# ── Self-test: UncertaintyAwareEnv == UncertaintyAwareAgent ───────────────────────────────────────
 
 class _ScriptedGenerator:
     """Stands in for a reasoner_component generator: replays outputs, records calls."""
@@ -312,13 +312,13 @@ class _FakeSearchTool:
 
 
 def selftest() -> None:
-    """Run the same scripted policy through BeliefAgent.inference and BeliefEnv;
+    """Run the same scripted policy through UncertaintyAwareAgent.inference and UncertaintyAwareEnv;
     every policy call and every updater call must receive identical messages."""
     from training.config import RolloutConfig
     from training.rollout.agent_rollout import rollout_once
     from training.rollout.policy_client import Generation, PolicyClient
 
-    b = _belief()
+    b = _agent_module()
     question = "Which river flows through the capital of the country that borders both A and B?"
     answered = [
         "<think>Start with the countries.</think>\n<search>countries bordering A and B</search>",
@@ -340,11 +340,11 @@ def selftest() -> None:
 
         # -- inference agent --
         gen, upd = _ScriptedGenerator(script), _RecordingUpdater()
-        agent = b.BeliefAgent(llm_client=gen, retriever=None, seen_top_k=5, verbose=False,
+        agent = b.UncertaintyAwareAgent(llm_client=gen, retriever=None, seen_top_k=5, verbose=False,
                               criteria_llm_client=upd, criteria_model="scripted", **settings, **flags)
         agent.search_tool = _FakeSearchTool()
         _, prediction, _ = agent.inference(question, generation_temp=1.0)
-        outcome = agent._extras["belief_outcome"]
+        outcome = agent._extras["ua_outcome"]
 
         # -- training env --
         class _ScriptedPolicy(PolicyClient):
@@ -357,12 +357,12 @@ def selftest() -> None:
                 return Generation(text=script[self.i - 1])
 
         env_upd = _RecordingUpdater()
-        bcfg = belief_config({**settings, **flags, "criteria_model": "mock"})
-        env = BeliefEnv(_FakeSearchTool(), env_upd, bcfg, seen_top_k=5)
+        bcfg = uncertainty_aware_config({**settings, **flags, "criteria_model": "mock"})
+        env = UncertaintyAwareEnv(_FakeSearchTool(), env_upd, bcfg, seen_top_k=5)
         traj = asyncio.run(rollout_once(PromptRecord(id="q", question=question), _ScriptedPolicy(), env,
                                         RolloutConfig(temperature=1.0), group_id="g"))
         env_calls = [t.messages for t in traj.turns]
-        env_outcome = traj.meta["belief_outcome"]
+        env_outcome = traj.meta["ua_outcome"]
 
         checks = {
             "policy calls": gen.calls == env_calls,
@@ -374,7 +374,7 @@ def selftest() -> None:
                             "final_covered", "final_partial", "final_total", "mean_novelty")),
             "records": [
                 {k: v for k, v in r.items() if k not in ("belief", "search_novelty")}
-                for r in agent._extras["belief_records"]] == traj.meta["belief_records"],
+                for r in agent._extras["ua_records"]] == traj.meta["ua_records"],
         }
         label = f"{expected_end}: novelty={show_novelty} criteria={show_criteria}"
         if not all(checks.values()):
@@ -385,14 +385,14 @@ def selftest() -> None:
             raise SystemExit(f"[selftest] FAIL ({label}): {checks}")
         print(f"[selftest] ok  {label}: {len(env_calls)} policy calls, {len(env_upd.calls)} updater calls, "
               f"end={env_outcome['end']}")
-    print("[selftest] BeliefEnv reproduces BeliefAgent.inference")
+    print("[selftest] UncertaintyAwareEnv reproduces UncertaintyAwareAgent.inference")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _parse_args():
     p = argparse.ArgumentParser(
-        description="Train the belief agent (SFT + GRPO)",
+        description="Train the uncertainty-aware agent (SFT + GRPO)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML config with mostly-fixed knobs; CLI flags override it.")
@@ -411,9 +411,9 @@ def _parse_args():
     p.add_argument("--total-steps", type=int, default=None, help="Trainer updates (overrides config.rl.total_steps).")
     p.add_argument("--group-size", type=int, default=None, help="Rollouts per prompt (overrides config.rollout.group_size).")
     p.add_argument("--limit", type=int, default=None, help="Cap number of prompts.")
-    p.add_argument("--output-dir", type=str, default=None, help="Run directory (default: run_outputs/training/belief/<stage>_<time>).")
+    p.add_argument("--output-dir", type=str, default=None, help="Run directory (default: run_outputs/training/uncertainty_aware/<stage>_<time>).")
     p.add_argument("--smoke", action="store_true", help="CPU smoke test: mock policy/tool/updater/trainer/reward + synthetic data.")
-    p.add_argument("--selftest", action="store_true", help="Check BeliefEnv against the inference BeliefAgent, then exit.")
+    p.add_argument("--selftest", action="store_true", help="Check UncertaintyAwareEnv against the inference UncertaintyAwareAgent, then exit.")
     p.add_argument("--quiet", action="store_true", help="Reduce logging.")
     return p.parse_args()
 
@@ -471,12 +471,12 @@ def main():
 
     cfg = load_config(args.config, overrides=_overrides_from_args(args))
     if cfg.output_dir is None and not args.smoke:
-        cfg.output_dir = str(_REPO_ROOT / "run_outputs" / "training" / "belief"
+        cfg.output_dir = str(_REPO_ROOT / "run_outputs" / "training" / "uncertainty_aware"
                              / f"{cfg.stage}_{time.strftime('%Y%m%d-%H%M%S')}")
-    print(f"[dra_belief_train] stage={cfg.stage} rl.mode={cfg.rl.mode} "
+    print(f"[dra_uncertainty_aware_train] stage={cfg.stage} rl.mode={cfg.rl.mode} "
           f"trainer={cfg.trainer.backend} policy={cfg.rollout.policy} tool={cfg.rollout.tool} "
           f"model={cfg.rollout.model} out={cfg.output_dir}")
-    pipeline.run(cfg, make_env=make_belief_env)
+    pipeline.run(cfg, make_env=make_uncertainty_aware_env)
 
 
 if __name__ == "__main__":

@@ -64,21 +64,21 @@ FILE_BACKED_DEFAULTS = {
     "max_extend_steps": 5,
     "hard_mode": True,
     "max_passage_chars": 4000,
-    # Belief agent (belief)
-    "belief_max_turns": 8,
-    "belief_max_passage_chars": 1500,
-    "belief_max_format_retries": 2,
-    "belief_max_tokens_per_call": 4096,
-    "belief_disable_native_thinking": True,
-    "belief_show_novelty": True,
-    "belief_show_criteria": True,
-    "belief_criteria_mode": "auto",
-    "belief_criteria_model": "",
-    "belief_max_criteria": 8,
-    "belief_stabilization_window": 15,
-    "belief_criteria_max_tokens": 1024,
-    "belief_evidence_top_k": 5,
-    "belief_evidence_chars": 1500,
+    # Uncertainty-aware agent (uncertainty_aware)
+    "ua_max_turns": 8,
+    "ua_max_passage_chars": 1500,
+    "ua_max_format_retries": 2,
+    "ua_max_tokens_per_call": 4096,
+    "ua_disable_native_thinking": True,
+    "ua_show_novelty": True,
+    "ua_show_criteria": True,
+    "ua_criteria_mode": "auto",
+    "ua_criteria_model": "",
+    "ua_max_criteria": 8,
+    "ua_stabilization_window": 15,
+    "ua_criteria_max_tokens": 1024,
+    "ua_evidence_top_k": 5,
+    "ua_evidence_chars": 1500,
     # Controller (the rest)
     "llm_controller": "claude-sonnet-4-6",
     "llm_intervene": "claude-sonnet-4-6",
@@ -113,7 +113,7 @@ _FILE_BACKED_CHOICES = {
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
     "criteria_coverage_mode": [None, "static", "dynamic"],
-    "belief_criteria_mode": ["auto", "static", "dynamic"],
+    "ua_criteria_mode": ["auto", "static", "dynamic"],
 }
 
 
@@ -351,20 +351,20 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["max_extend_steps"] = args.max_extend_steps
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_chars"] = args.max_passage_chars
-    pipeline_kwargs["belief_max_turns"] = args.belief_max_turns
-    pipeline_kwargs["belief_max_passage_chars"] = args.belief_max_passage_chars
-    pipeline_kwargs["belief_max_format_retries"] = args.belief_max_format_retries
-    pipeline_kwargs["belief_max_tokens_per_call"] = args.belief_max_tokens_per_call
-    pipeline_kwargs["belief_disable_native_thinking"] = args.belief_disable_native_thinking
-    pipeline_kwargs["belief_show_novelty"] = args.belief_show_novelty
-    pipeline_kwargs["belief_show_criteria"] = args.belief_show_criteria
-    pipeline_kwargs["belief_criteria_mode"] = args.belief_criteria_mode
-    pipeline_kwargs["belief_criteria_model"] = args.belief_criteria_model
-    pipeline_kwargs["belief_max_criteria"] = args.belief_max_criteria
-    pipeline_kwargs["belief_stabilization_window"] = args.belief_stabilization_window
-    pipeline_kwargs["belief_criteria_max_tokens"] = args.belief_criteria_max_tokens
-    pipeline_kwargs["belief_evidence_top_k"] = args.belief_evidence_top_k
-    pipeline_kwargs["belief_evidence_chars"] = args.belief_evidence_chars
+    pipeline_kwargs["ua_max_turns"] = args.ua_max_turns
+    pipeline_kwargs["ua_max_passage_chars"] = args.ua_max_passage_chars
+    pipeline_kwargs["ua_max_format_retries"] = args.ua_max_format_retries
+    pipeline_kwargs["ua_max_tokens_per_call"] = args.ua_max_tokens_per_call
+    pipeline_kwargs["ua_disable_native_thinking"] = args.ua_disable_native_thinking
+    pipeline_kwargs["ua_show_novelty"] = args.ua_show_novelty
+    pipeline_kwargs["ua_show_criteria"] = args.ua_show_criteria
+    pipeline_kwargs["ua_criteria_mode"] = args.ua_criteria_mode
+    pipeline_kwargs["ua_criteria_model"] = args.ua_criteria_model
+    pipeline_kwargs["ua_max_criteria"] = args.ua_max_criteria
+    pipeline_kwargs["ua_stabilization_window"] = args.ua_stabilization_window
+    pipeline_kwargs["ua_criteria_max_tokens"] = args.ua_criteria_max_tokens
+    pipeline_kwargs["ua_evidence_top_k"] = args.ua_evidence_top_k
+    pipeline_kwargs["ua_evidence_chars"] = args.ua_evidence_chars
 
     pipeline_kwargs["controller"] = getattr(args, "controller", "monitor")
     pipeline_kwargs["llm_intervene"] = getattr(args, "llm_intervene", None)
@@ -394,20 +394,20 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_retries":             args.max_retries,
         "hard_mode":               args.hard_mode,
         "max_passage_chars":       args.max_passage_chars,
-        "belief_max_turns": args.belief_max_turns,
-        "belief_max_passage_chars": args.belief_max_passage_chars,
-        "belief_max_format_retries": args.belief_max_format_retries,
-        "belief_max_tokens_per_call": args.belief_max_tokens_per_call,
-        "belief_disable_native_thinking": args.belief_disable_native_thinking,
-        "belief_show_novelty": args.belief_show_novelty,
-        "belief_show_criteria": args.belief_show_criteria,
-        "belief_criteria_mode": args.belief_criteria_mode,
-        "belief_criteria_model": args.belief_criteria_model,
-        "belief_max_criteria": args.belief_max_criteria,
-        "belief_stabilization_window": args.belief_stabilization_window,
-        "belief_criteria_max_tokens": args.belief_criteria_max_tokens,
-        "belief_evidence_top_k": args.belief_evidence_top_k,
-        "belief_evidence_chars": args.belief_evidence_chars,
+        "ua_max_turns": args.ua_max_turns,
+        "ua_max_passage_chars": args.ua_max_passage_chars,
+        "ua_max_format_retries": args.ua_max_format_retries,
+        "ua_max_tokens_per_call": args.ua_max_tokens_per_call,
+        "ua_disable_native_thinking": args.ua_disable_native_thinking,
+        "ua_show_novelty": args.ua_show_novelty,
+        "ua_show_criteria": args.ua_show_criteria,
+        "ua_criteria_mode": args.ua_criteria_mode,
+        "ua_criteria_model": args.ua_criteria_model,
+        "ua_max_criteria": args.ua_max_criteria,
+        "ua_stabilization_window": args.ua_stabilization_window,
+        "ua_criteria_max_tokens": args.ua_criteria_max_tokens,
+        "ua_evidence_top_k": args.ua_evidence_top_k,
+        "ua_evidence_chars": args.ua_evidence_chars,
         "temperature":             args.llm_temperature,
         "verbose":                 verbose,
         "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),

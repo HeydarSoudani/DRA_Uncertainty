@@ -40,7 +40,6 @@ from . import (
     AccuracyEvaluator,
     TRQAGenerationEvaluator,
     ReportEvaluator,
-    TableEvaluator,
 )
 
 
@@ -48,8 +47,8 @@ from . import (
 # Evaluator construction + results loading / evaluation
 # ===========================================================================
 
-def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None, gold_tables: Optional[Dict[str, Dict[str, Any]]] = None, agentic_model: Optional[str] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], ControllerEvaluator, TableEvaluator]:
-    """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, Controller, and Table evaluators.
+def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], ControllerEvaluator]:
+    """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, and Controller evaluators.
 
     Args:
         qrels:     Qrels dict loaded from the dataset.
@@ -62,20 +61,13 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
                    :class:`AccuracyEvaluator`.
         questions: Optional mapping of query_id -> question text.
         dataset:   Dataset name; selects the accuracy-slot evaluator.
-        gold_tables: Optional mapping of query_id -> gold intermediate-info
-                   record (TRQA only).  Without it the table evaluator still
-                   persists grids but scores nothing.
 
     Returns:
         ``(retrieval_evaluator, generation_evaluator, trajectory_evaluator,
           cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-          report_evaluator, controller_evaluator, table_evaluator)`` where
+          report_evaluator, controller_evaluator)`` where
         ``accuracy_evaluator`` is None when no answers are available, and
         ``report_evaluator`` is None unless ``kwargs["report_eval"]`` is set.
-
-        ``table_evaluator`` is always constructed: it gates itself on whether a
-        result actually carries a grid, so building it costs nothing for the
-        agents that do not.
     """
     k_values = kwargs.get("k_values", [1, 3, 5, 10, 25, 100])
     retrieval_evaluator = SurfacedDocEvaluator(
@@ -125,25 +117,7 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
             qrels=qrels,
             **report_kwargs,
         )
-
-    # The grid evaluator is given the same qrels, cut-offs and fusion settings
-    # as the shared retrieval evaluators, so its per-phase retrieval block is a
-    # slice of the run's own retrieval numbers rather than a separately-defined
-    # quantity.  It writes and reads only its own tables/ directory.
-    # ``agentic_model`` is passed for one reason only: an agent names the phases
-    # and stages of its own schedule, and those names are what the per-phase and
-    # per-stage blocks group on.  Everything else still gates on the shape of
-    # the result, so an unrecognised agent scores exactly as it did before.
-    table_evaluator = TableEvaluator(
-        gold_tables=gold_tables,
-        qrels=qrels,
-        k_values=k_values,
-        fusion_method=kwargs.get("consolidation_fusion_method", "interleaving"),
-        interleaving_window=kwargs.get("interleaving_window", 3),
-        rrf_k=kwargs.get("rrf_k", 60),
-        agentic_model=agentic_model,
-    )
-    return retrieval_evaluator, GenerationEvaluator(), TrajectoryEvaluator(), cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, ControllerEvaluator(), table_evaluator
+    return retrieval_evaluator, GenerationEvaluator(), TrajectoryEvaluator(), cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, ControllerEvaluator()
 
 
 def _load_single_query(run_dir, query_id, retrieval_dir_str, lightweight=False):
@@ -243,7 +217,7 @@ def load_processed_results(processed: set, retrieval_dir, results: Dict[str, Any
             print(f"Warning: could not save eval cache: {e}")
 
 
-def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationEvaluator, trajectory_evaluator: TrajectoryEvaluator, run_dir: Optional[Path], cited_doc_evaluator: Optional[CitedDocEvaluator] = None, seen_doc_evaluator: Optional[SeenDocEvaluator] = None, accuracy_evaluator: Optional[AccuracyEvaluator] = None, controller_metrics: Optional[Dict[str, Any]] = None, controller_evaluator=None, report_evaluator: Optional[ReportEvaluator] = None, fusion_metrics: Optional[Dict[str, Any]] = None, table_evaluator: Optional[TableEvaluator] = None) -> None:
+def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationEvaluator, trajectory_evaluator: TrajectoryEvaluator, run_dir: Optional[Path], cited_doc_evaluator: Optional[CitedDocEvaluator] = None, seen_doc_evaluator: Optional[SeenDocEvaluator] = None, accuracy_evaluator: Optional[AccuracyEvaluator] = None, controller_metrics: Optional[Dict[str, Any]] = None, controller_evaluator=None, report_evaluator: Optional[ReportEvaluator] = None, fusion_metrics: Optional[Dict[str, Any]] = None) -> None:
     """Run all evaluations, print results, and write summary.json in one pass.
 
     Builds a single grouped ``summary`` dict and derives both the terminal log
@@ -257,7 +231,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
           "trajectory": {...},
           "generation": {...},
           "controller": {...},                                  # when ctrl on
-          "table":      {...},                                  # grid-shaped agents
         }
 
     Fusion metrics are computed beforehand by :func:`run_fusion_eval` and
@@ -282,10 +255,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         fusion_metrics:        Per-method surfaced-doc fusion metrics from
                                :func:`run_fusion_eval`; nested under
                                ``retrieval.fusion``.
-        table_evaluator:       Optional grid evaluator.  Scores only the queries
-                               that have both a gold table and a grid, so its
-                               count legitimately differs from every other
-                               evaluator's -- see the guard below.
     """
     # ------------------------------------------------------------------
     # 1. Evaluate everything (no printing yet)
@@ -312,15 +281,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
     if controller_evaluator is not None:
         controller_metrics = controller_evaluator.evaluate(results)
 
-    table_metrics = {}
-    if table_evaluator is not None:
-        # tables/ is the grid evaluator's own directory: reading it back is what
-        # gives --eval-only the full snapshot sequence and the per-phase view,
-        # neither of which fits in the shared trajectory meta line.
-        table_metrics = table_evaluator.evaluate(
-            results, tables_dir=(Path(run_dir) / "tables") if run_dir else None,
-        )
-
     # ------------------------------------------------------------------
     # 2. Guard: all evaluators must process the same number of queries
     # ------------------------------------------------------------------
@@ -336,10 +296,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         _evaluator_counts["accuracy"] = accuracy_metrics.get("num_evaluated", 0)
     if controller_metrics:
         _evaluator_counts["controller"] = controller_metrics.get("num_queries_with_controller", 0)
-    # The table evaluator is deliberately absent: it scores only the queries
-    # that have both a gold table and a grid, which is a subset by design (and
-    # empty for every agent that builds no grid).  Registering it here would
-    # fire the mismatch warning on every run that is working correctly.
 
     mismatches = {k: v for k, v in _evaluator_counts.items() if v != num_queries}
     if mismatches:
@@ -403,8 +359,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
     summary["generation"] = generation_metrics
     if controller_metrics:
         summary["controller"] = controller_metrics
-    if table_metrics:
-        summary["table"] = table_metrics
 
     # ------------------------------------------------------------------
     # 4. Print the terminal log in the same order as the summary
@@ -451,10 +405,6 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
             for k, v in controller_metrics.items():
                 print(f"  {k}: {v}")
             print("=" * 80)
-
-    # -- table
-    if table_metrics and table_evaluator is not None:
-        table_evaluator.print_results(table_metrics)
 
     # -- Save accuracy / report detail files
     if accuracy_metrics and run_dir and accuracy_evaluator is not None:

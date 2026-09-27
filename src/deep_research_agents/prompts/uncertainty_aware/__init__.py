@@ -1,4 +1,4 @@
-"""Prompt templates for the belief agent (plain-text files next to this module).
+"""Prompt templates for the uncertainty-aware agent (plain-text files next to this module).
 
 Placeholders are filled with str.replace, not str.format, so a literal brace
 added to a template later cannot break rendering.  The criteria-updater

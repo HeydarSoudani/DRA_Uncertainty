@@ -307,7 +307,7 @@ class TrajectoryLogger:
 
     Typical use, from ``run_single``::
 
-        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="Belief")
+        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="UncertaintyAware")
         logger.start()
         try:
             ...                      # agent calls log_step()/log_block()
@@ -432,7 +432,7 @@ class TrajectoryLogger:
         """Write a markdown-only note between steps.
 
         For things that never enter the trajectory but explain it: phase
-        banners, grid dumps, parse errors and retries.  Deliberately does not
+        banners, parse errors and retries.  Deliberately does not
         touch the JSONL, which stays byte-identical to what the end-of-run
         writer produces.
         """
@@ -470,13 +470,6 @@ class TrajectoryLogger:
                 f"out {usage.get('output_tokens', 0):,} · "
                 f"total {usage.get('total_tokens', 0):,} · "
                 f"calls {usage.get('num_calls', 0)}",
-                "",
-            ]
-
-        coverage = result.get("table_coverage") or {}
-        if coverage:
-            footer += [
-                f"**Coverage** {coverage.get('resolved', 0)}/{coverage.get('total', 0)} cells",
                 "",
             ]
 

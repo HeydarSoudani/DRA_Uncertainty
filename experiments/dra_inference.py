@@ -15,7 +15,7 @@ Supported agents via --agentic-model (the LLM is selected automatically per agen
     oss_120b        GPT-OSS-120B reasoning agent                   → gpt-oss-120b (vLLM)
     tongyi          Tongyi-DeepResearch ReAct agent                → Alibaba-NLP/Tongyi-DeepResearch-30B-A3B (vLLM)
     cpm_explore     AgentCPM-Explore deep search agent             → openbmb/AgentCPM-Explore (vLLM)
-    belief          Belief search agent (criteria-status belief)   → qwen/qwen3.6-27b (OpenRouter API)
+    uncertainty_aware  Uncertainty-aware search agent (reads a belief) → qwen/qwen3.6-27b (OpenRouter API)
 
 Agentic workflows:
     ReAct-style (react, selfask, searcho1, research, searchr1, stepsearch, drtulu, glm, oss_20b, oss_120b, tongyi, cpm_explore):
@@ -49,10 +49,6 @@ Output structure:
     │   └── {query_id}.md            same trajectory, human-readable, written live (one block per step)
     ├── controller/
     │   └── {query_id}.jsonl         per-query controller signals: meta line + one line per iteration
-    ├── tables/
-    │   └── {query_id}.jsonl         per-query grid snapshots (grid-shaped agents only):
-    │                                  meta line + one line per stage (init, each fill round,
-    │                                  each modify barrier, final)
     └── summary.json                 grouped run metrics (mirrors the dir layout):
                                        num_queries,
                                        answer     {accuracy, report},
@@ -83,7 +79,7 @@ warnings.filterwarnings("ignore", message=".*AttentionMaskConverter.*")
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
-from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, load_intermediate_info, resolve_split_id
+from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import AGENTIC_MODEL_TO_LLM, AGENTIC_MODEL_ALIAS, resolve_temperature
@@ -171,11 +167,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         data_path, file_data_set, query_key=query_key,
         min_relevance_score=min_rel_score, only_with_qrels=same_qrels_path,
     )
-    # Gold intermediate info: the entity set + property each answer is
-    # aggregated from, for scoring the table a grid-shaped agent builds.  Only
-    # TRQA ships one; every other dataset gets {} and the table evaluator then
-    # persists grids without scoring them.
-    gold_tables = load_intermediate_info(data_path, file_data_set)
     if not same_qrels_path:
         # qrels live in a separate directory; reload and re-filter against them.
         qrels = load_qrels(qrels_data_path, file_data_set, min_relevance_score=min_rel_score)
@@ -247,8 +238,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         retrieval_evaluator, generation_evaluator, trajectory_evaluator, \
             cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, \
-            controller_evaluator, table_evaluator = \
-            build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset, gold_tables=gold_tables, agentic_model=agentic_model)
+            controller_evaluator = \
+            build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
         # into the single summary.json written by evaluate_and_save.
@@ -262,7 +253,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             controller_evaluator=controller_evaluator,
             report_evaluator=report_evaluator,
             fusion_metrics=fusion_metrics,
-            table_evaluator=table_evaluator,
         )
         return
 
@@ -317,20 +307,20 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             max_retries=kwargs.get("max_retries", 3),
             hard_mode=kwargs.get("hard_mode", True),
             max_passage_chars=kwargs.get("max_passage_chars", 4000),
-            belief_max_turns=kwargs.get("belief_max_turns", 8),
-            belief_max_passage_chars=kwargs.get("belief_max_passage_chars", 1500),
-            belief_max_format_retries=kwargs.get("belief_max_format_retries", 2),
-            belief_max_tokens_per_call=kwargs.get("belief_max_tokens_per_call", 4096),
-            belief_disable_native_thinking=kwargs.get("belief_disable_native_thinking", True),
-            belief_show_novelty=kwargs.get("belief_show_novelty", True),
-            belief_show_criteria=kwargs.get("belief_show_criteria", True),
-            belief_criteria_mode=kwargs.get("belief_criteria_mode", "auto"),
-            belief_criteria_model=kwargs.get("belief_criteria_model", ""),
-            belief_max_criteria=kwargs.get("belief_max_criteria", 8),
-            belief_stabilization_window=kwargs.get("belief_stabilization_window", 15),
-            belief_criteria_max_tokens=kwargs.get("belief_criteria_max_tokens", 1024),
-            belief_evidence_top_k=kwargs.get("belief_evidence_top_k", 5),
-            belief_evidence_chars=kwargs.get("belief_evidence_chars", 1500),
+            ua_max_turns=kwargs.get("ua_max_turns", 8),
+            ua_max_passage_chars=kwargs.get("ua_max_passage_chars", 1500),
+            ua_max_format_retries=kwargs.get("ua_max_format_retries", 2),
+            ua_max_tokens_per_call=kwargs.get("ua_max_tokens_per_call", 4096),
+            ua_disable_native_thinking=kwargs.get("ua_disable_native_thinking", True),
+            ua_show_novelty=kwargs.get("ua_show_novelty", True),
+            ua_show_criteria=kwargs.get("ua_show_criteria", True),
+            ua_criteria_mode=kwargs.get("ua_criteria_mode", "auto"),
+            ua_criteria_model=kwargs.get("ua_criteria_model", ""),
+            ua_max_criteria=kwargs.get("ua_max_criteria", 8),
+            ua_stabilization_window=kwargs.get("ua_stabilization_window", 15),
+            ua_criteria_max_tokens=kwargs.get("ua_criteria_max_tokens", 1024),
+            ua_evidence_top_k=kwargs.get("ua_evidence_top_k", 5),
+            ua_evidence_chars=kwargs.get("ua_evidence_chars", 1500),
         )
 
         # Build the controller AFTER the agent so build_controller wires the
@@ -358,18 +348,17 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agent.controller = controller
 
     # ==================== Setup output dirs + evaluators ====================
-    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, controller_evaluator, table_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset, gold_tables=gold_tables, agentic_model=agentic_model)
+    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, controller_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
 
-    retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = controller_dir = tables_dir = None
+    retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = controller_dir = None
     if output_path:
-        _dirs = setup_output_dirs(run_dir, ["retrieval/surfaced", "generation", "trajectory", "retrieval/cited", "retrieval/seen", "controller", "tables"])
+        _dirs = setup_output_dirs(run_dir, ["retrieval/surfaced", "generation", "trajectory", "retrieval/cited", "retrieval/seen", "controller"])
         retrieval_dir  = _dirs["retrieval/surfaced"]
         generation_dir = _dirs["generation"]
         trajectory_dir = _dirs["trajectory"]
         cited_doc_dir  = _dirs["retrieval/cited"]
         seen_doc_dir   = _dirs["retrieval/seen"]
         controller_dir = _dirs["controller"]
-        tables_dir     = _dirs["tables"]
         write_run_config(run_dir, agentic_model=agentic_model, llm_model=llm_model, **kwargs)
         print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
 
@@ -521,7 +510,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                 cited_doc_evaluator.save_item(query_id, result, cited_doc_dir)
                 seen_doc_evaluator.save_item(query_id, result, seen_doc_dir)
                 controller_evaluator.save_item(query_id, query_text, result, controller_dir)
-                table_evaluator.save_item(query_id, query_text, result, tables_dir)
                 print(f"  ✓ Saved: {query_id}")
 
         if agent:
@@ -610,7 +598,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         controller_evaluator=controller_evaluator,
         report_evaluator=report_evaluator,
         fusion_metrics=fusion_metrics,
-        table_evaluator=table_evaluator,
     )
 
     # ==================== Final status ==========================================
@@ -641,7 +628,7 @@ def _parse_args():
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--agentic-model", type=str, default="belief", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief = search agent that writes a criteria-status belief after every retrieval; cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = search agent that reads a criteria-status belief after every retrieval; cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=["trqa", "browsecomp_plus", "neuclir"], help="Dataset. trqa/neuclir/browsecomp_plus use local indices.")
     parser.add_argument("--subset", type=str, default="test", help="Dataset subset/collection (null = auto-selected from --dataset). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical|report; browsecomp_plus: test.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever type for public datasets (neuclir only)")

@@ -1,8 +1,8 @@
-# Belief Agent Training
+# Uncertainty-Aware Agent Training
 
-`experiments/dra_belief_train.py` trains the [belief agent](belief_agent.md): an SFT cold start on teacher
+`experiments/dra_uncertainty_aware_train.py` trains the [uncertainty-aware agent](uncertainty_aware_agent.md): an SFT cold start on teacher
 trajectories, then GRPO. The common pipeline lives in `src/training`; the script holds only what is specific to the
-belief agent and plugs it in. This page covers the split between the two, the environment, the samples and reward,
+uncertainty-aware agent and plugs it in. This page covers the split between the two, the environment, the samples and reward,
 the stages, and what is still missing.
 
 ## Layout
@@ -13,19 +13,19 @@ the stages, and what is still missing.
 | `src/training/rollout/agent_rollout.py` | agent-agnostic driver: policy call, env step, one sample per call |
 | `src/training/rollout/policy_client.py` | `MockPolicyClient`, `ServerPolicyClient` (vLLM, token ids + logprobs), `ApiPolicyClient` (SFT teacher, text only) |
 | `src/training/rollout/tool_env.py` | shared search tool: mock, or `RetrievalSearchTool` built as in `dra_inference.py` |
-| `src/training/rollout/env_llm.py` | `TextLLM`: auxiliary model calls through `reasoner_component`, reasoning switched off as in the belief agent |
+| `src/training/rollout/env_llm.py` | `TextLLM`: auxiliary model calls through `reasoner_component`, reasoning switched off as in the uncertainty-aware agent |
 | `src/training/reward/outcome_reward.py` | outcome reward, scored as the inference evaluation scores it |
 | `src/training/data/sft_dataset.py` | teacher rollouts, reject sampling, per-turn chat samples |
-| `experiments/dra_belief_train.py` | `BeliefEnv`, criteria updater, `agent:` config parsing, `--selftest` |
-| `experiments/configs/dra_belief_train.yaml` | all settings; unknown keys are rejected |
+| `experiments/dra_uncertainty_aware_train.py` | `UncertaintyAwareEnv`, criteria updater, `agent:` config parsing, `--selftest` |
+| `experiments/configs/dra_uncertainty_aware_train.yaml` | all settings; unknown keys are rejected |
 
-`src/training` imports nothing from the belief agent. `BeliefEnv` imports the inference agent's own pieces
+`src/training` imports nothing from the uncertainty-aware agent. `UncertaintyAwareEnv` imports the inference agent's own pieces
 (`parse_turn`, `DocRegistry`, `render_information`, `render_belief`, prompts, `CriteriaTracker`), so the policy is
 trained on the context it reads at inference.
 
 ## Environment
 
-`BeliefEnv` is one belief run, step for step as `BeliefAgent.inference`:
+`UncertaintyAwareEnv` is one uncertainty-aware agent run, step for step as `UncertaintyAwareAgent.inference`:
 
 - `reset`: criteria init call (all `not_covered`), system prompt, `Question: …` transcript.
 - `messages`: `[system, user(transcript)]`, plus `[assistant(bad turn), user(format error)]` after a malformed turn.
@@ -33,7 +33,7 @@ trained on the context it reads at inference.
   answer ends it as `answered`; a search retrieves, shows `seen_top_k` passages, updates novelty and criteria, and
   appends `<information>` and `<belief>`; after `max_turns` turns the run ends as `max_turns`.
 
-`--selftest` runs the same scripted policy through `BeliefAgent.inference` and `BeliefEnv` (answered, format failure,
+`--selftest` runs the same scripted policy through `UncertaintyAwareAgent.inference` and `UncertaintyAwareEnv` (answered, format failure,
 max turns; every novelty/criteria display setting) and checks that every policy call and every updater call receives
 identical messages.
 
@@ -57,17 +57,17 @@ numeric exact match of `TRQAGenerationEvaluator`; other datasets use the BrowseC
 
 | stage | what runs | output (`output_dir`) |
 |---|---|---|
-| `sft` | teacher (`sft.teacher_model`) through `BeliefEnv`; keep correct trajectories with no re-asked turn; one chat sample per turn | `sft/sft_data.jsonl`, `sft/rollouts/` |
-| `rl` | policy on vLLM through `BeliefEnv`; score, advantages, update | `rollouts/step*/`, per-step stats in the log |
+| `sft` | teacher (`sft.teacher_model`) through `UncertaintyAwareEnv`; keep correct trajectories with no re-asked turn; one chat sample per turn | `sft/sft_data.jsonl`, `sft/rollouts/` |
+| `rl` | policy on vLLM through `UncertaintyAwareEnv`; score, advantages, update | `rollouts/step*/`, per-step stats in the log |
 
 An SFT sample is `{"messages": [system, user, assistant], "prompt_id", "turn", "action", "outcome"}`; the assistant
 message is the normalised turn (`<think>…</think>\n<search>…</search>`), and the loss belongs on it alone.
 
 ```
-python experiments/dra_belief_train.py --selftest                 # parity with the inference agent (CPU)
-python experiments/dra_belief_train.py --smoke [--mode async] [--stage sft]   # CPU, all mocks
-python experiments/dra_belief_train.py --stage sft --limit 200    # teacher data (retriever on GPU)
-python experiments/dra_belief_train.py --stage rl --server-url http://127.0.0.1:8000
+python experiments/dra_uncertainty_aware_train.py --selftest                 # parity with the inference agent (CPU)
+python experiments/dra_uncertainty_aware_train.py --smoke [--mode async] [--stage sft]   # CPU, all mocks
+python experiments/dra_uncertainty_aware_train.py --stage sft --limit 200    # teacher data (retriever on GPU)
+python experiments/dra_uncertainty_aware_train.py --stage rl --server-url http://127.0.0.1:8000
 ```
 
 Data defaults to TRQA `wiki1_validation` (91 queries) so `test` stays held out; `--subset wiki2` has 1083.

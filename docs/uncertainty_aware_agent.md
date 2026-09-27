@@ -1,14 +1,14 @@
-# Belief Agent
+# Uncertainty-Aware Agent
 
-`--agentic-model belief` — a SearchR1-style search agent that, after every retrieval, reads a **belief**: a
+`--agentic-model uncertainty_aware` — a SearchR1-style search agent that, after every retrieval, reads a **belief**: a
 progress report computed by code, not written by the policy. The belief carries two things:
 
 - **doc novelty** — how many of the passages just shown are new to the run;
 - **criteria progress** — the query's criteria, each with a status `covered` / `partial` / `not_covered`.
 
-Code: `src/deep_research_agents/agents/belief_agent.py` (loop, turn parsing, novelty, belief rendering) and
-`src/deep_research_agents/agent_tools/belief_criteria.py` (criteria updater). Prompts:
-`src/deep_research_agents/prompts/belief/` (policy) and `.../belief/criteria/` (updater). The agent does not import
+Code: `src/deep_research_agents/agents/uncertainty_aware_agent.py` (loop, turn parsing, novelty, belief rendering) and
+`src/deep_research_agents/agent_tools/uncertainty_aware_criteria.py` (criteria updater). Prompts:
+`src/deep_research_agents/prompts/uncertainty_aware/` (policy) and `.../uncertainty_aware/criteria/` (updater). The agent does not import
 `controller_component`; the criteria updater and its prompts are copies of the controller's criteria-coverage signal
 (prompt fixes are listed under [Criteria updater](#criteria-updater)). As in the other API agents, a controller attached
 with `--controller` is reset and reported by the base hooks but never consulted.
@@ -21,7 +21,7 @@ iteration t  policy:  <think> <search>q</search>
              code:    retrieve ─▶ <information> [d1]… ─▶ novelty new/shown
              updater: update prompt(question, current list, q, shown passages) ─▶ delta ─▶ apply
              code:    append <belief step="t">
-end          policy:  <think> <answer>…</answer>      (or belief_max_turns runs out = failure)
+end          policy:  <think> <answer>…</answer>      (or ua_max_turns runs out = failure)
 ```
 
 The run is one growing transcript in a single user message. Per search there is one updater call, plus one init
@@ -55,7 +55,7 @@ text…
 - Only statuses are shown. The updater's evidence notes and reasoning are logged, never shown to the policy.
 - The criteria are not shown before the first search; they first appear in `<belief step="0">`.
 - The policy writes only `<think>` + one `<search>` or `<answer>`. A turn with no action is re-asked up to
-  `belief_max_format_retries` times, then the run ends as `format_failure`. A `<belief>`/`<information>` written by the
+  `ua_max_format_retries` times, then the run ends as `format_failure`. A `<belief>`/`<information>` written by the
   policy is dropped (warning).
 
 ## Criteria updater
@@ -67,14 +67,14 @@ Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
 | `static` | copy each condition of the query verbatim | `tick` only | fixed |
 | `dynamic` | decompose the query into 2…`max_criteria` criteria | `tick`, `add`, `remove` | frozen after `stabilization_window` iterations with no add/remove |
 
-`belief_criteria_mode: auto` picks `static` on `browsecomp_plus` and `dynamic` otherwise.
+`ua_criteria_mode: auto` picks `static` on `browsecomp_plus` and `dynamic` otherwise.
 
 - The updater answers in JSON with only the criteria that changed; code applies the delta (case-insensitive name
   match, status aliases such as `partially covered` → `partial`).
-- It sees the passages the policy was shown: `belief_evidence_top_k` passages × `belief_evidence_chars` characters
+- It sees the passages the policy was shown: `ua_evidence_top_k` passages × `ua_evidence_chars` characters
   (the controller uses 10 × 200).
-- Model: `belief_criteria_model`, or the policy backbone when empty. Calls are greedy (temperature 0) with the
-  model's reasoning switched off when `belief_disable_native_thinking` (on OpenRouter; for a separate non-OpenRouter
+- Model: `ua_criteria_model`, or the policy backbone when empty. Calls are greedy (temperature 0) with the
+  model's reasoning switched off when `ua_disable_native_thinking` (on OpenRouter; for a separate non-OpenRouter
   model the switch is not sent).
 - A failed or unparsable call leaves the list unchanged; the failure is recorded on the step and in the outcome. If
   init fails, the run continues with no criteria (the belief then shows novelty only). JSON wrapped in prose with no
@@ -88,20 +88,20 @@ Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
 
 | key | default | meaning |
 |---|---|---|
-| `belief_max_turns` | 8 | policy turns before a run with no answer fails |
-| `belief_max_passage_chars` | 1500 | chars per passage in `<information>` |
-| `belief_max_format_retries` | 2 | re-asks after a turn with no action |
-| `belief_max_tokens_per_call` | 4096 | output cap for one policy turn |
-| `belief_disable_native_thinking` | true | reasoning mode off for policy and updater |
-| `belief_show_novelty` | true | show `<novelty>` (ablation) |
-| `belief_show_criteria` | true | show `<criteria>` (ablation); both off = no belief and no belief section in the system prompt |
-| `belief_criteria_mode` | auto | auto / static / dynamic |
-| `belief_criteria_model` | "" | updater model; empty = backbone |
-| `belief_max_criteria` | 8 | cap on the criteria list |
-| `belief_stabilization_window` | 15 | dynamic mode freeze window |
-| `belief_criteria_max_tokens` | 1024 | output cap for one updater call |
-| `belief_evidence_top_k` | 5 | passages per update shown to the updater |
-| `belief_evidence_chars` | 1500 | chars per passage shown to the updater |
+| `ua_max_turns` | 8 | policy turns before a run with no answer fails |
+| `ua_max_passage_chars` | 1500 | chars per passage in `<information>` |
+| `ua_max_format_retries` | 2 | re-asks after a turn with no action |
+| `ua_max_tokens_per_call` | 4096 | output cap for one policy turn |
+| `ua_disable_native_thinking` | true | reasoning mode off for policy and updater |
+| `ua_show_novelty` | true | show `<novelty>` (ablation) |
+| `ua_show_criteria` | true | show `<criteria>` (ablation); both off = no belief and no belief section in the system prompt |
+| `ua_criteria_mode` | auto | auto / static / dynamic |
+| `ua_criteria_model` | "" | updater model; empty = backbone |
+| `ua_max_criteria` | 8 | cap on the criteria list |
+| `ua_stabilization_window` | 15 | dynamic mode freeze window |
+| `ua_criteria_max_tokens` | 1024 | output cap for one updater call |
+| `ua_evidence_top_k` | 5 | passages per update shown to the updater |
+| `ua_evidence_chars` | 1500 | chars per passage shown to the updater |
 
 `seen_top_k` and the run temperature apply; `max_iteration` does not.
 
@@ -109,13 +109,13 @@ Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
 
 The result (and the trajectory meta line, via `AGENT_META_KEYS`) carries:
 
-- `belief_criteria` — the initial list; `belief_criteria_raw` — the init call's raw output.
-- `belief_records` — one per policy turn: `turn`, `action`, `action_text`, `valid`, `errors`, `warnings`,
+- `ua_criteria` — the initial list; `ua_criteria_raw` — the init call's raw output.
+- `ua_records` — one per policy turn: `turn`, `action`, `action_text`, `valid`, `errors`, `warnings`,
   `format_retries`; for searches also `step`, `novelty`, `novel_docs`, `shown_docs`, `search_novelty` (labels),
   `criteria` (full summary: statuses, evidence, changed/new/removed, reasoning, raw, error), `criteria_error`, and the
   rendered `belief`.
-- `belief_doc_labels` — `dN → doc_id`.
-- `belief_outcome` — `end` (`answered` / `max_turns` / `format_failure` / `llm_error`), `answer`, `num_turns`,
+- `ua_doc_labels` — `dN → doc_id`.
+- `ua_outcome` — `end` (`answered` / `max_turns` / `format_failure` / `llm_error`), `answer`, `num_turns`,
   `num_searches`, `format_retries`, `criteria_mode`, `criteria_init_error`, `criteria_errors`,
   `criteria_update_failures`, `final_criteria` and `final_covered/partial/not_covered/total`, `mean_novelty`, `config`.
 

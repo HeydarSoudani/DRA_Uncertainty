@@ -2,7 +2,7 @@
 
 All pure-Python with no heavy dependencies:
 
-  Parsing    — extract content from XML tags, boxed answers, and tool calls
+  Parsing    — extract content from XML tags and tool calls
   Printing   — format and display agent loop progress to the terminal
   Formatting — convert doc dicts to strings for the LLM prompt
   Citations  — extract which docs were actually cited from an agent result
@@ -71,12 +71,6 @@ def parse_action_call(text: str) -> Optional[tuple]:
     return None
 
 
-def extract_boxed_answer(text: str) -> Optional[str]:
-    r"""Extract the answer from the first ``\boxed{…}`` LaTeX expression."""
-    match = re.search(r"\\boxed\{(.*?)\}", text, re.DOTALL)
-    return match.group(1).strip() if match else None
-
-
 def parse_tool_call_xml(text: str) -> Optional[Dict[str, Any]]:
     """Extract and parse JSON from ``<tool_call>…</tool_call>``."""
     m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", text, re.DOTALL)
@@ -111,66 +105,6 @@ def parse_tool_calls_xml_list(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
-_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-
-
-def strip_think(text: str) -> str:
-    """Return the response body with any leading reasoning block removed."""
-    return text.split("</think>")[-1].strip() if "</think>" in text else text
-
-
-def parse_json_block(raw: Optional[str]) -> Optional[Any]:
-    """Parse JSON out of a tag body, tolerating code fences and trailing prose.
-
-    Falls back to the widest ``{...}``/``[...]`` span in the text when the whole
-    body is not valid JSON, and to json5 when it is available.
-    """
-    if not raw:
-        return None
-    text = _FENCE_RE.sub("", raw.strip()).strip()
-    for candidate in (text, None):
-        if candidate is None:
-            match = re.search(r"[\{\[].*[\}\]]", text, re.DOTALL)
-            if match is None:
-                return None
-            candidate = match.group(0)
-        try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            pass
-        if _HAS_JSON5:
-            try:
-                return _json5.loads(candidate)
-            except Exception:
-                pass
-    return None
-
-
-def as_str_list(value: Any) -> List[str]:
-    """Coerce a scalar-or-list field into a list of non-empty strings."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value] if value.strip() else []
-    if isinstance(value, (list, tuple)):
-        return [str(v).strip() for v in value if str(v).strip()]
-    return [str(value)]
-
-
-def normalize_name(text: Any) -> str:
-    """Normalise a name for identity comparison: collapse whitespace, lowercase."""
-    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
-
-
-def render_value(value: Any) -> str:
-    """Render a value for a prompt without JSON noise on plain scalars."""
-    if value is None:
-        return ""
-    if isinstance(value, (str, int, float, bool)):
-        return str(value)
-    return json.dumps(value, ensure_ascii=False)
-
-
 def format_react_history(
     history: Sequence[Dict[str, str]],
     window: Optional[int] = None,
@@ -194,13 +128,6 @@ def extract_think_and_clean(text: str) -> tuple:
         if m:
             return m.group(1).strip(), (text[:m.start()] + text[m.end():]).strip()
     return "", text
-
-
-def ensure_closing_tag(text: str, tag: str) -> str:
-    """Append ``</tag>`` if ``<tag>`` is present but ``</tag>`` is not."""
-    if f"<{tag}>" in text and f"</{tag}>" not in text:
-        return text + f"</{tag}>"
-    return text
 
 
 # ===========================================================================
@@ -451,15 +378,6 @@ def passages2string(passages: List[Dict[str, Any]], max_text_length: int = 300) 
         parts.append(f"[{idx}] {title}\n{text}")
 
     return "\n\n".join(parts)
-
-
-def format_as_context(docs: List[Dict[str, Any]], top_k: int = 5) -> str:
-    """Convert docs to ``ContextN: text`` format. Used by: SelfAsk agent."""
-    parts = []
-    for idx, doc in enumerate(docs[:top_k], 1):
-        text = doc.get("relevant_text", "")
-        parts.append(f"Context{idx}: {text}")
-    return "\n".join(parts)
 
 
 def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = 1000) -> str:

@@ -77,7 +77,7 @@ class AgentVerboseMixin:
         """Write a markdown-only note into the trajectory log.
 
         For what explains the trajectory without belonging to it: phase
-        banners, grid dumps, parse errors and retries.  Never touches the
+        banners, parse errors and retries.  Never touches the
         JSONL.
         """
         logger_ = getattr(self, "_traj_logger", None)

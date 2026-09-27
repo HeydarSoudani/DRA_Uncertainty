@@ -207,20 +207,20 @@ def build_agent(
     max_retries: int = 3,
     hard_mode: bool = True,
     max_passage_chars: int = 4000,
-    belief_max_turns: int = 8,
-    belief_max_passage_chars: int = 1500,
-    belief_max_format_retries: int = 2,
-    belief_max_tokens_per_call: int = 4096,
-    belief_disable_native_thinking: bool = True,
-    belief_show_novelty: bool = True,
-    belief_show_criteria: bool = True,
-    belief_criteria_mode: str = "auto",
-    belief_criteria_model: str = "",
-    belief_max_criteria: int = 8,
-    belief_stabilization_window: int = 15,
-    belief_criteria_max_tokens: int = 1024,
-    belief_evidence_top_k: int = 5,
-    belief_evidence_chars: int = 1500,
+    ua_max_turns: int = 8,
+    ua_max_passage_chars: int = 1500,
+    ua_max_format_retries: int = 2,
+    ua_max_tokens_per_call: int = 4096,
+    ua_disable_native_thinking: bool = True,
+    ua_show_novelty: bool = True,
+    ua_show_criteria: bool = True,
+    ua_criteria_mode: str = "auto",
+    ua_criteria_model: str = "",
+    ua_max_criteria: int = 8,
+    ua_stabilization_window: int = 15,
+    ua_criteria_max_tokens: int = 1024,
+    ua_evidence_top_k: int = 5,
+    ua_evidence_chars: int = 1500,
 ):
     """Instantiate an agent and attach its search tool.
 
@@ -278,28 +278,28 @@ def build_agent(
         _reasoning_extra["hard_mode"] = hard_mode
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["model_name"] = llm_model
-    elif agentic_model == "belief":
-        _reasoning_extra["max_turns"] = belief_max_turns
-        _reasoning_extra["max_passage_chars"] = belief_max_passage_chars
-        _reasoning_extra["max_format_retries"] = belief_max_format_retries
-        _reasoning_extra["max_tokens_per_call"] = belief_max_tokens_per_call
-        _reasoning_extra["disable_native_thinking"] = belief_disable_native_thinking
-        _reasoning_extra["show_novelty"] = belief_show_novelty
-        _reasoning_extra["show_criteria"] = belief_show_criteria
-        _reasoning_extra["criteria_mode"] = belief_criteria_mode
+    elif agentic_model == "uncertainty_aware":
+        _reasoning_extra["max_turns"] = ua_max_turns
+        _reasoning_extra["max_passage_chars"] = ua_max_passage_chars
+        _reasoning_extra["max_format_retries"] = ua_max_format_retries
+        _reasoning_extra["max_tokens_per_call"] = ua_max_tokens_per_call
+        _reasoning_extra["disable_native_thinking"] = ua_disable_native_thinking
+        _reasoning_extra["show_novelty"] = ua_show_novelty
+        _reasoning_extra["show_criteria"] = ua_show_criteria
+        _reasoning_extra["criteria_mode"] = ua_criteria_mode
         _reasoning_extra["dataset"] = dataset
-        _reasoning_extra["criteria_model"] = belief_criteria_model or ""
-        _reasoning_extra["max_criteria"] = belief_max_criteria
-        _reasoning_extra["stabilization_window"] = belief_stabilization_window
-        _reasoning_extra["criteria_max_tokens"] = belief_criteria_max_tokens
-        _reasoning_extra["evidence_top_k"] = belief_evidence_top_k
-        _reasoning_extra["evidence_chars"] = belief_evidence_chars
-        if belief_criteria_model:
+        _reasoning_extra["criteria_model"] = ua_criteria_model or ""
+        _reasoning_extra["max_criteria"] = ua_max_criteria
+        _reasoning_extra["stabilization_window"] = ua_stabilization_window
+        _reasoning_extra["criteria_max_tokens"] = ua_criteria_max_tokens
+        _reasoning_extra["evidence_top_k"] = ua_evidence_top_k
+        _reasoning_extra["evidence_chars"] = ua_evidence_chars
+        if ua_criteria_model:
             # A separate criteria updater; empty means the policy backbone.
             _reasoning_extra["criteria_llm_client"] = create_generator(
-                belief_criteria_model,
+                ua_criteria_model,
                 temperature=0.0,
-                metadata={"model": belief_criteria_model},
+                metadata={"model": ua_criteria_model},
             )
 
     agent = model_class(
@@ -524,20 +524,20 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_retries=worker_config.get("max_retries", 3),
         hard_mode=worker_config.get("hard_mode", True),
         max_passage_chars=worker_config.get("max_passage_chars", 4000),
-        belief_max_turns=worker_config.get("belief_max_turns", 8),
-        belief_max_passage_chars=worker_config.get("belief_max_passage_chars", 1500),
-        belief_max_format_retries=worker_config.get("belief_max_format_retries", 2),
-        belief_max_tokens_per_call=worker_config.get("belief_max_tokens_per_call", 4096),
-        belief_disable_native_thinking=worker_config.get("belief_disable_native_thinking", True),
-        belief_show_novelty=worker_config.get("belief_show_novelty", True),
-        belief_show_criteria=worker_config.get("belief_show_criteria", True),
-        belief_criteria_mode=worker_config.get("belief_criteria_mode", "auto"),
-        belief_criteria_model=worker_config.get("belief_criteria_model", ""),
-        belief_max_criteria=worker_config.get("belief_max_criteria", 8),
-        belief_stabilization_window=worker_config.get("belief_stabilization_window", 15),
-        belief_criteria_max_tokens=worker_config.get("belief_criteria_max_tokens", 1024),
-        belief_evidence_top_k=worker_config.get("belief_evidence_top_k", 5),
-        belief_evidence_chars=worker_config.get("belief_evidence_chars", 1500),
+        ua_max_turns=worker_config.get("ua_max_turns", 8),
+        ua_max_passage_chars=worker_config.get("ua_max_passage_chars", 1500),
+        ua_max_format_retries=worker_config.get("ua_max_format_retries", 2),
+        ua_max_tokens_per_call=worker_config.get("ua_max_tokens_per_call", 4096),
+        ua_disable_native_thinking=worker_config.get("ua_disable_native_thinking", True),
+        ua_show_novelty=worker_config.get("ua_show_novelty", True),
+        ua_show_criteria=worker_config.get("ua_show_criteria", True),
+        ua_criteria_mode=worker_config.get("ua_criteria_mode", "auto"),
+        ua_criteria_model=worker_config.get("ua_criteria_model", ""),
+        ua_max_criteria=worker_config.get("ua_max_criteria", 8),
+        ua_stabilization_window=worker_config.get("ua_stabilization_window", 15),
+        ua_criteria_max_tokens=worker_config.get("ua_criteria_max_tokens", 1024),
+        ua_evidence_top_k=worker_config.get("ua_evidence_top_k", 5),
+        ua_evidence_chars=worker_config.get("ua_evidence_chars", 1500),
     )
 
     _controller_mode = worker_config.get("controller", "monitor")
@@ -590,21 +590,16 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     cited_doc_dir  = str(temp_dir / "retrieval" / "cited")
     seen_doc_dir   = str(temp_dir / "retrieval" / "seen")
     controller_dir = str(temp_dir / "controller")
-    tables_dir     = str(temp_dir / "tables")
-    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, controller_dir, tables_dir]:
+    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, controller_dir]:
         Path(_d).mkdir(parents=True, exist_ok=True)
 
-    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, ControllerEvaluator, CitedDocEvaluator, SeenDocEvaluator, TableEvaluator
+    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, ControllerEvaluator, CitedDocEvaluator, SeenDocEvaluator
     _ret_eval        = SurfacedDocEvaluator(qrels={}, k_values=[])
     _gen_eval        = GenerationEvaluator()
     _traj_eval       = TrajectoryEvaluator()
     _controller_eval = ControllerEvaluator()
     _cited_eval      = CitedDocEvaluator(qrels={}, k_values=[])
     _seen_eval       = SeenDocEvaluator(qrels={}, k_values=[])
-    # Needs the agent name so ``save_item`` groups the trajectory's ``phase``
-    # tags under the vocabulary this agent actually uses.  Without it a worker
-    # writes an empty ``phases`` line, and --eval-only cannot recover it.
-    _table_eval      = TableEvaluator(agentic_model=worker_config.get("agentic_model"))
 
     results     = {}
     temperature = worker_config.get("temperature", 0.7)
@@ -663,7 +658,6 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         _cited_eval.save_item(query_id, result, cited_doc_dir)
         _seen_eval.save_item(query_id, result, seen_doc_dir)
         _controller_eval.save_item(query_id, query_text, result, controller_dir)
-        _table_eval.save_item(query_id, query_text, result, tables_dir)
         if progress_queue is not None:
             num_iters = result.get("num_iterations", "?")
             progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))

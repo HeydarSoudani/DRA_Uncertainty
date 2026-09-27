@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 # Qwen3.5-9B is the student of the trajectory-distillation plan: it is the
 # backbone DeepSearch-World validated in an offline verifiable search
 # environment, and it shares its tokenizer with the Qwen3.6-27B teacher that
-# generates the trajectories (utils.config.AGENTIC_MODEL_TO_LLM["belief"]),
+# generates the trajectories (utils.config.AGENTIC_MODEL_TO_LLM["uncertainty_aware"]),
 # which is what keeps token-level on-policy distillation available after SFT.
 DEFAULT_POLICY_MODEL: str = "Qwen/Qwen3.5-9B"
 
@@ -114,7 +114,7 @@ class SFTConfig:
     data_out: Optional[str] = None            # JSONL of per-turn chat samples; None = {output_dir}/sft/sft_data.jsonl
     base_model: Optional[str] = DEFAULT_POLICY_MODEL   # cold-start backbone; keep == rollout.model
     teacher_model: str = "openrouter/qwen/qwen3.6-27b"  # generates the SFT trajectories
-    teacher_temperature: float = 0.6          # the belief agent's inference temperature
+    teacher_temperature: float = 0.6          # the uncertainty-aware agent's inference temperature
     samples_per_prompt: int = 1               # teacher rollouts per prompt
     min_outcome: float = 1.0                  # keep trajectories whose outcome reward reaches this
     drop_format_retries: bool = True          # keep only trajectories with no re-asked turn

@@ -29,7 +29,6 @@ from .dataset_loaders import (
     load_queries,
     load_qrels,
     load_query_answers,
-    load_intermediate_info,
     load_split,
 )
 
@@ -38,7 +37,6 @@ __all__ = [
     "load_queries",
     "load_qrels",
     "load_query_answers",
-    "load_intermediate_info",
     "load_split",
     "resolve_split_id",
     "resolve_data_path",

@@ -1,7 +1,7 @@
-"""Criteria-updater prompts for the belief agent.
+"""Criteria-updater prompts for the uncertainty-aware agent.
 
 The four system prompts and the user templates are copied from the
-controller's criteria-coverage prompts, so the belief agent does not depend on
+controller's criteria-coverage prompts, so the uncertainty-aware agent does not depend on
 ``controller_component``.  Fixed here only: the dynamic update prompt carries
 the ``{frozen_instruction}`` placeholder the code fills (the original drops
 it), its example JSON has no trailing comma, and a few wording slips.  They

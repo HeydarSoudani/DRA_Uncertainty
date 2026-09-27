@@ -18,7 +18,6 @@ import json
 from .layout import (
     DATA_ROOT,
     queries_base,
-    intermediate_info_path,
     qrels_base,
     corpus_path,
     corpus_name,
@@ -93,48 +92,6 @@ def load_queries(
                     (including NeuCLIR's topic_* fields) into "text".
     """
     return _load_queries_and_answers(data_path, data_set, query_key)[0]
-
-
-def load_intermediate_info(
-    data_path: Path | str, data_set: str = "set1"
-) -> dict[str, dict]:
-    """Load the gold intermediate information for a split, keyed by query id.
-
-    Each record describes the table the answer is aggregated from::
-
-        {"qid": ..., "entity_values": [{"entity": str, "value": Any}, ...],
-         "property": {"label": str, "description": str, "datatype": str},
-         "aggregation": str, "answer": Any}
-
-    ``entity_values`` is the *pre-filter* universe -- every entity of the
-    question's class, not just the ones that satisfy its condition -- so it is
-    the set an agent's table is expected to enumerate.  ``property`` names the
-    single aggregated property; a question that also filters on a second
-    property does not record that one here.
-
-    Only TRQA ships this file.  Returns ``{}`` when it is absent, so callers
-    need no dataset check.
-    """
-    file_path = intermediate_info_path(data_path, data_set)
-    if not file_path.exists():
-        return {}
-
-    records: dict[str, dict] = {}
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                qid = obj.get("qid") or obj.get("id")
-                if qid:
-                    records[qid] = obj
-    except Exception as e:
-        print(f"Error reading intermediate info file {file_path}: {e}")
-        return {}
-
-    return records
 
 
 def load_query_answers(
