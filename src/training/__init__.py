@@ -11,8 +11,7 @@ Design stance:
     drivers, and component interfaces are implemented here.
   * AGENT-AGNOSTIC.  An agent plugs in through ``rollout.env.AgentEnv`` (its
     prompts, turn parsing, observations, end conditions); the environment
-    lives with the agent's entry script, e.g. ``UncertaintyAwareEnv`` in
-    ``experiments/dra_uncertainty_aware_train.py``.
+    lives with the agent's entry script.
   * PER-TURN SAMPLES.  Every policy call is one training sample (context
     masked, generation trained) carrying the trajectory's GRPO advantage.
   * Still TODO behind stable interfaces: the GRPO update and weight sync
@@ -22,7 +21,8 @@ Design stance:
     GPUs, so masking / group formation / advantage shaping can be validated
     before any real training compute is wired.
 
-Entry point: ``experiments/dra_uncertainty_aware_train.py`` (uncertainty-aware agent) -> ``training.pipeline.run``.
+Entry point: ``training.pipeline.run``, called by an agent's training script
+(none at the moment).
 """
 
 __all__ = ["config", "pipeline"]

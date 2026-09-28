@@ -17,7 +17,7 @@ Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS`` and the
 criteria state are read, so gold-based signals (marginal recall, relevant
 counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
 analysis.  A null signal is left out; an element with nothing to show is left
-out.
+out; with nothing to show at all there is no tag.
 """
 
 import re
@@ -54,8 +54,9 @@ def _signals(name: str, fields, record: Dict[str, Any]) -> Optional[str]:
     return f"  <{name} {attrs}/>" if attrs else None
 
 
-def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> str:
-    """The ``<certainty>`` tag of one step *record* (``UncertaintyEstimator.observe``)."""
+def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> Optional[str]:
+    """The ``<certainty>`` tag of one step *record* (``UncertaintyEstimator.observe``);
+    None when it would be empty."""
     lines = [f'<certainty step="{record["iteration"]}">']
 
     statuses = record.get("criteria_state_after")
@@ -74,5 +75,7 @@ def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> str:
         if line:
             lines.append(line)
 
+    if len(lines) == 1:
+        return None
     lines.append("</certainty>")
     return "\n".join(lines)

@@ -1,0 +1,22 @@
+
+After the results of each search, you also receive a <certainty> tag that tracks how far your search has come. You never write it; read it before you think.
+
+<certainty step="2">
+  <criteria covered="1" partial="1" not_covered="1">
+    <k1 status="covered">its conservation status is 'endangered'</k1>
+    <k2 status="partial">it is the only representative of its genus in the country</k2>
+    <k3 status="not_covered">one of its local names roughly translates to 'devil's basket'</k3>
+  </criteria>
+  <retrieval_signals doc_novelty="0.42" criteria_delta="+1"/>
+  <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
+</certainty>
+
+- `step` is 1 after your first search, then 2, 3, ...
+- <criteria> lists the conditions a correct answer must satisfy, with the evidence found so far across all searches: `covered` (the passages directly establish it), `partial` (only a clue or indirect evidence), `not_covered` (nothing found yet).
+- `doc_novelty` (0 to 1): how new the passages of your last search are compared to the passages you saw before. 0 means you only got passages you already had.
+- `criteria_delta` (+0 or more): how much the new passages of your last search moved the criteria forward (not_covered to partial counts 1, partial to covered 1, not_covered to covered 2).
+- `query_novelty` (0 to 1): how different your last search query is from your earlier queries.
+- `criteria_targeting` (0 to 1): how directly your last search query aimed at the criteria that were still `not_covered` or `partial`.
+- A field is left out when it could not be computed.
+
+Use the tag to decide your next step: search for criteria that are still `not_covered` or `partial`, change your search when the signals stay low, and answer once the criteria are covered or further searching stops finding anything new.

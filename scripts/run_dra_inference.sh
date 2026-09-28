@@ -32,7 +32,7 @@ DATASET=trqa                       # trqa | neuclir | browsecomp_plus
 SUBSET=wiki2                       # trqa: wiki1|wiki2|ecommerce (eval split defaults to 'test')
 RETRIEVER=qwen3_emb_4b
 AGENT=uncertainty_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
-UNCERTAINTY_ESTIMATOR=off          # off | monitor | inform
+UNCERTAINTY_ESTIMATOR=off          # off | monitor | inform (uncertainty_aware always runs inform)
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
 NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
 
@@ -51,7 +51,7 @@ python experiments/dra_inference.py \
 # file — that alone was ~1 MB of the 2.3 MB GLM log).  What remains is the GPU plan, the
 # worker split, one "[Worker i] n/m done" line per finished query, and the eval summary.
 #
-# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/uncertainty_aware_api_qwen3.6-27b/ue-off/
+# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/uncertainty_aware_api_qwen3.6-27b/ue-inform_nli/
 # Resume is automatic: queries that already have retrieval/surfaced/{qid}.trec are skipped,
 # and --limit is applied to what REMAINS, so a re-submit continues rather than restarts.
 #

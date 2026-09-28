@@ -6,7 +6,7 @@ Three backends, each behind ``BaseGenerator``:
   * ``hf``    → ``HFGenerator``    (weights loaded in-process via transformers)
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from .base import BaseGenerator
 
@@ -64,3 +64,38 @@ def create_generator(
         return APIGenerator(model_name, **kwargs)
 
     raise ValueError(f"Unknown backend '{backend}' for model '{model_name}'.")
+
+
+def no_thinking_extra_body(generator) -> Optional[Dict[str, Any]]:
+    """``extra_body`` that switches a model's own reasoning off.
+
+    Copies the configured body (OpenRouter provider pin) and extends it, so
+    it can be passed per call in place of the configured one: OpenRouter takes
+    ``reasoning.enabled``, a self-hosted vLLM model takes the chat-template
+    switch.  Other APIs get nothing (they may reject the vLLM kwarg).
+    """
+    client = getattr(generator, "_client", generator)
+    config = getattr(client, "config", None) or {}
+    body = dict(config.get("extra_body") or {})
+    model = str(config.get("model", "") or getattr(generator, "model_name", ""))
+    if model.startswith("openrouter/"):
+        body["reasoning"] = {"enabled": False}
+    elif model.startswith(("vllm/", "hosted_vllm/", "openai/")):
+        body["chat_template_kwargs"] = {"enable_thinking": False}
+    else:
+        return None
+    return body
+
+
+def disable_native_thinking(generator) -> BaseGenerator:
+    """Switch *generator*'s own reasoning off for every call; returns it.
+
+    For auxiliary models that must answer in plain text within a small token
+    budget (criteria extraction, LLM criteria judge): with reasoning on, a
+    thinking model can spend the whole budget before writing the answer.
+    """
+    body = no_thinking_extra_body(generator)
+    client = getattr(generator, "_client", None)
+    if body is not None and isinstance(getattr(client, "config", None), dict):
+        client.config["extra_body"] = body
+    return generator

@@ -29,7 +29,7 @@ from utils.config import (
     is_local_finetuned,
     resolve_agent_backend,
 )
-from reasoner_component import create_generator
+from reasoner_component import create_generator, disable_native_thinking
 from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
 from utils.trajectory_logger import TrajectoryLogger
 
@@ -127,7 +127,7 @@ def build_uncertainty_estimator(
     criteria_source = None
     if llm_criteria:
         criteria_source = LLMCriteriaSource(
-            llm_client=create_generator(llm_criteria, backend="api"),
+            llm_client=disable_native_thinking(create_generator(llm_criteria, backend="api")),
             model_name=llm_criteria,
             max_criteria=max_criteria,
         )
@@ -156,7 +156,7 @@ def build_uncertainty_estimator(
     elif criteria_judge == "llm":
         judge_model = criteria_judge_model or llm_criteria
         doc_judge, query_scorer = build_criteria_judges(
-            "llm", model=judge_model, llm_client=create_generator(judge_model, backend="api"),
+            "llm", model=judge_model, llm_client=disable_native_thinking(create_generator(judge_model, backend="api")),
         )
     else:
         doc_judge, query_scorer = build_criteria_judges(
@@ -215,15 +215,6 @@ def build_agent(
     ua_max_format_retries: int = 2,
     ua_max_tokens_per_call: int = 4096,
     ua_disable_native_thinking: bool = True,
-    ua_show_novelty: bool = True,
-    ua_show_criteria: bool = True,
-    ua_criteria_mode: str = "auto",
-    ua_criteria_model: str = "",
-    ua_max_criteria: int = 8,
-    ua_stabilization_window: int = 15,
-    ua_criteria_max_tokens: int = 1024,
-    ua_evidence_top_k: int = 5,
-    ua_evidence_chars: int = 1500,
 ):
     """Instantiate an agent and attach its search tool.
 
@@ -287,23 +278,6 @@ def build_agent(
         _reasoning_extra["max_format_retries"] = ua_max_format_retries
         _reasoning_extra["max_tokens_per_call"] = ua_max_tokens_per_call
         _reasoning_extra["disable_native_thinking"] = ua_disable_native_thinking
-        _reasoning_extra["show_novelty"] = ua_show_novelty
-        _reasoning_extra["show_criteria"] = ua_show_criteria
-        _reasoning_extra["criteria_mode"] = ua_criteria_mode
-        _reasoning_extra["dataset"] = dataset
-        _reasoning_extra["criteria_model"] = ua_criteria_model or ""
-        _reasoning_extra["max_criteria"] = ua_max_criteria
-        _reasoning_extra["stabilization_window"] = ua_stabilization_window
-        _reasoning_extra["criteria_max_tokens"] = ua_criteria_max_tokens
-        _reasoning_extra["evidence_top_k"] = ua_evidence_top_k
-        _reasoning_extra["evidence_chars"] = ua_evidence_chars
-        if ua_criteria_model:
-            # A separate criteria updater; empty means the policy backbone.
-            _reasoning_extra["criteria_llm_client"] = create_generator(
-                ua_criteria_model,
-                temperature=0.0,
-                metadata={"model": ua_criteria_model},
-            )
 
     agent = model_class(
         llm_client=llm_client,
@@ -532,15 +506,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         ua_max_format_retries=worker_config.get("ua_max_format_retries", 2),
         ua_max_tokens_per_call=worker_config.get("ua_max_tokens_per_call", 4096),
         ua_disable_native_thinking=worker_config.get("ua_disable_native_thinking", True),
-        ua_show_novelty=worker_config.get("ua_show_novelty", True),
-        ua_show_criteria=worker_config.get("ua_show_criteria", True),
-        ua_criteria_mode=worker_config.get("ua_criteria_mode", "auto"),
-        ua_criteria_model=worker_config.get("ua_criteria_model", ""),
-        ua_max_criteria=worker_config.get("ua_max_criteria", 8),
-        ua_stabilization_window=worker_config.get("ua_stabilization_window", 15),
-        ua_criteria_max_tokens=worker_config.get("ua_criteria_max_tokens", 1024),
-        ua_evidence_top_k=worker_config.get("ua_evidence_top_k", 5),
-        ua_evidence_chars=worker_config.get("ua_evidence_chars", 1500),
     )
 
     estimator = build_uncertainty_estimator(
@@ -661,6 +626,10 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             print(f"  [Worker {worker_id}] ✓ Saved: {query_id}", flush=True)
 
     agent.cleanup()
+    # As run_pipeline does: drop the estimator's model and callback references.
+    estimator = getattr(agent, "uncertainty_estimator", None)
+    if estimator is not None:
+        estimator.close()
     if verbose:
         print(
             f"[Worker {worker_id}] Completed {len(results)}/{len(query_items)} queries",

@@ -16,7 +16,7 @@ from .base import BaseGenerator, LiteLLMBackedGenerator
 from .litellm_client import LiteLLMClient
 from .api import APIGenerator, get_litellm_client, resolve_provider_config
 from .vllm import VLLMGenerator, VLLMClient, get_openai_client
-from .factory import create_generator
+from .factory import create_generator, disable_native_thinking, no_thinking_extra_body
 from .setup import setup_llm
 
 __all__ = [
@@ -27,6 +27,8 @@ __all__ = [
     "VLLMGenerator",
     "HFGenerator",
     "create_generator",
+    "disable_native_thinking",
+    "no_thinking_extra_body",
     # Transports
     "LiteLLMClient",
     "VLLMClient",

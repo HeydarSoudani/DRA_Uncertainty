@@ -1,7 +1,7 @@
 """Text-only LLM calls through ``reasoner_component`` (READ-ONLY reuse).
 
 Used where training needs a model that is NOT the policy being trained: an
-environment's auxiliary model (e.g. the uncertainty-aware agent's criteria updater), or a
+environment's auxiliary model (e.g. a frozen judge), or a
 teacher generating SFT trajectories.  Both must behave as in inference, so the
 call mirrors ``UncertaintyAwareAgent._call``: the same generator factory, the same
 ``complete`` kwargs, and the same switch that turns the model's own reasoning
@@ -12,26 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-
-def no_thinking_extra_body(generator) -> Optional[Dict[str, Any]]:
-    """``extra_body`` that switches a model's own reasoning off.
-
-    Copies the configured body (OpenRouter provider pin) and extends it, as
-    ``UncertaintyAwareAgent._no_thinking_body`` does: OpenRouter takes
-    ``reasoning.enabled``, a self-hosted vLLM model takes the chat-template
-    switch.  Other APIs get nothing (they may reject the vLLM kwarg).
-    """
-    client = getattr(generator, "_client", generator)
-    config = getattr(client, "config", None) or {}
-    body = dict(config.get("extra_body") or {})
-    model = str(config.get("model", "") or getattr(generator, "model_name", ""))
-    if model.startswith("openrouter/"):
-        body["reasoning"] = {"enabled": False}
-    elif model.startswith(("vllm/", "hosted_vllm/", "openai/")):
-        body["chat_template_kwargs"] = {"enable_thinking": False}
-    else:
-        return None
-    return body
+from reasoner_component import no_thinking_extra_body
 
 
 class TextLLM:

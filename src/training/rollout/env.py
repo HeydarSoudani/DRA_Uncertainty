@@ -12,7 +12,7 @@ are handed in by the factory that builds it.
 
 An agent is plugged into training by passing an ``EnvFactory`` to
 ``training.pipeline.run``; the agent-specific environment lives with its entry
-script (e.g. ``experiments/dra_uncertainty_aware_train.py``).
+script.
 """
 
 from __future__ import annotations

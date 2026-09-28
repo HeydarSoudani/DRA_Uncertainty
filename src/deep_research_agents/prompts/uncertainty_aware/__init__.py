@@ -1,8 +1,7 @@
 """Prompt templates for the uncertainty-aware agent (plain-text files next to this module).
 
 Placeholders are filled with str.replace, not str.format, so a literal brace
-added to a template later cannot break rendering.  The criteria-updater
-prompts live in the ``criteria`` subpackage.
+added to a template later cannot break rendering.
 """
 
 from pathlib import Path
@@ -10,16 +9,16 @@ from pathlib import Path
 _DIR = Path(__file__).resolve().parent
 
 SYSTEM_TEMPLATE: str = (_DIR / "system.txt").read_text()
-BELIEF_SECTION: str = (_DIR / "belief_section.txt").read_text()
+CERTAINTY_SECTION: str = (_DIR / "certainty_section.txt").read_text()
 USER_TEMPLATE: str = (_DIR / "user.txt").read_text()
 FORMAT_ERROR_TEMPLATE: str = (_DIR / "format_error.txt").read_text()
 
 
-def render_system(max_turns: int, show_belief: bool = True) -> str:
-    """The policy's system prompt; *show_belief* False drops the belief section."""
+def render_system(max_turns: int) -> str:
+    """The policy's system prompt, with the section that explains <certainty>."""
     return (SYSTEM_TEMPLATE
             .replace("{max_turns}", str(max_turns))
-            .replace("{belief_section}", BELIEF_SECTION if show_belief else ""))
+            .replace("{certainty_section}", CERTAINTY_SECTION))
 
 
 def render_user(question: str) -> str:

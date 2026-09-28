@@ -70,17 +70,8 @@ FILE_BACKED_DEFAULTS = {
     "ua_max_format_retries": 2,
     "ua_max_tokens_per_call": 4096,
     "ua_disable_native_thinking": True,
-    "ua_show_novelty": True,
-    "ua_show_criteria": True,
-    "ua_criteria_mode": "auto",
-    "ua_criteria_model": "",
-    "ua_max_criteria": 8,
-    "ua_stabilization_window": 15,
-    "ua_criteria_max_tokens": 1024,
-    "ua_evidence_top_k": 5,
-    "ua_evidence_chars": 1500,
     # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
-    "llm_criteria": "claude-sonnet-4-6",
+    "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": 8,
     "criteria_judge": "nli",
     "criteria_judge_model": "",
@@ -110,7 +101,6 @@ _FILE_BACKED_CHOICES = {
     "retrieval_input": ["subquery", "original_query+subquery", "reasoning+subquery"],
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
-    "ua_criteria_mode": ["auto", "static", "dynamic"],
     "criteria_judge": ["none", "nli", "llm"],
 }
 
@@ -356,15 +346,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["ua_max_format_retries"] = args.ua_max_format_retries
     pipeline_kwargs["ua_max_tokens_per_call"] = args.ua_max_tokens_per_call
     pipeline_kwargs["ua_disable_native_thinking"] = args.ua_disable_native_thinking
-    pipeline_kwargs["ua_show_novelty"] = args.ua_show_novelty
-    pipeline_kwargs["ua_show_criteria"] = args.ua_show_criteria
-    pipeline_kwargs["ua_criteria_mode"] = args.ua_criteria_mode
-    pipeline_kwargs["ua_criteria_model"] = args.ua_criteria_model
-    pipeline_kwargs["ua_max_criteria"] = args.ua_max_criteria
-    pipeline_kwargs["ua_stabilization_window"] = args.ua_stabilization_window
-    pipeline_kwargs["ua_criteria_max_tokens"] = args.ua_criteria_max_tokens
-    pipeline_kwargs["ua_evidence_top_k"] = args.ua_evidence_top_k
-    pipeline_kwargs["ua_evidence_chars"] = args.ua_evidence_chars
 
     pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
@@ -396,15 +377,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "ua_max_format_retries": args.ua_max_format_retries,
         "ua_max_tokens_per_call": args.ua_max_tokens_per_call,
         "ua_disable_native_thinking": args.ua_disable_native_thinking,
-        "ua_show_novelty": args.ua_show_novelty,
-        "ua_show_criteria": args.ua_show_criteria,
-        "ua_criteria_mode": args.ua_criteria_mode,
-        "ua_criteria_model": args.ua_criteria_model,
-        "ua_max_criteria": args.ua_max_criteria,
-        "ua_stabilization_window": args.ua_stabilization_window,
-        "ua_criteria_max_tokens": args.ua_criteria_max_tokens,
-        "ua_evidence_top_k": args.ua_evidence_top_k,
-        "ua_evidence_chars": args.ua_evidence_chars,
         "temperature":             args.llm_temperature,
         "verbose":                 verbose,
         "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),

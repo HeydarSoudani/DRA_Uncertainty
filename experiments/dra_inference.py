@@ -15,7 +15,7 @@ Supported agents via --agentic-model (the LLM is selected automatically per agen
     oss_120b        GPT-OSS-120B reasoning agent                   → gpt-oss-120b (vLLM)
     tongyi          Tongyi-DeepResearch ReAct agent                → Alibaba-NLP/Tongyi-DeepResearch-30B-A3B (vLLM)
     cpm_explore     AgentCPM-Explore deep search agent             → openbmb/AgentCPM-Explore (vLLM)
-    uncertainty_aware  Uncertainty-aware search agent (reads a belief) → qwen/qwen3.6-27b (OpenRouter API)
+    uncertainty_aware  Uncertainty-aware search agent (reads <certainty>) → qwen/qwen3.6-27b (OpenRouter API)
 
 Agentic workflows:
     ReAct-style (react, selfask, searcho1, research, searchr1, stepsearch, drtulu, glm, oss_20b, oss_120b, tongyi, cpm_explore):
@@ -314,15 +314,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             ua_max_format_retries=kwargs.get("ua_max_format_retries", 2),
             ua_max_tokens_per_call=kwargs.get("ua_max_tokens_per_call", 4096),
             ua_disable_native_thinking=kwargs.get("ua_disable_native_thinking", True),
-            ua_show_novelty=kwargs.get("ua_show_novelty", True),
-            ua_show_criteria=kwargs.get("ua_show_criteria", True),
-            ua_criteria_mode=kwargs.get("ua_criteria_mode", "auto"),
-            ua_criteria_model=kwargs.get("ua_criteria_model", ""),
-            ua_max_criteria=kwargs.get("ua_max_criteria", 8),
-            ua_stabilization_window=kwargs.get("ua_stabilization_window", 15),
-            ua_criteria_max_tokens=kwargs.get("ua_criteria_max_tokens", 1024),
-            ua_evidence_top_k=kwargs.get("ua_evidence_top_k", 5),
-            ua_evidence_chars=kwargs.get("ua_evidence_chars", 1500),
         )
 
         # Build the estimator AFTER the agent so it can take the agent's
@@ -620,11 +611,11 @@ def _parse_args():
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = search agent that reads a criteria-status belief after every retrieval; cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that always reads the <certainty> tag (inform mode) and whose system prompt explains it; cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=["trqa", "browsecomp_plus", "neuclir"], help="Dataset. trqa/neuclir/browsecomp_plus use local indices.")
     parser.add_argument("--subset", type=str, default="test", help="Dataset subset/collection (null = auto-selected from --dataset). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical|report; browsecomp_plus: test.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever type for public datasets (neuclir only)")
-    parser.add_argument("--uncertainty-estimator-mode", type=str, default="off", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change/targeting, marginal recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, reasoning signals query_novelty/criteria_targeting; never gold-based signals) to the trajectory after each iteration's search results. Supported by every agent except uncertainty_aware.")
+    parser.add_argument("--uncertainty-estimator-mode", type=str, default="off", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change/targeting, marginal recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, reasoning signals query_novelty/criteria_targeting; never gold-based signals) to the trajectory after each iteration's search results. Ignored by uncertainty_aware, which always runs in inform mode.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
@@ -646,6 +637,14 @@ def _parse_args():
     args.llm_model = AGENTIC_MODEL_TO_LLM[args.agentic_model]
     args.agentic_model_cli = args.agentic_model
     args.agentic_model = AGENTIC_MODEL_ALIAS.get(args.agentic_model, args.agentic_model)
+
+    # ── The uncertainty-aware agent always reads the <certainty> tag ───────-
+    # Set before anything reads the mode, so the run directory (ue-inform_*),
+    # run_config.json and the GPU workers all see inform.
+    if args.agentic_model == "uncertainty_aware" and args.uncertainty_estimator_mode != "inform":
+        print(f"uncertainty_aware always runs the estimator in inform mode "
+              f"(--uncertainty-estimator-mode {args.uncertainty_estimator_mode} ignored)")
+        args.uncertainty_estimator_mode = "inform"
 
     # ── Resolve the sampling temperature from the agent ────────────────────-
     # Left on auto (null in the YAML), each agent gets the value it was tuned

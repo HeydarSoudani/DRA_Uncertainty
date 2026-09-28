@@ -64,19 +64,10 @@ ua_max_turns: 8                   # generation steps before a run with no <answe
 ua_max_passage_chars: 1500        # chars of one passage shown inside <information>
 ua_max_format_retries: 2          # re-asks after a malformed turn before the run stops
 ua_max_tokens_per_call: 4096      # output-token cap for one policy turn
-ua_disable_native_thinking: true  # switch the model's own reasoning mode off (policy and criteria updater)
-ua_show_novelty: true             # show <novelty> in the <belief> block (ablation)
-ua_show_criteria: true            # show <criteria> in the <belief> block (ablation); both false = no belief
-ua_criteria_mode: "auto"          # auto (static on browsecomp_plus, else dynamic) | static | dynamic
-ua_criteria_model: ""             # criteria updater model; "" = the policy backbone
-ua_max_criteria: 8                # soft cap on the number of criteria
-ua_stabilization_window: 15       # dynamic mode: iterations without add/remove before the list freezes
-ua_criteria_max_tokens: 1024      # output-token cap for one criteria init/update call
-ua_evidence_top_k: 5              # passages per update shown to the criteria updater
-ua_evidence_chars: 1500           # chars of one passage shown to the criteria updater
+ua_disable_native_thinking: true  # switch the model's own reasoning mode off (policy turns and intermediate answers)
 
 # ── Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI) ─────────
-llm_criteria: "claude-sonnet-4-6"   # LLM that extracts each query's criteria (once per sample)
+llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the uncertainty-aware agent, reasoning off
 max_criteria: 8                     # Cap on the number of criteria per query
 criteria_judge: "nli"               # none | nli (NLI docs + embedding queries) | llm (LLM docs + queries)
 criteria_judge_model: ""            # nli: HF NLI model ("" = DeBERTa-v3-large NLI); llm: judge LLM ("" = llm_criteria)

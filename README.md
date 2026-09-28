@@ -164,7 +164,7 @@ The system prompts are unchanged. Where the tag goes:
 
 The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl` and as `certainty_tag` in
 `uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
-does not read the tag.
+always runs in `inform` mode (the flag is ignored for it); its system prompt explains the tag.
 
 ### Output format
 

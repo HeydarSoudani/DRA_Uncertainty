@@ -69,11 +69,10 @@ AGENTIC_MODEL_TO_LLM: Dict[str, str] = {
 
 # Agent-specific result keys carried in the trajectory meta line: they are
 # persisted nowhere else (WebWeaver's memory bank / query outputs, the uncertainty-aware
-# agent's criteria and records), so dropping them there loses them for good.
+# agent's per-turn records), so dropping them there loses them for good.
 AGENT_META_KEYS: Tuple[str, ...] = (
     "memory_bank", "query_outputs",
-    "ua_criteria", "ua_criteria_raw", "ua_records",
-    "ua_doc_labels", "ua_outcome",
+    "ua_records", "ua_doc_labels", "ua_outcome",
 )
 
 

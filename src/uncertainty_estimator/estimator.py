@@ -30,7 +30,7 @@ first, nested detail last::
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after, criteria_judgments[],
     intermediate_answer_reasoning, errors[],
-    certainty_tag                                                    # inform only
+    certainty_tag                                  # inform only; null when empty
 
 ``iteration`` counts the observed search iterations from 1, the same for
 every agent; ``agent_iteration`` is the agent's own counter, whose base and
