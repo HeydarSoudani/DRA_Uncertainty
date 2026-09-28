@@ -56,4 +56,4 @@ class ReSearch_Agent(TagReasoningAgent):
         else:
             search_results = passages2string(docs[:self.seen_top_k])
 
-        return f"\n{output_text}<result>{search_results}</result>\n"
+        return f"\n{output_text}<result>{search_results}</result>\n{self._certainty_suffix(step)}"

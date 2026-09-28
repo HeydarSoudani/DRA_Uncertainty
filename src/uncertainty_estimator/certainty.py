@@ -1,0 +1,78 @@
+"""The ``<certainty>`` tag that ``--uncertainty-estimator-mode inform`` injects.
+
+At the end of every search iteration the agent reads one tag built from the
+iteration's step record::
+
+    <certainty step="3">
+      <criteria covered="1" partial="1" not_covered="1">
+        <k1 status="covered">born in the 1960s</k1>
+        <k2 status="partial">won a regional award</k2>
+        <k3 status="not_covered">studied in Lisbon</k3>
+      </criteria>
+      <retrieval_signals doc_novelty="0.42" criteria_delta="+1"/>
+      <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
+    </certainty>
+
+Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS`` and the
+criteria state are read, so gold-based signals (marginal recall, relevant
+counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
+analysis.  A null signal is left out; an element with nothing to show is left
+out.
+"""
+
+import re
+from html import escape
+from typing import Any, Dict, List, Optional
+
+from .types import FULLY_COVERED, PARTIALLY_COVERED, UNCOVERED, Criterion
+
+# Document side of x_t (nu^D, Delta^D) and query side (nu^q, tau^q).
+RETRIEVAL_FIELDS = ("doc_novelty", "criteria_delta")
+REASONING_FIELDS = ("query_novelty", "criteria_targeting")
+
+_STATUS_LABEL = {FULLY_COVERED: "covered", PARTIALLY_COVERED: "partial", UNCOVERED: "not_covered"}
+
+# A tag the model wrote itself; removed before its text enters the context.
+CERTAINTY_RE = re.compile(r"<certainty\b[^>]*>.*?</certainty>\s*", re.DOTALL)
+
+
+def strip_certainty(text: str) -> str:
+    """Remove every ``<certainty>`` tag from *text*."""
+    return CERTAINTY_RE.sub("", text) if text and "<certainty" in text else text
+
+
+def _format(field: str, value: Any) -> str:
+    if field == "criteria_delta":
+        return f"+{value}"
+    return f"{value:.2f}"
+
+
+def _signals(name: str, fields, record: Dict[str, Any]) -> Optional[str]:
+    attrs = " ".join(
+        f'{f}="{_format(f, record[f])}"' for f in fields if record.get(f) is not None
+    )
+    return f"  <{name} {attrs}/>" if attrs else None
+
+
+def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> str:
+    """The ``<certainty>`` tag of one step *record* (``UncertaintyEstimator.observe``)."""
+    lines = [f'<certainty step="{record["iteration"]}">']
+
+    statuses = record.get("criteria_state_after")
+    if criteria and statuses and len(statuses) == len(criteria):
+        labels = [_STATUS_LABEL[s] for s in statuses]
+        lines.append(
+            f'  <criteria covered="{labels.count("covered")}" partial="{labels.count("partial")}" '
+            f'not_covered="{labels.count("not_covered")}">'
+        )
+        for i, (c, label) in enumerate(zip(criteria, labels), 1):
+            lines.append(f'    <k{i} status="{label}">{escape(c.text, quote=False)}</k{i}>')
+        lines.append("  </criteria>")
+
+    for name, fields in (("retrieval_signals", RETRIEVAL_FIELDS), ("reasoning_signals", REASONING_FIELDS)):
+        line = _signals(name, fields, record)
+        if line:
+            lines.append(line)
+
+    lines.append("</certainty>")
+    return "\n".join(lines)

@@ -96,11 +96,17 @@ class SelfAsk_Agent(BasicAgent):
             'component_doc_ids': [d.get('doc_id', '') for d in cur_search_docs[:self.seen_top_k]],
             'tokens': self._step_tokens(),
         })
-        self._observe_step(
+        tag = self._observe_step(
             search_query, seen_docs_init, 0, question,
             seen_docs=seen_docs_init,
             trajectory=messages,
         )
+        if tag:
+            # The initial retrieval's tag opens the running text, right after
+            # the prompt; it stays there for the whole run.
+            text = f"{tag}\n"
+            reasoning_path[-1]['certainty'] = tag
+            messages[-1]['content'] += text
 
         output_text = ""
         for idx in range(self.max_iteration):
@@ -122,6 +128,7 @@ class SelfAsk_Agent(BasicAgent):
                     return reasoning_path, answer, iter_num
                 break
 
+            output_text = self._strip_certainty(output_text)
             if "So the final answer is:" in output_text:
                 self._notify_progress("answer", iter_num)
                 pred = self.extract_final_answer(output_text)
@@ -166,24 +173,31 @@ class SelfAsk_Agent(BasicAgent):
             })
 
             if idx == 0:
-                text += f"Follow up: {search_query}\nIntermediate answer: "
+                step_text = f"Follow up: {search_query}\n"
             else:
-                text += f"{intermediate_ans}\nFollow up: {search_query}\nIntermediate answer: "
+                step_text = f"{intermediate_ans}\nFollow up: {search_query}\n"
+            prefill = "Intermediate answer: "
 
             docs_str = self.documents2string(unq_tmp_doc)
-            user_input_prompt = self.user_prompt.format(
+            prompt_head = self.user_prompt.format(
                 documents=docs_str,
                 question=question
-            ) + text
+            )
             messages = [
                 {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_input_prompt}
+                {"role": "user", "content": prompt_head + text + step_text + prefill}
             ]
             if search_query:
-                self._observe_step(
+                tag = self._observe_step(
                     search_query, seen_docs, iter_num, question,
                     trajectory=messages,
                 )
+                if tag:
+                    # Between the follow-up and the intermediate-answer prefill.
+                    step_text += f"{tag}\n"
+                    reasoning_path[-1]['certainty'] = tag
+            text += step_text + prefill
+            messages[-1]['content'] = prompt_head + text
 
         # If no final answer yet, generate one
         if "So the final answer is:" not in output_text:

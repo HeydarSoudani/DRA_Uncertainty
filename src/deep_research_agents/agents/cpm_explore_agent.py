@@ -700,10 +700,11 @@ class CPMExplore(BasicAgent):
                     })
 
             if _iter_subqueries:
-                self._observe_step(
+                tag = self._observe_step(
                     _iter_subqueries, _iter_seen_docs, iteration, query,
                     trajectory=messages,
                 )
+                self._append_certainty(messages, tag, reasoning_path[-1])
 
             iteration += 1
 

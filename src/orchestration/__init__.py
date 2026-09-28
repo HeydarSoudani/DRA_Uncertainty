@@ -94,7 +94,8 @@ def build_uncertainty_estimator(
     Shared by the main process (run_pipeline) and spawned GPU workers.
 
     Args:
-        mode: ``"off"`` or ``"monitor"``.
+        mode: ``"off"``, ``"monitor"`` (observe only) or ``"inform"``
+            (observe and inject a ``<certainty>`` tag into the trajectory).
         retriever: Retriever whose encoder gives the novelty embeddings
             (dense retrievers only; others leave nu^q null and nu^D id-only).
         qrels: Ground-truth relevance judgements, for marginal recall.
@@ -115,8 +116,8 @@ def build_uncertainty_estimator(
     """
     if mode == "off":
         return None
-    if mode != "monitor":
-        raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off' or 'monitor'")
+    if mode not in ("monitor", "inform"):
+        raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off', 'monitor' or 'inform'")
     criteria_judge = (criteria_judge or "none").lower()
 
     from uncertainty_estimator import (
@@ -180,7 +181,9 @@ def build_uncertainty_estimator(
             "dataset": dataset,
             "llm_criteria": llm_criteria or None,
             "max_criteria": max_criteria,
+            "mode": mode,
         },
+        inform=mode == "inform",
     )
 
 
@@ -541,7 +544,7 @@ def _init_worker(worker_id: int, worker_config: dict):
     )
 
     estimator = build_uncertainty_estimator(
-        mode=worker_config.get("uncertainty_estimator", "off"),
+        mode=worker_config.get("uncertainty_estimator_mode", "off"),
         retriever=retriever,
         qrels=worker_config.get("qrels"),
         llm_criteria=worker_config.get("llm_criteria"),

@@ -1,6 +1,9 @@
 """UncertaintyEstimator: per-step uncertainty signals for deep research agents.
 
-Passive monitor: it never changes the trajectory.  Per sample:
+With ``inform=False`` (``monitor``) it never changes the trajectory; with
+``inform=True`` (``inform``) each record also carries ``certainty_tag``, the
+``<certainty>`` tag the agent appends to its context (``certainty``).  Per
+sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
                              the sample) and sigma_0 is all uncovered
@@ -26,7 +29,8 @@ first, nested detail last::
     intermediate_answers, intermediate_answer_confidence,
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after, criteria_judgments[],
-    intermediate_answer_reasoning, errors[]
+    intermediate_answer_reasoning, errors[],
+    certainty_tag                                                    # inform only
 
 ``iteration`` counts the observed search iterations from 1, the same for
 every agent; ``agent_iteration`` is the agent's own counter, whose base and
@@ -44,6 +48,7 @@ import logging
 from typing import Any, Dict, List, Optional, Set
 
 from ._helpers import doc_id
+from .certainty import render_certainty
 from .criteria import CriteriaSource
 from .judges import DocCriteriaJudge, QueryCriteriaScorer
 from .signals import (
@@ -86,6 +91,8 @@ class UncertaintyEstimator:
         agentic_model: Agent name; picks the intermediate answer format.
         run_info: Run settings saved in every meta line (agent, dataset,
             estimator configuration), so a file can be read on its own.
+        inform: Render each step's ``<certainty>`` tag for the agent to
+            read (``--uncertainty-estimator-mode inform``).
     """
 
     def __init__(
@@ -99,7 +106,9 @@ class UncertaintyEstimator:
         intermediate_answer_fn: Optional[AnswerFn] = None,
         agentic_model: str = "",
         run_info: Optional[Dict[str, Any]] = None,
+        inform: bool = False,
     ) -> None:
+        self.inform = inform
         self._run_info = dict(run_info or {})
         self._criteria_source = criteria_source
         self._encode_fn = encode_fn
@@ -294,5 +303,7 @@ class UncertaintyEstimator:
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,
             "errors": errors,
         }
+        if self.inform:
+            record["certainty_tag"] = render_certainty(record, self._criteria)
         self.steps.append(record)
         return record

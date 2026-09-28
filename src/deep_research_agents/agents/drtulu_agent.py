@@ -378,11 +378,12 @@ class DrTulu_Agent(BasicAgent):
             #    reasoning with the retrieved evidence (DR-Tulu output handling).
             messages = [*messages, {"role": "user", "content": tool_output_xml}]
 
-            self._observe_step(
+            tag = self._observe_step(
                 tool_query or "", seen_docs, iter_num, query,
                 seen_docs=seen_docs,
                 trajectory=messages,
             )
+            self._append_certainty(messages, tag, reasoning_path[-1])
 
         # ── Force final answer if budget exhausted on a search step ─────────
         # When max_iteration is reached and the last step was a search (not an answer),

@@ -110,14 +110,18 @@ class AgentVerboseMixin:
         *,
         seen_docs: Optional[List[Dict[str, Any]]] = None,
         trajectory: Any = None,
-    ) -> None:
+    ) -> Optional[str]:
         """Pass one finished search iteration to the uncertainty estimator.
 
         Called once per iteration, after all its searches, with the
         iteration's queries, the documents the agent was shown and its
-        conversation so far (*trajectory*, for the intermediate answer).  The
-        estimator only records signals; the trajectory is never changed.
+        conversation so far (*trajectory*, for the intermediate answer).
         *seen_docs*, when given, are printed in verbose mode.
+
+        Returns the iteration's ``<certainty>`` tag in ``inform`` mode, which
+        the agent appends to its context right after the iteration's search
+        results (``_append_certainty``); None otherwise, and whenever the
+        estimator failed, so the agent then goes on without a tag.
 
         The estimator is isolated from the agent run: its errors are logged,
         never raised; the tokens its intermediate answer spends on the
@@ -129,7 +133,8 @@ class AgentVerboseMixin:
             self._vprint_docs(iter_num, seen_docs)
         estimator = getattr(self, "uncertainty_estimator", None)
         if estimator is None:
-            return
+            return None
+        tag = None
         started = time.monotonic()
         meter = self._token_meter() if hasattr(self, "_token_meter") else None
         saved = (meter.input_tokens, meter.output_tokens, meter.num_calls) if meter is not None else None
@@ -142,6 +147,7 @@ class AgentVerboseMixin:
                 trajectory=trajectory,
             )
             self._vprint_uncertainty(iter_num, record)
+            tag = record.get("certainty_tag")
         except Exception:
             logger.warning("Uncertainty estimator failed at iteration %s; the agent run continues",
                            iter_num, exc_info=True)
@@ -149,6 +155,44 @@ class AgentVerboseMixin:
             if saved is not None:
                 meter.input_tokens, meter.output_tokens, meter.num_calls = saved
             self._uncertainty_seconds = getattr(self, "_uncertainty_seconds", 0.0) + time.monotonic() - started
+        return tag
+
+    # -- inform mode: the <certainty> tag --
+
+    @property
+    def _informs(self) -> bool:
+        estimator = getattr(self, "uncertainty_estimator", None)
+        return bool(getattr(estimator, "inform", False))
+
+    def _strip_certainty(self, text: str) -> str:
+        """Drop <certainty> tags the model wrote itself (inform mode only)."""
+        if not self._informs:
+            return text
+        from uncertainty_estimator.certainty import strip_certainty
+        return strip_certainty(text)
+
+    @staticmethod
+    def _append_certainty(messages: List[Any], tag: Optional[str],
+                          step: Optional[Dict[str, Any]] = None) -> None:
+        """Append *tag* to the last message (the iteration's last tool or
+        search-result message) and record it on *step*.
+
+        Handles chat messages (``content``) and Responses API tool outputs
+        (``output``).  No-op without a tag.
+        """
+        if not tag or not messages:
+            return
+        msg = messages[-1]
+        key = "output" if "output" in msg else "content"
+        msg[key] = f"{msg.get(key) or ''}\n{tag}"
+        if step is not None:
+            step["certainty"] = tag
+
+    @staticmethod
+    def _certainty_suffix(step: Dict[str, Any]) -> str:
+        """The step's tag as prompt text, for rebuilding a prompt from steps."""
+        tag = step.get("certainty")
+        return f"{tag}\n" if tag else ""
 
     def _reset_uncertainty_estimator(self, query_id: Optional[str], query_text: str) -> None:
         self._uncertainty_seconds = 0.0
@@ -791,7 +835,7 @@ class BasicAgent(AgentVerboseMixin):
         else:
             search_results = passages2string(docs[:seen_top_k])
 
-        return f"\n\n{output_text}<information>{search_results}</information>\n\n"
+        return f"\n\n{output_text}<information>{search_results}</information>\n\n{self._certainty_suffix(step)}"
 
     def _rebuild_windowed_prompt(
         self,
@@ -1008,6 +1052,7 @@ class TagReasoningAgent(BasicAgent):
                 reasoning_path.append({'think': one_step_think, 'prediction': prediction, 'tokens': self._step_tokens()})
                 break
 
+            output_text = self._strip_certainty(output_text)
             tmp_query = self.get_query(output_text)
             think_text = self.get_think(output_text)
             self._vprint(iter_num, "think", think_text or "(no think)")
@@ -1039,11 +1084,15 @@ class TagReasoningAgent(BasicAgent):
 
             if tmp_query:
                 seen_docs = search_docs[:self.seen_top_k]
-                self._observe_step(
+                tag = self._observe_step(
                     tmp_query, seen_docs, iter_num, question,
                     seen_docs=seen_docs,
                     trajectory=messages,
                 )
+                if tag:
+                    input_prompt += f"{tag}\n"
+                    reasoning_path[-1]['certainty'] = tag
+                    messages = self._build_messages(input_prompt)
 
         prediction = reasoning_path[-1].get('prediction') if reasoning_path else None
 

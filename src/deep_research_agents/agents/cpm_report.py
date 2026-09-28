@@ -173,6 +173,7 @@ class CPMReport(BasicAgent):
             "extend_time": 0,
             "extend_result": "",
             "retrieved_info": "",
+            "certainty": "",  # inform mode: tag of the last search, shown after retrieved_info
             "parsed": True,
             "retry_count": 0,
             "citation_registry": {},
@@ -273,6 +274,7 @@ class CPMReport(BasicAgent):
                 elif current_state == "search":
                     # If search fails, try to continue anyway with empty results
                     state["retrieved_info"] = ""
+                    state["certainty"] = ""
                     state["retry_count"] = 0  # Reset retry count
                     # Transition based on cursor
                     if cursor == "outline":
@@ -457,11 +459,16 @@ class CPMReport(BasicAgent):
             "all_docs": fused_docs,
         })
 
-        self._observe_step(
+        # Kept apart from retrieved_info, whose text is parsed for citations;
+        # joined to it only in the prompt (_current_information).
+        tag = self._observe_step(
             keywords, seen_docs, step, state["query"],
             seen_docs=seen_docs,
             trajectory=state["trajectory"],
         )
+        state["certainty"] = tag or ""
+        if tag:
+            state["trajectory"][-1]["certainty"] = tag
 
         return state
 
@@ -474,7 +481,7 @@ class CPMReport(BasicAgent):
 
         prompt = self.prompts["init_plan"].render(
             user_query=query,
-            current_information=retrieved_info,
+            current_information=self._current_information(state),
         )
 
         step = state['step']
@@ -648,7 +655,7 @@ class CPMReport(BasicAgent):
             user_query=query,
             current_survey=survey_text,
             current_instruction=current_instruction,
-            current_information=retrieved_info,
+            current_information=self._current_information(state),
         )
 
         # Call LLM with temperature adjustment for retries
@@ -1194,6 +1201,13 @@ class CPMReport(BasicAgent):
         matches = re.findall(pattern, text)
         return list(set(matches))
 
+    @staticmethod
+    def _current_information(state: Dict[str, Any]) -> str:
+        """The prompt's current information: the last search's passages, then
+        its <certainty> tag in inform mode."""
+        tag = state.get("certainty")
+        return f"{state['retrieved_info']}\n{tag}" if tag else state["retrieved_info"]
+
     def _extract_doc_ids_from_cited_text(self, text: str, state: Dict[str, Any], limit: int = 20) -> tuple[int, list[str]]:
         """Extract doc IDs from text containing citations.
 
@@ -1486,6 +1500,8 @@ class CPMReport(BasicAgent):
             traj_state = entry.get("state", "")
 
             if traj_state == "search":
+                if entry.get("certainty"):
+                    rp_entry["certainty"] = entry["certainty"]
                 keywords = entry.get("input", {}).get("keywords", [])
                 rp_entry["search_query"] = "; ".join(keywords) if keywords else ""
                 all_docs = entry.get("all_docs", [])

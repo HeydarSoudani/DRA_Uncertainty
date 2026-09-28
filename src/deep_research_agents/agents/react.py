@@ -88,7 +88,7 @@ class ReActAgent(BasicAgent):
 
         return self.current_step_template.format(
             think=think, action_text=action_text, observation=observation,
-        ) + "\n"
+        ) + self._certainty_suffix(step) + "\n"
 
     # ------------------------------------------------------------------
     # Observation dispatch
@@ -154,7 +154,7 @@ class ReActAgent(BasicAgent):
                         think=entry["thought"],
                         action_text=action_text,
                         observation=entry["observation"],
-                    )
+                    ) + self._certainty_suffix(entry)
                 )
 
         return "\n".join(parts)
@@ -261,6 +261,7 @@ class ReActAgent(BasicAgent):
                 break
 
             # Extract thought from <think> tags
+            output_text = self._strip_certainty(output_text)
             think_content = self.get_think(output_text)
             if think_content:
                 thought = think_content.replace("\n", " ").strip()
@@ -364,7 +365,7 @@ class ReActAgent(BasicAgent):
                     context += self.current_step_template.format(
                         think=thought, action_text=action_text, observation=obs,
                     ) + "\n"
-                    self._observe_step(
+                    tag = self._observe_step(
                         action_entity, docs[:self.seen_top_k], display_iter, self.query,
                         seen_docs=docs[:self.seen_top_k],
                         trajectory=[
@@ -372,6 +373,11 @@ class ReActAgent(BasicAgent):
                             {"role": "user", "content": context},
                         ],
                     )
+                    if tag:
+                        # Shown after this step's observation, in both the
+                        # linear prompt and the plan-mode history context.
+                        history_entry["certainty"] = tag
+                        reasoning_path[-1]["certainty"] = tag
 
                 # Hard-coded: update plan after each search observation
                 if self.use_plan:
@@ -409,7 +415,7 @@ class ReActAgent(BasicAgent):
                     think=thought,
                     action_text=action_text,
                     observation=obs,
-                )
+                ) + self._certainty_suffix(history_entry)
                 input_prompt += current_step_text + "\n"
 
         # ---- force Finish if the loop ended without one ----

@@ -11,7 +11,7 @@ Code: `src/deep_research_agents/agents/uncertainty_aware_agent.py` (loop, turn p
 `src/deep_research_agents/prompts/uncertainty_aware/` (policy) and `.../uncertainty_aware/criteria/` (updater). The criteria updater
 and its prompts began as copies of the former controller's criteria-coverage signal (prompt fixes are listed under
 [Criteria updater](#criteria-updater)). As in every agent, an uncertainty estimator attached with
-`--uncertainty-estimator monitor` observes each search iteration and never changes the run.
+`--uncertainty-estimator-mode monitor` observes each search iteration and never changes the run.
 
 ## Loop
 

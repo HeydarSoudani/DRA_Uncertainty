@@ -32,7 +32,7 @@ DATASET=trqa                       # trqa | neuclir | browsecomp_plus
 SUBSET=wiki2                       # trqa: wiki1|wiki2|ecommerce (eval split defaults to 'test')
 RETRIEVER=qwen3_emb_4b
 AGENT=uncertainty_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
-UNCERTAINTY_ESTIMATOR=off          # off | monitor
+UNCERTAINTY_ESTIMATOR=off          # off | monitor | inform
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
 NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
 
@@ -41,7 +41,7 @@ python experiments/dra_inference.py \
     --subset "$SUBSET" \
     --retriever "$RETRIEVER" \
     --agentic-model "$AGENT" \
-    --uncertainty-estimator "$UNCERTAINTY_ESTIMATOR" \
+    --uncertainty-estimator-mode "$UNCERTAINTY_ESTIMATOR" \
     --limit "$LIMIT" \
     --num-gpus "$NUM_GPUS" \
     --quiet

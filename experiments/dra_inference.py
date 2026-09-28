@@ -197,7 +197,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         print(f"{'=' * 80}")
 
         processed = get_processed_queries(
-            run_dir, require_uncertainty=kwargs.get("uncertainty_estimator", "off") != "off",
+            run_dir, require_uncertainty=kwargs.get("uncertainty_estimator_mode", "off") != "off",
         )
         if processed:
             print(f"Found {len(processed)} already processed queries — skipping them")
@@ -259,7 +259,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         return
 
     # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
-    _estimator_mode = kwargs.get("uncertainty_estimator", "off")
+    _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
     if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
 
@@ -613,6 +613,7 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description="Run deep research agents pipeline (unified)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        allow_abbrev=False,  # only full flag names, e.g. --uncertainty-estimator-mode
     )
 
     # ── File-backed config ─────────────────────────────────────────────────
@@ -623,7 +624,7 @@ def _parse_args():
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=["trqa", "browsecomp_plus", "neuclir"], help="Dataset. trqa/neuclir/browsecomp_plus use local indices.")
     parser.add_argument("--subset", type=str, default="test", help="Dataset subset/collection (null = auto-selected from --dataset). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical|report; browsecomp_plus: test.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever type for public datasets (neuclir only)")
-    parser.add_argument("--uncertainty-estimator", type=str, default="off", choices=["off", "monitor"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change/targeting, marginal recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed.")
+    parser.add_argument("--uncertainty-estimator-mode", type=str, default="off", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change/targeting, marginal recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, reasoning signals query_novelty/criteria_targeting; never gold-based signals) to the trajectory after each iteration's search results. Supported by every agent except uncertainty_aware.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")

@@ -295,10 +295,11 @@ class OSS_Agent(BasicAgent):
                     ))
 
             if _iter_subqueries:
-                self._observe_step(
+                tag = self._observe_step(
                     _iter_subqueries, _iter_seen_docs, iteration, query,
                     trajectory=new_messages,
                 )
+                self._append_certainty(new_messages, tag, reasoning_path[-1])
 
             messages = new_messages
             _last_completed_iter = iteration

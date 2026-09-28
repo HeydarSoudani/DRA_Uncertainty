@@ -128,6 +128,8 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
             line["seen_docs"] = seen
         if step.get("tokens") is not None:
             line["tokens"] = step["tokens"]
+        if step.get("certainty"):
+            line["certainty"] = step["certainty"]
         return line
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
@@ -180,7 +182,7 @@ _RENDERED_KEYS = frozenset({
     "think", "search_query", "query", "generation", "prediction", "conclusion",
     "observation", "docs", "all_docs", "component_doc_ids", "seen_docs",
     "action_type", "action", "phase", "iteration", "sub_iter", "tokens",
-    "output", "input",
+    "output", "input", "certainty",
 })
 
 
@@ -270,6 +272,10 @@ def render_step_md(
     observation = step.get("observation")
     if observation:
         parts.append(f"**Observation**\n\n{str(observation).strip()}")
+
+    certainty = step.get("certainty")
+    if certainty:
+        parts.append(f"**Certainty** (injected)\n\n{_fence(certainty, 'xml')}")
 
     for key, heading_text in (("prediction", "Prediction"),
                               ("conclusion", "Conclusion"),

@@ -27,7 +27,7 @@ family.  ``run_single`` and retrieval come from :class:`BasicAgent`, the
 trajectory streams through the standard logger, and the belief data rides on
 the result under ``ua_*`` keys, which the trajectory meta line persists
 (``utils.config.AGENT_META_KEYS``).  As in every agent, an uncertainty
-estimator attached by ``--uncertainty-estimator monitor`` observes each search
+estimator attached by ``--uncertainty-estimator-mode monitor`` observes each search
 iteration; it never changes the run.
 
 Settings come from the ``ua_*`` keys of ``dra_inference.yaml``.  The

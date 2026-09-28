@@ -85,7 +85,7 @@ python experiments/dra_inference.py \
     --dataset browsecomp_plus \
     --retriever qwen3_emb_4b \
     --agentic-model glm \
-    --uncertainty-estimator monitor \
+    --uncertainty-estimator-mode monitor \
     --num-gpus 0
 ```
 
@@ -103,7 +103,7 @@ Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
 
 ### Uncertainty estimator
 
-`--uncertainty-estimator monitor` plugs a passive monitor (`src/uncertainty_estimator/`) into any agent; `off` (the
+`--uncertainty-estimator-mode monitor` plugs a passive monitor (`src/uncertainty_estimator/`) into any agent; `off` (the
 default) disables it. It never changes the trajectory. At the start of each sample it extracts a fixed list of
 criteria from the query (`llm_criteria`); at the end of each search iteration it computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
@@ -133,6 +133,39 @@ prompt in `src/uncertainty_estimator/prompts/`). They are saved as is, not evalu
 
 A criterion's status is the highest coverage any doc gave it so far, so `criteria_delta` is never negative.
 
+#### Inform mode
+
+`--uncertainty-estimator-mode inform` computes the same signals and also shows them to the agent: right after each
+iteration's search results, one `<certainty>` tag is appended to the trajectory (`src/uncertainty_estimator/certainty.py`):
+
+```xml
+<certainty step="3">
+  <criteria covered="1" partial="1" not_covered="1">
+    <k1 status="covered">born in the 1960s</k1>
+    <k2 status="partial">won a regional award</k2>
+    <k3 status="not_covered">studied in Lisbon</k3>
+  </criteria>
+  <retrieval_signals doc_novelty="0.42" criteria_delta="+1"/>
+  <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
+</certainty>
+```
+
+Only the criteria state and the four signals above are shown; gold-based fields (`marginal_recall`,
+`new_relevant_frac`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
+The system prompts are unchanged. Where the tag goes:
+
+| agents | place |
+|---|---|
+| searchr1, research, stepsearch, searcho1, react | appended to the prompt after the search-result block |
+| selfask | between `Follow up: …` and the `Intermediate answer:` prefill (the initial retrieval's tag after the prompt) |
+| glm, oss, tongyi, drtulu, cpm_explore | appended to the iteration's last tool / result message |
+| webweaver | appended to the planner's search observation |
+| cpm_report | appended to the current information of the next plan / write prompt |
+
+The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl` and as `certainty_tag` in
+`uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
+does not read the tag.
+
 ### Output format
 
 ```
@@ -149,7 +182,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 └── summary.json                    grouped metrics (answer / retrieval / trajectory / generation / uncertainty)
 ```
 
-With the estimator on, `{uncertainty_config}` is `ue-monitor_{criteria_judge}` (e.g. `ue-monitor_nli`).
+With the estimator on, `{uncertainty_config}` is `ue-{mode}_{criteria_judge}` (e.g. `ue-monitor_nli`, `ue-inform_nli`).
 
 #### `uncertainty/{query_id}.jsonl`
 

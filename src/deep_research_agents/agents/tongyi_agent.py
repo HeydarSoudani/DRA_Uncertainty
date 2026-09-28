@@ -397,10 +397,11 @@ class TongyiDR_Agent(BasicAgent):
                     ]
 
                     if all_subqueries:
-                        self._observe_step(
+                        tag = self._observe_step(
                             all_subqueries, all_seen_docs, iteration, query,
                             trajectory=messages,
                         )
+                        self._append_certainty(messages, tag, reasoning_path[-1])
 
                     iteration += 1
 

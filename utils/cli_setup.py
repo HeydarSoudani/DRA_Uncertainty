@@ -79,7 +79,7 @@ FILE_BACKED_DEFAULTS = {
     "ua_criteria_max_tokens": 1024,
     "ua_evidence_top_k": 5,
     "ua_evidence_chars": 1500,
-    # Uncertainty estimator (the rest; --uncertainty-estimator is CLI)
+    # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
     "llm_criteria": "claude-sonnet-4-6",
     "max_criteria": 8,
     "criteria_judge": "nli",
@@ -218,15 +218,17 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
 
     Sets every FILE_BACKED_DEFAULTS key on ``args`` from ``config``, then
     applies CLI ``overrides`` (coerced to each key's config type) so an
-    explicit flag wins over the file for a single run.
+    explicit flag wins over the file for a single run.  An unknown flag is an
+    error: ignoring it would silently run with the default instead.
     """
+    unknown = sorted(f"--{key.replace('_', '-')}" for key in overrides if key not in config)
+    if unknown:
+        raise SystemExit(f"error: unrecognized arguments: {' '.join(unknown)}")
+
     for key, value in config.items():
         setattr(args, key, value)
 
     for key, raw_vals in overrides.items():
-        if key not in config:
-            print(f"WARNING: unknown override --{key.replace('_', '-')} ignored")
-            continue
         ref = config[key]
         if isinstance(ref, list):
             flat = [tok for v in raw_vals for tok in v.split()]
@@ -364,7 +366,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["ua_evidence_top_k"] = args.ua_evidence_top_k
     pipeline_kwargs["ua_evidence_chars"] = args.ua_evidence_chars
 
-    pipeline_kwargs["uncertainty_estimator"] = getattr(args, "uncertainty_estimator", "off")
+    pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
     pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", 8)
     pipeline_kwargs["criteria_judge"] = getattr(args, "criteria_judge", "none")
@@ -413,7 +415,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "post_fusion_reranker_input":   args.post_fusion_reranker_input,
         "max_output_tokens_total":       getattr(args, "max_output_tokens_total", 40000),
         "use_plan":                      getattr(args, "use_plan", False),
-        "uncertainty_estimator":         getattr(args, "uncertainty_estimator", "off"),
+        "uncertainty_estimator_mode":    getattr(args, "uncertainty_estimator_mode", "off"),
         "llm_criteria":                  getattr(args, "llm_criteria", None),
         "max_criteria":                  getattr(args, "max_criteria", 8),
         "criteria_judge":                getattr(args, "criteria_judge", "none"),

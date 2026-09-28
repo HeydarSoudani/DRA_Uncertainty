@@ -5,7 +5,7 @@
 # Edit values here instead of passing long command lines.
 #
 # The frequently-varied knobs stay on the CLI and are NOT listed here:
-#   --agentic-model  --dataset  --retriever  --uncertainty-estimator
+#   --agentic-model  --dataset  --retriever  --uncertainty-estimator-mode
 #   --limit  --num-gpus  --eval-only  --quiet
 #
 # Precedence (lowest -> highest):
@@ -75,7 +75,7 @@ ua_criteria_max_tokens: 1024      # output-token cap for one criteria init/updat
 ua_evidence_top_k: 5              # passages per update shown to the criteria updater
 ua_evidence_chars: 1500           # chars of one passage shown to the criteria updater
 
-# ── Uncertainty estimator (the rest; --uncertainty-estimator is CLI) ─────────
+# ── Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI) ─────────
 llm_criteria: "claude-sonnet-4-6"   # LLM that extracts each query's criteria (once per sample)
 max_criteria: 8                     # Cap on the number of criteria per query
 criteria_judge: "nli"               # none | nli (NLI docs + embedding queries) | llm (LLM docs + queries)

@@ -315,7 +315,7 @@ def build_uncertainty_config_name(**kwargs) -> str:
 
     Examples: ``ue-off``, ``ue-monitor_nli``, ``ue-monitor_llm_novel``.
     """
-    mode = kwargs.get("uncertainty_estimator", "off")
+    mode = kwargs.get("uncertainty_estimator_mode", "off")
     name = f"ue-{mode}"
     if mode != "off":
         name += f"_{kwargs.get('criteria_judge') or 'none'}"
@@ -369,7 +369,7 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "ensure_novel_seen_docs": kwargs.get("ensure_novel_seen_docs", False),
         },
         "uncertainty_estimator": {
-            "mode": kwargs.get("uncertainty_estimator", "off"),
+            "mode": kwargs.get("uncertainty_estimator_mode", "off"),
             "llm_criteria": kwargs.get("llm_criteria"),
             "max_criteria": kwargs.get("max_criteria", 8),
             "criteria_judge": kwargs.get("criteria_judge", "none"),

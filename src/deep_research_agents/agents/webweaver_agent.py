@@ -309,10 +309,12 @@ class WebWeaver_Agent(BasicAgent):
                 self._vprint(step_num, "plan-error", "Empty query list")
             else:
                 try:
-                    new_entries = search_fn(queries, goal, thought=thought)
+                    new_entries, tag = search_fn(queries, goal, thought=thought)
                     for eid, entry in new_entries.items():
                         new_state.memory_bank[eid] = entry
                     obs = f"Added {len(new_entries)} evidence entries to memory bank."
+                    if tag:
+                        obs += f"\n{tag}"
                     self._vprint(step_num, "plan-ret", f"{len(new_entries)} entries, memory bank: {len(new_state.memory_bank)}")
                 except Exception as e:
                     obs = f"Search error: {e}"
@@ -497,7 +499,9 @@ class WebWeaver_Agent(BasicAgent):
         self._print(f"Query: {question}")
 
         # ── search_fn: bridges planner's tool calls → pipeline retriever ─────
-        def search_fn(queries: List[str], goal: str, thought: str = "") -> Dict[str, Dict]:
+        def search_fn(queries: List[str], goal: str, thought: str = "") -> Tuple[Dict[str, Dict], Optional[str]]:
+            """Run one planner search action; returns its memory-bank entries
+            and, in inform mode, the <certainty> tag for the observation."""
             nonlocal search_iter
             search_iter += 1
             new_entries: Dict[str, Dict] = {}
@@ -556,12 +560,15 @@ class WebWeaver_Agent(BasicAgent):
                 # The intermediate answer reads the memory bank including this search.
                 self._answer_memory_bank = dict(self._answer_memory_bank_base)
                 self._answer_memory_bank.update(new_entries)
-                self._observe_step(
+                tag = self._observe_step(
                     iter_subqueries, iter_seen_docs, search_iter, question,
                     trajectory=[],
                 )
+                if tag:
+                    reasoning_path[-1]["certainty"] = tag
+                return new_entries, tag
 
-            return new_entries
+            return new_entries, None
 
         # ── Planner loop ──────────────────────────────────────────────────────
         self._current_phase = "plan"
