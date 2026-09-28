@@ -79,13 +79,11 @@ FILE_BACKED_DEFAULTS = {
     "ua_criteria_max_tokens": 1024,
     "ua_evidence_top_k": 5,
     "ua_evidence_chars": 1500,
-    # Controller (the rest)
-    "llm_controller": "claude-sonnet-4-6",
-    "llm_intervene": "claude-sonnet-4-6",
-    "controller_history_window": None,
-    "criteria_coverage_mode": None,
-    "criteria_coverage_max_criteria": 8,
-    "llm_criteria_coverage": "claude-sonnet-4-6",
+    # Uncertainty estimator (the rest; --uncertainty-estimator is CLI)
+    "llm_criteria": "claude-sonnet-4-6",
+    "max_criteria": 8,
+    "criteria_judge": "nli",
+    "criteria_judge_model": "",
     # Evaluation
     "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
     "interleaving_window": 3,
@@ -112,8 +110,8 @@ _FILE_BACKED_CHOICES = {
     "retrieval_input": ["subquery", "original_query+subquery", "reasoning+subquery"],
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
-    "criteria_coverage_mode": [None, "static", "dynamic"],
     "ua_criteria_mode": ["auto", "static", "dynamic"],
+    "criteria_judge": ["none", "nli", "llm"],
 }
 
 
@@ -366,14 +364,11 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["ua_evidence_top_k"] = args.ua_evidence_top_k
     pipeline_kwargs["ua_evidence_chars"] = args.ua_evidence_chars
 
-    pipeline_kwargs["controller"] = getattr(args, "controller", "monitor")
-    pipeline_kwargs["llm_intervene"] = getattr(args, "llm_intervene", None)
-    pipeline_kwargs["llm_controller"] = getattr(args, "llm_controller", None)
-    pipeline_kwargs["controller_history_window"] = getattr(args, "controller_history_window", None)
-    pipeline_kwargs["controller_prompt_variant"] = getattr(args, "controller_prompt_variant", "nov_cov_sim")
-    pipeline_kwargs["criteria_coverage_mode"] = getattr(args, "criteria_coverage_mode", "dynamic")
-    pipeline_kwargs["criteria_coverage_max_criteria"] = getattr(args, "criteria_coverage_max_criteria", 8)
-    pipeline_kwargs["llm_criteria_coverage"] = getattr(args, "llm_criteria_coverage", None)
+    pipeline_kwargs["uncertainty_estimator"] = getattr(args, "uncertainty_estimator", "off")
+    pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
+    pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", 8)
+    pipeline_kwargs["criteria_judge"] = getattr(args, "criteria_judge", "none")
+    pipeline_kwargs["criteria_judge_model"] = getattr(args, "criteria_judge_model", "")
 
     worker_config = {
         "agentic_model":           args.agentic_model,
@@ -418,14 +413,11 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "post_fusion_reranker_input":   args.post_fusion_reranker_input,
         "max_output_tokens_total":       getattr(args, "max_output_tokens_total", 40000),
         "use_plan":                      getattr(args, "use_plan", False),
-        "controller":                    getattr(args, "controller", "monitor"),
-        "llm_intervene":        getattr(args, "llm_intervene", None),
-        "llm_controller":           getattr(args, "llm_controller", None),
-        "controller_history_window": getattr(args, "controller_history_window", None),
-        "controller_prompt_variant":             getattr(args, "controller_prompt_variant", "nov_cov_sim"),
-        "criteria_coverage_mode":          getattr(args, "criteria_coverage_mode", "dynamic"),
-        "criteria_coverage_max_criteria":   getattr(args, "criteria_coverage_max_criteria", 8),
-        "llm_criteria_coverage":           getattr(args, "llm_criteria_coverage", None),
+        "uncertainty_estimator":         getattr(args, "uncertainty_estimator", "off"),
+        "llm_criteria":                  getattr(args, "llm_criteria", None),
+        "max_criteria":                  getattr(args, "max_criteria", 8),
+        "criteria_judge":                getattr(args, "criteria_judge", "none"),
+        "criteria_judge_model":          getattr(args, "criteria_judge_model", ""),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),
         "quiet":                         getattr(args, "quiet", False),
     }

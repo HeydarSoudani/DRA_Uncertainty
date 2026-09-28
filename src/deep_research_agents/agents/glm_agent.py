@@ -9,25 +9,21 @@ LLM calls  : OpenAI Chat Completions API → vLLM server
 Retrieval  : pipeline local retriever (self.retrieve_documents)
 """
 
-import copy
 import json
 import logging
 import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import openai
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE
-from controller_component.prompts.answer_prompts import (
-    CANDIDATE_GENERATION_INSTRUCTION,
+from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     OSS_FORMAT,
-    AnswerCandidateOutput,
-    extract_answer_candidates,
 )
 from utils.config import InferenceConfig
 
@@ -116,7 +112,7 @@ class GLM_Agent(BasicAgent):
 
         # Per-call output caps.
         self._max_tokens_per_call = 4096
-        self._answer_candidate_max_tokens = 1024
+        self._intermediate_answer_max_tokens = 1024
 
         from utils.token_meter import TokenMeter
         self.token_meter = TokenMeter()
@@ -164,82 +160,26 @@ class GLM_Agent(BasicAgent):
                 return "\n".join(parts)
         return None
 
-    # ── Answer candidate (Chat Completions, same client as main loop) ───────
+    # ── Intermediate answer (Chat Completions, same client as main loop) ────
 
-    def generate_answer_candidate(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None] = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        seen_top_k: int = 5,
-    ) -> List[AnswerCandidateOutput]:
-        """Generate answer candidates using Chat Completions API.
-
-        Uses the same direct openai client as the main loop and force answer,
-        with the full conversation + instruction appended.
-        """
+    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
+        """Same direct openai client as the main loop, within the output budget."""
         cfg = self.inference_config
-
-        if not isinstance(trajectory, list):
-            logger.warning(
-                "generate_answer_candidate requires a message list. "
-                "Got %s; skipping.", type(trajectory).__name__,
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="trajectory is not a message list",
-            )]
-
-        messages = copy.deepcopy(trajectory)
-        instruction = (
-            f"{CANDIDATE_GENERATION_INSTRUCTION}\n\n"
-            f"{cfg.format_instructions}"
-        )
-        messages.append({"role": "user", "content": instruction})
-
-        cumulative = getattr(self, "_cumulative_output_tokens", 0)
-        remaining_tokens = max(cfg.max_output_tokens - cumulative, 1024)
-
+        messages = self._intermediate_answer_messages(trajectory, instruction)
+        remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
         client = openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
-        try:
-            response = client.chat.completions.create(
-                model=cfg.model_name,
-                messages=messages,
-                max_tokens=min(remaining_tokens, self._answer_candidate_max_tokens),
-                **self._chat_sampling_kwargs(),
-            )
-        except Exception:
-            logger.warning("Answer candidate API call failed", exc_info=True)
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="API call failed",
-            )]
-
-        raw = response.choices[0].message.content or ""
-        reasoning_content = self._read_reasoning(response.choices[0].message)
-        if not raw.strip() and reasoning_content:
-            raw = "[reasoning_fallback]" + reasoning_content
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-        return candidates
+        response = client.chat.completions.create(
+            model=cfg.model_name,
+            messages=messages,
+            max_tokens=min(remaining_tokens, self._intermediate_answer_max_tokens),
+            **self._chat_sampling_kwargs(),
+        )
+        message = response.choices[0].message
+        raw = message.content or ""
+        reasoning = self._read_reasoning(message)
+        if not raw.strip() and reasoning:
+            return "[reasoning_fallback]" + reasoning
+        return raw
 
     # _force_answer_chat_in_conversation() and _force_answer_chat_compressed()
     # inherited from BasicAgent
@@ -279,8 +219,6 @@ class GLM_Agent(BasicAgent):
 
         self._print(f"Query: {query}")
 
-        _early_stop = False
-        _early_stop_notified = False
         self._reasoning_only_retries = 0
         iteration = 1
         while iteration <= self.max_iteration:
@@ -425,11 +363,10 @@ class GLM_Agent(BasicAgent):
             if not function_calls:
                 break
 
-            # Process function calls — evaluate controller per query
+            # Process function calls; the iteration's searches are observed together
             n_searches = sum(1 for fc in function_calls if fc["name"] == "search")
-            last_search_msg_idx: Optional[int] = None
-            _first_controller_action = None
-            _stop_tracking = False
+            _iter_subqueries: List[str] = []
+            _iter_seen_docs: List[Dict[str, Any]] = []
 
             for idx, tc in enumerate(function_calls):
                 sub_iter = idx if n_searches > 1 else None
@@ -487,16 +424,8 @@ class GLM_Agent(BasicAgent):
 
                     messages.append(self._build_tool_response_message(tc["id"], result_text))
                     if tc["name"] == "search" and search_query:
-                        last_search_msg_idx = len(messages) - 1
-
-                        # Per-query controller: stop evaluating after first non-continue
-                        if not _stop_tracking:
-                            _result, _stop_tracking = self._track_query(
-                                search_query, docs[:self.seen_top_k],
-                                query, cur_reasoning, messages, reasoning_path,
-                            )
-                            if _result is not None:
-                                _first_controller_action = _result
+                        _iter_subqueries.append(search_query)
+                        _iter_seen_docs.extend(docs[:self.seen_top_k])
 
                 except Exception as e:
                     error_msg = f"Error executing {tc.get('name', 'unknown')}: {e}"
@@ -505,22 +434,13 @@ class GLM_Agent(BasicAgent):
                         tc.get("id", ""), error_msg,
                     ))
 
-            # Apply the first non-continue controller action
-            if _first_controller_action is not None:
-                if self._apply_controller_action(
-                    _first_controller_action, messages, reasoning_path, last_search_msg_idx,
-                    original_query=query,
-                ):
-                    _early_stop = True
+            if _iter_subqueries:
+                self._observe_step(
+                    _iter_subqueries, _iter_seen_docs, iteration, query,
+                    trajectory=messages,
+                )
 
             iteration += 1
-
-            # Early stopping: instruct model to answer, then one more iteration
-            _should_break, _early_stop_notified = self._handle_early_stop_phase(
-                _early_stop, _early_stop_notified, messages,
-            )
-            if _should_break:
-                break
 
         if not prediction:
             self._print("Max iterations reached without answer, forcing final answer in conversation")

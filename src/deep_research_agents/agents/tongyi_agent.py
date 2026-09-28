@@ -12,7 +12,7 @@ import time
 import datetime
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import json5
@@ -20,14 +20,10 @@ except ImportError:
     json5 = None
 
 from .base_agent import BasicAgent
-from deep_research_agents.agent_tools.controller_results import CriticalThinkDeferred, CriticalThinkResult, EarlyStopResult
-from controller_component.prompts.answer_prompts import (
+from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     TAG_FORMAT,
-    TONGYI_CANDIDATE_ANSWER,
     TONGYI_FORCE_ANSWER,
-    AnswerCandidateOutput,
-    extract_answer_candidates,
 )
 from utils.text_utils import extract_tag_content, extract_all_tag_content, parse_tool_calls_xml_list
 from utils.text_utils import format_as_markdown
@@ -129,61 +125,19 @@ class TongyiDR_Agent(BasicAgent):
         """Rough token count estimate (~4 chars per token)."""
         return sum(len(m.get("content", "")) for m in messages) // 4
 
-    # ── Answer candidate (Chat Completions, same VLLMClient as main loop) ────
+    # ── Intermediate answer (Chat Completions, same VLLMClient as main loop) ─
 
-    def generate_answer_candidate(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None] = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        seen_top_k: int = 5,
-    ) -> List[AnswerCandidateOutput]:
-        """Generate answer candidates using the same VLLMClient as the main loop."""
+    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
+        """Same VLLMClient as the main loop.  The instruction is appended to
+        the last message (the step's ``<tool_response>``), so the answer sees
+        the step's documents."""
         if not isinstance(trajectory, list):
-            logger.warning(
-                "generate_answer_candidate requires a message list. "
-                "Got %s; skipping.", type(trajectory).__name__,
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="trajectory is not a message list",
-            )]
-
+            raise ValueError(f"trajectory is not a message list ({type(trajectory).__name__})")
         messages = copy.deepcopy(trajectory)
-        messages[-1] = {"role": "user", "content": TONGYI_CANDIDATE_ANSWER}
-
-        cumulative = getattr(self, "_cumulative_output_tokens", 0)
-        remaining_tokens = max(self.max_output_tokens - cumulative, 1024)
-
-        try:
-            raw = self._call_server(messages, max_tokens=min(remaining_tokens, self.max_tokens_per_step))
-        except Exception:
-            logger.warning("Answer candidate API call failed", exc_info=True)
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="API call failed",
-            )]
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-        return candidates
+        last = messages[-1]
+        messages[-1] = {**last, "content": f"{last.get('content', '')}\n\n{instruction}"}
+        remaining_tokens = max(self.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
+        return self._call_server(messages, max_tokens=min(remaining_tokens, self.max_tokens_per_step)) or ""
 
     # ── Force answer helpers (Chat Completions, same VLLMClient) ─────────────
 
@@ -238,12 +192,11 @@ class TongyiDR_Agent(BasicAgent):
 
             self._print(f"Query: {query}")
 
-            _tongyi_early_stop = False
-            _tongyi_early_stop_notified = False
             iteration = 1
             while iteration <= self.max_iteration:
-                # Wall-clock timeout (AgentIR: 150 min)
-                if time.time() - start_time > 150 * 60:
+                # Wall-clock timeout (AgentIR: 150 min); the uncertainty
+                # estimator's time is excluded so it never shortens a run.
+                if time.time() - start_time - getattr(self, "_uncertainty_seconds", 0.0) > 150 * 60:
                     self._print("Time limit reached (150 min)")
                     reasoning_path.append({
                         "action_type": "answer",
@@ -368,6 +321,9 @@ class TongyiDR_Agent(BasicAgent):
                         self._print(f"Iteration {iteration}: capping {len(search_queries)} queries to 3")
                         search_queries = search_queries[:3]
 
+                    all_subqueries: List[str] = []
+                    all_seen_docs: List[Dict[str, Any]] = []
+
                     # Report unavailable tools
                     if error_tool_calls:
                         bad = ", ".join(sorted(set(error_tool_calls)))
@@ -384,13 +340,9 @@ class TongyiDR_Agent(BasicAgent):
                         result_text = "No valid search query found. Please use the search tool with a single query string."
                         all_docs = []
                     else:
-                        # Process each search query individually — evaluate controller per query
+                        # Process each search query; the iteration's searches are observed together
                         n_searches = len(search_queries)
-                        all_subqueries: List[str] = []
                         all_docs = []
-                        all_seen_docs: List[Dict[str, Any]] = []
-                        _first_controller_action = None
-                        _stop_tracking = False
 
                         for idx, sq in enumerate(search_queries):
                             sub_iter = idx if n_searches > 1 else None
@@ -436,50 +388,21 @@ class TongyiDR_Agent(BasicAgent):
                                 "tokens": self._step_tokens() if idx == 0 else None,
                             })
 
-                            # Per-query controller: stop evaluating after first non-continue
-                            if not _stop_tracking:
-                                _result, _stop_tracking = self._track_query(
-                                    sq, docs[:self.seen_top_k],
-                                    query, think_text, messages, reasoning_path,
-                                )
-                                if _result is not None:
-                                    _first_controller_action = _result
-
                         # Format combined results for model (single <tool_response>)
                         result_text = format_as_markdown(all_docs, self.seen_top_k)
-
-                        # Apply the first non-continue controller action
-                        if _first_controller_action is not None:
-                            if isinstance(_first_controller_action, EarlyStopResult):
-                                _tongyi_early_stop = True
-                            elif isinstance(_first_controller_action, CriticalThinkDeferred):
-                                _first_controller_action = self._execute_deferred_critical_search(
-                                    _first_controller_action, query,
-                                    trajectory=messages, reasoning_path=reasoning_path,
-                                )
-                                self._search_step += 1
-                            if isinstance(_first_controller_action, CriticalThinkResult):
-                                result_text += self._format_critical_redirect_text(_first_controller_action)
-                                ct_entry = self._critical_think_to_reasoning_entry(
-                                    _first_controller_action, include_all_docs=True,
-                                )
-                                ct_entry["iteration"] = _first_controller_action.critical_think_iter
-                                reasoning_path.append(ct_entry)
-                                iteration += 1
 
                     messages = [
                         *messages,
                         {"role": "user", "content": f"<tool_response>\n{result_text}\n</tool_response>"},
                     ]
 
-                    iteration += 1
+                    if all_subqueries:
+                        self._observe_step(
+                            all_subqueries, all_seen_docs, iteration, query,
+                            trajectory=messages,
+                        )
 
-                    # Early stopping: replace last message with force-answer (AgentIR style)
-                    if _tongyi_early_stop and not _tongyi_early_stop_notified:
-                        messages[-1] = {"role": "user", "content": TONGYI_FORCE_ANSWER}
-                        _tongyi_early_stop_notified = True
-                    elif _tongyi_early_stop_notified:
-                        break
+                    iteration += 1
 
                 # ── Answer detected ───────────────────────────────────────
                 elif "<answer>" in content:

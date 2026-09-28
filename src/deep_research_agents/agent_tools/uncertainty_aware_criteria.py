@@ -1,15 +1,13 @@
 """Criteria progress for the uncertainty-aware agent: init once per query, update per search.
 
-A copy of the controller's criteria-coverage signal
-(``controller_component.signals.CriteriaCoverageSignal`` and the helpers in
-``controller_component.prompts.criteria_coverage``), kept here so the uncertainty-aware
-agent does not depend on the controller.  The update logic is unchanged.
-What differs:
+A copy of the criteria-coverage signal of the former controller, which has
+since been removed (the ``uncertainty_estimator`` package replaced it and is
+unrelated to this module).  The update logic is unchanged.  What differs:
 
 - the LLM is reached through a ``complete(messages) -> str`` callable, so the
   agent decides the model, temperature and reasoning switch;
 - ``update`` takes the passages the policy was shown, with the snippet count
-  and length set by the caller (the controller uses 10 x 200 chars);
+  and length set by the caller (the controller used 10 x 200 chars);
 - failed calls and unparsable outputs are recorded in ``errors`` and on the
   returned summary, not only logged;
 - JSON with prose around it and no code fence is still parsed (the outermost

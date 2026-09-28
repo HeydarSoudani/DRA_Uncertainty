@@ -14,8 +14,7 @@ from deep_research_agents.prompts.searcho1.prompts import (
 )
 
 from .base_agent import BasicAgent, passages2string
-from deep_research_agents.agent_tools.controller_results import CriticalThinkResult, EarlyStopResult
-from controller_component.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, BOXED_FORMAT
+from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, BOXED_FORMAT
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +98,6 @@ class SearchO1_Agent(BasicAgent):
         messages = [{"role": "user", "content": input_prompt}]
 
         reasoning_path = []
-        early_stop_result = None
         for iter_idx in range(1, self.MAX_SEARCH_LIMIT + 1):
             iter_num = iter_idx
             self._notify_progress("think", iter_num)
@@ -149,17 +147,9 @@ class SearchO1_Agent(BasicAgent):
             else:
                 search_docs, docs_text = [], ''
 
-            # Trajectory controller: may inject observation, critical_think, or early stop
             seen_docs = search_docs[:self.seen_top_k]
-            controller_result = self.post_search_evaluate(
-                subquery=tmp_query or "", docs=seen_docs,
-                iter_num=iter_num, original_query=question,
-                thinking=tmp_think,
-                seen_docs=seen_docs if seen_docs else None,
-                trajectory=input_prompt,
-            )
-            if isinstance(controller_result, EarlyStopResult):
-                early_stop_result = controller_result
+            if seen_docs:
+                self._vprint_docs(iter_num, seen_docs)
 
             reasoning_path.append({
                 'think': tmp_think,
@@ -186,25 +176,17 @@ class SearchO1_Agent(BasicAgent):
             )
             input_prompt += current_step_text
 
-            # Early stopping: break loop, force answer after
-            if early_stop_result is not None:
-                break
-
-            # Inject controller critical_think as an additional full turn
-            if isinstance(controller_result, CriticalThinkResult):
-                reasoning_path.append(self._critical_think_to_reasoning_entry(controller_result))
-                critical_think_step = self.current_step_template.format(
-                    think=controller_result.critical_think,
-                    search_query=controller_result.critical_search_query,
-                    search_result=controller_result.critical_observation,
-                )
-                input_prompt += critical_think_step
             messages = [{"role": "user", "content": input_prompt}]
+            if tmp_query:
+                self._observe_step(
+                    tmp_query, seen_docs, iter_num, question,
+                    trajectory=messages,
+                )
 
         pred_answer = reasoning_path[-1].get('prediction') if reasoning_path else None
 
         if not pred_answer:
-            action_type = 'early_stop' if early_stop_result is not None else 'max_iter_force'
+            action_type = 'max_iter_force'
             force_input = input_prompt + f"\n{FINAL_ANSWER_INSTRUCTION}\n\\boxed{{"
             force_messages = [{"role": "user", "content": force_input}]
             force_output = self.generator.complete(force_messages, temperature=generation_temp)

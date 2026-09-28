@@ -19,8 +19,8 @@ generation (package)
     faithfulness for long-form reports).
 trajectory_evaluator
     Per-step trajectory statistics (incl. token usage) and persistence.
-controller_evaluator
-    Per-iteration controller-signal persistence and aggregation.
+uncertainty_evaluator
+    Per-iteration uncertainty-signal persistence and aggregation.
 
 Per-query/per-step token usage is recorded by the agents (via
 ``utils.token_meter.TokenMeter`` attached to the LLM clients) and aggregated by
@@ -59,8 +59,8 @@ from .generation import (
 # Trajectory evaluation
 from .trajectory_evaluator import TrajectoryEvaluator
 
-# Controller evaluation (per-iteration signal persistence)
-from .controller_evaluator import ControllerEvaluator
+# Uncertainty evaluation (per-iteration signal persistence)
+from .uncertainty_evaluator import UncertaintyEvaluator
 
 __all__ = [
     # Retrieval evaluation
@@ -85,6 +85,6 @@ __all__ = [
     "ReportEvaluator",
     # Trajectory evaluation
     "TrajectoryEvaluator",
-    # Controller evaluation
-    "ControllerEvaluator",
+    # Uncertainty evaluation
+    "UncertaintyEvaluator",
 ]

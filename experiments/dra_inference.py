@@ -31,9 +31,9 @@ Agentic workflows:
 
 
 Output structure:
-    run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{controller_config}/
-    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ctrl-off/
-    ├── run_config.json              full agent/searcher/controller settings
+    run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
+    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor_nli/
+    ├── run_config.json              full agent/searcher/uncertainty-estimator settings
     ├── retrieval/
     │   ├── surfaced/
     │   │   └── {query_id}.trec      per-query surfaced-doc TREC (all iters, col 6 = iter_N; raw retriever output)
@@ -47,13 +47,13 @@ Output structure:
     ├── trajectory/
     │   ├── {query_id}.jsonl         per-query trajectory: one line per step + a trailing meta line
     │   └── {query_id}.md            same trajectory, human-readable, written live (one block per step)
-    ├── controller/
-    │   └── {query_id}.jsonl         per-query controller signals: meta line + one line per iteration
+    ├── uncertainty/
+    │   └── {query_id}.jsonl         per-query uncertainty signals: meta line + one line per iteration
     └── summary.json                 grouped run metrics (mirrors the dir layout):
                                        num_queries,
                                        answer     {accuracy, report},
                                        retrieval  {fusion, seen, cited},
-                                       trajectory, generation, controller
+                                       trajectory, generation, uncertainty
 """
 
 import argparse
@@ -105,7 +105,7 @@ from utils.io_utils import (
     get_processed_queries,
     setup_output_dirs,
     build_run_name_for_pipeline,
-    build_controller_config_name,
+    build_uncertainty_config_name,
     write_run_config,
 )
 from evaluation.runner import evaluate_and_save, build_evaluators, load_processed_results
@@ -188,15 +188,17 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         retriever_label = kwargs.get("retriever_name", "e5")
         qk_part = f"_{query_key}" if query_key and query_key != "text" else ""
         dataset_dir = f"{dataset}_{file_data_set}{qk_part}_{retriever_label}"
-        controller_config_name = build_controller_config_name(**kwargs)
+        uncertainty_config_name = build_uncertainty_config_name(**kwargs)
 
-        run_dir = str(Path(output_path) / dataset_dir / run_name / controller_config_name)
+        run_dir = str(Path(output_path) / dataset_dir / run_name / uncertainty_config_name)
 
         print(f"\n{'=' * 80}")
         print(f"[OUTPUT] Loading/saving results from: {run_dir}")
         print(f"{'=' * 80}")
 
-        processed = get_processed_queries(run_dir)
+        processed = get_processed_queries(
+            run_dir, require_uncertainty=kwargs.get("uncertainty_estimator", "off") != "off",
+        )
         if processed:
             print(f"Found {len(processed)} already processed queries — skipping them")
             original_count = len(queries)
@@ -238,7 +240,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         retrieval_evaluator, generation_evaluator, trajectory_evaluator, \
             cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, \
-            controller_evaluator = \
+            uncertainty_evaluator = \
             build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
@@ -250,15 +252,15 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         evaluate_and_save(
             results, generation_evaluator, trajectory_evaluator, run_dir,
             cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-            controller_evaluator=controller_evaluator,
+            uncertainty_evaluator=uncertainty_evaluator,
             report_evaluator=report_evaluator,
             fusion_metrics=fusion_metrics,
         )
         return
 
-    # ==================== Inject qrels into worker_config for multi-GPU controller ==
-    _controller_mode = kwargs.get("controller", "monitor")
-    if worker_config is not None and _controller_mode != "off":
+    # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
+    _estimator_mode = kwargs.get("uncertainty_estimator", "off")
+    if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
 
     # ==================== Build search tool ====================
@@ -279,15 +281,15 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             seen_top_k=kwargs.get("seen_top_k", 5),
         )
 
-    # ==================== Instantiate Agent + Controller ====================
-    # In multi-GPU mode neither the agent nor the controller is built in the main
+    # ==================== Instantiate Agent + Uncertainty estimator ====================
+    # In multi-GPU mode neither the agent nor the estimator is built in the main
     # process; each worker spawns its own instances on its assigned GPU (see
     # orchestration._init_worker).  Building them here would create unused LLM
     # clients that are immediately torn down.
-    from orchestration import build_agent, build_controller
+    from orchestration import build_agent, build_uncertainty_estimator
 
     agent = None
-    controller = None
+    estimator = None
     if num_gpus <= 1 and queries:
         agent = build_agent(
             agentic_model=agentic_model,
@@ -323,42 +325,36 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             ua_evidence_chars=kwargs.get("ua_evidence_chars", 1500),
         )
 
-        # Build the controller AFTER the agent so build_controller wires the
-        # per-agent answer format + answer-candidate generator through its
-        # constructor (no external private-attribute injection).
-        controller = build_controller(
-            controller_mode=_controller_mode,
+        # Build the estimator AFTER the agent so it can take the agent's
+        # intermediate-answer hook.
+        estimator = build_uncertainty_estimator(
+            mode=_estimator_mode,
             retriever=_retriever,
             qrels=qrels,
-            seen_top_k=kwargs.get("seen_top_k", 5),
-            llm_controller=kwargs.get("llm_controller"),
-            llm_intervene=kwargs.get("llm_intervene"),
-            agent=agent if hasattr(agent, "controller") else None,
+            llm_criteria=kwargs.get("llm_criteria"),
+            max_criteria=kwargs.get("max_criteria", 8),
+            criteria_judge=kwargs.get("criteria_judge", "none"),
+            criteria_judge_model=kwargs.get("criteria_judge_model", ""),
+            agent=agent if hasattr(agent, "uncertainty_estimator") else None,
             agentic_model=agentic_model,
-            controller_history_window=kwargs.get("controller_history_window"),
-            controller_prompt_variant=kwargs.get("controller_prompt_variant", "nov_cov_sim"),
-            max_iteration=kwargs.get("max_iteration"),
-            criteria_coverage_mode=kwargs.get("criteria_coverage_mode", "dynamic"),
-            criteria_coverage_max_criteria=kwargs.get("criteria_coverage_max_criteria", 8),
-            llm_criteria_coverage=kwargs.get("llm_criteria_coverage"),
-            ac_temperature=kwargs.get("temperature", 0.0),
             dataset=dataset,
+            llm_model=llm_model,
         )
-        if controller is not None and hasattr(agent, "controller"):
-            agent.controller = controller
+        if estimator is not None and hasattr(agent, "uncertainty_estimator"):
+            agent.uncertainty_estimator = estimator
 
     # ==================== Setup output dirs + evaluators ====================
-    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, controller_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
+    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, uncertainty_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
 
-    retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = controller_dir = None
+    retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = uncertainty_dir = None
     if output_path:
-        _dirs = setup_output_dirs(run_dir, ["retrieval/surfaced", "generation", "trajectory", "retrieval/cited", "retrieval/seen", "controller"])
+        _dirs = setup_output_dirs(run_dir, ["retrieval/surfaced", "generation", "trajectory", "retrieval/cited", "retrieval/seen", "uncertainty"])
         retrieval_dir  = _dirs["retrieval/surfaced"]
         generation_dir = _dirs["generation"]
         trajectory_dir = _dirs["trajectory"]
         cited_doc_dir  = _dirs["retrieval/cited"]
         seen_doc_dir   = _dirs["retrieval/seen"]
-        controller_dir = _dirs["controller"]
+        uncertainty_dir = _dirs["uncertainty"]
         write_run_config(run_dir, agentic_model=agentic_model, llm_model=llm_model, **kwargs)
         print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
 
@@ -509,7 +505,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                 trajectory_evaluator.save_item(query_id, query_text, result, trajectory_dir)
                 cited_doc_evaluator.save_item(query_id, result, cited_doc_dir)
                 seen_doc_evaluator.save_item(query_id, result, seen_doc_dir)
-                controller_evaluator.save_item(query_id, query_text, result, controller_dir)
+                uncertainty_evaluator.save_item(query_id, query_text, result, uncertainty_dir)
                 print(f"  ✓ Saved: {query_id}")
 
         if agent:
@@ -531,21 +527,16 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # collect them before we reclaim the GPUs.
     #
     # Reference chains that keep the encoder model alive:
-    #   1. controller._answer_candidate_fn → bound method → agent → retriever.encoder
-    #   2. controller._consec_query_sim._encode_fn → closure → encoder
-    #   3. controller._orig_query_sim._encode_fn  → closure → encoder
-    #   4. agent.search_tool.retriever → retriever.encoder
-    #   5. agent.retriever → retriever.encoder
-    #   6. kwargs["retriever"] → retriever.encoder
+    #   1. the estimator: its answer hook (bound method → agent → retriever.encoder),
+    #      the encode closures of the novelty signals and the query scorer,
+    #      and the NLI judge model
+    #   2. agent.search_tool.retriever → retriever.encoder
+    #   3. agent.retriever → retriever.encoder
+    #   4. kwargs["retriever"] → retriever.encoder
 
-    # 1) Sever closure/bound-method refs inside controller
-    if controller is not None:
-        if hasattr(controller, "_answer_candidate_fn"):
-            controller._answer_candidate_fn = None
-        if hasattr(controller, "_consec_query_sim"):
-            controller._consec_query_sim._encode_fn = None
-        if hasattr(controller, "_orig_query_sim"):
-            controller._orig_query_sim._encode_fn = None
+    # 1) Sever closure/bound-method/model refs inside the estimator
+    if estimator is not None:
+        estimator.close()
 
     # 2) Move the encoder model off GPU *before* dropping references.
     #    Accelerate's device_map hooks can prevent gc from freeing GPU
@@ -563,7 +554,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     del _enc
 
     # 3) Drop all local + kwargs references
-    del agent, search_tool, _retriever, controller
+    del agent, search_tool, _retriever, estimator
     kwargs.pop("retriever", None)
     kwargs.pop("post_retrieval_reranker", None)
     kwargs.pop("post_fusion_reranker", None)
@@ -595,7 +586,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         cited_doc_evaluator,
         seen_doc_evaluator,
         accuracy_evaluator,
-        controller_evaluator=controller_evaluator,
+        uncertainty_evaluator=uncertainty_evaluator,
         report_evaluator=report_evaluator,
         fusion_metrics=fusion_metrics,
     )
@@ -632,13 +623,12 @@ def _parse_args():
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=["trqa", "browsecomp_plus", "neuclir"], help="Dataset. trqa/neuclir/browsecomp_plus use local indices.")
     parser.add_argument("--subset", type=str, default="test", help="Dataset subset/collection (null = auto-selected from --dataset). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical|report; browsecomp_plus: test.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever type for public datasets (neuclir only)")
-    parser.add_argument("--controller", type=str, default="off", choices=["off", "monitor", "action"], help="Controller mode. 'off': disabled. 'monitor': compute and log scores only, no intervention. 'action': controller takes corrective actions (intervene/stop) via the controller policy.")
-    parser.add_argument("--controller-prompt-variant", type=str, default="nov_cov_sim", choices=["nov", "nov_cov", "nov_sim", "nov_cov_sim", "sim", "cov_sim"], help="Controller policy prompt variant controlling which signals the controller sees. 'nov': novelty only. 'nov_cov': novelty + criteria coverage. 'nov_sim': novelty + consec_query_sim + orig_query_sim. 'nov_cov_sim': novelty + criteria coverage + consec_query_sim + orig_query_sim. 'sim': consec_query_sim (primary) + orig_query_sim (guardrail). 'cov_sim': criteria coverage (primary) + consec_query_sim + orig_query_sim (no novelty). Default: 'nov_cov_sim'.")
+    parser.add_argument("--uncertainty-estimator", type=str, default="off", choices=["off", "monitor"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change/targeting, marginal recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and run only evaluation on already-generated results. Runs all evaluators (generation, trajectory, controller, cited-doc, seen-doc, accuracy, fusion). Requires the run to have been completed at least once so that trajectory/ and retrieval/ files exist. Accuracy evaluation runs automatically whenever the dataset has ground-truth answers (LLM-as-judge via --judge-model for BrowseComp-Plus; rule-based numeric match for TRQA).")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and run only evaluation on already-generated results. Runs all evaluators (generation, trajectory, uncertainty, cited-doc, seen-doc, accuracy, fusion). Requires the run to have been completed at least once so that trajectory/ and retrieval/ files exist. Accuracy evaluation runs automatically whenever the dataset has ground-truth answers (LLM-as-judge via --judge-model for BrowseComp-Plus; rule-based numeric match for TRQA).")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -687,13 +677,6 @@ def main():
         _silence_hf_progress_bars()
 
     resolve_dataset_defaults(args)
-
-    # ── Default criteria-coverage mode per dataset (user can override via CLI) ──
-    if args.criteria_coverage_mode is None:
-        if args.dataset == "browsecomp_plus":
-            args.criteria_coverage_mode = "static"
-        else:
-            args.criteria_coverage_mode = "dynamic"
 
     # ── Parse --gpu-ids and reconcile with --num-gpus ────────────────────
     gpu_ids = None
@@ -833,9 +816,9 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{controller_config}/
-#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ctrl-off/
-#     ├── run_config.json          full agent/searcher/controller settings
+#   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
+#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor_nli/
+#     ├── run_config.json          full agent/searcher/uncertainty-estimator settings
 #     ├── retrieval/
 #     │   ├── surfaced/
 #     │   │   └── {query_id}.trec   per-query surfaced-doc TREC (raw retriever output, col 6 = iter_N)
@@ -849,11 +832,11 @@ if __name__ == "__main__":
 #     ├── trajectory/
 #     │   ├── {query_id}.jsonl  per-query trajectory: one line per step + a trailing meta line
 #     │   └── {query_id}.md     same trajectory, human-readable, written live
-#     ├── controller/
-#     │   └── {query_id}.jsonl  per-query controller signals: meta line + one line per iteration
+#     ├── uncertainty/
+#     │   └── {query_id}.jsonl  per-query uncertainty signals: meta line + one line per iteration
 #     └── summary.json          grouped: num_queries, answer{accuracy,report},
 #                                        retrieval{fusion,seen,cited},
-#                                        trajectory, generation, controller
+#                                        trajectory, generation, uncertainty
 #
 # ============================================================================
 # EXAMPLE USAGE

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.oss.user import QUERY_TEMPLATE
-from controller_component.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, OSS_FORMAT
+from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, OSS_FORMAT
 from utils.config import InferenceConfig
 
 logger = logging.getLogger(__name__)
@@ -106,8 +106,6 @@ class OSS_Agent(BasicAgent):
 
         self._print(f"Query: {query}")
 
-        _early_stop = False
-        _early_stop_notified = False
         self._reasoning_only_retries = 0
         iteration = 1
         _last_completed_iter = 0
@@ -223,12 +221,11 @@ class OSS_Agent(BasicAgent):
                     break
                 continue
 
-            # Process function calls — evaluate controller per query
+            # Process function calls; the iteration's searches are observed together
             new_messages = messages.copy()
             n_searches = sum(1 for fc in function_calls if fc["name"] == "search")
-            last_search_msg_idx: Optional[int] = None
-            _first_controller_action = None
-            _stop_tracking = False
+            _iter_subqueries: List[str] = []
+            _iter_seen_docs: List[Dict[str, Any]] = []
 
             for idx, tool_call in enumerate(function_calls):
                 sub_iter = idx if n_searches > 1 else None
@@ -287,16 +284,8 @@ class OSS_Agent(BasicAgent):
                         tool_call["call_id"], result_text,
                     ))
                     if tool_call["name"] == "search" and search_query:
-                        last_search_msg_idx = len(new_messages) - 1
-
-                        # Per-query controller: stop evaluating after first non-continue
-                        if not _stop_tracking:
-                            _result, _stop_tracking = self._track_query(
-                                search_query, docs[:self.seen_top_k],
-                                query, cur_reasoning, new_messages, reasoning_path,
-                            )
-                            if _result is not None:
-                                _first_controller_action = _result
+                        _iter_subqueries.append(search_query)
+                        _iter_seen_docs.extend(docs[:self.seen_top_k])
 
                 except Exception as e:
                     error_msg = f"Error executing {tool_call.get('name', 'unknown')}: {e}"
@@ -305,24 +294,15 @@ class OSS_Agent(BasicAgent):
                         tool_call.get("call_id", ""), error_msg,
                     ))
 
-            # Apply the first non-continue controller action
-            if _first_controller_action is not None:
-                if self._apply_controller_action(
-                    _first_controller_action, new_messages, reasoning_path, last_search_msg_idx,
-                    original_query=query,
-                ):
-                    _early_stop = True
+            if _iter_subqueries:
+                self._observe_step(
+                    _iter_subqueries, _iter_seen_docs, iteration, query,
+                    trajectory=new_messages,
+                )
 
             messages = new_messages
             _last_completed_iter = iteration
             iteration += 1
-
-            # Early stopping: instruct model to answer, then one more iteration
-            _should_break, _early_stop_notified = self._handle_early_stop_phase(
-                _early_stop, _early_stop_notified, messages,
-            )
-            if _should_break:
-                break
 
         if not prediction:
             self._print("Max iterations reached without answer, forcing final answer in conversation")

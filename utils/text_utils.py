@@ -183,67 +183,46 @@ def verbose_print_search_results(
         print(f"{prefix}{iter_label} [ret result]: ... and {remaining} more docs")
 
 
-def verbose_print_controller(
+def verbose_print_uncertainty(
     iter_num: int,
-    scores: Dict[str, Any],
-    action: str,
+    record: Dict[str, Any],
     *,
     agent_name: str = "",
-    sub_iter: Optional[int] = None,
 ) -> None:
-    """Print controller diagnostics for the current search step."""
+    """Print the uncertainty estimator's signals for one search iteration."""
     prefix = f"[{agent_name}] " if agent_name else ""
-    iter_label = f"[Iter {iter_num}.{sub_iter}]" if sub_iter is not None else f"[Iter {iter_num}]"
+    label = f"{prefix}[Iter {iter_num}] [uncertainty]: "
 
     def _fmt(val, fmt=".3f"):
         return f"{val:{fmt}}" if val is not None else "—"
 
-    recall = scores.get("marginal_recall")
-    n_new = scores.get("num_new_relevant", 0)
-    n_total = scores.get("num_docs_this_step", 0)
-    recall_str = f"marginal_recall={_fmt(recall)} ({n_new}/{n_total})" if recall is not None else "marginal_recall=— (no qrels)"
-    signals_line = (
-        f"{recall_str} | novelty={_fmt(scores.get('doc_novelty'))} | "
-        f"consec_sim={_fmt(scores.get('consec_query_sim'))} | orig_sim={_fmt(scores.get('orig_query_sim'))}"
+    print(
+        f"{label}doc_novelty={_fmt(record.get('doc_novelty'))} "
+        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids) | "
+        f"query_novelty={_fmt(record.get('query_novelty'))} | "
+        f"criteria_delta={_fmt(record.get('criteria_delta'), 'd')} | "
+        f"criteria_targeting={_fmt(record.get('criteria_targeting'))} | "
+        f"marginal_recall={_fmt(record.get('marginal_recall'))} "
+        f"({_fmt(record.get('num_new_relevant'), 'd')} new relevant)"
     )
+    padding = " " * len(label)
 
-    print(f"{prefix}{iter_label} [controller]: {signals_line}")
-    padding = " " * len(f"{prefix}{iter_label} [controller]: ")
+    state = record.get("criteria_state_after")
+    if state:
+        counts = {s: state.count(s) for s in ("fully_covered", "partially_covered", "uncovered")}
+        print(f"{padding}criteria_state: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
 
-    ac = scores.get("criteria_coverage")
-    if ac is not None and isinstance(ac, dict) and ac.get("total", 0) > 0:
-        ac_total = ac["total"]
-        ac_line = (
-            f"criteria_coverage={ac.get('num_covered', 0)}/{ac_total} covered, "
-            f"{ac.get('num_partial', 0)}/{ac_total} partial, "
-            f"{ac.get('num_not_covered', 0)}/{ac_total} not_covered"
-        )
-        if ac.get("critical_gaps"):
-            ac_line += f" | critical_gaps=[{', '.join(ac['critical_gaps'])}]"
-        if ac.get("minor_gaps"):
-            ac_line += f" | minor_gaps=[{', '.join(ac['minor_gaps'])}]"
-        if ac.get("frozen"):
-            ac_line += " | FROZEN"
-        print(f"{padding}{ac_line}")
+    answers = record.get("intermediate_answers")
+    if answers is not None:
+        answers = [a.replace(chr(10), " ") for a in answers]
+        parts = [f"intermediate_answer={answers if answers else 'none'}"]
+        confidence = record.get("intermediate_answer_confidence")
+        if confidence is not None:
+            parts.append(f"confidence={confidence:.2f}")
+        print(f"{padding}{' | '.join(parts)}")
 
-    answer_candidates = scores.get("answer_candidates", [])
-    if answer_candidates:
-        for i, cand in enumerate(answer_candidates):
-            label = f"candidate_answer[{i}]" if len(answer_candidates) > 1 else "candidate_answer"
-            parts = [f"{label}={cand['candidate'].replace(chr(10), ' ')}"]
-            if cand.get("confidence") is not None:
-                parts.append(f"confidence={cand['confidence']}%")
-            if cand.get("reasoning"):
-                r = cand["reasoning"].replace("\n", " ")
-                parts.append(f"reasoning={r[:150]}{'...' if len(r) > 150 else ''}")
-            print(f"{padding}{' | '.join(parts)}")
-    else:
-        print(f"{padding}candidates=[] | reasoning=—")
-
-    controller_line = f"controller_action={scores.get('controller_action', action)}"
-    if scores.get("controller_reasoning"):
-        controller_line += f" | controller_reasoning={scores['controller_reasoning']}"
-    print(f"{padding}{controller_line}")
+    if record.get("errors"):
+        print(f"{padding}errors: {'; '.join(record['errors'])}")
 
 
 # ===========================================================================
@@ -663,7 +642,7 @@ def build_evidence_summary(
     for step in pruned:
         action = step.get("action_type", "")
         has_search = bool(step.get("search_query") or step.get("docs"))
-        if not has_search and action not in ("search", "critical_search"):
+        if not has_search and action != "search":
             continue
         sq = step.get("search_query", step.get("query", ""))
         think = step.get("think", "")

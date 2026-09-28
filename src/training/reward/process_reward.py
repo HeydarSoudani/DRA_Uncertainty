@@ -1,8 +1,8 @@
 """Process reward — DESIGNABLE, stubbed.
 
 Per-search-turn credit.  The plan is to
-wrap the finalized ``controller_component.signals`` (READ-ONLY) — DocNovelty,
-MarginalRecall (needs qrels), CriteriaCoverage — and pair information-gain with a
+wrap the finalized ``uncertainty_estimator.signals`` (READ-ONLY) — DocNovelty,
+QueryNovelty, MarginalRecall (needs qrels), the criteria signals — and pair information-gain with a
 redundancy penalty (StepSearch-style) to resist novelty-farming.
 
 Only the INTERFACE is fixed here; which signals and how they map to a scalar per
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class ProcessReward(ProcessComponent):
-    """Wraps controller signals into per-turn credit. TODO(reward-process)."""
+    """Wraps uncertainty-estimator signals into per-turn credit. TODO(reward-process)."""
 
     def __init__(self, cfg: RewardConfig) -> None:
         self.cfg = cfg
         # TODO(reward-process): lazily construct the requested signals, e.g.
-        #   from controller_component.signals import DocNoveltySignal, MarginalRecallSignal
+        #   from uncertainty_estimator.signals import DocNoveltySignal, MarginalRecallSignal
         #   self._novelty = DocNoveltySignal(); self._recall = MarginalRecallSignal(qrels=...)
         # NOTE: MarginalRecall needs qrels at RL time -> thread prompt.qrels through.
 

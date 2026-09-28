@@ -16,14 +16,13 @@ import re
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
 from utils.llm_client import LiteLLMClient
 
 from .base_agent import BasicAgent
-from deep_research_agents.agent_tools.controller_results import CriticalThinkDeferred, CriticalThinkResult, EarlyStopResult
 from utils.config import InferenceConfig
 from utils.text_utils import (
     extract_tag_content as _extract_tag,
@@ -35,11 +34,6 @@ from deep_research_agents.prompts.webweaver.user_prompts import (
     WRITER_USER_TEMPLATE,
 )
 from searcher_component.fusion import interleaving_fusion
-from controller_component.prompts.answer_prompts import (
-    CANDIDATE_GENERATION_INSTRUCTION,
-    AnswerCandidateOutput,
-    extract_answer_candidates,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -175,8 +169,8 @@ class WebWeaver_Agent(BasicAgent):
 
         self._status_callback = status_callback
         self._search_iter     = 0
-        # Reset trajectory controller for this query (loads per-query qrels)
-        self._reset_controller(query_id=query_id)
+        # Reset the uncertainty estimator (creates the query's criteria, loads its qrels)
+        self._reset_uncertainty_estimator(query_id, query_text)
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
         if _meter is not None:
@@ -194,8 +188,8 @@ class WebWeaver_Agent(BasicAgent):
                 "trajectory": reasoning_path,
                 "citation_to_doc_id": citation_to_doc_id,
             }
-            # Attach controller stats when available
-            self._attach_controller_stats(result)
+            # Attach uncertainty signals when available
+            self._attach_uncertainty_stats(result)
 
             # Attach per-query token usage when a meter is available.
             token_usage = self._token_usage_delta(_tok_start)
@@ -213,86 +207,35 @@ class WebWeaver_Agent(BasicAgent):
             self._status_callback = None
             self._search_iter     = 0
 
-    # ── Answer candidate (planner-consistent) ────────────────────────────────
+    # ── Intermediate answer (planner-consistent) ─────────────────────────────
 
-    def generate_answer_candidate(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None] = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        seen_top_k: int = 5,
-    ) -> List[AnswerCandidateOutput]:
-        """Generate answer candidate using the same context the planner sees."""
-        memory_bank = getattr(self, "_ac_memory_bank", None)
-        planner_history = getattr(self, "_ac_planner_history", None)
+    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
+        """Same context the planner sees: the memory bank and recent steps.
+        *trajectory* is unused; the planner state is kept by the search loop."""
+        memory_bank = getattr(self, "_answer_memory_bank", None)
+        planner_history = getattr(self, "_answer_planner_history", None)
         if memory_bank is None or planner_history is None:
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="no planner state available",
-            )]
-
-        memory_text = memory_bank_format_for_context(memory_bank)
-        history_text = format_react_history(planner_history, window=10)
-
-        cfg = self.inference_config
+            raise RuntimeError("no planner state available")
         user_content = (
             f"## Open-ended research question\n{original_query}\n\n"
-            f"## Memory bank (evidence so far)\n{memory_text}\n\n"
-            f"## Previous steps (thought, action, observation)\n{history_text}\n\n"
-            f"{CANDIDATE_GENERATION_INSTRUCTION}\n\n"
-            f"{cfg.format_instructions}"
+            f"## Memory bank (evidence so far)\n{memory_bank_format_for_context(memory_bank)}\n\n"
+            f"## Previous steps (thought, action, observation)\n"
+            f"{format_react_history(planner_history, window=10)}\n\n"
+            f"{instruction}"
         )
-
         messages = [
             {"role": "system", "content": PLANNER_SYSTEM},
             {"role": "user",   "content": user_content},
         ]
-
-        llm = self.get_answer_candidate_llm()
+        llm = self.get_intermediate_answer_llm()
         if llm is None:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="no LLM client available",
-            )]
-
-        try:
-            raw = llm.complete(
-                messages,
-                strip_think=False,
-                return_reasoning_fallback=True,
-                max_tokens=cfg.max_output_tokens or 1024,
-            )
-        except Exception:
-            logger.warning("WebWeaver answer candidate LLM call failed", exc_info=True)
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM call failed",
-            )]
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            logger.warning(
-                "WebWeaver answer candidate: no candidates extracted. "
-                "Raw (first 300 chars): %s", raw[:300],
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        return candidates
+            raise RuntimeError("no LLM client available")
+        return llm.complete(
+            messages,
+            strip_think=False,
+            return_reasoning_fallback=True,
+            max_tokens=self.inference_config.max_output_tokens or 1024,
+        ) or ""
 
     # ── Planner step ─────────────────────────────────────────────────────────
 
@@ -366,19 +309,10 @@ class WebWeaver_Agent(BasicAgent):
                 self._vprint(step_num, "plan-error", "Empty query list")
             else:
                 try:
-                    new_entries, controller_result = search_fn(queries, goal, thought=thought)
+                    new_entries = search_fn(queries, goal, thought=thought)
                     for eid, entry in new_entries.items():
                         new_state.memory_bank[eid] = entry
                     obs = f"Added {len(new_entries)} evidence entries to memory bank."
-                    if isinstance(controller_result, EarlyStopResult):
-                        new_state.terminated = True
-                    elif isinstance(controller_result, CriticalThinkResult):
-                        obs += (
-                            f"\n[Critical Redirect — {controller_result.critical_search_query}]\n"
-                            f"{controller_result.critical_observation}"
-                        )
-                    elif controller_result:
-                        obs = controller_result
                     self._vprint(step_num, "plan-ret", f"{len(new_entries)} entries, memory bank: {len(new_state.memory_bank)}")
                 except Exception as e:
                     obs = f"Search error: {e}"
@@ -558,19 +492,22 @@ class WebWeaver_Agent(BasicAgent):
         """
         self._entry_counter = 0
         reasoning_path: List[Dict[str, Any]] = []
+        search_iter = 0  # one per search_fn call (a planner search action)
 
         self._print(f"Query: {question}")
 
         # ── search_fn: bridges planner's tool calls → pipeline retriever ─────
-        def search_fn(queries: List[str], goal: str, thought: str = "") -> Tuple[Dict[str, Dict], Optional[str]]:
+        def search_fn(queries: List[str], goal: str, thought: str = "") -> Dict[str, Dict]:
+            nonlocal search_iter
+            search_iter += 1
             new_entries: Dict[str, Dict] = {}
             n_queries = len(queries)
-            _first_controller_action = None
-            _stop_tracking = False
+            iter_subqueries: List[str] = []
+            iter_seen_docs: List[Dict[str, Any]] = []
 
             for q_idx, query in enumerate(queries):
                 sub_iter = q_idx if n_queries > 1 else None
-                self._vprint(self._search_step + 1, "search", query, sub_iter=sub_iter)
+                self._vprint(search_iter, "search", query, sub_iter=sub_iter)
 
                 if self.search_tool is not None:
                     docs = self.search_tool.execute(
@@ -599,7 +536,7 @@ class WebWeaver_Agent(BasicAgent):
                         "title":    title,
                     }
 
-                self._vprint_docs(self._search_step + 1, docs[:self.seen_top_k], sub_iter=sub_iter)
+                self._vprint_docs(search_iter, docs[:self.seen_top_k], sub_iter=sub_iter)
 
                 reasoning_path.append({
                     "action_type":       "search",
@@ -610,56 +547,21 @@ class WebWeaver_Agent(BasicAgent):
                     "all_docs":          docs,
                     "component_doc_ids": [d.get("doc_id", "") for d in docs[:self.seen_top_k]],
                     "sub_iter":          sub_iter,
-                    "controller_observation": None,
                 })
+                iter_subqueries.append(query)
+                iter_seen_docs.extend(docs[:self.seen_top_k])
 
-                if not _stop_tracking:
-                    self._ac_memory_bank = dict(self._ac_memory_bank_base)
-                    self._ac_memory_bank.update(new_entries)
-                    _result, _stop_tracking = self._track_query(
-                        query, docs[:self.seen_top_k],
-                        question, thought, [], reasoning_path,
-                    )
-                    if _result is not None:
-                        _first_controller_action = _result
 
-            controller_result = _first_controller_action
-
-            if isinstance(controller_result, CriticalThinkDeferred):
-                controller_result = self._execute_deferred_critical_search(
-                    controller_result, question,
-                    trajectory=[], reasoning_path=reasoning_path,
+            if iter_subqueries:
+                # The intermediate answer reads the memory bank including this search.
+                self._answer_memory_bank = dict(self._answer_memory_bank_base)
+                self._answer_memory_bank.update(new_entries)
+                self._observe_step(
+                    iter_subqueries, iter_seen_docs, search_iter, question,
+                    trajectory=[],
                 )
-                self._search_step += 1
 
-            if isinstance(controller_result, CriticalThinkResult):
-                for doc in controller_result.critical_docs[:self.seen_top_k]:
-                    entry_id = doc.get("doc_id") or doc.get("id") or ""
-                    if not entry_id:
-                        continue
-                    text = (
-                        doc.get("text") or doc.get("contents") or doc.get("snippet") or ""
-                    ).strip()
-                    title = doc.get("title") or ""
-                    new_entries[entry_id] = {
-                        "summary":  text[:500],
-                        "evidence": text,
-                        "url":      entry_id,
-                        "title":    title,
-                    }
-                reasoning_path.append({
-                    "action_type":       "critical_search",
-                    "phase":             "planner",
-                    "search_query":      [controller_result.critical_search_query],
-                    "think":             controller_result.critical_think,
-                    "docs":              controller_result.critical_docs,
-                    "component_doc_ids": [
-                        d.get("doc_id", "") for d in controller_result.critical_docs[:self.seen_top_k]
-                    ],
-                    "is_critical_think":       True,
-                })
-
-            return new_entries, controller_result
+            return new_entries
 
         # ── Planner loop ──────────────────────────────────────────────────────
         self._current_phase = "plan"
@@ -667,8 +569,8 @@ class WebWeaver_Agent(BasicAgent):
         planner_state = _PlannerState(question=question)
         for _ in range(self.planner_max_steps):
             self._notify_progress()
-            self._ac_planner_history = list(planner_state.history)
-            self._ac_memory_bank_base = dict(planner_state.memory_bank)
+            self._answer_planner_history = list(planner_state.history)
+            self._answer_memory_bank_base = dict(planner_state.memory_bank)
             prev_outline = planner_state.outline
             planner_state = self._run_planner_step(planner_state, search_fn, generation_temp)
             # Record write_outline step (search steps are already recorded inside search_fn)
@@ -683,9 +585,9 @@ class WebWeaver_Agent(BasicAgent):
             if planner_state.terminated:
                 break
 
-        self._ac_planner_history = None
-        self._ac_memory_bank = None
-        self._ac_memory_bank_base = None
+        self._answer_planner_history = None
+        self._answer_memory_bank = None
+        self._answer_memory_bank_base = None
 
         outline     = planner_state.outline or ""
         memory_bank = planner_state.memory_bank

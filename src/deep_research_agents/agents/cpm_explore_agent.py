@@ -15,7 +15,6 @@ LLM calls  : OpenAI-compatible Chat Completions API → vLLM server
 Retrieval  : pipeline local retriever (self.retrieve_documents)
 """
 
-import copy
 import hashlib
 import json
 import logging
@@ -24,17 +23,14 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import openai
 
 from .base_agent import BasicAgent
-from controller_component.prompts.answer_prompts import (
-    CANDIDATE_GENERATION_INSTRUCTION,
+from deep_research_agents.prompts.answer_prompts import (
     CPM_EXPLORE_FORMAT,
     FINAL_ANSWER_INSTRUCTION,
-    AnswerCandidateOutput,
-    extract_answer_candidates,
 )
 from utils.config import InferenceConfig
 
@@ -290,31 +286,13 @@ class CPMExplore(BasicAgent):
     # _force_answer_chat_in_conversation() and _force_answer_chat_compressed()
     # inherited from BasicAgent
 
-    # ── Answer candidate (Chat Completions, same client as main loop) ───────
+    # ── Intermediate answer (Chat Completions, same client as main loop) ────
 
-    def generate_answer_candidate(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None] = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        seen_top_k: int = 5,
-    ) -> List[AnswerCandidateOutput]:
+    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
+        """Same client as the main loop, with the no-tools system prompt."""
         cfg = self.inference_config
-
-        if not isinstance(trajectory, list):
-            logger.warning(
-                "generate_answer_candidate requires a message list. "
-                "Got %s; skipping.", type(trajectory).__name__,
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="trajectory is not a message list",
-            )]
-
-        messages = copy.deepcopy(trajectory)
-
-        # Swap system prompt to no-tools variant with "no candidate" option
-        if messages and messages[0].get("role") == "system":
+        messages = self._intermediate_answer_messages(trajectory, instruction)
+        if messages[0].get("role") == "system":
             tools_section = (
                 "No tools are available. Based on all information gathered so far, "
                 "provide your final answer inside <answer></answer> tags.\n"
@@ -324,55 +302,19 @@ class CPMExplore(BasicAgent):
                 tools_section=tools_section,
                 current_date=datetime.now().strftime("%Y-%m-%d"),
             )
-
-        instruction = (
-            f"{FINAL_ANSWER_INSTRUCTION}\n\n"
-            f"{cfg.format_instructions}"
-        )
-        messages.append({"role": "user", "content": instruction})
-
-        cumulative = getattr(self, "_cumulative_output_tokens", 0)
-        remaining_tokens = max(cfg.max_output_tokens - cumulative, 1024)
-
+        remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
         client = openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
-        try:
-            response = client.chat.completions.create(
-                model=cfg.model_name,
-                messages=messages,
-                max_tokens=min(remaining_tokens, 4096),
-            )
-        except Exception:
-            logger.warning("Answer candidate API call failed", exc_info=True)
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="API call failed",
-            )]
-
-        raw = response.choices[0].message.content or ""
-        reasoning_content = getattr(response.choices[0].message, "reasoning_content", None)
-        if not raw.strip() and reasoning_content:
-            raw = "[reasoning_fallback]" + reasoning_content
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-        return candidates
+        response = client.chat.completions.create(
+            model=cfg.model_name,
+            messages=messages,
+            max_tokens=min(remaining_tokens, 4096),
+        )
+        message = response.choices[0].message
+        raw = message.content or ""
+        reasoning = getattr(message, "reasoning_content", None)
+        if not raw.strip() and reasoning:
+            return "[reasoning_fallback]" + reasoning
+        return raw
 
     # ── History compression ──────────────────────────────────────────────────
 
@@ -492,9 +434,6 @@ class CPMExplore(BasicAgent):
         consecutive_repetitions = 0
 
         self._print(f"Query: {query}")
-
-        _early_stop = False
-        _early_stop_notified = False
 
         iteration = 1
         while iteration <= self.max_iteration:
@@ -687,9 +626,8 @@ class CPMExplore(BasicAgent):
 
             no_op_count = 0
             n_searches = sum(1 for tc in all_tool_calls if tc["function"]["name"] == "search")
-            last_search_msg_idx: Optional[int] = None
-            _first_controller_action = None
-            _stop_tracking = False
+            _iter_subqueries: List[str] = []
+            _iter_seen_docs: List[Dict[str, Any]] = []
 
             for idx, tool_call in enumerate(all_tool_calls):
                 tname = tool_call["function"]["name"]
@@ -748,16 +686,8 @@ class CPMExplore(BasicAgent):
                         ),
                     })
                     if tname == "search" and search_query:
-                        last_search_msg_idx = len(messages) - 1
-
-                        # Per-query controller: stop evaluating after first non-continue
-                        if not _stop_tracking:
-                            _result, _stop_tracking = self._track_query(
-                                search_query, docs[:self.seen_top_k],
-                                query, current_thinking, messages, reasoning_path,
-                            )
-                            if _result is not None:
-                                _first_controller_action = _result
+                        _iter_subqueries.append(search_query)
+                        _iter_seen_docs.extend(docs[:self.seen_top_k])
 
                 except Exception as e:
                     error_msg = f"Error executing {tname}: {e}"
@@ -769,24 +699,13 @@ class CPMExplore(BasicAgent):
                         ),
                     })
 
-            # Apply the first non-continue controller action
-            if _first_controller_action is not None:
-                if self._apply_controller_action(
-                    _first_controller_action, messages, reasoning_path, last_search_msg_idx,
-                    original_query=query,
-                ):
-                    _early_stop = True
+            if _iter_subqueries:
+                self._observe_step(
+                    _iter_subqueries, _iter_seen_docs, iteration, query,
+                    trajectory=messages,
+                )
 
             iteration += 1
-
-            # Early stopping: instruct model to answer, then one more iteration
-            if _early_stop and not _early_stop_notified:
-                self._swap_system_prompt_no_tools(messages)
-            _should_break, _early_stop_notified = self._handle_early_stop_phase(
-                _early_stop, _early_stop_notified, messages,
-            )
-            if _should_break:
-                break
 
         # ── No answer after loop → terminal force ────────────────────────
         if not prediction:

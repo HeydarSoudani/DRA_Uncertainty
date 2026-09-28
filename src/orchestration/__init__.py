@@ -1,7 +1,7 @@
-"""Pipeline orchestration: retriever/controller factories and multi-GPU workers.
+"""Pipeline orchestration: retriever/uncertainty-estimator factories and multi-GPU workers.
 
 This is the wiring layer that assembles heavy component packages
-(``controller_component``, ``searcher_component``, ``deep_research_agents``,
+(``uncertainty_estimator``, ``searcher_component``, ``deep_research_agents``,
 ``evaluation``) into a runnable agent. It is consumed by the ``run_pipeline``
 entry point in ``experiments/dra_inference.py``.
 
@@ -67,121 +67,121 @@ def setup_retriever_from_args(args):
 
 
 # ===========================================================================
-# Controller factory
+# Uncertainty estimator factory
 # ===========================================================================
 
-def build_controller(
-    controller_mode: str,
+# Datasets whose answers are short enough for per-step intermediate answers.
+INTERMEDIATE_ANSWER_DATASETS = ("browsecomp_plus", "trqa")
+# Agents that write a long report rather than a short answer.
+NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
+
+
+def build_uncertainty_estimator(
+    mode: str,
     retriever=None,
     qrels=None,
-    seen_top_k: int = 5,
-    llm_controller: Optional[str] = None,
-    llm_intervene: Optional[str] = None,
+    llm_criteria: Optional[str] = None,
+    max_criteria: int = 8,
+    criteria_judge: str = "none",
+    criteria_judge_model: str = "",
     agent=None,
     agentic_model: Optional[str] = None,
-    strict: bool = True,
-    controller_history_window: Optional[int] = None,
-    controller_prompt_variant: str = "nov_cov_sim",
-    max_iteration: Optional[int] = None,
-    criteria_coverage_mode: str = "dynamic",
-    criteria_coverage_max_criteria: int = 8,
-    llm_criteria_coverage: Optional[str] = None,
-    ac_temperature: float = 0.0,
     dataset: Optional[str] = None,
+    llm_model: Optional[str] = None,
 ):
-    """Build a Controller with controller and answer candidate generator.
+    """Build the uncertainty estimator, or None when *mode* is ``"off"``.
 
-    Shared by both the main process (run_pipeline) and spawned GPU workers.
+    Shared by the main process (run_pipeline) and spawned GPU workers.
 
     Args:
-        controller_mode: "off", "monitor", or "action".
-        retriever: Retriever instance (for encoding function).
-        qrels: Ground-truth relevance judgements.
-        seen_top_k: Number of docs considered "seen" per step.
-        llm_controller: Model name for controller LLM.
-        llm_intervene: Model name for critical thinking generator LLM.
-        agent: Agent instance (to wire up answer candidate generator).
-        agentic_model: Agent type name (for format selection).
-        strict: If True, raise ValueError for missing required params.
-        criteria_coverage_mode: "static" or "dynamic".
-        criteria_coverage_max_criteria: Soft cap on the number of criteria.
-        llm_criteria_coverage: Model name for criteria coverage LLM. Falls
-            back to llm_controller or llm_intervene if not set.
-
-    Returns:
-        Controller instance, or None if controller_mode is "off".
+        mode: ``"off"`` or ``"monitor"``.
+        retriever: Retriever whose encoder gives the novelty embeddings
+            (dense retrievers only; others leave nu^q null and nu^D id-only).
+        qrels: Ground-truth relevance judgements, for marginal recall.
+        llm_criteria: Model that extracts each query's criteria.  Without
+            it the criteria-based signals are null.
+        max_criteria: Cap on the number of criteria per query.
+        criteria_judge: ``none``, ``nli`` or ``llm``; the judge behind
+            criteria_delta and criteria_targeting.
+        criteria_judge_model: NLI model (nli) or judge LLM (llm); "" = the
+            default NLI model or *llm_criteria*.
+        agent: Agent instance; its ``answer_from_trajectory`` gives the
+            per-step intermediate answers.
+        agentic_model: Agent type name (answer format, intermediate answer
+            gating).
+        dataset: Dataset name (intermediate answer gating).
+        llm_model: The agent's LLM; saved with the other run settings in
+            every meta line.
     """
-    if controller_mode == "off":
+    if mode == "off":
         return None
+    if mode != "monitor":
+        raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off' or 'monitor'")
+    criteria_judge = (criteria_judge or "none").lower()
 
-    from controller_component import (
-        Controller, LLMCriticalThinkingGenerator, LLMControllerPolicy,
-        encode_fn_from_retriever,
+    from uncertainty_estimator import (
+        LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges, encode_fn_from_retriever,
     )
-    from controller_component.prompts.answer_prompts import get_candidate_format
 
-    _intervention_mode = "none" if controller_mode == "monitor" else "active"
-
-    _critical_thinking_gen = None
-    if controller_mode == "action":
-        if llm_intervene:
-            _intervene_llm_client = create_generator(llm_intervene, backend="api")
-            _critical_thinking_gen = LLMCriticalThinkingGenerator(llm_client=_intervene_llm_client)
-        elif strict:
-            raise ValueError("--llm-intervene is required when using intervene action")
-
-    _controller_policy = None
-    _controller_llm_model = llm_controller or llm_intervene
-    if _controller_llm_model:
-        _controller_llm_client = create_generator(_controller_llm_model, backend="api")
-        _controller_policy = LLMControllerPolicy(llm_client=_controller_llm_client, history_window=controller_history_window, controller_prompt_variant=controller_prompt_variant, max_iteration=max_iteration)
-    elif controller_mode == "action" and strict:
-        raise ValueError(
-            "--llm-controller (or --llm-intervene) is required "
-            "when --controller=action"
+    criteria_source = None
+    if llm_criteria:
+        criteria_source = LLMCriteriaSource(
+            llm_client=create_generator(llm_criteria, backend="api"),
+            model_name=llm_criteria,
+            max_criteria=max_criteria,
         )
-
-    # Criteria coverage signal (optional).
-    _criteria_coverage_signal = None
-    _ac_llm_model = llm_criteria_coverage or llm_controller or llm_intervene
-    if _ac_llm_model:
-        from controller_component import CriteriaCoverageSignal
-        _ac_llm_client = create_generator(_ac_llm_model, backend="api")
-        _criteria_coverage_signal = CriteriaCoverageSignal(
-            llm_client=_ac_llm_client,
-            mode=criteria_coverage_mode,
-            max_criteria=criteria_coverage_max_criteria,
-            temperature=ac_temperature,
-        )
-        print(f"Criteria coverage signal enabled: mode={criteria_coverage_mode}, model={_ac_llm_model}")
+        print(f"Uncertainty estimator: criteria from {llm_criteria}")
     else:
-        logger.warning("No LLM model available for criteria coverage; signal disabled")
+        logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
-    # Answer candidate function (optional, sourced from the agent).
-    _answer_candidate_fn = None
-    if agent is not None and agentic_model is not None:
-        _cfg = getattr(agent, "inference_config", None)
-        if _cfg is not None:
-            _cfg.format_instructions = get_candidate_format(agentic_model)
+    encode_fn, encoder_name = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
+    if encode_fn is None:
+        logger.warning("Retriever has no local encoder; query_novelty is null and doc_novelty uses ids only")
 
-        if dataset == "browsecomp_plus" and agentic_model != "cpm_report":
-            if hasattr(agent, "generate_answer_candidate"):
-                _answer_candidate_fn = agent.generate_answer_candidate
-                _model_id = _cfg.model_name if _cfg else "unknown"
-                print(f"Answer candidate via agent.generate_answer_candidate: {_model_id}")
+    intermediate_answer_fn = None
+    if (
+        agent is not None
+        and agentic_model not in NO_INTERMEDIATE_ANSWER_AGENTS
+        and dataset in INTERMEDIATE_ANSWER_DATASETS
+        and hasattr(agent, "answer_from_trajectory")
+    ):
+        intermediate_answer_fn = agent.answer_from_trajectory
+        print(f"Uncertainty estimator: intermediate answers via {agentic_model}.answer_from_trajectory")
 
-    controller = Controller(
-        intervention_mode=_intervention_mode,
-        critical_thinking_generator=_critical_thinking_gen,
-        encode_fn=encode_fn_from_retriever(retriever) if retriever else None,
+    doc_judge, query_scorer = None, None
+    if criteria_source is None:
+        if criteria_judge != "none":
+            logger.warning("criteria_judge=%s ignored: no criteria source", criteria_judge)
+    elif criteria_judge == "llm":
+        judge_model = criteria_judge_model or llm_criteria
+        doc_judge, query_scorer = build_criteria_judges(
+            "llm", model=judge_model, llm_client=create_generator(judge_model, backend="api"),
+        )
+    else:
+        doc_judge, query_scorer = build_criteria_judges(
+            criteria_judge, model=criteria_judge_model, encode_fn=encode_fn, encoder_name=encoder_name,
+        )
+    if doc_judge is not None:
+        print(f"Uncertainty estimator: criteria judge {doc_judge.name}, "
+              f"query scorer {query_scorer.name if query_scorer else None}")
+
+    return UncertaintyEstimator(
+        criteria_source=criteria_source,
+        doc_judge=doc_judge,
+        query_scorer=query_scorer,
+        encode_fn=encode_fn,
+        encoder_name=encoder_name,
         qrels=qrels or {},
-        seen_top_k=seen_top_k,
-        controller_policy=_controller_policy,
-        criteria_coverage_signal=_criteria_coverage_signal,
-        answer_candidate_fn=_answer_candidate_fn,
+        intermediate_answer_fn=intermediate_answer_fn,
+        agentic_model=agentic_model or "",
+        run_info={
+            "agent": agentic_model,
+            "llm_model": llm_model,
+            "dataset": dataset,
+            "llm_criteria": llm_criteria or None,
+            "max_criteria": max_criteria,
+        },
     )
-
-    return controller
 
 
 # ===========================================================================
@@ -540,28 +540,21 @@ def _init_worker(worker_id: int, worker_config: dict):
         ua_evidence_chars=worker_config.get("ua_evidence_chars", 1500),
     )
 
-    _controller_mode = worker_config.get("controller", "monitor")
-    controller = build_controller(
-        controller_mode=_controller_mode,
+    estimator = build_uncertainty_estimator(
+        mode=worker_config.get("uncertainty_estimator", "off"),
         retriever=retriever,
         qrels=worker_config.get("qrels"),
-        seen_top_k=worker_config.get("seen_top_k", 5),
-        llm_controller=worker_config.get("llm_controller"),
-        llm_intervene=worker_config.get("llm_intervene"),
-        agent=agent if hasattr(agent, "controller") else None,
+        llm_criteria=worker_config.get("llm_criteria"),
+        max_criteria=worker_config.get("max_criteria", 8),
+        criteria_judge=worker_config.get("criteria_judge", "none"),
+        criteria_judge_model=worker_config.get("criteria_judge_model", ""),
+        agent=agent if hasattr(agent, "uncertainty_estimator") else None,
         agentic_model=agentic_model,
-        strict=False,
-        controller_history_window=worker_config.get("controller_history_window"),
-        ac_temperature=worker_config.get("temperature", 0.7),
-        controller_prompt_variant=worker_config.get("controller_prompt_variant", "nov_cov_sim"),
-        max_iteration=worker_config.get("max_iteration"),
-        criteria_coverage_mode=worker_config.get("criteria_coverage_mode", "dynamic"),
-        criteria_coverage_max_criteria=worker_config.get("criteria_coverage_max_criteria", 8),
-        llm_criteria_coverage=worker_config.get("llm_criteria_coverage"),
         dataset=dataset,
+        llm_model=llm_model,
     )
-    if controller is not None and hasattr(agent, "controller"):
-        agent.controller = controller
+    if estimator is not None and hasattr(agent, "uncertainty_estimator"):
+        agent.uncertainty_estimator = estimator
 
     print(f"[Worker {worker_id}] Initialisation complete", flush=True)
     return agent, search_tool, verbose
@@ -589,15 +582,15 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     trajectory_dir = str(temp_dir / "trajectory")
     cited_doc_dir  = str(temp_dir / "retrieval" / "cited")
     seen_doc_dir   = str(temp_dir / "retrieval" / "seen")
-    controller_dir = str(temp_dir / "controller")
-    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, controller_dir]:
+    uncertainty_dir = str(temp_dir / "uncertainty")
+    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, uncertainty_dir]:
         Path(_d).mkdir(parents=True, exist_ok=True)
 
-    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, ControllerEvaluator, CitedDocEvaluator, SeenDocEvaluator
+    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, UncertaintyEvaluator, CitedDocEvaluator, SeenDocEvaluator
     _ret_eval        = SurfacedDocEvaluator(qrels={}, k_values=[])
     _gen_eval        = GenerationEvaluator()
     _traj_eval       = TrajectoryEvaluator()
-    _controller_eval = ControllerEvaluator()
+    _uncertainty_eval = UncertaintyEvaluator()
     _cited_eval      = CitedDocEvaluator(qrels={}, k_values=[])
     _seen_eval       = SeenDocEvaluator(qrels={}, k_values=[])
 
@@ -657,7 +650,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         _traj_eval.save_item(query_id, query_text, result, trajectory_dir)
         _cited_eval.save_item(query_id, result, cited_doc_dir)
         _seen_eval.save_item(query_id, result, seen_doc_dir)
-        _controller_eval.save_item(query_id, query_text, result, controller_dir)
+        _uncertainty_eval.save_item(query_id, query_text, result, uncertainty_dir)
         if progress_queue is not None:
             num_iters = result.get("num_iterations", "?")
             progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))

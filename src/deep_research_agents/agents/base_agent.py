@@ -2,32 +2,27 @@
 
 import copy
 import logging
+import time
 import traceback
 from typing import Callable, Dict, List, Any, Optional, Union
 
 from utils.llm_client import LiteLLMClient
 from searcher_component import normalize_retrieval_response
-from deep_research_agents.agent_tools.controller_results import CriticalThinkDeferred, CriticalThinkResult, EarlyStopResult  # noqa: E501
-from controller_component.prompts.answer_prompts import (
-    CANDIDATE_GENERATION_INSTRUCTION,
+from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     TAG_FORMAT,
-    AnswerCandidateOutput,
-    extract_answer_candidates,
 )
 from utils.text_utils import passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
 from utils.config import InferenceConfig
-from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_controller  # noqa: F401
+from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_uncertainty  # noqa: F401
 from utils.text_utils import get_think as _get_think, get_query as _get_query, get_answer as _get_answer  # noqa: E501
 
 logger = logging.getLogger(__name__)
 
-_ControllerResult = Union[CriticalThinkDeferred, CriticalThinkResult, EarlyStopResult]
-
 
 class AgentVerboseMixin:
-    """Mixin providing verbose logging and controller helpers."""
+    """Mixin providing verbose logging and uncertainty-estimator helpers."""
 
     @property
     def _display_name(self) -> str:
@@ -49,9 +44,9 @@ class AgentVerboseMixin:
         if self._is_verbose:
             verbose_print_search_results(iter_num, docs, agent_name=self._display_name, sub_iter=sub_iter)
 
-    def _vprint_controller(self, iter_num: int, scores: dict, action: str, *, sub_iter: int = None) -> None:
+    def _vprint_uncertainty(self, iter_num: int, record: dict) -> None:
         if self._is_verbose:
-            verbose_print_controller(iter_num, scores, action, agent_name=self._display_name, sub_iter=sub_iter)
+            verbose_print_uncertainty(iter_num, record, agent_name=self._display_name)
 
     # -- Online trajectory logging --
 
@@ -106,166 +101,74 @@ class AgentVerboseMixin:
             logger_.close(error=error)
             self._traj_logger = None
 
-    def _critical_think_to_reasoning_entry(self, ct: CriticalThinkResult, *, include_all_docs: bool = False) -> dict:
-        seen_top_k = getattr(self, "seen_top_k", 5)
-        entry = {
-            "action_type": "critical_search",
-            "think": ct.critical_think,
-            "search_query": ct.critical_search_query,
-            "docs": ct.critical_docs,
-            "component_doc_ids": [d.get("doc_id", "") for d in ct.critical_docs[:seen_top_k]],
-            "is_critical_think": True,
-        }
-        if include_all_docs:
-            entry["all_docs"] = ct.critical_docs
-        return entry
-
-    @staticmethod
-    def _format_critical_redirect_text(ct: CriticalThinkResult) -> str:
-        return (
-            f"\n\n[Critical Redirect — {ct.critical_search_query}]\n"
-            f"{ct.critical_observation}"
-        )
-
-    def post_search_evaluate(
+    def _observe_step(
         self,
-        subquery: Union[str, List[str]],
+        subqueries: Union[str, List[str]],
         docs: List[Dict[str, Any]],
         iter_num: int,
         original_query: Optional[str] = None,
-        thinking: str = "",
+        *,
         seen_docs: Optional[List[Dict[str, Any]]] = None,
-        sub_iter: Optional[int] = None,
         trajectory: Any = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        defer_critical_search: bool = False,
-        **kwargs,
-    ) -> Optional[_ControllerResult]:
-        """Evaluate a search step via the controller.
+    ) -> None:
+        """Pass one finished search iteration to the uncertainty estimator.
 
-        Returns None (continue), CriticalThinkResult (inject notice),
-        CriticalThinkDeferred (deferred intervene), or EarlyStopResult.
+        Called once per iteration, after all its searches, with the
+        iteration's queries, the documents the agent was shown and its
+        conversation so far (*trajectory*, for the intermediate answer).  The
+        estimator only records signals; the trajectory is never changed.
+        *seen_docs*, when given, are printed in verbose mode.
+
+        The estimator is isolated from the agent run: its errors are logged,
+        never raised; the tokens its intermediate answer spends on the
+        agent's client are removed from the agent's token meter; its wall
+        time is added to ``self._uncertainty_seconds`` so time limits can
+        exclude it.
         """
-        controller = getattr(self, "controller", None)
-        if controller is None:
-            if seen_docs is not None:
-                self._vprint_docs(iter_num, seen_docs, sub_iter=sub_iter)
-            return None
-
-        decision = controller.evaluate(
-            subquery=subquery, docs=docs, original_query=original_query or "",
-            iter_num=iter_num, thinking=thinking, trajectory=trajectory,
-            reasoning_path=reasoning_path, **kwargs,
-        )
-
-        critical_think_triggered = (
-            decision.critical_thinking_output is not None
-            and decision.critical_thinking_output.search_query.strip()
-        )
-
-        if self._is_verbose:
-            if seen_docs is not None:
-                self._vprint_docs(iter_num, seen_docs, sub_iter=sub_iter)
-            self._vprint_controller(iter_num, decision.scores, decision.action, sub_iter=sub_iter)
-            if critical_think_triggered:
-                self._vprint(iter_num, "notice",
-                    f"[{decision.action}] critical_think" + (" (deferred)" if defer_critical_search else ""),
-                    sub_iter=sub_iter)
-
-        if critical_think_triggered:
-            critical_output = decision.critical_thinking_output
-            if defer_critical_search:
-                return CriticalThinkDeferred(
-                    critical_think=critical_output.reasoning, critical_search_query=critical_output.search_query,
-                    scores=decision.scores, iter_num=iter_num,
-                )
-            retrieve_fn = getattr(self, "retrieve_documents", None)
-            if retrieve_fn is None:
-                logger.warning("Controller critical_think requested but no retriever available")
-                return None
-            critical_think_iter = iter_num + 1
-            self._notify_progress("critical_think", critical_think_iter)
-            critical_docs = retrieve_fn(critical_output.search_query, original_query=original_query)
-            self._notify_progress("critical_search", critical_think_iter)
-            seen_top_k = getattr(self, "seen_top_k", 5)
-            critical_observation = passages2string(critical_docs[:seen_top_k])
-            if self._is_verbose:
-                self._vprint(critical_think_iter, "critical think", critical_output.reasoning or "(no reasoning)", sub_iter=sub_iter)
-                self._vprint(critical_think_iter, "critical search", critical_output.search_query, sub_iter=sub_iter)
-                self._vprint_docs(critical_think_iter, critical_docs[:seen_top_k], sub_iter=sub_iter)
-            critical_think_decision = controller.evaluate(
-                subquery=critical_output.search_query, docs=critical_docs[:seen_top_k],
-                original_query=original_query or "", iter_num=critical_think_iter,
-                thinking=critical_output.reasoning, trajectory=trajectory, reasoning_path=reasoning_path,
+        if seen_docs is not None:
+            self._vprint_docs(iter_num, seen_docs)
+        estimator = getattr(self, "uncertainty_estimator", None)
+        if estimator is None:
+            return
+        started = time.monotonic()
+        meter = self._token_meter() if hasattr(self, "_token_meter") else None
+        saved = (meter.input_tokens, meter.output_tokens, meter.num_calls) if meter is not None else None
+        try:
+            record = estimator.observe(
+                subqueries=[subqueries] if isinstance(subqueries, str) else list(subqueries),
+                docs=docs,
+                iter_num=iter_num,
+                original_query=original_query or "",
+                trajectory=trajectory,
             )
-            if self._is_verbose:
-                self._vprint_controller(critical_think_iter, critical_think_decision.scores, critical_think_decision.action, sub_iter=sub_iter)
-            return CriticalThinkResult(
-                critical_think=critical_output.reasoning, critical_search_query=critical_output.search_query,
-                critical_docs=critical_docs, critical_observation=critical_observation,
-                critical_think_scores=critical_think_decision.scores, critical_think_iter=critical_think_iter,
-            )
+            self._vprint_uncertainty(iter_num, record)
+        except Exception:
+            logger.warning("Uncertainty estimator failed at iteration %s; the agent run continues",
+                           iter_num, exc_info=True)
+        finally:
+            if saved is not None:
+                meter.input_tokens, meter.output_tokens, meter.num_calls = saved
+            self._uncertainty_seconds = getattr(self, "_uncertainty_seconds", 0.0) + time.monotonic() - started
 
-        early_stop = getattr(decision, "early_stopping_output", None)
-        if early_stop is not None:
-            if self._is_verbose:
-                self._vprint(iter_num, "notice", f"[{decision.action}] early_stopping", sub_iter=sub_iter)
-            return EarlyStopResult(reasoning=early_stop.reasoning, scores=decision.scores)
+    def _reset_uncertainty_estimator(self, query_id: Optional[str], query_text: str) -> None:
+        self._uncertainty_seconds = 0.0
+        estimator = getattr(self, "uncertainty_estimator", None)
+        if estimator is None:
+            return
+        try:
+            estimator.reset(query_id=query_id, query=query_text)
+        except Exception:
+            logger.warning("Uncertainty estimator reset failed for %s", query_id, exc_info=True)
 
-        return None
-
-    def _execute_deferred_critical_search(
-        self,
-        deferred: CriticalThinkDeferred,
-        original_query: str,
-        trajectory: Any = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-    ) -> Optional[CriticalThinkResult]:
-        """Execute a deferred critical search and return the full result."""
-        retrieve_fn = getattr(self, "retrieve_documents", None)
-        if retrieve_fn is None:
-            logger.warning("Controller critical_think requested but no retriever available")
-            return None
-        controller = getattr(self, "controller", None)
-        critical_think_iter = deferred.iter_num + 1
-        self._notify_progress("critical_think", critical_think_iter)
-        critical_docs = retrieve_fn(deferred.critical_search_query, original_query=original_query)
-        self._notify_progress("critical_search", critical_think_iter)
-        seen_top_k = getattr(self, "seen_top_k", 5)
-        critical_observation = passages2string(critical_docs[:seen_top_k])
-        if self._is_verbose:
-            self._vprint(critical_think_iter, "critical think", deferred.critical_think or "(no reasoning)")
-            self._vprint(critical_think_iter, "critical search", deferred.critical_search_query)
-            self._vprint_docs(critical_think_iter, critical_docs[:seen_top_k])
-        critical_think_scores = {}
-        if controller is not None:
-            critical_think_decision = controller.evaluate(
-                subquery=deferred.critical_search_query, docs=critical_docs[:seen_top_k],
-                original_query=original_query, iter_num=critical_think_iter,
-                thinking=deferred.critical_think, trajectory=trajectory, reasoning_path=reasoning_path,
-            )
-            critical_think_scores = critical_think_decision.scores
-            if self._is_verbose:
-                self._vprint_controller(critical_think_iter, critical_think_scores, critical_think_decision.action)
-        return CriticalThinkResult(
-            critical_think=deferred.critical_think, critical_search_query=deferred.critical_search_query,
-            critical_docs=critical_docs, critical_observation=critical_observation,
-            critical_think_scores=critical_think_scores, critical_think_iter=critical_think_iter,
-        )
-
-    def _reset_controller(self, query_id: Optional[str] = None) -> None:
-        self._search_step = 0
-        controller = getattr(self, "controller", None)
-        if controller is not None:
-            controller.reset(query_id=query_id)
-
-    def _attach_controller_stats(self, result: dict) -> None:
-        controller = getattr(self, "controller", None)
-        if controller is not None:
-            result["controller_score_history"] = list(controller.score_history)
-            result["controller_unique_doc_ids"] = sorted(controller.unique_doc_ids)
-            result["controller_unique_doc_count"] = controller.unique_doc_count
-            result["controller_answer_candidates"] = list(controller.answer_candidates)
+    def _attach_uncertainty_stats(self, result: dict) -> None:
+        estimator = getattr(self, "uncertainty_estimator", None)
+        if estimator is None:
+            return
+        try:
+            result["uncertainty_meta"] = estimator.meta()
+            result["uncertainty_steps"] = list(estimator.steps)
+        except Exception:
+            logger.warning("Uncertainty estimator meta failed", exc_info=True)
 
 
 def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -274,7 +177,7 @@ def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     Providers like Bedrock reject messages that contain tool_calls or
     role="tool" entries when no ``tools=`` parameter is supplied. This
     helper converts such messages into plain text so the conversation
-    can be sent as a regular completion call (e.g. answer candidate
+    can be sent as a regular completion call (e.g. the intermediate answer
     generation).
     """
     sanitized: List[Dict[str, Any]] = []
@@ -297,7 +200,7 @@ def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 class BasicAgent(AgentVerboseMixin):
     """Base class for retrieval agents."""
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, controller=None):
+    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, uncertainty_estimator=None):
         """Initialize BasicAgent.
 
         Args:
@@ -310,17 +213,16 @@ class BasicAgent(AgentVerboseMixin):
             search_tool: Optional RetrievalSearchTool instance. When provided,
                 retrieve_documents() delegates to it (supporting fusion and
                 reranking). Falls back to raw retriever if not set.
-            controller: Optional Controller instance. When
-                provided, post_search_evaluate() computes a score after each
-                search and may inject an observation into the agent's context.
+            uncertainty_estimator: Optional UncertaintyEstimator. When
+                provided, _observe_step() records the uncertainty signals of
+                each search iteration; the trajectory is never changed.
         """
         self.generator = llm_client
         self.retriever = retriever
         self.search_tool = search_tool
-        self.controller = controller
+        self.uncertainty_estimator = uncertainty_estimator
         self.max_iteration = max_iteration
         self.seen_top_k = seen_top_k
-        self._search_step = 0
         # Set per query by run_single(); see _record_step().
         self._traj_logger = None
 
@@ -365,12 +267,12 @@ class BasicAgent(AgentVerboseMixin):
         meter = self._token_meter()
         return meter.since_last_step() if meter is not None else None
 
-    def get_answer_candidate_llm(self) -> Optional[LiteLLMClient]:
-        """Return a LiteLLM client for answer candidate generation.
+    def get_intermediate_answer_llm(self) -> Optional[LiteLLMClient]:
+        """Return a LiteLLM client for the intermediate answer.
 
         Self-managed agents (those with model_name / model_url attributes)
         automatically get a hosted_vllm/ LiteLLM wrapper pointing at the
-        same vLLM server so the answer-candidate generator uses the same
+        same vLLM server so the intermediate answer uses the same
         backbone model.  API-backed agents fall back to self.generator.
         Subclasses with non-standard routing (e.g. Bedrock) can still
         override this method.
@@ -446,7 +348,7 @@ class BasicAgent(AgentVerboseMixin):
         }]
 
     # ------------------------------------------------------------------
-    # Unified Responses API call (used by force answer + answer candidate)
+    # Unified Responses API call (used by force answer + intermediate answer)
     # ------------------------------------------------------------------
 
     def _make_responses_api_call(
@@ -664,157 +566,45 @@ class BasicAgent(AgentVerboseMixin):
             return None
 
     # ------------------------------------------------------------------
-    # Answer candidate generation (shared across all agents)
+    # Intermediate answer (asked by the uncertainty estimator every turn)
     # ------------------------------------------------------------------
 
-    def generate_answer_candidate(
+    def answer_from_trajectory(
         self,
         original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None] = None,
-        reasoning_path: Optional[List[Dict[str, Any]]] = None,
-        seen_top_k: int = 5,
-    ) -> List[AnswerCandidateOutput]:
-        """Generate answer candidates using the same config as the main loop.
+        trajectory: Any,
+        instruction: str,
+    ) -> str:
+        """Raw model output for *instruction* asked after *trajectory*.
 
-        For Responses API agents: appends instruction to the live conversation
-        and makes one more API call (full context preserved).
-
-        For chat-completion agents: builds an evidence-summary prompt and calls
-        the LLM client.
+        Used by ``IntermediateAnswerSignal``, which owns the instruction and
+        the parsing.  The default appends the instruction to a copy of the
+        conversation and calls the agent's own model; Responses API agents
+        continue the live conversation.  Agents with another context or
+        client override this.  Raises on failure; a reasoning-only reply is
+        returned with the ``[reasoning_fallback]`` prefix.
         """
-        cfg = self.inference_config
-
-        if cfg.api_type == "responses_api":
-            return self._generate_answer_candidate_responses_api(
-                original_query, trajectory, seen_top_k,
-            )
-        return self._generate_answer_candidate_chat(
-            original_query, trajectory, reasoning_path, seen_top_k,
-        )
-
-    def _generate_answer_candidate_responses_api(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None],
-        seen_top_k: int,
-    ) -> List[AnswerCandidateOutput]:
-        cfg = self.inference_config
-
-        if not isinstance(trajectory, list):
-            logger.warning(
-                "generate_answer_candidate (responses_api) requires a message list. "
-                "Got %s; skipping.", type(trajectory).__name__,
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="trajectory is not a Responses API message list",
-            )]
-
-        messages = copy.deepcopy(trajectory)
-        instruction = (
-            f"{CANDIDATE_GENERATION_INSTRUCTION}\n\n"
-            f"{cfg.format_instructions}"
-        )
-        messages.append({"role": "user", "content": instruction})
-
-        raw = self._make_responses_api_call(messages, return_reasoning_fallback=True)
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            logger.warning(
-                "Answer candidate (Responses API) returned text but no candidates. "
-                "Raw (first 300 chars): %s", raw[:300],
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-        return candidates
-
-    def _generate_answer_candidate_chat(
-        self,
-        original_query: str,
-        trajectory: Union[str, List[Dict[str, Any]], None],
-        reasoning_path: Optional[List[Dict[str, Any]]],
-        seen_top_k: int,
-    ) -> List[AnswerCandidateOutput]:
-        cfg = self.inference_config
-
-        if not isinstance(trajectory, list):
-            logger.warning(
-                "generate_answer_candidate (chat) requires a message list. "
-                "Got %s; skipping.", type(trajectory).__name__,
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate",
-                reasoning="trajectory is not a message list",
-            )]
-
-        messages = _strip_tool_messages(copy.deepcopy(trajectory))
-        instruction = (
-            f"{CANDIDATE_GENERATION_INSTRUCTION}\n\n"
-            f"{cfg.format_instructions}"
-        )
-        messages.append({"role": "user", "content": instruction})
-
-        llm = self.get_answer_candidate_llm()
+        messages = self._intermediate_answer_messages(trajectory, instruction)
+        if self.inference_config.api_type == "responses_api":
+            return self._make_responses_api_call(messages, return_reasoning_fallback=True) or ""
+        llm = self.get_intermediate_answer_llm()
         if llm is None:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="no LLM client available",
-            )]
+            raise RuntimeError("no LLM client available")
+        return llm.complete(
+            _strip_tool_messages(messages),
+            strip_think=False,
+            return_reasoning_fallback=True,
+            max_tokens=self.inference_config.max_output_tokens,
+        ) or ""
 
-        try:
-            raw = llm.complete(
-                messages,
-                strip_think=False,
-                return_reasoning_fallback=True,
-                max_tokens=cfg.max_output_tokens,
-            )
-        except Exception:
-            logger.warning("Answer candidate LLM call failed", exc_info=True)
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM call failed",
-            )]
-
-        if not raw or not raw.strip():
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning="LLM returned empty response",
-            )]
-
-        is_reasoning_fallback = raw.startswith("[reasoning_fallback]")
-        if is_reasoning_fallback:
-            raw = raw[len("[reasoning_fallback]"):]
-
-        candidates, format_matched = extract_answer_candidates(raw)
-
-        if is_reasoning_fallback and not format_matched:
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-
-        if not candidates and not format_matched:
-            logger.warning(
-                "Answer candidate LLM returned text but no candidates. "
-                "Raw (first 300 chars): %s", raw[:300],
-            )
-            return [AnswerCandidateOutput(
-                candidate="no candidate", reasoning=raw.strip(),
-            )]
-        return candidates
+    @staticmethod
+    def _intermediate_answer_messages(trajectory: Any, instruction: str) -> List[Dict[str, Any]]:
+        """A copy of the conversation with *instruction* as the last user turn."""
+        if not isinstance(trajectory, list):
+            raise ValueError(f"trajectory is not a message list ({type(trajectory).__name__})")
+        messages = copy.deepcopy(trajectory)
+        messages.append({"role": "user", "content": instruction})
+        return messages
 
     def _notify_progress(self, stage: str, iteration: int) -> None:
         """Report current iteration and stage to the progress bar callback."""
@@ -874,8 +664,8 @@ class BasicAgent(AgentVerboseMixin):
         self._begin_trajectory_log(trajectory_logger)
         _error: Optional[BaseException] = None
         _result: Optional[Dict[str, Any]] = None
-        # Reset controller for this query (loads per-query qrels)
-        self._reset_controller(query_id=query_id)
+        # Reset the uncertainty estimator (creates the query's criteria, loads its qrels)
+        self._reset_uncertainty_estimator(query_id, query_text)
         # Snapshot token usage so we can report per-query totals.
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
@@ -903,8 +693,8 @@ class BasicAgent(AgentVerboseMixin):
             if num_iterations is not None:
                 result["num_iterations"] = num_iterations
 
-            # Attach controller stats when available
-            self._attach_controller_stats(result)
+            # Attach uncertainty signals when available
+            self._attach_uncertainty_stats(result)
 
             # Attach per-query token usage when a meter is available.
             token_usage = self._token_usage_delta(_tok_start)
@@ -957,174 +747,6 @@ class BasicAgent(AgentVerboseMixin):
         if cfg.api_type == "responses_api":
             return {"type": "function_call_output", "call_id": call_id, "output": content}
         return {"role": "tool", "tool_call_id": call_id, "content": content}
-
-    def _handle_early_stop_phase(
-        self,
-        early_stop: bool,
-        notified: bool,
-        messages: List[Any],
-    ) -> tuple:
-        """Manage the two-phase early stop state machine.
-
-        Phase 1 (early_stop=True, notified=False): append force-answer
-        instruction and set notified=True.
-        Phase 2 (notified=True): signal the caller to break.
-
-        Returns:
-            (should_break, notified)
-        """
-        if early_stop and not notified:
-            cfg = self.inference_config
-            if messages and messages[-1].get("role") == "tool":
-                messages.append({
-                    "role": "assistant",
-                    "content": "I have reviewed the search results. Let me now provide my final answer.",
-                })
-            messages.append({
-                "role": "user",
-                "content": f"{FINAL_ANSWER_INSTRUCTION}\n\n{cfg.format_instructions}",
-            })
-            return False, True
-        if notified:
-            return True, True
-        return False, False
-
-    def _evaluate_and_handle_controller(
-        self,
-        all_subqueries: List[str],
-        all_seen_docs: List[Dict[str, Any]],
-        iteration: int,
-        query: str,
-        cur_reasoning: Optional[str],
-        messages: List[Any],
-        reasoning_path: List[Dict[str, Any]],
-        last_search_msg_idx: Optional[int],
-    ) -> tuple:
-        """Post-search controller evaluation with aggregated data.
-
-        Handles both early-stop and critical-think results. For critical
-        think, appends redirect text to the last search result message and
-        records the entry in reasoning_path.
-
-        Returns:
-            (early_stop_triggered: bool, extra_iterations: int)
-        """
-        seen_docs_dedup = self.get_unique_docs(all_seen_docs)
-        controller_result = self.post_search_evaluate(
-            subquery=all_subqueries,
-            docs=seen_docs_dedup,
-            iter_num=iteration, original_query=query,
-            thinking=cur_reasoning or "",
-            seen_docs=None,
-            trajectory=messages,
-            reasoning_path=reasoning_path,
-        )
-        if isinstance(controller_result, EarlyStopResult):
-            return True, 0
-        if isinstance(controller_result, CriticalThinkResult):
-            if last_search_msg_idx is not None:
-                msg = messages[last_search_msg_idx]
-                content_key = "output" if "output" in msg else "content"
-                msg[content_key] += self._format_critical_redirect_text(controller_result)
-            ct_entry = self._critical_think_to_reasoning_entry(
-                controller_result, include_all_docs=True,
-            )
-            ct_entry["iteration"] = controller_result.critical_think_iter
-            reasoning_path.append(ct_entry)
-            return False, 1
-        return False, 0
-
-    # ------------------------------------------------------------------
-    # Per-query controller helpers
-    # ------------------------------------------------------------------
-
-    def _track_query(
-        self,
-        search_query: str,
-        seen_docs: List[Dict[str, Any]],
-        original_query: str,
-        cur_reasoning: Optional[str],
-        messages: List[Any],
-        reasoning_path: List[Dict[str, Any]],
-    ) -> tuple:
-        """Evaluate the controller for a single search query.
-
-        Increments ``_search_step`` and calls ``post_search_evaluate`` with
-        ``defer_critical_search=True`` so that an "intervene" decision
-        returns a ``CriticalThinkDeferred`` without executing
-        retrieval.  The actual critical search is executed later by
-        ``_apply_controller_action`` after all sub-queries have completed.
-
-        Returns:
-            (controller_result, stop_evaluating) where *controller_result* is the
-            actionable result (``CriticalThinkDeferred``,
-            ``EarlyStopResult``, or ``None``) and *stop_evaluating*
-            is ``True`` when the controller issued a non-continue action
-            (even if no actionable result was produced).
-        """
-        self._search_step += 1
-        controller_result = self.post_search_evaluate(
-            subquery=search_query,
-            docs=seen_docs,
-            iter_num=self._search_step,
-            original_query=original_query,
-            thinking=cur_reasoning or "",
-            seen_docs=None,
-            trajectory=messages,
-            reasoning_path=reasoning_path,
-            defer_critical_search=True,
-        )
-
-        stop_evaluating = controller_result is not None
-        if not stop_evaluating:
-            controller = getattr(self, "controller", None)
-            if controller is not None and controller.score_history:
-                last_action = controller.score_history[-1].get("controller_action")
-                if last_action and last_action != "continue":
-                    stop_evaluating = True
-
-        return controller_result, stop_evaluating
-
-    def _apply_controller_action(
-        self,
-        controller_result: Union[CriticalThinkDeferred, CriticalThinkResult, EarlyStopResult],
-        messages: List[Any],
-        reasoning_path: List[Dict[str, Any]],
-        last_search_msg_idx: Optional[int],
-        original_query: Optional[str] = None,
-    ) -> bool:
-        """Apply a deferred controller action after the tool-call loop.
-
-        For deferred critical-think: executes the critical search retrieval,
-        then injects redirect text and appends the entry to reasoning_path.
-        For critical-think: injects redirect text into the last search
-        result message and appends the entry to reasoning_path.
-        For early-stop: signals the caller to stop.
-
-        Returns True if early stop was triggered.
-        """
-        if isinstance(controller_result, EarlyStopResult):
-            return True
-        if isinstance(controller_result, CriticalThinkDeferred):
-            controller_result = self._execute_deferred_critical_search(
-                controller_result, original_query or "",
-                trajectory=messages, reasoning_path=reasoning_path,
-            )
-            if controller_result is None:
-                return False
-            self._search_step += 1
-        if isinstance(controller_result, CriticalThinkResult):
-            if last_search_msg_idx is not None:
-                msg = messages[last_search_msg_idx]
-                content_key = "output" if "output" in msg else "content"
-                msg[content_key] += self._format_critical_redirect_text(controller_result)
-            ct_entry = self._critical_think_to_reasoning_entry(
-                controller_result, include_all_docs=True,
-            )
-            ct_entry["iteration"] = controller_result.critical_think_iter
-            reasoning_path.append(ct_entry)
-            return False
-        return False
 
     # ------------------------------------------------------------------
     # Other helpers
@@ -1359,7 +981,6 @@ class TagReasoningAgent(BasicAgent):
         messages = self._build_messages(input_prompt)
 
         reasoning_path: List[Dict[str, Any]] = []
-        early_stop_result = None
         for iter_idx in range(self.max_iteration):
             iter_num = iter_idx
             self._notify_progress("think", iter_num)
@@ -1401,20 +1022,8 @@ class TagReasoningAgent(BasicAgent):
                 )
                 search_results = passages2string(search_docs[:self.seen_top_k])
 
-                seen_docs = search_docs[:self.seen_top_k]
-                controller_result = self.post_search_evaluate(
-                    subquery=tmp_query, docs=seen_docs,
-                    iter_num=iter_num, original_query=question,
-                    thinking=think_text or "",
-                    seen_docs=seen_docs,
-                    trajectory=input_prompt,
-                    reasoning_path=reasoning_path,
-                )
-                if isinstance(controller_result, EarlyStopResult):
-                    early_stop_result = controller_result
             else:
                 search_docs, search_results = [], ''
-                controller_result = None
 
             reasoning_path.append({
                 'think': think_text,
@@ -1426,27 +1035,20 @@ class TagReasoningAgent(BasicAgent):
 
             search_text = self.curr_step_template.format(output_text=output_text, search_results=search_results)
             input_prompt += search_text
-
-            if early_stop_result is not None:
-                break
-
-            if isinstance(controller_result, CriticalThinkResult):
-                reasoning_path.append(self._critical_think_to_reasoning_entry(controller_result))
-                critical_think_output = (
-                    f"<think>{controller_result.critical_think}</think>\n"
-                    f"<search>{controller_result.critical_search_query}</search>"
-                )
-                critical_think_text = self.curr_step_template.format(
-                    output_text=critical_think_output,
-                    search_results=controller_result.critical_observation,
-                )
-                input_prompt += critical_think_text
             messages = self._build_messages(input_prompt)
+
+            if tmp_query:
+                seen_docs = search_docs[:self.seen_top_k]
+                self._observe_step(
+                    tmp_query, seen_docs, iter_num, question,
+                    seen_docs=seen_docs,
+                    trajectory=messages,
+                )
 
         prediction = reasoning_path[-1].get('prediction') if reasoning_path else None
 
         if not prediction:
-            action_type = 'early_stop' if early_stop_result is not None else 'max_iter_force'
+            action_type = 'max_iter_force'
             force_input = input_prompt + (
                 f"\n{FINAL_ANSWER_INSTRUCTION} {TAG_FORMAT}\n<answer>"
             )

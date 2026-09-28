@@ -8,7 +8,7 @@ run.  Used by ``experiments/dra_inference.py``:
     load_processed_results          Reload saved files for resumed queries.
     evaluate_and_save               Run all evaluations and write summary.json
                                     (grouped: answer / retrieval / trajectory /
-                                    generation / controller), plus terminal log.
+                                    generation / uncertainty), plus terminal log.
 
 Related code now lives elsewhere:
     * Reranker construction      → ``searcher_component.rerankers.build_reranker_from_config``
@@ -34,21 +34,22 @@ from . import (
     SurfacedDocEvaluator,
     GenerationEvaluator,
     TrajectoryEvaluator,
-    ControllerEvaluator,
+    UncertaintyEvaluator,
     CitedDocEvaluator,
     SeenDocEvaluator,
     AccuracyEvaluator,
     TRQAGenerationEvaluator,
     ReportEvaluator,
 )
+from .uncertainty_evaluator import SCHEMA_VERSION as _UNCERTAINTY_SCHEMA_VERSION
 
 
 # ===========================================================================
 # Evaluator construction + results loading / evaluation
 # ===========================================================================
 
-def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], ControllerEvaluator]:
-    """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, and Controller evaluators.
+def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], UncertaintyEvaluator]:
+    """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, and Uncertainty evaluators.
 
     Args:
         qrels:     Qrels dict loaded from the dataset.
@@ -65,7 +66,7 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
     Returns:
         ``(retrieval_evaluator, generation_evaluator, trajectory_evaluator,
           cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-          report_evaluator, controller_evaluator)`` where
+          report_evaluator, uncertainty_evaluator)`` where
         ``accuracy_evaluator`` is None when no answers are available, and
         ``report_evaluator`` is None unless ``kwargs["report_eval"]`` is set.
     """
@@ -117,7 +118,7 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
             qrels=qrels,
             **report_kwargs,
         )
-    return retrieval_evaluator, GenerationEvaluator(), TrajectoryEvaluator(), cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, ControllerEvaluator()
+    return retrieval_evaluator, GenerationEvaluator(), TrajectoryEvaluator(), cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, UncertaintyEvaluator()
 
 
 def _load_single_query(run_dir, query_id, retrieval_dir_str, lightweight=False):
@@ -164,9 +165,11 @@ def load_processed_results(processed: set, retrieval_dir, results: Dict[str, Any
     # per-query files on disk (trajectory JSONL, generation MD, retrieval TRECs),
     # so it is safe to delete.  gzip shrinks it ~7x (the surfaced-doc rankings
     # dominate and compress well); level 6 is the fast default.
+    # The version suffix follows the uncertainty file schema, so a cache
+    # built from files of an older schema is never reused.
     cache_filename = (
-        "_eval_results_cache_lightweight.pkl.gz" if lightweight
-        else "_eval_results_cache.pkl.gz"
+        f"_eval_results_cache_lightweight_v{_UNCERTAINTY_SCHEMA_VERSION}.pkl.gz" if lightweight
+        else f"_eval_results_cache_v{_UNCERTAINTY_SCHEMA_VERSION}.pkl.gz"
     )
     cache_path = Path(run_dir) / cache_filename
 
@@ -217,7 +220,7 @@ def load_processed_results(processed: set, retrieval_dir, results: Dict[str, Any
             print(f"Warning: could not save eval cache: {e}")
 
 
-def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationEvaluator, trajectory_evaluator: TrajectoryEvaluator, run_dir: Optional[Path], cited_doc_evaluator: Optional[CitedDocEvaluator] = None, seen_doc_evaluator: Optional[SeenDocEvaluator] = None, accuracy_evaluator: Optional[AccuracyEvaluator] = None, controller_metrics: Optional[Dict[str, Any]] = None, controller_evaluator=None, report_evaluator: Optional[ReportEvaluator] = None, fusion_metrics: Optional[Dict[str, Any]] = None) -> None:
+def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationEvaluator, trajectory_evaluator: TrajectoryEvaluator, run_dir: Optional[Path], cited_doc_evaluator: Optional[CitedDocEvaluator] = None, seen_doc_evaluator: Optional[SeenDocEvaluator] = None, accuracy_evaluator: Optional[AccuracyEvaluator] = None, uncertainty_evaluator: Optional[UncertaintyEvaluator] = None, report_evaluator: Optional[ReportEvaluator] = None, fusion_metrics: Optional[Dict[str, Any]] = None) -> None:
     """Run all evaluations, print results, and write summary.json in one pass.
 
     Builds a single grouped ``summary`` dict and derives both the terminal log
@@ -230,7 +233,7 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
           "retrieval":  {"fusion": {...}, "seen": {...}, "cited": {...}},
           "trajectory": {...},
           "generation": {...},
-          "controller": {...},                                  # when ctrl on
+          "uncertainty": {...},                                 # when estimator on
         }
 
     Fusion metrics are computed beforehand by :func:`run_fusion_eval` and
@@ -246,11 +249,8 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         seen_doc_evaluator:    Optional evaluator for seen docs (docs passed to LLM).
         accuracy_evaluator:    Optional LLM-as-judge accuracy evaluator
                                (used when ground-truth answers are available, e.g. BrowseComp-Plus).
-        controller_metrics:    Pre-computed controller metrics dict (legacy).
-        controller_evaluator:  Optional ControllerEvaluator instance.  When
-                               provided, ``controller_metrics`` is ignored and
-                               the evaluator is run here so printing follows
-                               the canonical summary order.
+        uncertainty_evaluator: Optional UncertaintyEvaluator; run here so
+                               printing follows the canonical summary order.
         report_evaluator:      Optional long-form report evaluator.
         fusion_metrics:        Per-method surfaced-doc fusion metrics from
                                :func:`run_fusion_eval`; nested under
@@ -278,8 +278,9 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
     if report_evaluator is not None:
         report_metrics = report_evaluator.evaluate(results)
 
-    if controller_evaluator is not None:
-        controller_metrics = controller_evaluator.evaluate(results)
+    uncertainty_metrics = {}
+    if uncertainty_evaluator is not None:
+        uncertainty_metrics = uncertainty_evaluator.evaluate(results, accuracy_metrics)
 
     # ------------------------------------------------------------------
     # 2. Guard: all evaluators must process the same number of queries
@@ -294,8 +295,8 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         _evaluator_counts["seen_doc_retrieval"] = seen_doc_metrics.get("num_queries", 0)
     if accuracy_metrics:
         _evaluator_counts["accuracy"] = accuracy_metrics.get("num_evaluated", 0)
-    if controller_metrics:
-        _evaluator_counts["controller"] = controller_metrics.get("num_queries_with_controller", 0)
+    if uncertainty_metrics:
+        _evaluator_counts["uncertainty"] = uncertainty_metrics.get("num_queries", 0)
 
     mismatches = {k: v for k, v in _evaluator_counts.items() if v != num_queries}
     if mismatches:
@@ -353,12 +354,12 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
     if retrieval:
         summary["retrieval"] = retrieval
 
-    # -- trajectory / generation / controller
+    # -- trajectory / generation / uncertainty
     if trajectory_metrics:
         summary["trajectory"] = trajectory_metrics
     summary["generation"] = generation_metrics
-    if controller_metrics:
-        summary["controller"] = controller_metrics
+    if uncertainty_metrics:
+        summary["uncertainty"] = uncertainty_metrics
 
     # ------------------------------------------------------------------
     # 4. Print the terminal log in the same order as the summary
@@ -394,17 +395,9 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
     # -- generation
     generation_evaluator.print_results(generation_metrics)
 
-    # -- controller
-    if controller_metrics:
-        if controller_evaluator is not None:
-            controller_evaluator.print_results(controller_metrics)
-        else:
-            print(f"\n{'=' * 80}")
-            print("CONTROLLER STATISTICS")
-            print("=" * 80)
-            for k, v in controller_metrics.items():
-                print(f"  {k}: {v}")
-            print("=" * 80)
+    # -- uncertainty
+    if uncertainty_metrics:
+        uncertainty_evaluator.print_results(uncertainty_metrics)
 
     # -- Save accuracy / report detail files
     if accuracy_metrics and run_dir and accuracy_evaluator is not None:

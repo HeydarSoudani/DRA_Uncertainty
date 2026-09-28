@@ -104,8 +104,7 @@ class UnifiedToolCallParserV20250824(ToolCallParser):
 from utils.llm_client import LiteLLMClient              # noqa: E402
 
 from .base_agent import BasicAgent                                                           # noqa: E402
-from deep_research_agents.agent_tools.controller_results import CriticalThinkResult, EarlyStopResult  # noqa: E402
-from controller_component.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, DRTULU_FORMAT
+from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, DRTULU_FORMAT
 from utils.text_utils import format_as_snippets                                          # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -271,7 +270,6 @@ class DrTulu_Agent(BasicAgent):
         reasoning_path: List[Dict[str, Any]] = []
         snippet_offset: int = 0    # running counter for globally-unique snippet IDs
         full_generation: str = ""  # accumulated assistant text for answer extraction
-        controller_result = None
 
         self._print(f"Query: {query}")
 
@@ -361,25 +359,7 @@ class DrTulu_Agent(BasicAgent):
                 matched_tool, tool_query, tool_info.parameters, snippet_offset,
                 reasoning=think_text if think_text else None,
             )
-            # Trajectory controller: may inject observation, critical_think, or early stop
             seen_docs = docs[:self.seen_top_k]
-            controller_result = self.post_search_evaluate(
-                subquery=tool_query or "", docs=seen_docs,
-                iter_num=iter_num, original_query=query,
-                thinking=think_text,
-                seen_docs=seen_docs,
-                trajectory=messages,
-            )
-            _early_stop_triggered = isinstance(controller_result, EarlyStopResult)
-            if _early_stop_triggered:
-                pass  # keep original tool_output_xml
-            elif isinstance(controller_result, CriticalThinkResult):
-                tool_output_xml += (
-                    f"\n<tool_output>\n"
-                    f"[Critical Redirect — {controller_result.critical_search_query}]\n"
-                    f"{controller_result.critical_observation}\n"
-                    f"</tool_output>"
-                )
 
             # 4. Record step in the trajectory (pipeline-compatible)
             reasoning_path.append({
@@ -393,18 +373,16 @@ class DrTulu_Agent(BasicAgent):
                 ],
                 "tokens":            self._step_tokens(),
             })
-            if isinstance(controller_result, CriticalThinkResult):
-                entry = self._critical_think_to_reasoning_entry(controller_result)
-                entry["tool_name"] = matched_tool
-                reasoning_path.append(entry)
 
             # 5. Append tool output as user turn so the model can continue
             #    reasoning with the retrieved evidence (DR-Tulu output handling).
             messages = [*messages, {"role": "user", "content": tool_output_xml}]
 
-            # Early stopping: break loop after appending tool output
-            if _early_stop_triggered:
-                break
+            self._observe_step(
+                tool_query or "", seen_docs, iter_num, query,
+                seen_docs=seen_docs,
+                trajectory=messages,
+            )
 
         # ── Force final answer if budget exhausted on a search step ─────────
         # When max_iteration is reached and the last step was a search (not an answer),
@@ -415,11 +393,7 @@ class DrTulu_Agent(BasicAgent):
             and reasoning_path[-1].get("action_type") == "search"
         )
         if last_step_was_search:
-            is_early_stop = isinstance(controller_result, EarlyStopResult) if controller_result else False
-            if is_early_stop:
-                self._vprint(len(reasoning_path) + 1, "force-answer", "Early stopping triggered, forcing final answer")
-            else:
-                self._vprint(len(reasoning_path) + 1, "force-answer", "Budget exhausted on search, forcing final answer")
+            self._vprint(len(reasoning_path) + 1, "force-answer", "Budget exhausted on search, forcing final answer")
             user_content = FINAL_ANSWER_INSTRUCTION
             messages = [
                 *messages,
@@ -433,9 +407,8 @@ class DrTulu_Agent(BasicAgent):
             # Model continues from the prefill; reconstruct the full tag
             forced_text = "<answer>" + (forced_response or "")
             full_generation += forced_text
-            action_type = "early_stop" if is_early_stop else "answer"
             reasoning_path.append({
-                "action_type":       action_type,
+                "action_type":       "answer",
                 "think":             FINAL_ANSWER_INSTRUCTION,
                 "generation":        forced_text,
                 "docs":              [],

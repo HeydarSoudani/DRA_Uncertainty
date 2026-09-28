@@ -16,9 +16,9 @@ The policy never writes the belief.  The belief carries two things:
     criteria     each criterion with its status only: covered, partial or
                  not_covered (the updater's evidence notes are logged, not shown)
 
-The criteria updater is a copy of the controller's criteria-coverage signal
-(``deep_research_agents.agent_tools.uncertainty_aware_criteria``); the agent does not
-import the controller.  Its mode is ``static`` (criteria copied from the
+The criteria updater lives in
+``deep_research_agents.agent_tools.uncertainty_aware_criteria`` (it began as a
+copy of the former controller's criteria-coverage signal).  Its mode is ``static`` (criteria copied from the
 query, list fixed) or ``dynamic`` (query decomposed, list may change until it
 stabilises); ``auto`` picks static for BrowseComp-Plus and dynamic otherwise.
 
@@ -26,9 +26,9 @@ The run is one growing transcript in the user message, as in the SearchR1
 family.  ``run_single`` and retrieval come from :class:`BasicAgent`, the
 trajectory streams through the standard logger, and the belief data rides on
 the result under ``ua_*`` keys, which the trajectory meta line persists
-(``utils.config.AGENT_META_KEYS``).  As in the other API agents, a controller
-attached by ``--controller`` is reset and reported by the base hooks but never
-consulted.
+(``utils.config.AGENT_META_KEYS``).  As in every agent, an uncertainty
+estimator attached by ``--uncertainty-estimator monitor`` observes each search
+iteration; it never changes the run.
 
 Settings come from the ``ua_*`` keys of ``dra_inference.yaml``.  The
 pipeline's ``seen_top_k`` (passages per search) and run temperature apply; its
@@ -337,10 +337,10 @@ class UncertaintyAwareAgent(BasicAgent):
     # Pipeline hooks
     # ------------------------------------------------------------------
 
-    def _attach_controller_stats(self, result: dict) -> None:
+    def _attach_uncertainty_stats(self, result: dict) -> None:
         # run_single's per-result hook, called before the trajectory log is
         # finalised; also used to attach the belief data.
-        super()._attach_controller_stats(result)
+        super()._attach_uncertainty_stats(result)
         result.update(self._extras)
 
     # ------------------------------------------------------------------
@@ -383,6 +383,12 @@ class UncertaintyAwareAgent(BasicAgent):
         if body is not None:
             kwargs["extra_body"] = body
         return generator.complete(messages, **kwargs) or ""
+
+    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
+        """Intermediate answer with the policy's call settings (native
+        thinking off, per-turn token cap), greedy."""
+        messages = self._intermediate_answer_messages(trajectory, instruction)
+        return self._call(messages, 0.0, self.cfg.max_tokens_per_call)
 
     def _criteria_complete(self, messages: List[Dict[str, str]]) -> str:
         # The updater answers in JSON: greedy, and any <think> is stripped.
@@ -558,6 +564,10 @@ class UncertaintyAwareAgent(BasicAgent):
             self._log_criteria(summary, title=f"Belief {step} · novelty {novelty.novel}/{novelty.shown}")
             self._vprint(t, "belief", f"novelty {novelty.novel}/{novelty.shown} · "
                                       + format_summary_for_log(summary))
+            self._observe_step(
+                query, shown, t, question,
+                trajectory=self._messages(system, transcript),
+            )
             step += 1
 
         if end == END_MAX_TURNS:

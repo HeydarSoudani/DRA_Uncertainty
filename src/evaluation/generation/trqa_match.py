@@ -12,9 +12,9 @@ Metrics reported (matching ``run_evalution.py`` in that repo):
                                ``[1, 5, 10, 20, 50, 90]``.
 
 The agent's final short answer is extracted from the (possibly long) generation
-with :func:`controller_component.prompts.answer_prompts.extract_answer_candidates`
-(the same ``\\boxed{}`` / ``<answer>`` / ``Exact Answer:`` parsers the controller
-uses), falling back to the raw generation text when no structured answer is found.
+with :func:`deep_research_agents.prompts.answer_prompts.extract_answer_candidates`
+(the same ``\\boxed{}`` / ``<answer>`` / ``Exact Answer:`` parsers the answer
+candidates use), falling back to the raw generation text when no structured answer is found.
 
 The public interface mirrors
 :class:`evaluation.generation.short_answer.AccuracyEvaluator`
@@ -126,7 +126,7 @@ def soft_exact_match(prediction, gold, decimals=3, tolerance_pct=None):
 def _extract_prediction(generation: str) -> str:
     """Pull the agent's final short answer from its (possibly long) generation.
 
-    Reuses the controller's structured-answer parsers (``\\boxed{}``,
+    Reuses the answer-candidate structured-answer parsers (``\\boxed{}``,
     ``<answer>``, ``Exact Answer:`` …).  Falls back to the raw text — with any
     appended ``## References`` block stripped — when nothing structured matches,
     so ``extract_number_from_string`` still has a chance to find the number.
@@ -135,7 +135,7 @@ def _extract_prediction(generation: str) -> str:
         return ""
 
     try:
-        from controller_component.prompts.answer_prompts import extract_answer_candidates
+        from deep_research_agents.prompts.answer_prompts import extract_answer_candidates
 
         candidates, _matched = extract_answer_candidates(generation)
         if candidates:

@@ -5,8 +5,8 @@
 # Edit values here instead of passing long command lines.
 #
 # The frequently-varied knobs stay on the CLI and are NOT listed here:
-#   --agentic-model  --dataset  --retriever  --controller
-#   --controller-prompt-variant  --limit  --num-gpus  --eval-only  --quiet
+#   --agentic-model  --dataset  --retriever  --uncertainty-estimator
+#   --limit  --num-gpus  --eval-only  --quiet
 #
 # Precedence (lowest -> highest):
 #   built-in fallback  <  this file  <  explicit CLI flag
@@ -75,13 +75,11 @@ ua_criteria_max_tokens: 1024      # output-token cap for one criteria init/updat
 ua_evidence_top_k: 5              # passages per update shown to the criteria updater
 ua_evidence_chars: 1500           # chars of one passage shown to the criteria updater
 
-# ── Controller (the rest; --controller and --controller-prompt-variant are CLI) ─
-llm_controller: "claude-sonnet-4-6"        # LLM model for the controller policy
-llm_intervene: "claude-sonnet-4-6"         # LLM model for critical_thinking interventions
-controller_history_window: null            # Recent history entries shown to policy; null = full history
-criteria_coverage_mode: null               # static | dynamic; null = auto (static for browsecomp_plus, else dynamic)
-criteria_coverage_max_criteria: 8          # Soft cap on number of criteria tracked
-llm_criteria_coverage: "claude-sonnet-4-6" # LLM model for criteria coverage evaluation
+# ── Uncertainty estimator (the rest; --uncertainty-estimator is CLI) ─────────
+llm_criteria: "claude-sonnet-4-6"   # LLM that extracts each query's criteria (once per sample)
+max_criteria: 8                     # Cap on the number of criteria per query
+criteria_judge: "nli"               # none | nli (NLI docs + embedding queries) | llm (LLM docs + queries)
+criteria_judge_model: ""            # nli: HF NLI model ("" = DeBERTa-v3-large NLI); llm: judge LLM ("" = llm_criteria)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
 k_values: [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000]  # K values for retrieval metrics

@@ -24,7 +24,6 @@ from jinja2 import Template
 
 from searcher_component.fusion import interleaving_fusion
 from deep_research_agents.agents.base_agent import BasicAgent
-from deep_research_agents.agent_tools.controller_results import CriticalThinkResult, EarlyStopResult
 from utils.config import InferenceConfig
 
 logger = logging.getLogger(__name__)
@@ -219,11 +218,6 @@ class CPMReport(BasicAgent):
         # Increment step
         step += 1
         state["step"] = step
-
-        # Check early stopping
-        if state.get("early_stop"):
-            state["state"] = "done"
-            return state
 
         # Check max steps
         if step >= self.max_steps:
@@ -432,22 +426,7 @@ class CPMReport(BasicAgent):
             [fused_passages], survey, state, [fused_docs]
         )
 
-        # Trajectory controller: may inject observation, critical_think, or early stop
         seen_docs = fused_docs[:self.seen_top_k]
-        controller_result = self.post_search_evaluate(
-            subquery=keywords,
-            docs=seen_docs, iter_num=step,
-            original_query=state["query"],
-            thinking=thought,
-            seen_docs=seen_docs,
-            trajectory=state["trajectory"],
-            reasoning_path=state["trajectory"],
-        )
-        if isinstance(controller_result, EarlyStopResult):
-            state["early_stop"] = True
-        elif isinstance(controller_result, CriticalThinkResult):
-            retrieved_info += f"\n{controller_result.critical_observation}"
-
         state["retrieved_info"] = retrieved_info
 
         # Store fused docs for this search (for evaluation)
@@ -477,24 +456,12 @@ class CPMReport(BasicAgent):
             },
             "all_docs": fused_docs,
         })
-        if isinstance(controller_result, CriticalThinkResult):
-            critical_think_doc_ids = [
-                doc.get("doc_id") or doc.get("id") or ""
-                for doc in controller_result.critical_docs
-            ]
-            state["trajectory"].append({
-                "step": controller_result.critical_think_iter,
-                "state": "critical_search",
-                "action": "critical_search",
-                "think": controller_result.critical_think,
-                "input": {"keywords": [controller_result.critical_search_query]},
-                "output": {
-                    "num_results": len(critical_think_doc_ids),
-                    "doc_ids": critical_think_doc_ids[:self.seen_top_k],
-                },
-                "all_docs": controller_result.critical_docs,
-                "is_critical_think": True,
-            })
+
+        self._observe_step(
+            keywords, seen_docs, step, state["query"],
+            seen_docs=seen_docs,
+            trajectory=state["trajectory"],
+        )
 
         return state
 
@@ -1518,15 +1485,13 @@ class CPMReport(BasicAgent):
             }
             traj_state = entry.get("state", "")
 
-            if traj_state in ("search", "critical_search"):
+            if traj_state == "search":
                 keywords = entry.get("input", {}).get("keywords", [])
                 rp_entry["search_query"] = "; ".join(keywords) if keywords else ""
                 all_docs = entry.get("all_docs", [])
                 rp_entry["docs"] = all_docs
                 rp_entry["all_docs"] = all_docs
                 rp_entry["component_doc_ids"] = entry.get("output", {}).get("doc_ids", [])
-                if entry.get("is_critical_think"):
-                    rp_entry["is_critical_think"] = True
 
             elif traj_state == "write":
                 rp_entry["docs"] = []

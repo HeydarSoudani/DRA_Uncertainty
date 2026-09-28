@@ -335,7 +335,7 @@ def get_reranker_configs(rerank_top_k: int = 100) -> dict:
 @dataclass
 class InferenceConfig:
     """Immutable bundle of parameters shared by the main loop, force answer,
-    and answer candidate components of an agent."""
+    and intermediate answer components of an agent."""
 
     # API dispatch
     api_type: str = "chat_completion"  # "responses_api" | "chat_completion"

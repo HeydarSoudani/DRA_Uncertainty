@@ -160,8 +160,7 @@ class TrajectoryEvaluator:
         # this set is read as "never terminated", which inflates both
         # ``queries_max_iter_reached`` and ``queries_with_force_answer`` for an
         # agent that in fact finished cleanly -- so it has to track the agents.
-        _TERMINAL_ACTIONS = {"finish", "predict", "done", "answer", "terminate",
-                             "early_stop"}
+        _TERMINAL_ACTIONS = {"finish", "predict", "done", "answer", "terminate"}
         _FORCE_ANSWER_ACTIONS = {"context_limit", "max_iter_force"}
 
         total_steps_per_query: List[int] = []
@@ -355,7 +354,7 @@ class TrajectoryEvaluator:
         Deliberately *not* stored here (to avoid duplicating data that lives
         elsewhere):
         - the full surfaced doc ranking → ``retrieval/surfaced/{qid}.trec``;
-        - controller decisions / score history → ``controller/{qid}.jsonl``;
+        - uncertainty signals → ``uncertainty/{qid}.jsonl``;
         - cited docs → ``retrieval/cited/{qid}.trec``.
 
         Args:

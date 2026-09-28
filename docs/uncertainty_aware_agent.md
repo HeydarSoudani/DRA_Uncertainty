@@ -8,10 +8,10 @@ progress report computed by code, not written by the policy. The belief carries 
 
 Code: `src/deep_research_agents/agents/uncertainty_aware_agent.py` (loop, turn parsing, novelty, belief rendering) and
 `src/deep_research_agents/agent_tools/uncertainty_aware_criteria.py` (criteria updater). Prompts:
-`src/deep_research_agents/prompts/uncertainty_aware/` (policy) and `.../uncertainty_aware/criteria/` (updater). The agent does not import
-`controller_component`; the criteria updater and its prompts are copies of the controller's criteria-coverage signal
-(prompt fixes are listed under [Criteria updater](#criteria-updater)). As in the other API agents, a controller attached
-with `--controller` is reset and reported by the base hooks but never consulted.
+`src/deep_research_agents/prompts/uncertainty_aware/` (policy) and `.../uncertainty_aware/criteria/` (updater). The criteria updater
+and its prompts began as copies of the former controller's criteria-coverage signal (prompt fixes are listed under
+[Criteria updater](#criteria-updater)). As in every agent, an uncertainty estimator attached with
+`--uncertainty-estimator monitor` observes each search iteration and never changes the run.
 
 ## Loop
 
@@ -60,7 +60,8 @@ text…
 
 ## Criteria updater
 
-Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
+Same logic as the former controller's criteria-coverage signal (the controller has been removed; the
+`CriteriaCoverageSignal` in `uncertainty_estimator` is a different signal), with two modes:
 
 | mode | init prompt | update prompt | list |
 |---|---|---|---|
@@ -72,7 +73,7 @@ Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
 - The updater answers in JSON with only the criteria that changed; code applies the delta (case-insensitive name
   match, status aliases such as `partially covered` → `partial`).
 - It sees the passages the policy was shown: `ua_evidence_top_k` passages × `ua_evidence_chars` characters
-  (the controller uses 10 × 200).
+  (the former controller used 10 × 200).
 - Model: `ua_criteria_model`, or the policy backbone when empty. Calls are greedy (temperature 0) with the
   model's reasoning switched off when `ua_disable_native_thinking` (on OpenRouter; for a separate non-OpenRouter
   model the switch is not sent).
@@ -80,8 +81,8 @@ Same logic as the controller's `CriteriaCoverageSignal`, with two modes:
   init fails, the run continues with no criteria (the belief then shows novelty only). JSON wrapped in prose with no
   code fence is still parsed (the outermost `{…}` is taken). The `critical_gaps` / `minor_gaps` keys the prompts ask
   for are ignored.
-- Prompt differences from the controller's copies: the dynamic update prompt states whether the list is frozen (the
-  controller's prompt drops the `{frozen_instruction}` placeholder), its example JSON has no trailing comma, and a few
+- Prompt differences from the former controller's prompts: the dynamic update prompt states whether the list is frozen
+  (the controller's prompt dropped the `{frozen_instruction}` placeholder), its example JSON has no trailing comma, and a few
   wording slips are fixed ("a criterion", "the criterion's information need").
 
 ## Configuration (`experiments/configs/dra_inference.yaml`)

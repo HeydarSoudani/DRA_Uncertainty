@@ -1,13 +1,11 @@
 """Answer prompts: instructions, format strings, and extraction utilities.
 
-Centralises everything related to forcing a final answer and generating
-mid-loop answer candidates:
+- FINAL_ANSWER_INSTRUCTION  -- loop-end: agent must produce a definitive answer.
+- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...).
+- AnswerCandidateOutput dataclass + extraction helpers, shared by the final
+  answer evaluation and the uncertainty estimator's intermediate answers.
 
-- FINAL_ANSWER_INSTRUCTION        -- loop-end: agent must produce a definitive answer.
-- CANDIDATE_GENERATION_INSTRUCTION -- mid-loop: agent may respond "no candidate".
-- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK).
-- Agent-to-format mapping + helper.
-- AnswerCandidateOutput dataclass + extraction helpers.
+The intermediate-answer instruction lives in ``uncertainty_estimator.prompts``.
 """
 
 import json
@@ -28,13 +26,6 @@ FINAL_ANSWER_INSTRUCTION = (
     "above, think again and provide what you consider the most likely answer."
 )
 
-CANDIDATE_GENERATION_INSTRUCTION = (
-    "You have now reached the maximum context length you can handle. "
-    "You should stop making tool calls and, based on all the information "
-    "above, think again and provide what you consider the most likely answer.\n"
-    "If the evidence is insufficient to answer, respond with 'no candidate'."
-)
-
 TONGYI_FORCE_ANSWER = (
     "You have now reached the maximum context length you can handle. "
     "You should stop making tool calls and, based on all the information "
@@ -42,17 +33,6 @@ TONGYI_FORCE_ANSWER = (
     "in the following format:"
     "<think>your final thinking</think>\n"
     "<answer>your answer</answer>"
-)
-
-TONGYI_CANDIDATE_ANSWER = (
-    "You have now reached the maximum context length you can handle. "
-    "You should stop making tool calls and, based on all the information "
-    "above, think again and provide what you consider the most likely answer "
-    "in the following format:"
-    "<think>your final thinking</think>\n"
-    "<answer>your answer</answer>\n"
-    "If the evidence is truly insufficient, respond with "
-    "<answer>no candidate</answer>"
 )
 
 # ======================================================================
@@ -95,28 +75,6 @@ BOXED_FORMAT = "Provide your final answer in \\boxed{} format."
 DRTULU_FORMAT = "Provide your answer using <answer>...</answer> tags."
 
 SELFASK_FORMAT = "So the final answer is: "
-
-# ======================================================================
-# Agent-to-format mapping
-# ======================================================================
-
-AGENT_AC_FORMAT = {
-    "searcho1":    BOXED_FORMAT,
-    "react":       REACT_FORMAT,
-    "drtulu":      DRTULU_FORMAT,
-    "selfask":     SELFASK_FORMAT,
-    "oss":         OSS_FORMAT,
-    "glm":         OSS_FORMAT,
-    "cpm_explore": CPM_EXPLORE_FORMAT,
-    "tongyi":      TAG_FORMAT,
-    "webweaver":   WEBWEAVER_FORMAT,
-}
-
-
-def get_candidate_format(agentic_model: str) -> str:
-    """Return the answer-candidate format instructions for the given agent."""
-    return AGENT_AC_FORMAT.get(agentic_model, TAG_FORMAT)
-
 
 # ======================================================================
 # Structured output + extraction

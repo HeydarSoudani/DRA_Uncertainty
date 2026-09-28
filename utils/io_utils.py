@@ -40,7 +40,7 @@ def setup_output_dirs(
     return result
 
 
-def get_processed_queries(run_dir: Union[str, Path]) -> set:
+def get_processed_queries(run_dir: Union[str, Path], require_uncertainty: bool = False) -> set:
     """Return query IDs that already have a saved retrieval TREC file.
 
     Enables resuming an interrupted pipeline run by skipping previously
@@ -49,6 +49,9 @@ def get_processed_queries(run_dir: Union[str, Path]) -> set:
     Args:
         run_dir: Root directory of the current run.
             Results are expected under ``{run_dir}/retrieval/surfaced/*.trec``.
+        require_uncertainty: Also require ``{run_dir}/uncertainty/{qid}.jsonl``
+            (set when the uncertainty estimator is on), so a query whose run
+            stopped between the two writes is run again.
 
     Returns:
         Set of query-ID strings (filename stems of existing ``.trec`` files),
@@ -58,7 +61,11 @@ def get_processed_queries(run_dir: Union[str, Path]) -> set:
     if not retrieval_dir.exists():
         return set()
     try:
-        return {f.stem for f in retrieval_dir.glob("*.trec")}
+        processed = {f.stem for f in retrieval_dir.glob("*.trec")}
+        if require_uncertainty:
+            uncertainty_dir = Path(run_dir) / "uncertainty"
+            processed &= {f.stem for f in uncertainty_dir.glob("*.jsonl")}
+        return processed
     except Exception as e:
         print(f"Warning: could not read existing results from {retrieval_dir}: {e}")
         return set()
@@ -145,8 +152,8 @@ def load_result_from_saved_files(
     # ── 1. Try trajectory JSONL (richest source) ────────────────────────────
     # One line per trajectory step plus a ``{"record": "meta", ...}`` line (last
     # in files written online, first in older runs — position is irrelevant here).  The full surfaced ranking is not stored here (it lives in
-    # retrieval/surfaced/*.trec, reconstructed in step 5b); controller history is
-    # under controller/{qid}.json (step 6).
+    # retrieval/surfaced/*.trec, reconstructed in step 5b); uncertainty signals
+    # are under uncertainty/{qid}.jsonl (step 6).
     if not lightweight:
         try:
             content = _read_text("trajectory", f"{query_id}.jsonl")
@@ -244,34 +251,36 @@ def load_result_from_saved_files(
         except (FileNotFoundError, OSError):
             pass
 
-    # ── 6. Load controller history from controller/{qid}.jsonl if absent ─────
-    # Newer runs persist the controller signal history only here (not inlined in
-    # the trajectory file).  Line 1 is a ``{"record": "meta", ...}`` header; each
-    # remaining line is one iteration's signals.  Reconstruct the in-memory
-    # ``controller_score_history`` list so ControllerEvaluator can aggregate it
-    # on resume.
-    if not result.get("controller_score_history") and not result.get("tracker_score_history"):
+    # ── 6. Load uncertainty signals from uncertainty/{qid}.jsonl ─────────────
+    # A ``{"record": "meta", ...}`` line, then one ``{"record": "step", ...}``
+    # line per search iteration (see ``evaluation.uncertainty_evaluator``).
+    # Rebuilt into the ``uncertainty_meta`` / ``uncertainty_steps`` keys the
+    # agent attaches, so UncertaintyEvaluator can aggregate them on resume.
+    if "uncertainty_meta" not in result:
         try:
-            content = _read_text("controller", f"{query_id}.jsonl")
-            score_history = []
-            unique_doc_count = 0
+            content = _read_text("uncertainty", f"{query_id}.jsonl")
+            meta = None
+            steps = []
             for line in content.splitlines():
                 line = line.strip()
                 if not line:
                     continue
                 obj = _json_loads(line)
-                if obj.get("record") == "meta":
-                    unique_doc_count = obj.get("unique_doc_count", 0)
-                    continue
-                obj.setdefault("iter_num", obj.get("iteration"))
-                score_history.append(obj)
-            if score_history:
-                result["controller_score_history"] = score_history
-                result["controller_unique_doc_count"] = unique_doc_count
+                record = obj.pop("record", None)
+                obj.pop("query_id", None)
+                if record == "meta":
+                    obj.pop("question", None)
+                    obj.pop("schema_version", None)
+                    meta = obj
+                elif record == "step":
+                    steps.append(obj)
+            if meta is not None:
+                result["uncertainty_meta"] = meta
+                result["uncertainty_steps"] = steps
         except (FileNotFoundError, OSError):
             pass
         except Exception as e:
-            print(f"Warning: could not load controller JSONL for {query_id}: {e}")
+            print(f"Warning: could not load uncertainty JSONL for {query_id}: {e}")
 
     return result
 
@@ -297,23 +306,19 @@ def build_run_name_for_pipeline(agentic_model: str, llm_model: str, **kwargs) ->
     return f"{name}_{backend}_{model_display_name(llm_model)}"
 
 
-def build_controller_config_name(**kwargs) -> str:
-    """Build the controller-config directory name (the run's varying knob).
+def build_uncertainty_config_name(**kwargs) -> str:
+    """Build the uncertainty-estimator directory name (the run's varying knob).
 
     Searcher/retrieval settings are fixed and recorded in run_config.json
-    rather than the path.  Only the controller is surfaced here.
+    rather than the path.  Only the estimator mode and, when it is on, the
+    criteria judge are surfaced here, so a resumed run never mixes judges.
 
-    Examples: ``ctrl-off``, ``ctrl-monitor``, ``ctrl-off_novel``,
-    ``ctrl-action_glm-4.7-flash_nov-cov-sim``.
+    Examples: ``ue-off``, ``ue-monitor_nli``, ``ue-monitor_llm_novel``.
     """
-    from utils.config import model_display_name
-
-    controller_mode = kwargs.get("controller", "monitor")
-    name = f"ctrl-{controller_mode}"
-    if controller_mode == "action":
-        controller_llm = kwargs.get("llm_controller") or kwargs.get("llm_intervene")
-        variant = kwargs.get("controller_prompt_variant", "nov_cov_sim")
-        name += f"_{model_display_name(controller_llm)}_{variant.replace('_', '-')}"
+    mode = kwargs.get("uncertainty_estimator", "off")
+    name = f"ue-{mode}"
+    if mode != "off":
+        name += f"_{kwargs.get('criteria_judge') or 'none'}"
     if kwargs.get("ensure_novel_seen_docs", False):
         name += "_novel"
     return name
@@ -324,13 +329,12 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
     """Persist the full run configuration to ``run_dir/run_config.json``.
 
     Captures the fixed searcher/retrieval settings that used to live in the
-    folder name, plus agent/model/controller metadata, so nothing is lost when
+    folder name, plus agent/model/uncertainty-estimator metadata, so nothing is lost when
     the path is simplified.
     """
     from utils.config import resolve_agent_backend, model_display_name
 
     backend, slug = resolve_agent_backend(agentic_model)
-    controller_mode = kwargs.get("controller", "monitor")
     config = {
         "agent": {
             "agentic_model": agentic_model,
@@ -364,10 +368,12 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "post_fusion_reranker_input": kwargs.get("post_fusion_reranker_input", "original_query"),
             "ensure_novel_seen_docs": kwargs.get("ensure_novel_seen_docs", False),
         },
-        "controller": {
-            "mode": controller_mode,
-            "llm_controller": kwargs.get("llm_controller") or kwargs.get("llm_intervene"),
-            "controller_prompt_variant": kwargs.get("controller_prompt_variant", "nov_cov_sim"),
+        "uncertainty_estimator": {
+            "mode": kwargs.get("uncertainty_estimator", "off"),
+            "llm_criteria": kwargs.get("llm_criteria"),
+            "max_criteria": kwargs.get("max_criteria", 8),
+            "criteria_judge": kwargs.get("criteria_judge", "none"),
+            "criteria_judge_model": kwargs.get("criteria_judge_model", ""),
         },
     }
     path = Path(run_dir) / "run_config.json"

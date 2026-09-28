@@ -25,6 +25,7 @@ include = [
     "evaluation*",
     "searcher_component*",
     "reasoner_component*",
-    "controller_component*",
+    "uncertainty_estimator*",
     "indexing_corpus_dataset*",
+    "training*",
 ]

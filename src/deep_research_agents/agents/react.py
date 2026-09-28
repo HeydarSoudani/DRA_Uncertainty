@@ -19,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 from .base_agent import BasicAgent
 from deep_research_agents.agent_tools.react_tools import PlanTool
-from deep_research_agents.agent_tools.controller_results import CriticalThinkResult, EarlyStopResult
-from controller_component.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, REACT_FORMAT
+from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, REACT_FORMAT
 from utils.text_utils import passages2string
 from utils.config import InferenceConfig
 from utils.text_utils import get_action, parse_action_call, extract_think_and_clean
@@ -98,7 +97,7 @@ class ReActAgent(BasicAgent):
     def get_observation(self, action_type: str, action_entity: str) -> tuple:
         """Execute an action and return its observation.
 
-        Controller evaluation is handled by the main loop, not here.
+        The uncertainty estimator is called by the main loop, not here.
 
         Returns:
             (docs, obs, done)
@@ -138,7 +137,7 @@ class ReActAgent(BasicAgent):
 
         Strategy (plan mode):
         - Include current plan at the top.
-        - Include ALL Search actions (including critical_search) and observations.
+        - Include ALL Search actions and observations.
         """
         parts = []
 
@@ -148,7 +147,7 @@ class ReActAgent(BasicAgent):
                 parts.append(f"Current Research Plan:\n{current_plan}\n")
 
         for entry in self.history:
-            if entry["action"] in ("search", "critical_search"):
+            if entry["action"] == "search":
                 action_text = f'search(query="{entry["value"]}")'
                 parts.append(
                     self.current_step_template.format(
@@ -220,7 +219,6 @@ class ReActAgent(BasicAgent):
 
         consecutive_parse_errors = 0
         max_consecutive_parse_errors = 3
-        early_stop_result: Optional[EarlyStopResult] = None
 
         self._print(f"Query: {query}")
 
@@ -356,46 +354,24 @@ class ReActAgent(BasicAgent):
                         "tokens": self._step_tokens(),
                     })
 
-                # Trajectory controller: evaluate after each search
                 if docs is not None:
-                    controller_result = self.post_search_evaluate(
-                        subquery=action_entity,
-                        docs=docs[:self.seen_top_k],
-                        iter_num=display_iter,
-                        original_query=self.query,
-                        thinking=thought or "",
+                    # The prompt the next call would see, including this step;
+                    # built separately so input_prompt is not touched.
+                    context = (
+                        base_prompt + self._build_recent_history_context()
+                        if self.use_plan else input_prompt
+                    )
+                    context += self.current_step_template.format(
+                        think=thought, action_text=action_text, observation=obs,
+                    ) + "\n"
+                    self._observe_step(
+                        action_entity, docs[:self.seen_top_k], display_iter, self.query,
                         seen_docs=docs[:self.seen_top_k],
                         trajectory=[
                             {"role": "system", "content": ""},
-                            {"role": "user", "content": input_prompt},
+                            {"role": "user", "content": context},
                         ],
-                        reasoning_path=reasoning_path,
                     )
-                    if isinstance(controller_result, EarlyStopResult):
-                        early_stop_result = controller_result
-                        done = True
-                    elif isinstance(controller_result, CriticalThinkResult):
-                        self.retrieved_docs.extend(controller_result.critical_docs)
-                        self.history.append({
-                            "iter": controller_result.critical_think_iter,
-                            "thought": controller_result.critical_think,
-                            "action": "critical_search",
-                            "value": controller_result.critical_search_query,
-                            "observation": controller_result.critical_observation,
-                            "is_critical_think": True,
-                        })
-                        ct_entry = self._critical_think_to_reasoning_entry(
-                            controller_result, include_all_docs=True,
-                        )
-                        ct_entry["iteration"] = controller_result.critical_think_iter
-                        reasoning_path.append(ct_entry)
-                        if not self.use_plan:
-                            ct_step = self.current_step_template.format(
-                                think=controller_result.critical_think,
-                                action_text=f'search(query="{controller_result.critical_search_query}")',
-                                observation=controller_result.critical_observation,
-                            )
-                            input_prompt += ct_step + "\n"
 
                 # Hard-coded: update plan after each search observation
                 if self.use_plan:
@@ -443,9 +419,6 @@ class ReActAgent(BasicAgent):
             else:
                 force_prompt = input_prompt
 
-            if early_stop_result:
-                force_prompt += f"\n<think>{early_stop_result.reasoning}</think>\n"
-
             force_prompt += (
                 f"\n{FINAL_ANSWER_INSTRUCTION} {REACT_FORMAT}"
             )
@@ -470,19 +443,18 @@ class ReActAgent(BasicAgent):
                 think_content = self.get_think(force_output)
                 conclusion = think_content or force_output.strip()
 
-            action_type = "early_stop" if early_stop_result else "finish"
+            action_type = "finish"
             force_think = self.get_think(force_output) or ""
-            final_think = early_stop_result.reasoning if early_stop_result else force_think
-            self._vprint(iter_num + 1, "think", final_think or "(no thought)")
+            self._vprint(iter_num + 1, "think", force_think or "(no thought)")
             self._vprint(iter_num + 1, "finish", conclusion or "(no conclusion)")
             reasoning_path.append({
-                "think": early_stop_result.reasoning if early_stop_result else "",
+                "think": "",
                 "action_type": action_type,
                 "conclusion": conclusion,
             })
             self.history.append({
                 "iter": iter_num + 1,
-                "thought": early_stop_result.reasoning if early_stop_result else "",
+                "thought": "",
                 "action": action_type,
                 "value": conclusion,
                 "observation": conclusion,
