@@ -32,7 +32,7 @@ Agentic workflows:
 
 Output structure:
     run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
-    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor_nli/
+    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor/
     ├── run_config.json              full agent/searcher/uncertainty-estimator settings
     ├── retrieval/
     │   ├── surfaced/
@@ -317,7 +317,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             qrels=qrels,
             llm_criteria=kwargs.get("llm_criteria"),
             max_criteria=kwargs.get("max_criteria", 8),
-            criteria_judge=kwargs.get("criteria_judge", "none"),
             criteria_judge_model=kwargs.get("criteria_judge_model", ""),
             add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
             agent=agent if hasattr(agent, "uncertainty_estimator") else None,
@@ -802,7 +801,7 @@ if __name__ == "__main__":
 # OUTPUT STRUCTURE
 # ============================================================================
 #   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
-#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor_nli/
+#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor/
 #     ├── run_config.json          full agent/searcher/uncertainty-estimator settings
 #     ├── retrieval/
 #     │   ├── surfaced/

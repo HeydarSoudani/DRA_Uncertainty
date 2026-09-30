@@ -82,7 +82,6 @@ def build_uncertainty_estimator(
     qrels=None,
     llm_criteria: Optional[str] = None,
     max_criteria: int = 8,
-    criteria_judge: str = "none",
     criteria_judge_model: str = "",
     add_intermediate_answer: bool = True,
     agent=None,
@@ -103,10 +102,8 @@ def build_uncertainty_estimator(
         llm_criteria: Model that extracts each query's criteria.  Without
             it the criteria-based signals are null.
         max_criteria: Cap on the number of criteria per query.
-        criteria_judge: ``none``, ``nli`` or ``llm``; the judge behind
-            criteria_delta and criteria_targeting.
-        criteria_judge_model: NLI model (nli) or judge LLM (llm); "" = the
-            default NLI model or *llm_criteria*.
+        criteria_judge_model: LLM behind criteria_delta (stateful coverage
+            judge) and criteria_targeting; "" = *llm_criteria*.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
@@ -121,7 +118,6 @@ def build_uncertainty_estimator(
         return None
     if mode not in ("monitor", "inform"):
         raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off', 'monitor' or 'inform'")
-    criteria_judge = (criteria_judge or "none").lower()
 
     from uncertainty_estimator import (
         LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges, encode_fn_from_retriever,
@@ -154,26 +150,17 @@ def build_uncertainty_estimator(
         intermediate_answer_fn = agent.answer_from_trajectory
         print(f"Uncertainty estimator: intermediate answers via {agentic_model}.answer_from_trajectory")
 
-    doc_judge, query_scorer = None, None
-    if criteria_source is None:
-        if criteria_judge != "none":
-            logger.warning("criteria_judge=%s ignored: no criteria source", criteria_judge)
-    elif criteria_judge == "llm":
+    coverage_judge, query_scorer = None, None
+    if criteria_source is not None:
         judge_model = criteria_judge_model or llm_criteria
-        doc_judge, query_scorer = build_criteria_judges(
-            "llm", model=judge_model, llm_client=disable_native_thinking(create_generator(judge_model, backend="api")),
+        coverage_judge, query_scorer = build_criteria_judges(
+            disable_native_thinking(create_generator(judge_model, backend="api")), model=judge_model,
         )
-    else:
-        doc_judge, query_scorer = build_criteria_judges(
-            criteria_judge, model=criteria_judge_model, encode_fn=encode_fn, encoder_name=encoder_name,
-        )
-    if doc_judge is not None:
-        print(f"Uncertainty estimator: criteria judge {doc_judge.name}, "
-              f"query scorer {query_scorer.name if query_scorer else None}")
+        print(f"Uncertainty estimator: criteria judge {coverage_judge.name}, query scorer {query_scorer.name}")
 
     return UncertaintyEstimator(
         criteria_source=criteria_source,
-        doc_judge=doc_judge,
+        coverage_judge=coverage_judge,
         query_scorer=query_scorer,
         encode_fn=encode_fn,
         encoder_name=encoder_name,
@@ -507,7 +494,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         qrels=worker_config.get("qrels"),
         llm_criteria=worker_config.get("llm_criteria"),
         max_criteria=worker_config.get("max_criteria", 8),
-        criteria_judge=worker_config.get("criteria_judge", "none"),
         criteria_judge_model=worker_config.get("criteria_judge_model", ""),
         add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
         agent=agent if hasattr(agent, "uncertainty_estimator") else None,

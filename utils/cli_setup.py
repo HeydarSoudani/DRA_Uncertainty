@@ -67,7 +67,6 @@ FILE_BACKED_DEFAULTS = {
     # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": 8,
-    "criteria_judge": "nli",
     "criteria_judge_model": "",
     "add_intermediate_answer": True,
     # Evaluation
@@ -96,7 +95,6 @@ _FILE_BACKED_CHOICES = {
     "retrieval_input": ["subquery", "original_query+subquery", "reasoning+subquery"],
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
-    "criteria_judge": ["none", "nli", "llm"],
 }
 
 
@@ -341,7 +339,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
     pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", 8)
-    pipeline_kwargs["criteria_judge"] = getattr(args, "criteria_judge", "none")
     pipeline_kwargs["criteria_judge_model"] = getattr(args, "criteria_judge_model", "")
     pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
 
@@ -377,7 +374,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "uncertainty_estimator_mode":    getattr(args, "uncertainty_estimator_mode", "off"),
         "llm_criteria":                  getattr(args, "llm_criteria", None),
         "max_criteria":                  getattr(args, "max_criteria", 8),
-        "criteria_judge":                getattr(args, "criteria_judge", "none"),
         "criteria_judge_model":          getattr(args, "criteria_judge_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),

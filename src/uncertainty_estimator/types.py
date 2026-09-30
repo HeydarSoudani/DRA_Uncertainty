@@ -1,12 +1,12 @@
 """Constants and dataclasses shared by the uncertainty estimator."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
 # Criteria state sigma_t(k) of the report (Section "Instantiation"):
 # uncovered (0), partially covered (1), fully covered (2).  The same three
-# labels are the per-(document, criterion) coverage a DocCriteriaJudge returns.
+# labels are the statuses the coverage judge proposes.
 UNCOVERED = "uncovered"
 PARTIALLY_COVERED = "partially_covered"
 FULLY_COVERED = "fully_covered"
@@ -29,21 +29,47 @@ class Criterion:
 
 
 @dataclass
-class DocJudgment:
-    """Coverage of every criterion by one document.
+class Evidence:
+    """One passage attached to a criterion by the coverage judge.
 
-    ``statuses[k]`` is in ``STATUSES``.  ``scores[k]`` is the NLI judge's
-    entailment probability (kept so the thresholds can be re-tuned offline);
-    ``evidence[k]`` is the LLM judge's supporting quote.
+    ``role`` is ``support`` or ``contradict``.  ``spans`` are the sentences
+    the judge cited from the passage; ``span_verified[i]`` says whether
+    ``spans[i]`` occurs verbatim in the passage, and then ``spans[i]`` is the
+    passage's own words, else the judge's text.  ``text`` is the start of
+    the passage.  Later prompts show the verified spans and the text.
     """
-    statuses: List[str]
-    scores: Optional[List[float]] = None
-    evidence: Optional[List[str]] = None
+    doc_id: str
+    step: int
+    role: str
+    spans: List[str]
+    span_verified: List[bool]
+    text: str
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"statuses": self.statuses}
-        if self.scores is not None:
-            out["scores"] = [round(s, 4) for s in self.scores]
-        if self.evidence is not None:
-            out["evidence"] = self.evidence
+    @property
+    def verified_spans(self) -> List[str]:
+        return [s for s, ok in zip(self.spans, self.span_verified) if ok]
+
+    def to_dict(self, with_text: bool = False) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "doc_id": self.doc_id, "step": self.step, "role": self.role,
+            "spans": list(self.spans), "span_verified": list(self.span_verified),
+        }
+        if with_text:
+            out["text"] = self.text
         return out
+
+
+@dataclass
+class CriterionUpdate:
+    """One criterion update proposed by the coverage judge for one step.
+
+    ``status`` is the proposed sigma_t(k); ``support`` and ``contradict`` are
+    the new passages cited for it; ``missing`` is what a partially covered
+    criterion still lacks.
+    """
+    id: str
+    status: str
+    support: List[Evidence] = field(default_factory=list)
+    contradict: List[Evidence] = field(default_factory=list)
+    reason: str = ""
+    missing: str = ""

@@ -7,11 +7,9 @@ x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t) against a fixed per-query criteria
 list, plus extra saved information (new-item recall, intermediate answers).
 
 Module layout:
-    types      criteria statuses, Criterion, DocJudgment
+    types      criteria statuses, Criterion, Evidence, CriterionUpdate
     criteria   CriteriaSource, LLMCriteriaSource, CriteriaState
-    judges     DocCriteriaJudge (NLIDocJudge, LLMDocJudge),
-               QueryCriteriaScorer (EmbeddingQueryScorer, LLMQueryScorer),
-               build_criteria_judges
+    judges     LLMCoverageJudge, LLMQueryScorer, build_criteria_judges
     signals    DocNoveltySignal, QueryNoveltySignal, CriteriaCoverageSignal,
                CriteriaTargetingSignal, NewItemRecallSignal,
                IntermediateAnswerSignal, encode_fn_from_retriever
@@ -26,7 +24,8 @@ from .types import (
     STATUS_VALUE,
     STATUSES,
     Criterion,
-    DocJudgment,
+    CriterionUpdate,
+    Evidence,
 )
 from .criteria import (
     CriteriaSource,
@@ -34,11 +33,7 @@ from .criteria import (
     CriteriaState,
 )
 from .judges import (
-    DocCriteriaJudge,
-    NLIDocJudge,
-    LLMDocJudge,
-    QueryCriteriaScorer,
-    EmbeddingQueryScorer,
+    LLMCoverageJudge,
     LLMQueryScorer,
     build_criteria_judges,
 )
@@ -61,15 +56,12 @@ __all__ = [
     "STATUS_VALUE",
     "STATUSES",
     "Criterion",
-    "DocJudgment",
+    "CriterionUpdate",
+    "Evidence",
     "CriteriaSource",
     "LLMCriteriaSource",
     "CriteriaState",
-    "DocCriteriaJudge",
-    "NLIDocJudge",
-    "LLMDocJudge",
-    "QueryCriteriaScorer",
-    "EmbeddingQueryScorer",
+    "LLMCoverageJudge",
     "LLMQueryScorer",
     "build_criteria_judges",
     "DocNoveltySignal",

@@ -209,7 +209,7 @@ def verbose_print_uncertainty(
         f"doc_novelty={_fmt(record.get('doc_novelty'))} "
         f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids) | "
         f"query_novelty={_fmt(record.get('query_novelty'))} | "
-        f"criteria_delta={_fmt(record.get('criteria_delta'), 'd')} | "
+        f"criteria_delta={_fmt(record.get('criteria_delta'), '+d')} | "
         f"criteria_targeting={_fmt(record.get('criteria_targeting'))}"
     )
 

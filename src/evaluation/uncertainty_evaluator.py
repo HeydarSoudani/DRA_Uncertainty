@@ -8,18 +8,20 @@ stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 3::
+Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 5::
 
-    line 1  {"record": "meta", "schema_version": 3, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 5, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
-             "criteria_source": "llm", "criteria_judge": "nli:...",
-             "query_scorer": "embedding:...", "encoder": "...",
+             "criteria_source": "llm", "criteria_judge": "llm:...",
+             "query_scorer": "llm:...", "encoder": "...",
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "..."}, ...],
              "criteria_info": {"model": ..., "reasoning": ..., "errors": []},
              "final_criteria_state": ["fully_covered", "uncovered", ...],
-             "criteria_evidence": [{"id": "c1", "partially_covered": [...], "fully_covered": ["d1"]}, ...]}
+             "criteria_evidence": [{"id": "c1", "status": "fully_covered", "missing": "",
+                                    "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
+                                                  "spans": ["..."], "span_verified": [true]}]}, ...]}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
@@ -32,7 +34,10 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 3::
                           "target_scores": [0.71, 0.42, ...], "criteria_targeting": 0.71}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
              "criteria_state_before": ["uncovered", ...], "criteria_state_after": ["fully_covered", ...],
-             "criteria_judgments": [{"doc_id": "d1", "statuses": [...], "scores": [...]}, ...],
+             "criteria_updates": [{"id": "c1", "from": "uncovered", "to": "fully_covered",
+                                   "proposed": "fully_covered", "support": [{"doc_id": "d1", ...}],
+                                   "contradict": [], "reason": "...", "missing": "", "applied": true, "note": ""}, ...],
+             "criteria_judge_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
     ...
 
@@ -54,7 +59,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 def _clean(obj: Any) -> Any:

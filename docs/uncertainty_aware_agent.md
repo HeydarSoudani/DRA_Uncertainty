@@ -10,12 +10,12 @@ no gold-based signal). What sets this agent apart is only its system prompt, whi
 
 | Mode | Trajectory | System prompt | Run directory |
 |---|---|---|---|
-| `inform` | `<certainty>` after each `<information>` | includes `certainty_section.txt` | `ue-inform_{criteria_judge}` |
-| `monitor` | no tag (signals still saved to `uncertainty/{qid}.jsonl`) | never mentions the tag | `ue-monitor_{criteria_judge}` |
+| `inform` | `<certainty>` after each `<information>` | includes `certainty_section.txt` | `ue-inform` |
+| `monitor` | no tag (signals still saved to `uncertainty/{qid}.jsonl`) | never mentions the tag | `ue-monitor` |
 | `off` | no tag, no estimator (plain SearchR1-style agent) | never mentions the tag | `ue-off` |
 
 Criteria extraction, the criteria judge, the signals, the per-step intermediate answers and
-`uncertainty/{qid}.jsonl` all come from the estimator settings (`llm_criteria`, `max_criteria`, `criteria_judge`,
+`uncertainty/{qid}.jsonl` all come from the estimator settings (`llm_criteria`, `max_criteria`,
 `criteria_judge_model`).
 
 Code: `src/deep_research_agents/agents/uncertainty_aware_agent.py` (loop, turn parsing, passage labels). Prompts:

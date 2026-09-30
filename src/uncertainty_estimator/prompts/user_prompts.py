@@ -12,19 +12,19 @@ List at most {max_criteria} criteria. This list will be FIXED for the entire sea
 CRITERIA_JUDGE_DOC_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria:
+Criteria, with their current status and attached evidence:
 {criteria}
 
-Passages:
+New passages:
 {passages}
 
-Judge how well each passage covers each criterion.\
+Update the criteria given the attached evidence and the new passages.\
 """
 
 CRITERIA_JUDGE_QUERY_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria:
+Criteria, with their current status and what the search has found so far:
 {criteria}
 
 Search queries:

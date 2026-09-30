@@ -5,7 +5,7 @@ Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t):
 - ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
   not seen in an earlier step.
 - ``CriteriaCoverageSignal`` Delta^D: change of the criteria state caused
-  by the step's novel documents.
+  by the step's novel documents; negative when coverage was lost.
 - ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
   queries of earlier steps.
 - ``CriteriaTargetingSignal`` tau^q: how strongly the step's queries target
@@ -19,7 +19,7 @@ Extra, not part of x_t:
 
 Query embeddings come from the retriever's encoder
 (``encode_fn_from_retriever``).  Without one (BM25, SPLADE, endpoint
-retrievers) nu^q is null.  The criteria signals take a judge from ``judges``.
+retrievers) nu^q is null.  The criteria signals take an LLM judge from ``judges``.
 """
 
 import logging
@@ -31,7 +31,7 @@ from deep_research_agents.prompts.answer_prompts import extract_answer_candidate
 from reasoner_component import REASONING_FALLBACK_PREFIX
 from utils.text_utils import doc_id as _doc_id
 from .criteria import CriteriaState
-from .judges import DocCriteriaJudge, QueryCriteriaScorer
+from .judges import LLMCoverageJudge, LLMQueryScorer
 from .prompts import intermediate_answer_instruction
 from .types import OPEN_STATUSES, STATUS_VALUE, Criterion
 
@@ -177,14 +177,15 @@ class CriteriaCoverageSignal:
     """Change of the criteria state caused by the step's novel documents.
 
     Delta^D = sum_k (sigma_t(k) - sigma_{t-1}(k)) with uncovered = 0,
-    partially = 1, fully covered = 2; never negative, since sigma only moves
-    up.  Only documents not seen in earlier steps are judged; with no novel
-    document Delta^D is 0.  Documents the judge fails on leave the state
-    unchanged and are reported in ``errors``; Delta^D is null when every
-    novel document failed.
+    partially = 1, fully covered = 2.  The stateful judge sees the current
+    state with its attached evidence and the step's novel documents, so
+    sigma can go up (new or combined evidence) or down (a contradiction);
+    Delta^D is negative when coverage was lost.  With no novel document
+    Delta^D is 0 and the judge is not called; when the judge fails the
+    state is unchanged and Delta^D is null.
     """
 
-    def __init__(self, judge: DocCriteriaJudge) -> None:
+    def __init__(self, judge: LLMCoverageJudge) -> None:
         self.judge = judge
         self._query = ""
         self._state: Optional[CriteriaState] = None
@@ -205,30 +206,23 @@ class CriteriaCoverageSignal:
         self._state = CriteriaState(criteria) if criteria else None
 
     def score(
-        self, new_docs: List[Dict[str, Any]],
-    ) -> Tuple[Optional[int], List[Dict[str, Any]], List[str]]:
-        """Return ``(delta, judgments, errors)``; *judgments* has one
-        ``{doc_id, statuses, scores | evidence}`` per novel doc, with
-        ``statuses`` null when the judge failed on it."""
+        self, new_docs: List[Dict[str, Any]], step: int,
+    ) -> Tuple[Optional[int], List[Dict[str, Any]], Optional[str], List[str]]:
+        """Return ``(delta, updates, raw, errors)``; *updates* has one record
+        per update the judge proposed (``CriteriaState.apply``), *raw* is the
+        judge's reply (None when it was not called)."""
         if self._state is None:
-            return None, [], []
+            return None, [], None, []
         if not new_docs:
-            return 0, [], []
+            return 0, [], None, []
         before = self._state.snapshot()
-        judged, errors = self.judge.judge(self._query, new_docs, self._state.criteria)
-        judgments: List[Dict[str, Any]] = []
-        for doc, judgment in zip(new_docs, judged):
-            doc_id = _doc_id(doc)
-            if judgment is None:
-                judgments.append({"doc_id": doc_id, "statuses": None})
-                continue
-            judgments.append({"doc_id": doc_id, **judgment.to_dict()})
-            self._state.apply(doc_id, judgment.statuses)
-        if all(j is None for j in judged):
-            return None, judgments, errors
+        updates, raw, errors = self.judge.judge(self._query, self._state, new_docs, step)
+        if updates is None:
+            return None, [], raw, errors
+        records = self._state.apply(updates)
         after = self._state.snapshot()
         delta = sum(STATUS_VALUE[a] - STATUS_VALUE[b] for b, a in zip(before, after))
-        return delta, judgments, errors
+        return delta, records, raw, errors
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +237,7 @@ class CriteriaTargetingSignal:
     is the mean over the step's queries.
     """
 
-    def __init__(self, scorer: QueryCriteriaScorer) -> None:
+    def __init__(self, scorer: LLMQueryScorer) -> None:
         self.scorer = scorer
         self._query = ""
         self._criteria: List[Criterion] = []
@@ -253,14 +247,15 @@ class CriteriaTargetingSignal:
         self._criteria = list(criteria)
 
     def score(
-        self, subqueries: List[str], statuses_before: Optional[List[str]],
+        self, subqueries: List[str], state: Optional[CriteriaState],
     ) -> Tuple[Optional[float], List[Dict[str, Any]]]:
         """Return ``(step_targeting, per_query)``; per query ``target_scores``
-        (one per criterion) and ``criteria_targeting``."""
-        if not subqueries or not self._criteria or statuses_before is None:
+        (one per criterion) and ``criteria_targeting``.  *state* is
+        sigma_{t-1}, shown to the scorer and used for the mask."""
+        if not subqueries or not self._criteria or state is None:
             return None, []
-        scores = self.scorer.score(self._query, subqueries, self._criteria)
-        open_k = [k for k, st in enumerate(statuses_before) if st in OPEN_STATUSES]
+        scores = self.scorer.score(self._query, subqueries, state)
+        open_k = [k for k, st in enumerate(state.statuses) if st in OPEN_STATUSES]
         per_query: List[Dict[str, Any]] = []
         for row in scores:
             value = max((row[k] for k in open_k), default=0.0)

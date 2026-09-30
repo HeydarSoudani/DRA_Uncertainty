@@ -14,8 +14,9 @@ sample:
 Order inside ``observe`` (tau^q uses sigma_{t-1}; the documents then move
 the state to sigma_t):
 
-    tau^q -> nu^q -> nu^D (picks the novel documents) -> Delta^D (judges
-    the novel documents, sigma_t) -> new-item recall -> intermediate answer
+    tau^q -> nu^q -> nu^D (picks the novel documents) -> Delta^D (the
+    stateful judge updates sigma with the novel documents) -> new-item
+    recall -> intermediate answer
 
 Step record, one per iteration (saved as one line of
 ``uncertainty/{query_id}.jsonl`` by ``UncertaintyEvaluator``); flat scalars
@@ -28,8 +29,8 @@ first, nested detail last::
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
-    criteria_state_before, criteria_state_after, criteria_judgments[],
-    intermediate_answer_reasoning, errors[],
+    criteria_state_before, criteria_state_after, criteria_updates[],
+    criteria_judge_output, intermediate_answer_reasoning, errors[],
     certainty_tag                                  # inform only; null when empty
 
 ``iteration`` counts the observed search iterations from 1, the same for
@@ -37,9 +38,12 @@ every agent; ``agent_iteration`` is the agent's own counter, whose base and
 meaning differ per agent.
 
 A signal that could not be computed is null, never 0; the reason is in
-``errors`` (or a component is not configured: no encoder, no criteria judge,
-no qrels).  ``criteria_judgments`` has one ``{doc_id, statuses, scores |
-evidence}`` per novel doc, ``statuses`` null when the judge failed on it.
+``errors`` (or a component is not configured: no encoder, no criteria,
+no qrels).  ``criteria_delta`` is negative when coverage was lost.
+``criteria_updates`` has one ``{id, from, to, proposed, support[],
+contradict[], reason, missing, applied, note}`` per update the coverage judge
+proposed (``CriteriaState.apply``); ``criteria_judge_output`` is the
+judge's raw reply (null when it was not called).
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
 ``ok``, ``no_candidate`` (``[]``), ``unparsed`` (reply without answer
@@ -54,7 +58,7 @@ from utils.text_utils import doc_id
 
 from .certainty import render_certainty
 from .criteria import CriteriaSource
-from .judges import DocCriteriaJudge, QueryCriteriaScorer
+from .judges import LLMCoverageJudge, LLMQueryScorer
 from .signals import (
     AnswerFn,
     CriteriaCoverageSignal,
@@ -80,8 +84,8 @@ class UncertaintyEstimator:
     Args:
         criteria_source: Produces the fixed criteria list at ``reset``.  None
             disables the criteria-based signals.
-        doc_judge: Coverage judge of documents vs criteria (``judges``).
-            None: sigma, Delta^D and tau^q are null.
+        coverage_judge: Stateful coverage judge (``judges``).  None:
+            sigma, Delta^D and tau^q are null.
         query_scorer: Targeting scorer of queries vs criteria.  None:
             tau^q is null.
         encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
@@ -101,8 +105,8 @@ class UncertaintyEstimator:
     def __init__(
         self,
         criteria_source: Optional[CriteriaSource] = None,
-        doc_judge: Optional[DocCriteriaJudge] = None,
-        query_scorer: Optional[QueryCriteriaScorer] = None,
+        coverage_judge: Optional[LLMCoverageJudge] = None,
+        query_scorer: Optional[LLMQueryScorer] = None,
         encode_fn: Optional[EncodeFn] = None,
         encoder_name: Optional[str] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -119,7 +123,7 @@ class UncertaintyEstimator:
         self._doc_novelty = DocNoveltySignal()
         self._query_novelty = QueryNoveltySignal(encode_fn)
         self._new_item_recall = NewItemRecallSignal(qrels)
-        self._coverage = CriteriaCoverageSignal(doc_judge) if doc_judge is not None else None
+        self._coverage = CriteriaCoverageSignal(coverage_judge) if coverage_judge is not None else None
         self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
             IntermediateAnswerSignal(intermediate_answer_fn, agentic_model)
@@ -226,7 +230,7 @@ class UncertaintyEstimator:
         criteria_targeting, per_target = None, []
         if tracks_state and self._targeting is not None:
             try:
-                criteria_targeting, per_target = self._targeting.score(subqueries, state_before)
+                criteria_targeting, per_target = self._targeting.score(subqueries, self._coverage.state)
             except Exception as e:
                 logger.warning("UncertaintyEstimator: criteria targeting failed", exc_info=True)
                 errors.append(f"criteria_targeting: {e}")
@@ -253,11 +257,13 @@ class UncertaintyEstimator:
         # --- Delta^D and sigma_t (novel documents only) -------------------------
         # Null, not 0, when the step had no docs or nu^D failed: then the novel
         # documents are unknown.
-        criteria_delta, judgments, state_after = None, None, state_before
+        criteria_delta, updates, judge_output, state_after = None, None, None, state_before
         if tracks_state and doc_novelty is not None:
             try:
                 by_id = {doc_id(d): d for d in docs}
-                criteria_delta, judgments, judge_errors = self._coverage.score([by_id[i] for i in new_ids])
+                criteria_delta, updates, judge_output, judge_errors = self._coverage.score(
+                    [by_id[i] for i in new_ids], self._step,
+                )
                 errors.extend(f"criteria_judgment: {e}" for e in judge_errors)
             except Exception as e:
                 logger.warning("UncertaintyEstimator: criteria judgment failed", exc_info=True)
@@ -304,7 +310,8 @@ class UncertaintyEstimator:
             "docs": per_doc,
             "criteria_state_before": state_before,
             "criteria_state_after": state_after,
-            "criteria_judgments": judgments,
+            "criteria_updates": updates,
+            "criteria_judge_output": judge_output,
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,
             "errors": errors,
         }

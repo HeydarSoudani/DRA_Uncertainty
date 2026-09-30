@@ -111,7 +111,7 @@ the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Secti
 | field | report | meaning |
 |---|---|---|
 | `doc_novelty` | ν^D | fraction of the iteration's docs whose id was not seen in an earlier iteration (0, 0.2, ..., 1 for 5 docs) |
-| `criteria_delta` | Δ^D | change of the criteria state (uncovered 0, partially covered 1, fully covered 2) caused by the novel docs |
+| `criteria_delta` | Δ^D | change of the criteria state (uncovered 0, partially covered 1, fully covered 2) caused by the novel docs; negative when a contradiction lowered it |
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
 | `criteria_targeting` | τ^q | how strongly the queries target criteria still uncovered or partially covered |
 
@@ -119,19 +119,24 @@ Extra saved information: `new_item_recall` (against qrels) and per-step intermed
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
 prompt in `src/uncertainty_estimator/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
-`query_novelty` is null. The judge behind `criteria_delta` and
-`criteria_targeting` is set by `criteria_judge` (`src/uncertainty_estimator/judges.py`):
+`query_novelty` is null. The criteria signals use LLM judges (`src/uncertainty_estimator/judges.py`,
+model `criteria_judge_model`, default `llm_criteria`):
 
-- `nli`: an NLI cross-encoder (`criteria_judge_model`, default DeBERTa-v3-large NLI) scores all k × t (passage,
-  criterion) pairs of an iteration in batches; the entailment probability gives fully (≥ 0.9) or partially (≥ 0.5)
-  covered. The probabilities are saved, so the thresholds can be re-tuned offline. Query targeting is the cosine similarity of
-  query and criterion embeddings (dense retrievers only; else `criteria_targeting` is null).
-- `llm`: one LLM call per iteration labels every (passage, criterion) pair of the novel passages (with an evidence
-  quote); the judge does not see the criteria state. One more call per iteration scores every (query, criterion)
-  pair as 0, 0.5 or 1. `criteria_judge_model` defaults to `llm_criteria`.
-- `none`: both signals are null.
-
-A criterion's status is the highest coverage any doc gave it so far, so `criteria_delta` is never negative.
+- `criteria_delta`: a stateful coverage judge. One call per iteration sees each criterion with its current status,
+  its attached evidence (the last 4 passages, each shown as the spans the judge cited that occur verbatim in the
+  passage and the first 100 words of the passage; a passage attached to several criteria is shown under each) and,
+  when partially covered, what it is still `missing`; plus the iteration's novel passages. It does not see the search
+  queries. It lists the criteria a new passage supports or contradicts, alone or combined with the attached evidence
+  (partially covered criteria and criteria that refer to each other are re-checked every iteration), with one or
+  more single-sentence verbatim spans per cited passage. Each span is checked on its own (a span joined with "..." is
+  split first); a span that is not verbatim is not shown, but the citation still counts (`span_verified` is saved per
+  span). `CriteriaState.apply` enforces the rules: a raise needs a
+  supporting passage, a lowering needs a contradicting passage and moves one level at most per iteration, and an
+  update that keeps the status only attaches its evidence. Several partial passages can together make a criterion
+  fully covered, and a contradiction lowers it, so `criteria_delta` is negative when coverage was lost.
+- `criteria_targeting`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
+  each criterion's status, the verified spans of its latest evidence passage and what is `missing`, so a query naming
+  an entity the evidence already linked to a criterion counts as targeting it.
 
 #### Inform mode
 
@@ -183,7 +188,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 └── summary.json                    grouped metrics (answer / retrieval / trajectory / generation)
 ```
 
-With the estimator on, `{uncertainty_config}` is `ue-{mode}_{criteria_judge}` (e.g. `ue-monitor_nli`, `ue-inform_nli`).
+With the estimator on, `{uncertainty_config}` is `ue-{mode}` (e.g. `ue-monitor`, `ue-inform`).
 
 #### `uncertainty/{query_id}.jsonl`
 
@@ -195,7 +200,7 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 3 |
+| `schema_version` | 5 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
 | `criteria_source`, `criteria_judge`, `query_scorer`, `encoder` | components in use (null when off) |
@@ -203,7 +208,7 @@ Meta line (one per query):
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `criteria` | `[{id, text}]` |
 | `criteria_info` | criteria LLM `model`, `reasoning`, `errors` |
-| `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, the ids of the covering docs |
+| `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
 Step line (one per search iteration, flat scalars first):
 
@@ -218,7 +223,8 @@ Step line (one per search iteration, flat scalars first):
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
 | `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
 | `criteria_state_before`, `criteria_state_after` | one status per criterion, in `criteria` order |
-| `criteria_judgments` | `[{doc_id, statuses, scores or evidence}]` for the novel docs |
+| `criteria_updates` | `[{id, from, to, proposed, support, contradict, reason, missing, applied, note}]`, one per update the coverage judge proposed; `applied` is false for a rejected one (`note` says why) |
+| `criteria_judge_output` | the coverage judge's raw reply (null when it was not called) |
 | `intermediate_answer_reasoning`, `errors` | free text, reasons for nulls |
 
 `iteration` is not the retrieval `iter_N`: `iter_N` counts retrieval calls, so an iteration with several queries spans

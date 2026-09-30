@@ -279,15 +279,12 @@ def build_uncertainty_config_name(**kwargs) -> str:
     """Build the uncertainty-estimator directory name (the run's varying knob).
 
     Searcher/retrieval settings are fixed and recorded in run_config.json
-    rather than the path.  Only the estimator mode and, when it is on, the
-    criteria judge are surfaced here, so a resumed run never mixes judges.
+    rather than the path.  Only the estimator mode is surfaced here.
 
-    Examples: ``ue-off``, ``ue-monitor_nli``, ``ue-monitor_llm_novel``.
+    Examples: ``ue-off``, ``ue-monitor``, ``ue-inform_novel``.
     """
     mode = kwargs.get("uncertainty_estimator_mode", "off")
     name = f"ue-{mode}"
-    if mode != "off":
-        name += f"_{kwargs.get('criteria_judge') or 'none'}"
     if kwargs.get("ensure_novel_seen_docs", False):
         name += "_novel"
     return name
@@ -331,7 +328,6 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "mode": kwargs.get("uncertainty_estimator_mode", "off"),
             "llm_criteria": kwargs.get("llm_criteria"),
             "max_criteria": kwargs.get("max_criteria", 8),
-            "criteria_judge": kwargs.get("criteria_judge", "none"),
             "criteria_judge_model": kwargs.get("criteria_judge_model", ""),
             "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
         },

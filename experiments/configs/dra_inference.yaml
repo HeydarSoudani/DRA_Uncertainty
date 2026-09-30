@@ -22,7 +22,7 @@
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
 llm_temperature: null           # Sampling temperature (null = per-agent, see utils.config.AGENT_TEMPERATURE)
-llm_max_tokens_per_call: 10000  # Max tokens generated per single LLM API call
+llm_max_tokens_per_call: 2000  # Max tokens generated per single LLM API call
 llm_top_p: 1.0                  # Top-p sampling (reasoning agents only)
 max_output_tokens_total: 120000 # Cumulative output-token budget per query (oss/glm/tongyi).
 request_timeout: 300            # HTTP request timeout (s) for LLM API calls
@@ -60,8 +60,7 @@ max_passage_chars: 4000         # Chars of one retrieved passage shown to the ag
 # ── Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the uncertainty-aware agent, reasoning off
 max_criteria: 8                     # Cap on the number of criteria per query
-criteria_judge: "nli"               # none | nli (NLI docs + embedding queries) | llm (LLM docs + queries)
-criteria_judge_model: ""            # nli: HF NLI model ("" = DeBERTa-v3-large NLI); llm: judge LLM ("" = llm_criteria)
+criteria_judge_model: ""            # LLM of the stateful coverage judge (criteria_delta) and the query scorer (criteria_targeting); "" = llm_criteria
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; browsecomp_plus/trqa only)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────

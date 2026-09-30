@@ -43,7 +43,7 @@ def strip_certainty(text: str) -> str:
 
 def _format(field: str, value: Any) -> str:
     if field == "criteria_delta":
-        return f"+{value}"
+        return f"{value:+d}"
     return f"{value:.2f}"
 
 

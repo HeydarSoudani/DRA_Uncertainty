@@ -3,14 +3,15 @@
 The report (Section "Instantiation") replaces the hidden state with a fixed
 per-query criteria list C = {c_1, ..., c_K} and tracks a criteria state
 sigma_t(k) in {uncovered, partially_covered, fully_covered}, updated by
-documents only.
+documents only (it can move up or down).
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` extracts the criteria stated in the query.
   TODO(criteria-file): a source that reads C from a file, keyed by query id.
-- ``CriteriaState``: sigma_t, accumulated over all novel documents so far.
+- ``CriteriaState``: sigma_t and the evidence attached to each criterion.
 
-The judges that label documents and queries against C are in ``judges``.
+The judges that update the state and score queries against C are in
+``judges``.
 """
 
 import logging
@@ -19,7 +20,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ._helpers import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE
-from .types import FULLY_COVERED, STATUS_VALUE, STATUSES, UNCOVERED, Criterion
+from .types import (
+    PARTIALLY_COVERED, STATUS_VALUE, STATUSES, UNCOVERED, Criterion, CriterionUpdate, Evidence,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,39 +114,96 @@ class LLMCriteriaSource(CriteriaSource):
 # ---------------------------------------------------------------------------
 
 class CriteriaState:
-    """Criteria state sigma_t, accumulated over all novel documents so far.
+    """Criteria state sigma_t with the evidence attached to each criterion.
 
-    sigma_t(k) is the highest coverage any document gave c_k so far, so the
-    state never moves down; several partial documents do not add up to full
-    coverage.  Each criterion also keeps the ids of the documents that
-    partially and fully cover it.  sigma_0 is all uncovered.
+    sigma_0 is all uncovered.  Each step, the coverage judge proposes
+    updates from the step's novel documents and ``apply`` enforces:
+
+    - a raise needs at least one supporting passage;
+    - a lowering needs at least one contradicting passage and moves one
+      level at most per step;
+    - an update that keeps the status only attaches its evidence.
+
+    The cited passages are attached to the criterion (role ``support`` or
+    ``contradict``) and shown to the judge in later steps, with what a
+    partially covered criterion still lacks (``missing``).
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
         self.statuses: List[str] = [UNCOVERED] * len(self.criteria)
-        self._partial: List[Set[str]] = [set() for _ in self.criteria]
-        self._full: List[Set[str]] = [set() for _ in self.criteria]
+        self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
+        self.missing: List[str] = [""] * len(self.criteria)
+        self._index = {c.id: k for k, c in enumerate(self.criteria)}
 
     def snapshot(self) -> List[str]:
         return list(self.statuses)
 
-    def apply(self, doc_id: str, statuses: List[str]) -> None:
-        """Add one document's coverage of each criterion."""
-        if len(statuses) != len(self.criteria):
-            raise ValueError(f"expected {len(self.criteria)} statuses, got {len(statuses)}")
-        for k, status in enumerate(statuses):
-            if status not in STATUSES:
-                raise ValueError(f"unknown coverage status {status!r}")
-            if status == UNCOVERED:
+    def attached(self, k: int, limit: Optional[int] = None) -> List[Evidence]:
+        """Evidence of criterion *k*, oldest first; the last *limit* when set."""
+        items = self._evidence[k]
+        return items[-limit:] if limit else list(items)
+
+    def apply(self, updates: List[CriterionUpdate]) -> List[Dict[str, Any]]:
+        """Apply the judge's updates of one step.
+
+        Returns one record per update: ``{id, from, to, proposed, support,
+        contradict, reason, missing, applied, note}``; ``applied`` is False for an
+        update that was rejected (``note`` says why).  Only the first update
+        of a criterion is used.
+        """
+        records: List[Dict[str, Any]] = []
+        done: Set[int] = set()
+        for u in updates:
+            k = self._index.get(u.id)
+            record = {
+                "id": u.id,
+                "from": self.statuses[k] if k is not None else None,
+                "to": None,
+                "proposed": u.status,
+                "support": [e.to_dict() for e in u.support],
+                "contradict": [e.to_dict() for e in u.contradict],
+                "reason": u.reason,
+                "missing": u.missing,
+                "applied": False,
+                "note": "",
+            }
+            records.append(record)
+            if k is None:
+                record["note"] = "unknown criterion id"
                 continue
-            (self._full if status == FULLY_COVERED else self._partial)[k].add(doc_id)
-            if STATUS_VALUE[status] > STATUS_VALUE[self.statuses[k]]:
-                self.statuses[k] = status
+            if k in done:
+                record["note"] = "duplicate update"
+                continue
+            if u.status not in STATUSES:
+                record["note"] = "unknown status"
+                continue
+            done.add(k)
+
+            current, proposed = STATUS_VALUE[self.statuses[k]], STATUS_VALUE[u.status]
+            if proposed > current and not u.support:
+                record["note"] = "raise without supporting passage"
+                continue
+            if proposed < current and not u.contradict:
+                record["note"] = "lowering without contradicting passage"
+                continue
+            if proposed == current and not (u.support or u.contradict):
+                record["note"] = "no cited passage"
+                continue
+            if proposed < current - 1:
+                proposed = current - 1
+                record["note"] = "lowered by one level at most"
+            self.statuses[k] = STATUSES[proposed]
+            self._evidence[k].extend(u.support + u.contradict)
+            self.missing[k] = u.missing if self.statuses[k] == PARTIALLY_COVERED else ""
+            record["to"] = self.statuses[k]
+            record["applied"] = True
+        return records
 
     def evidence(self) -> List[Dict[str, Any]]:
-        """Per-criterion ids of the partially and fully covering documents."""
+        """Per criterion, its status, what it still lacks and its attached
+        evidence (without text)."""
         return [
-            {"id": c.id, "partially_covered": sorted(p), "fully_covered": sorted(f)}
-            for c, p, f in zip(self.criteria, self._partial, self._full)
+            {"id": c.id, "status": st, "missing": m, "evidence": [e.to_dict() for e in ev]}
+            for c, st, m, ev in zip(self.criteria, self.statuses, self.missing, self._evidence)
         ]
