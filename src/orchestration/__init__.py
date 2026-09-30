@@ -84,6 +84,7 @@ def build_uncertainty_estimator(
     max_criteria: int = 8,
     criteria_judge: str = "none",
     criteria_judge_model: str = "",
+    add_intermediate_answer: bool = True,
     agent=None,
     agentic_model: Optional[str] = None,
     dataset: Optional[str] = None,
@@ -106,6 +107,8 @@ def build_uncertainty_estimator(
             criteria_delta and criteria_targeting.
         criteria_judge_model: NLI model (nli) or judge LLM (llm); "" = the
             default NLI model or *llm_criteria*.
+        add_intermediate_answer: Ask the agent for an intermediate answer
+            after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
             per-step intermediate answers.
         agentic_model: Agent type name (answer format, intermediate answer
@@ -140,7 +143,9 @@ def build_uncertainty_estimator(
         logger.warning("Retriever has no local encoder; query_novelty is null")
 
     intermediate_answer_fn = None
-    if (
+    if not add_intermediate_answer:
+        print("Uncertainty estimator: intermediate answers disabled (--add-intermediate-answer false)")
+    elif (
         agent is not None
         and agentic_model not in NO_INTERMEDIATE_ANSWER_AGENTS
         and dataset in INTERMEDIATE_ANSWER_DATASETS
@@ -181,6 +186,7 @@ def build_uncertainty_estimator(
             "dataset": dataset,
             "llm_criteria": llm_criteria or None,
             "max_criteria": max_criteria,
+            "add_intermediate_answer": add_intermediate_answer,
             "mode": mode,
         },
         inform=mode == "inform",
@@ -503,6 +509,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_criteria=worker_config.get("max_criteria", 8),
         criteria_judge=worker_config.get("criteria_judge", "none"),
         criteria_judge_model=worker_config.get("criteria_judge_model", ""),
+        add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
         agent=agent if hasattr(agent, "uncertainty_estimator") else None,
         agentic_model=agentic_model,
         dataset=dataset,

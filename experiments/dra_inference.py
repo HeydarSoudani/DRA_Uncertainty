@@ -239,8 +239,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         print(f"Loaded {len(results)} queries for evaluation")
 
         retrieval_evaluator, generation_evaluator, trajectory_evaluator, \
-            cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, \
-            uncertainty_evaluator = \
+            cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, _ = \
             build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
@@ -252,7 +251,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         evaluate_and_save(
             results, generation_evaluator, trajectory_evaluator, run_dir,
             cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-            uncertainty_evaluator=uncertainty_evaluator,
             report_evaluator=report_evaluator,
             fusion_metrics=fusion_metrics,
         )
@@ -321,6 +319,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             max_criteria=kwargs.get("max_criteria", 8),
             criteria_judge=kwargs.get("criteria_judge", "none"),
             criteria_judge_model=kwargs.get("criteria_judge_model", ""),
+            add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
             agent=agent if hasattr(agent, "uncertainty_estimator") else None,
             agentic_model=agentic_model,
             dataset=dataset,
@@ -572,7 +571,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         cited_doc_evaluator,
         seen_doc_evaluator,
         accuracy_evaluator,
-        uncertainty_evaluator=uncertainty_evaluator,
         report_evaluator=report_evaluator,
         fusion_metrics=fusion_metrics,
     )

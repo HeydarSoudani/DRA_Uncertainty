@@ -20,7 +20,7 @@ generation (package)
 trajectory_evaluator
     Per-step trajectory statistics (incl. token usage) and persistence.
 uncertainty_evaluator
-    Per-iteration uncertainty-signal persistence and aggregation.
+    Per-iteration uncertainty-signal persistence.
 
 Per-query/per-step token usage is recorded by the agents (via
 ``utils.token_meter.TokenMeter`` attached to the LLM clients) and aggregated by

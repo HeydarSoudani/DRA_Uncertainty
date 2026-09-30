@@ -189,40 +189,47 @@ def verbose_print_uncertainty(
     *,
     agent_name: str = "",
 ) -> None:
-    """Print the uncertainty estimator's signals for one search iteration."""
+    """Print the uncertainty estimator's record for one search iteration:
+    the criteria state, then the signals, then the gold-based recall and the
+    intermediate answer, then any errors."""
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[Iter {iter_num}] [uncertainty]: "
+    padding = " " * len(label)
 
     def _fmt(val, fmt=".3f"):
         return f"{val:{fmt}}" if val is not None else "—"
 
-    print(
-        f"{label}doc_novelty={_fmt(record.get('doc_novelty'))} "
-        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids) | "
-        f"query_novelty={_fmt(record.get('query_novelty'))} | "
-        f"criteria_delta={_fmt(record.get('criteria_delta'), 'd')} | "
-        f"criteria_targeting={_fmt(record.get('criteria_targeting'))} | "
-        f"new_item_recall={_fmt(record.get('new_item_recall'))} "
-        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant)"
-    )
-    padding = " " * len(label)
-
+    rows = []
     state = record.get("criteria_state_after")
     if state:
         counts = {s: state.count(s) for s in ("fully_covered", "partially_covered", "uncovered")}
-        print(f"{padding}criteria_state: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
+        rows.append("criteria_state: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
 
+    rows.append(
+        f"doc_novelty={_fmt(record.get('doc_novelty'))} "
+        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids) | "
+        f"query_novelty={_fmt(record.get('query_novelty'))} | "
+        f"criteria_delta={_fmt(record.get('criteria_delta'), 'd')} | "
+        f"criteria_targeting={_fmt(record.get('criteria_targeting'))}"
+    )
+
+    gold = (
+        f"new_item_recall={_fmt(record.get('new_item_recall'))} "
+        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant)"
+    )
     answers = record.get("intermediate_answers")
-    if answers is not None:
+    if answers is None:
+        gold += f" | intermediate_answer=null ({record.get('intermediate_answer_status') or 'disabled'})"
+    else:
         answers = [a.replace(chr(10), " ") for a in answers]
-        parts = [f"intermediate_answer={answers if answers else 'none'}"]
-        confidence = record.get("intermediate_answer_confidence")
-        if confidence is not None:
-            parts.append(f"confidence={confidence:.2f}")
-        print(f"{padding}{' | '.join(parts)}")
+        gold += f" | intermediate_answer={answers if answers else 'none'}"
+    rows.append(gold)
 
     if record.get("errors"):
-        print(f"{padding}errors: {'; '.join(record['errors'])}")
+        rows.append(f"errors: {'; '.join(record['errors'])}")
+
+    for i, row in enumerate(rows):
+        print(f"{label if i == 0 else padding}{row}")
 
 
 # ===========================================================================

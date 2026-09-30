@@ -26,7 +26,7 @@ first, nested detail last::
     doc_novelty, criteria_delta, query_novelty, criteria_targeting   # x_t
     new_item_recall,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
-    intermediate_answers, intermediate_answer_confidence,
+    intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after, criteria_judgments[],
     intermediate_answer_reasoning, errors[],
@@ -41,7 +41,10 @@ A signal that could not be computed is null, never 0; the reason is in
 no qrels).  ``criteria_judgments`` has one ``{doc_id, statuses, scores |
 evidence}`` per novel doc, ``statuses`` null when the judge failed on it.
 ``intermediate_answers`` is null when not configured or failed and ``[]``
-when the model gave no answer; its confidence is in [0, 1].
+when the model gave no answer; ``intermediate_answer_status`` says which:
+``ok``, ``no_candidate`` (``[]``), ``unparsed`` (reply without answer
+format), ``failed`` (call raised; see ``errors``) or ``disabled`` (not
+configured, e.g. ``--add-intermediate-answer false``).
 """
 
 import logging
@@ -270,13 +273,18 @@ class UncertaintyEstimator:
             recall = dict(NewItemRecallSignal._NULL)
 
         # --- Intermediate answer (extra) ----------------------------------------
-        intermediate_answer = None
+        intermediate_answer, intermediate_answer_status = None, "disabled"
         if self._intermediate_answer is not None:
             try:
                 intermediate_answer = self._intermediate_answer.score(original_query, trajectory)
+                if intermediate_answer is None:
+                    intermediate_answer_status = "unparsed"
+                else:
+                    intermediate_answer_status = "ok" if intermediate_answer["answers"] else "no_candidate"
             except Exception as e:
                 logger.warning("UncertaintyEstimator: intermediate answer failed: %s", e)
                 errors.append(f"intermediate_answer: {e}")
+                intermediate_answer_status = "failed"
 
         record: Dict[str, Any] = {
             "iteration": self._step,
@@ -290,7 +298,7 @@ class UncertaintyEstimator:
             "criteria_targeting": _round(criteria_targeting),
             **recall,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
-            "intermediate_answer_confidence": intermediate_answer["confidence"] if intermediate_answer else None,
+            "intermediate_answer_status": intermediate_answer_status,
             "subqueries": subqueries,
             "queries": per_query,
             "docs": per_doc,

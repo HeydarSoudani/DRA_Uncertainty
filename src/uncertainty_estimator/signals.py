@@ -15,7 +15,7 @@ Extra, not part of x_t:
 
 - ``NewItemRecallSignal``: supervised new-item recall against qrels.
 - ``IntermediateAnswerSignal``: the agent's own answer(s) after each turn,
-  not evaluated; confidence in [0, 1].
+  not evaluated.
 
 Query embeddings come from the retriever's encoder
 (``encode_fn_from_retriever``).  Without one (BM25, SPLADE, endpoint
@@ -345,9 +345,8 @@ class IntermediateAnswerSignal:
     A reply that is only the answer value (one short line, no tags, e.g. a
     bare ``no candidate``) is accepted as is.
 
-    ``score`` returns ``{"answers": [...], "reasoning": str, "confidence":
-    float | None}``; ``answers`` is empty when the model gave no answer and
-    ``confidence`` is the stated confidence rescaled to [0, 1].
+    ``score`` returns ``{"answers": [...], "reasoning": str}``; ``answers``
+    is empty when the model gave no answer.  A stated confidence is ignored.
     It returns ``None`` when the reply has no answer format, and raises
     when the call fails.
 
@@ -369,13 +368,11 @@ class IntermediateAnswerSignal:
         if not format_matched:
             outputs = extract_bare_answer(raw)
             if outputs is None:
-                logger.debug("Intermediate answer without answer format: %r", raw.strip()[:200])
+                logger.warning("Intermediate answer without answer format: %r", raw.strip()[:200])
                 return None
         answers = [o.candidate for o in outputs if o.candidate.lower() != "no candidate"]
         first = outputs[0] if outputs else None
-        confidence = first.confidence if first else None
         return {
             "answers": answers,
             "reasoning": first.reasoning if first else "",
-            "confidence": round(confidence / 100.0, 4) if confidence is not None else None,
         }

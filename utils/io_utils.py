@@ -153,7 +153,7 @@ def load_result_from_saved_files(
     # One line per trajectory step plus a ``{"record": "meta", ...}`` line (last
     # in files written online, first in older runs — position is irrelevant here).  The full surfaced ranking is not stored here (it lives in
     # retrieval/surfaced/*.trec, reconstructed in step 5b); uncertainty signals
-    # are under uncertainty/{qid}.jsonl (step 6).
+    # are under uncertainty/{qid}.jsonl and are not reloaded (analysed offline).
     if not lightweight:
         try:
             content = _read_text("trajectory", f"{query_id}.jsonl")
@@ -251,37 +251,6 @@ def load_result_from_saved_files(
         except (FileNotFoundError, OSError):
             pass
 
-    # ── 6. Load uncertainty signals from uncertainty/{qid}.jsonl ─────────────
-    # A ``{"record": "meta", ...}`` line, then one ``{"record": "step", ...}``
-    # line per search iteration (see ``evaluation.uncertainty_evaluator``).
-    # Rebuilt into the ``uncertainty_meta`` / ``uncertainty_steps`` keys the
-    # agent attaches, so UncertaintyEvaluator can aggregate them on resume.
-    if "uncertainty_meta" not in result:
-        try:
-            content = _read_text("uncertainty", f"{query_id}.jsonl")
-            meta = None
-            steps = []
-            for line in content.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                obj = _json_loads(line)
-                record = obj.pop("record", None)
-                obj.pop("query_id", None)
-                if record == "meta":
-                    obj.pop("question", None)
-                    obj.pop("schema_version", None)
-                    meta = obj
-                elif record == "step":
-                    steps.append(obj)
-            if meta is not None:
-                result["uncertainty_meta"] = meta
-                result["uncertainty_steps"] = steps
-        except (FileNotFoundError, OSError):
-            pass
-        except Exception as e:
-            print(f"Warning: could not load uncertainty JSONL for {query_id}: {e}")
-
     return result
 
 
@@ -364,6 +333,7 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "max_criteria": kwargs.get("max_criteria", 8),
             "criteria_judge": kwargs.get("criteria_judge", "none"),
             "criteria_judge_model": kwargs.get("criteria_judge_model", ""),
+            "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
         },
     }
     path = Path(run_dir) / "run_config.json"

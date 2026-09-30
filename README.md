@@ -180,7 +180,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 ├── generation/{qid}.md             per-query report (markdown)
 ├── trajectory/{qid}.jsonl          meta line + one line per step
 ├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
-└── summary.json                    grouped metrics (answer / retrieval / trajectory / generation / uncertainty)
+└── summary.json                    grouped metrics (answer / retrieval / trajectory / generation)
 ```
 
 With the estimator on, `{uncertainty_config}` is `ue-{mode}_{criteria_judge}` (e.g. `ue-monitor_nli`, `ue-inform_nli`).
@@ -195,7 +195,7 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 2 |
+| `schema_version` | 3 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
 | `criteria_source`, `criteria_judge`, `query_scorer`, `encoder` | components in use (null when off) |
@@ -216,7 +216,6 @@ Step line (one per search iteration, flat scalars first):
 | `new_item_recall` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
-| `intermediate_answer_confidence` | stated confidence in [0, 1] |
 | `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
 | `criteria_state_before`, `criteria_state_after` | one status per criterion, in `criteria` order |
 | `criteria_judgments` | `[{doc_id, statuses, scores or evidence}]` for the novel docs |
