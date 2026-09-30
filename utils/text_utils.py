@@ -189,9 +189,14 @@ def verbose_print_uncertainty(
     *,
     agent_name: str = "",
 ) -> None:
-    """Print the uncertainty estimator's record for one search iteration:
-    the criteria state, then the signals, then the gold-based recall and the
-    intermediate answer, then any errors."""
+    """Print the uncertainty estimator's record for one search iteration, one
+    row per signal family: retrieval (criteria state, criteria delta, doc
+    novelty), reasoner (criteria attempts, targeted criteria, query novelty),
+    gold (new-item recall, intermediate answer), then any errors.
+
+    ``criteria_state`` is one letter per criterion (u = uncovered,
+    p = partially_covered, c = fully_covered) in criterion order, index-aligned
+    with ``criteria_attempts``."""
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[Iter {iter_num}] [uncertainty]: "
     padding = " " * len(label)
@@ -199,20 +204,29 @@ def verbose_print_uncertainty(
     def _fmt(val, fmt=".3f"):
         return f"{val:{fmt}}" if val is not None else "—"
 
-    rows = []
     state = record.get("criteria_state_after")
-    if state:
-        counts = {s: state.count(s) for s in ("fully_covered", "partially_covered", "uncovered")}
-        rows.append("criteria_state: " + ", ".join(f"{n} {s}" for s, n in counts.items()))
+    attempts = record.get("criteria_attempts_after")
+    targeted = record.get("criteria_targeted")
+    letters = {"uncovered": "u", "partially_covered": "p", "fully_covered": "c"}
+    # Pad both lists to one column width so criterion i lines up across rows.
+    width = max((len(str(n)) for n in attempts or []), default=1)
 
-    rows.append(
-        f"doc_novelty={_fmt(record.get('doc_novelty'))} "
-        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids) | "
-        f"query_novelty={_fmt(record.get('query_novelty'))} | "
+    def _list(items):
+        if items is None:
+            return "—"
+        return "[" + ", ".join(f"{x:>{width}}" for x in items) + "]"
+
+    retrieval = (
+        f"criteria_state=   {_list(state and [letters.get(s, '?') for s in state])} | "
         f"criteria_delta={_fmt(record.get('criteria_delta'), '+d')} | "
-        f"criteria_targeting={_fmt(record.get('criteria_targeting'))}"
+        f"doc_novelty={_fmt(record.get('doc_novelty'))} "
+        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids)"
     )
-
+    reasoner = (
+        f"criteria_attempts={_list(attempts)} | "
+        f"targeted={targeted if targeted is not None else '—'} | "
+        f"query_novelty={_fmt(record.get('query_novelty'))}"
+    )
     gold = (
         f"new_item_recall={_fmt(record.get('new_item_recall'))} "
         f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant)"
@@ -223,13 +237,13 @@ def verbose_print_uncertainty(
     else:
         answers = [a.replace(chr(10), " ") for a in answers]
         gold += f" | intermediate_answer={answers if answers else 'none'}"
-    rows.append(gold)
 
+    rows = [("retrieval", retrieval), ("reasoner", reasoner), ("gold", gold)]
     if record.get("errors"):
-        rows.append(f"errors: {'; '.join(record['errors'])}")
+        rows.append(("errors", "; ".join(record["errors"])))
 
-    for i, row in enumerate(rows):
-        print(f"{label if i == 0 else padding}{row}")
+    for i, (family, row) in enumerate(rows):
+        print(f"{label if i == 0 else padding}{family + ':':<11}{row}")
 
 
 # ===========================================================================

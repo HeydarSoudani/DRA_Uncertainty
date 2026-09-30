@@ -103,7 +103,7 @@ def build_uncertainty_estimator(
             it the criteria-based signals are null.
         max_criteria: Cap on the number of criteria per query.
         criteria_judge_model: LLM behind criteria_delta (stateful coverage
-            judge) and criteria_targeting; "" = *llm_criteria*.
+            judge) and the criteria attempts (targeting scorer); "" = *llm_criteria*.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the

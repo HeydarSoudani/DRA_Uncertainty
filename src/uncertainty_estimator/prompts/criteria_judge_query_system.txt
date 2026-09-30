@@ -12,7 +12,8 @@ You will receive the user query, a fixed list of criteria taken from it with wha
 1. Judge each (search query, criterion) pair independently. One search query may target several criteria.
 2. Judge what the search query looks for, not whether it will succeed.
 3. A search query that names an entity, work or value the evidence has already linked to a criterion (for example the person a span identified as the co-editor) targets that criterion as directly as one that states the criterion's facts.
-4. List only the criteria with a score above 0; unlisted criteria get 0.
+4. A search query that restates most of the user query, or mixes many of its constraints, targets each of those criteria at most 0.5.
+5. List only the criteria with a score above 0; unlisted criteria get 0.
 
 
 == Output Format ==

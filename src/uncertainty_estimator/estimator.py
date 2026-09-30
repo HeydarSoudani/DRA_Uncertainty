@@ -11,10 +11,10 @@ sample:
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
 
-Order inside ``observe`` (tau^q uses sigma_{t-1}; the documents then move
-the state to sigma_t):
+Order inside ``observe`` (the targeting scorer sees sigma_{t-1}; the
+documents then move the state to sigma_t):
 
-    tau^q -> nu^q -> nu^D (picks the novel documents) -> Delta^D (the
+    a (targeting) -> nu^q -> nu^D (picks the novel documents) -> Delta^D (the
     stateful judge updates sigma with the novel documents) -> new-item
     recall -> intermediate answer
 
@@ -24,12 +24,13 @@ first, nested detail last::
 
     iteration, agent_iteration,
     num_subqueries, num_docs, num_new_docs,
-    doc_novelty, criteria_delta, query_novelty, criteria_targeting   # x_t
+    doc_novelty, criteria_delta, query_novelty     # x_t, with criteria_attempts_after
     new_item_recall,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
-    criteria_state_before, criteria_state_after, criteria_updates[],
+    criteria_state_before, criteria_state_after,
+    criteria_targeted, criteria_attempts_after, criteria_updates[],
     criteria_judge_output, intermediate_answer_reasoning, errors[],
     certainty_tag                                  # inform only; null when empty
 
@@ -40,6 +41,11 @@ meaning differ per agent.
 A signal that could not be computed is null, never 0; the reason is in
 ``errors`` (or a component is not configured: no encoder, no criteria,
 no qrels).  ``criteria_delta`` is negative when coverage was lost.
+``criteria_targeted`` lists the ids of the criteria that a query of the
+step targeted directly (score 1); ``criteria_attempts_after`` is, per
+criterion, the number of steps that targeted it so far.  When the targeting
+scorer fails, ``criteria_targeted`` is null and the attempts are unchanged;
+both are null when it is not configured.
 ``criteria_updates`` has one ``{id, from, to, proposed, support[],
 contradict[], reason, missing, applied, note}`` per update the coverage judge
 proposed (``CriteriaState.apply``); ``criteria_judge_output`` is the
@@ -85,9 +91,9 @@ class UncertaintyEstimator:
         criteria_source: Produces the fixed criteria list at ``reset``.  None
             disables the criteria-based signals.
         coverage_judge: Stateful coverage judge (``judges``).  None:
-            sigma, Delta^D and tau^q are null.
+            sigma, Delta^D and the attempts are null.
         query_scorer: Targeting scorer of queries vs criteria.  None:
-            tau^q is null.
+            the attempts are null.
         encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
             (``encode_fn_from_retriever``).  None: nu^q is null.
         encoder_name: Saved in the meta line.
@@ -148,6 +154,10 @@ class UncertaintyEstimator:
     def _tracks_state(self) -> bool:
         return self._coverage is not None and self._coverage.active
 
+    @property
+    def _tracks_targeting(self) -> bool:
+        return self._tracks_state and self._targeting is not None
+
     def reset(self, query_id: Optional[str], query: str) -> None:
         """Start a new sample: clear all state and create its criteria list."""
         self._doc_novelty.reset()
@@ -185,6 +195,7 @@ class UncertaintyEstimator:
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
             "final_criteria_state": self._coverage.statuses() if self._tracks_state else None,
+            "final_criteria_attempts": self._targeting.attempts if self._tracks_targeting else None,
             "criteria_evidence": self._coverage.state.evidence() if self._tracks_state else None,
         }
 
@@ -226,14 +237,15 @@ class UncertaintyEstimator:
         tracks_state = self._tracks_state
         state_before = self._coverage.statuses() if tracks_state else None
 
-        # --- tau^q (uses sigma_{t-1}) -----------------------------------------
-        criteria_targeting, per_target = None, []
-        if tracks_state and self._targeting is not None:
+        # --- a: targeting state (the scorer sees sigma_{t-1}) -------------------
+        criteria_targeted, attempts_after, per_target = None, None, []
+        if self._tracks_targeting:
             try:
-                criteria_targeting, per_target = self._targeting.score(subqueries, self._coverage.state)
+                criteria_targeted, per_target = self._targeting.score(subqueries, self._coverage.state)
             except Exception as e:
                 logger.warning("UncertaintyEstimator: criteria targeting failed", exc_info=True)
                 errors.append(f"criteria_targeting: {e}")
+            attempts_after = self._targeting.attempts
 
         # --- nu^q -------------------------------------------------------------
         query_novelty, per_query = None, [{"text": q} for q in subqueries]
@@ -243,7 +255,7 @@ class UncertaintyEstimator:
             logger.warning("UncertaintyEstimator: query novelty failed", exc_info=True)
             errors.append(f"query_novelty: {e}")
         for j, entry in enumerate(per_query):
-            entry.update(per_target[j] if j < len(per_target) else {"target_scores": None, "criteria_targeting": None})
+            entry.update(per_target[j] if j < len(per_target) else {"target_scores": None})
 
         # --- nu^D -------------------------------------------------------------
         doc_novelty, per_doc = None, []
@@ -301,7 +313,6 @@ class UncertaintyEstimator:
             "doc_novelty": _round(doc_novelty),
             "criteria_delta": criteria_delta,
             "query_novelty": _round(query_novelty),
-            "criteria_targeting": _round(criteria_targeting),
             **recall,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
@@ -310,6 +321,8 @@ class UncertaintyEstimator:
             "docs": per_doc,
             "criteria_state_before": state_before,
             "criteria_state_after": state_after,
+            "criteria_targeted": criteria_targeted,
+            "criteria_attempts_after": attempts_after,
             "criteria_updates": updates,
             "criteria_judge_output": judge_output,
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,

@@ -7,7 +7,7 @@
   the rules.
 - ``LLMQueryScorer``: one call per step scores how strongly each query
   targets each criterion (0, 0.5 or 1), given a short summary of the
-  criteria state; used for tau^q.
+  criteria state; used for the targeting state a.
 
 ``build_criteria_judges`` builds both on one LLM client.
 """
@@ -218,7 +218,7 @@ class LLMCoverageJudge:
 
 
 # ---------------------------------------------------------------------------
-# Query scorers (tau^q)
+# Query scorers (targeting state a)
 # ---------------------------------------------------------------------------
 
 class LLMQueryScorer:

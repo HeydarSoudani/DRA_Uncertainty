@@ -3,7 +3,7 @@
 `--agentic-model uncertainty_aware` is a SearchR1-style search agent that, after every retrieval, reads the
 `<certainty>` tag of the shared uncertainty estimator in `inform` mode. The tag is computed by code, never written by
 the policy, and is exactly the one every other agent reads under `--uncertainty-estimator-mode inform` (criteria
-states, retrieval signals `doc_novelty` / `criteria_delta`, reasoning signals `query_novelty` / `criteria_targeting`;
+states, retrieval signals `doc_novelty` / `criteria_delta`, attempts per criterion, reasoning signal `query_novelty`;
 no gold-based signal). What sets this agent apart is only its system prompt, which explains the tag.
 
 `--uncertainty-estimator-mode` applies as for every other agent:
@@ -49,12 +49,12 @@ text…
 </information>
 <certainty step="1">
   <criteria covered="1" partial="1" not_covered="1">
-    <k1 status="covered">its conservation status is 'endangered'</k1>
-    <k2 status="partial">it is the only representative of its genus in the country</k2>
-    <k3 status="not_covered">one of its local names roughly translates to 'devil's basket'</k3>
+    <k1 status="covered" attempts="1">its conservation status is 'endangered'</k1>
+    <k2 status="partial" attempts="2">it is the only representative of its genus in the country</k2>
+    <k3 status="not_covered" attempts="0">one of its local names roughly translates to 'devil's basket'</k3>
   </criteria>
   <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
-  <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
+  <reasoning_signals query_novelty="0.81"/>
 </certainty>
 <reasoning>…</reasoning>
 …

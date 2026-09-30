@@ -113,7 +113,7 @@ the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Secti
 | `doc_novelty` | ν^D | fraction of the iteration's docs whose id was not seen in an earlier iteration (0, 0.2, ..., 1 for 5 docs) |
 | `criteria_delta` | Δ^D | change of the criteria state (uncovered 0, partially covered 1, fully covered 2) caused by the novel docs; negative when a contradiction lowered it |
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
-| `criteria_targeting` | τ^q | how strongly the queries target criteria still uncovered or partially covered |
+| `criteria_attempts_after` | a | per criterion, the number of iterations whose queries directly targeted it (a state, like the criteria state) |
 
 Extra saved information: `new_item_recall` (against qrels) and per-step intermediate answers (BrowseComp-Plus and
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
@@ -134,9 +134,12 @@ model `criteria_judge_model`, default `llm_criteria`):
   supporting passage, a lowering needs a contradicting passage and moves one level at most per iteration, and an
   update that keeps the status only attaches its evidence. Several partial passages can together make a criterion
   fully covered, and a contradiction lowers it, so `criteria_delta` is negative when coverage was lost.
-- `criteria_targeting`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
+- `criteria_attempts_after`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
   each criterion's status, the verified spans of its latest evidence passage and what is `missing`, so a query naming
-  an entity the evidence already linked to a criterion counts as targeting it.
+  an entity the evidence already linked to a criterion counts as targeting it; a query that restates most of the user
+  query scores at most 0.5. One query may target several criteria. A criterion that some query of the iteration
+  scores 1 on is `criteria_targeted` and its attempt count grows by 1 (once per iteration, however many queries target
+  it; 0.5 never counts; covered criteria are counted too). When the call fails the attempts are unchanged.
 
 #### Inform mode
 
@@ -146,16 +149,16 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
 ```xml
 <certainty step="3">
   <criteria covered="1" partial="1" not_covered="1">
-    <k1 status="covered">born in the 1960s</k1>
-    <k2 status="partial">won a regional award</k2>
-    <k3 status="not_covered">studied in Lisbon</k3>
+    <k1 status="covered" attempts="1">born in the 1960s</k1>
+    <k2 status="partial" attempts="2">won a regional award</k2>
+    <k3 status="not_covered" attempts="0">studied in Lisbon</k3>
   </criteria>
   <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
-  <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
+  <reasoning_signals query_novelty="0.81"/>
 </certainty>
 ```
 
-Only the criteria state and the four signals above are shown; gold-based fields (`new_item_recall`,
+Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_recall`,
 relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
@@ -208,6 +211,7 @@ Meta line (one per query):
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `criteria` | `[{id, text}]` |
 | `criteria_info` | criteria LLM `model`, `reasoning`, `errors` |
+| `final_criteria_attempts` | last attempts, one per criterion |
 | `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
 Step line (one per search iteration, flat scalars first):
@@ -217,12 +221,13 @@ Step line (one per search iteration, flat scalars first):
 | `iteration` | 1, 2, ... for every agent |
 | `agent_iteration` | the agent's own counter (base and meaning differ per agent) |
 | `num_subqueries`, `num_docs`, `num_new_docs` | step counts (unique doc ids) |
-| `doc_novelty`, `criteria_delta`, `query_novelty`, `criteria_targeting` | x_t, see the table above |
+| `doc_novelty`, `criteria_delta`, `query_novelty` | x_t, see the table above |
 | `new_item_recall` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
 | `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
 | `criteria_state_before`, `criteria_state_after` | one status per criterion, in `criteria` order |
+| `criteria_targeted`, `criteria_attempts_after` | ids targeted directly this iteration (null when the scorer failed); attempts per criterion, in `criteria` order |
 | `criteria_updates` | `[{id, from, to, proposed, support, contradict, reason, missing, applied, note}]`, one per update the coverage judge proposed; `applied` is false for a rejected one (`note` says why) |
 | `criteria_judge_output` | the coverage judge's raw reply (null when it was not called) |
 | `intermediate_answer_reasoning`, `errors` | free text, reasons for nulls |

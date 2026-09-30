@@ -1,6 +1,6 @@
 """Per-step signals of the uncertainty estimator.
 
-Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t):
+Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t):
 
 - ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
   not seen in an earlier step.
@@ -8,8 +8,8 @@ Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t):
   by the step's novel documents; negative when coverage was lost.
 - ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
   queries of earlier steps.
-- ``CriteriaTargetingSignal`` tau^q: how strongly the step's queries target
-  the criteria still uncovered or partially covered.
+- ``CriteriaTargetingSignal`` a: per criterion, the number of steps whose
+  queries directly targeted it.
 
 Extra, not part of x_t:
 
@@ -33,7 +33,7 @@ from utils.text_utils import doc_id as _doc_id
 from .criteria import CriteriaState
 from .judges import LLMCoverageJudge, LLMQueryScorer
 from .prompts import intermediate_answer_instruction
-from .types import OPEN_STATUSES, STATUS_VALUE, Criterion
+from .types import STATUS_VALUE, Criterion
 
 logger = logging.getLogger(__name__)
 
@@ -226,41 +226,48 @@ class CriteriaCoverageSignal:
 
 
 # ---------------------------------------------------------------------------
-# tau^q: criteria targeting
+# a^q: criteria targeting state
 # ---------------------------------------------------------------------------
 
 class CriteriaTargetingSignal:
-    """How strongly the step's queries target the criteria still open.
+    """Targeting state: how many steps have aimed a query at each criterion.
 
-    Per query: the max score over the criteria that are uncovered or
-    partially covered in sigma_{t-1} (0 when none is open).  The step value
-    is the mean over the step's queries.
+    The scorer scores every (query, criterion) pair as 0, 0.5 or 1; one
+    query may target several criteria.  A criterion is targeted in a step
+    when at least one of the step's queries scores 1 on it (0.5 never
+    counts), and its attempt count a_t(k) then grows by 1, once per step
+    however many queries target it.  Covered criteria are counted too.
     """
 
     def __init__(self, scorer: LLMQueryScorer) -> None:
         self.scorer = scorer
         self._query = ""
         self._criteria: List[Criterion] = []
+        self._attempts: List[int] = []
+
+    @property
+    def attempts(self) -> List[int]:
+        return list(self._attempts)
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._criteria = list(criteria)
+        self._attempts = [0] * len(self._criteria)
 
     def score(
         self, subqueries: List[str], state: Optional[CriteriaState],
-    ) -> Tuple[Optional[float], List[Dict[str, Any]]]:
-        """Return ``(step_targeting, per_query)``; per query ``target_scores``
-        (one per criterion) and ``criteria_targeting``.  *state* is
-        sigma_{t-1}, shown to the scorer and used for the mask."""
+    ) -> Tuple[Optional[List[str]], List[Dict[str, Any]]]:
+        """Return ``(targeted_ids, per_query)``; per query ``target_scores``
+        (one per criterion).  *state* is sigma_{t-1}, shown to the scorer.
+        ``targeted_ids`` is None, and the attempts are unchanged, without
+        queries, criteria or state."""
         if not subqueries or not self._criteria or state is None:
             return None, []
         scores = self.scorer.score(self._query, subqueries, state)
-        open_k = [k for k, st in enumerate(state.statuses) if st in OPEN_STATUSES]
-        per_query: List[Dict[str, Any]] = []
-        for row in scores:
-            value = max((row[k] for k in open_k), default=0.0)
-            per_query.append({"target_scores": row, "criteria_targeting": round(float(value), 4)})
-        return _mean([p["criteria_targeting"] for p in per_query]), per_query
+        targeted = [k for k in range(len(self._criteria)) if any(row[k] >= 1.0 for row in scores)]
+        for k in targeted:
+            self._attempts[k] += 1
+        return [self._criteria[k].id for k in targeted], [{"target_scores": row} for row in scores]
 
 
 # ---------------------------------------------------------------------------

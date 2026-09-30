@@ -14,9 +14,6 @@ FULLY_COVERED = "fully_covered"
 STATUS_VALUE: Dict[str, int] = {UNCOVERED: 0, PARTIALLY_COVERED: 1, FULLY_COVERED: 2}
 STATUSES = tuple(STATUS_VALUE)
 
-# Criteria that a query can still target: uncovered or partially covered.
-OPEN_STATUSES = (UNCOVERED, PARTIALLY_COVERED)
-
 
 @dataclass
 class Criterion:
