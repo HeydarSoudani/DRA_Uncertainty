@@ -1,7 +1,7 @@
 Answer the given question.
-You must conduct reasoning inside <think> and </think> first every time you get new information.
+You must conduct reasoning inside <reasoning> and </reasoning> first every time you get new information.
 After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>.
-You can search as many times as your want, within {max_turns} turns.
+You can search as many times as you want.
 If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>.
 {certainty_section}
-Every turn is <think>, then exactly one <search> or <answer>. Then stop. Never write <information> or <certainty> yourself. A run that ends without an <answer> is a failure.
+Every turn is <reasoning>, then exactly one <search> or <answer>. Then stop. Never write {injected_tags} yourself. A run that ends without an <answer> is a failure.

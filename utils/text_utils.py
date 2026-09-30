@@ -202,8 +202,8 @@ def verbose_print_uncertainty(
         f"query_novelty={_fmt(record.get('query_novelty'))} | "
         f"criteria_delta={_fmt(record.get('criteria_delta'), 'd')} | "
         f"criteria_targeting={_fmt(record.get('criteria_targeting'))} | "
-        f"marginal_recall={_fmt(record.get('marginal_recall'))} "
-        f"({_fmt(record.get('num_new_relevant'), 'd')} new relevant)"
+        f"new_item_recall={_fmt(record.get('new_item_recall'))} "
+        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant)"
     )
     padding = " " * len(label)
 
@@ -229,8 +229,9 @@ def verbose_print_uncertainty(
 # Documents: internal helpers
 # ===========================================================================
 
-def _doc_id(doc) -> str:
-    """Return canonical doc_id from a doc dict or string."""
+def doc_id(doc) -> str:
+    """The canonical id of a doc dict (``doc_id``, else ``id``) or a bare id
+    string; "" when neither is set."""
     if isinstance(doc, str):
         return doc
     return doc.get("doc_id") or doc.get("id") or ""
@@ -305,7 +306,7 @@ def _collect_cited_docs(result: dict) -> List[Dict[str, Any]]:
 
         doc_by_id: Dict[str, Dict[str, Any]] = {}
         for d in step_docs:
-            did = _doc_id(d)
+            did = doc_id(d)
             if did:
                 doc_by_id[did] = d
 
@@ -321,11 +322,11 @@ def _collect_cited_docs(result: dict) -> List[Dict[str, Any]]:
     if not docs:
         memory_bank = result.get("memory_bank")
         if memory_bank and isinstance(memory_bank, dict):
-            for doc_id, entry in memory_bank.items():
-                if doc_id and doc_id not in seen_ids:
-                    seen_ids.add(doc_id)
+            for bank_id, entry in memory_bank.items():
+                if bank_id and bank_id not in seen_ids:
+                    seen_ids.add(bank_id)
                     docs.append({
-                        "doc_id": doc_id,
+                        "doc_id": bank_id,
                         "title": entry.get("title", ""),
                         "relevant_text": entry.get("evidence") or entry.get("summary") or "",
                     })
@@ -470,7 +471,7 @@ def build_references_section(result: dict) -> str:
     # Build doc_id → numeric reference mapping and replace UUID citations
     id_to_ref: Dict[str, str] = {}
     for idx, doc in enumerate(cited_docs, 1):
-        did = _doc_id(doc)
+        did = doc_id(doc)
         if did:
             id_to_ref[did] = str(idx)
 
@@ -483,7 +484,7 @@ def build_references_section(result: dict) -> str:
     lines = ["\n\n## References\n"]
 
     for idx, doc in enumerate(cited_docs, 1):
-        did = _doc_id(doc)
+        did = doc_id(doc)
         lines.append(f"[{idx}] {did}")
 
     return "\n".join(lines)

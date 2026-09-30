@@ -9,12 +9,12 @@ iteration's step record::
         <k2 status="partial">won a regional award</k2>
         <k3 status="not_covered">studied in Lisbon</k3>
       </criteria>
-      <retrieval_signals doc_novelty="0.42" criteria_delta="+1"/>
+      <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
       <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
     </certainty>
 
 Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS`` and the
-criteria state are read, so gold-based signals (marginal recall, relevant
+criteria state are read, so gold-based signals (new-item recall, relevant
 counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
 analysis.  A null signal is left out; an element with nothing to show is left
 out; with nothing to show at all there is no tag.

@@ -31,6 +31,16 @@ logger = logging.getLogger(__name__)
 litellm.suppress_debug_info = True
 
 
+# Prefix of a reply that had no content, only reasoning, returned when the
+# caller asked for ``return_reasoning_fallback``.
+REASONING_FALLBACK_PREFIX = "[reasoning_fallback]"
+
+
+def is_context_window_error(exc: BaseException) -> bool:
+    """True when *exc* says the prompt does not fit the model's context window."""
+    return "ContextWindowExceededError" in type(exc).__name__ or "context length" in str(exc).lower()
+
+
 _thread_local = threading.local()
 def _get_or_create_thread_event_loop() -> asyncio.AbstractEventLoop:
     """Get or create a persistent event loop for the current thread."""
@@ -201,7 +211,7 @@ class LiteLLMClient:
                 logger.warning(f"Attempt {attempt} failed: {str(e)}")
 
                 # ContextWindowExceededError is deterministic — retrying won't help
-                if "ContextWindowExceededError" in type(e).__name__ or "context length" in str(e).lower():
+                if is_context_window_error(e):
                     logger.error(f"Context window exceeded (attempt {attempt}), not retrying: {e}")
                     raise
 
@@ -344,7 +354,7 @@ class LiteLLMClient:
 
             if not content.strip() and return_reasoning_fallback:
                 if reasoning.strip():
-                    return "[reasoning_fallback]" + reasoning
+                    return REASONING_FALLBACK_PREFIX + reasoning
 
             return content
 

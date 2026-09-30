@@ -2,9 +2,8 @@
 
 Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t):
 
-- ``DocNoveltySignal``   nu^D: novelty of the step's documents w.r.t. the
-  documents of earlier steps (0 for a seen id, discounted by embedding
-  similarity for a near-duplicate, 1 for a new independent source).
+- ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
+  not seen in an earlier step.
 - ``CriteriaCoverageSignal`` Delta^D: change of the criteria state caused
   by the step's novel documents.
 - ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
@@ -14,13 +13,13 @@ Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, tau^q_t):
 
 Extra, not part of x_t:
 
-- ``MarginalRecallSignal``: supervised marginal recall against qrels.
+- ``NewItemRecallSignal``: supervised new-item recall against qrels.
 - ``IntermediateAnswerSignal``: the agent's own answer(s) after each turn,
   not evaluated; confidence in [0, 1].
 
-Embeddings come from the retriever's encoder (``encode_fn_from_retriever``).
-Without one (BM25, SPLADE, endpoint retrievers) nu^q is null and nu^D uses
-document ids only.  The criteria signals take a judge from ``judges``.
+Query embeddings come from the retriever's encoder
+(``encode_fn_from_retriever``).  Without one (BM25, SPLADE, endpoint
+retrievers) nu^q is null.  The criteria signals take a judge from ``judges``.
 """
 
 import logging
@@ -28,9 +27,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from deep_research_agents.prompts.answer_prompts import extract_answer_candidates
-from utils.text_utils import doc_text
-from ._helpers import doc_id as _doc_id
+from deep_research_agents.prompts.answer_prompts import extract_answer_candidates, extract_bare_answer
+from reasoner_component import REASONING_FALLBACK_PREFIX
+from utils.text_utils import doc_id as _doc_id
 from .criteria import CriteriaState
 from .judges import DocCriteriaJudge, QueryCriteriaScorer
 from .prompts import intermediate_answer_instruction
@@ -92,21 +91,14 @@ def _mean(values: List[Optional[float]]) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 class DocNoveltySignal:
-    """Novelty of the step's documents w.r.t. documents of earlier steps.
+    """Fraction of the step's documents whose id was not seen in an earlier step.
 
-    Per document: 0 if its id was seen in an earlier step, else
-    ``1 - max cosine similarity`` to the documents of earlier steps (1 for
-    the first step or without embeddings).  The step value is the mean.
-
-    Embeddings are the FAISS vectors the dense retriever attaches as
-    ``doc["_emb"]``; documents without one are encoded with the retriever
-    encoder (``is_query=False``).
+    Per document: 1 for a new id, 0 for an id seen in an earlier step.  The
+    step value is the mean, so with k unique documents it is a multiple of 1/k.
     """
 
-    def __init__(self, encode_fn: Optional[EncodeFn] = None) -> None:
-        self._encode_fn = encode_fn
+    def __init__(self) -> None:
         self._seen_ids: Set[str] = set()
-        self._seen_embs: List[np.ndarray] = []
 
     @property
     def seen_ids(self) -> Set[str]:
@@ -114,60 +106,23 @@ class DocNoveltySignal:
 
     def reset(self) -> None:
         self._seen_ids.clear()
-        self._seen_embs.clear()
-
-    def _embed(self, docs: List[Dict[str, Any]]) -> List[Optional[np.ndarray]]:
-        embs: List[Optional[np.ndarray]] = [None] * len(docs)
-        to_encode: List[int] = []
-        for i, doc in enumerate(docs):
-            emb = doc.get("_emb")
-            if emb is not None:
-                embs[i] = _normalise_rows(np.asarray(emb).reshape(1, -1))[0]
-            else:
-                to_encode.append(i)
-        if to_encode and self._encode_fn is not None:
-            texts = [doc_text(docs[i], max_length=None) for i in to_encode]
-            encoded = _normalise_rows(self._encode_fn(texts, is_query=False))
-            for i, emb in zip(to_encode, encoded):
-                embs[i] = emb
-        return embs
 
     def score(self, docs: List[Dict[str, Any]]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
         """Return ``(step_novelty, per_doc)``; ``step_novelty`` is None without docs."""
-        unique: Dict[str, Dict[str, Any]] = {}
+        ids: List[str] = []
         for doc in docs:
             doc_id = _doc_id(doc)
-            if doc_id and doc_id not in unique:
-                unique[doc_id] = doc
-        if not unique:
+            if doc_id and doc_id not in ids:
+                ids.append(doc_id)
+        if not ids:
             return None, []
 
-        ids = list(unique)
-        new_idx = [i for i, d in enumerate(ids) if d not in self._seen_ids]
-        embs: List[Optional[np.ndarray]] = [None] * len(ids)
-        if new_idx:
-            for i, emb in zip(new_idx, self._embed([unique[ids[i]] for i in new_idx])):
-                embs[i] = emb
-
-        per_doc: List[Dict[str, Any]] = []
-        for i, doc_id in enumerate(ids):
-            if doc_id in self._seen_ids:
-                per_doc.append({"doc_id": doc_id, "seen_before": True, "max_sim_to_seen": None, "novelty": 0.0})
-                continue
-            max_sim = _max_sim(embs[i], self._seen_embs) if embs[i] is not None else None
-            per_doc.append({
-                "doc_id": doc_id,
-                "seen_before": False,
-                "max_sim_to_seen": round(max_sim, 4) if max_sim is not None else None,
-                "novelty": round(_novelty(max_sim), 4),
-            })
-
-        # Update state after scoring: similarity is to earlier steps only.
-        for i in new_idx:
-            self._seen_ids.add(ids[i])
-            if embs[i] is not None:
-                self._seen_embs.append(embs[i])
-
+        per_doc = [
+            {"doc_id": d, "seen_before": d in self._seen_ids, "novelty": 0.0 if d in self._seen_ids else 1.0}
+            for d in ids
+        ]
+        # Update state after scoring: novelty is w.r.t. earlier steps only.
+        self._seen_ids.update(ids)
         return _mean([d["novelty"] for d in per_doc]), per_doc
 
 
@@ -189,6 +144,10 @@ class QueryNoveltySignal:
 
     def reset(self) -> None:
         self._earlier_embs.clear()
+
+    def close(self) -> None:
+        """Drop the encoder reference; nu^q is null from then on."""
+        self._encode_fn = None
 
     def score(self, subqueries: List[str]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
         """Return ``(step_novelty, per_query)``."""
@@ -310,18 +269,17 @@ class CriteriaTargetingSignal:
 
 
 # ---------------------------------------------------------------------------
-# Supervised marginal recall (extra)
+# Supervised new-item recall (extra)
 # ---------------------------------------------------------------------------
 
-class MarginalRecallSignal:
+class NewItemRecallSignal:
     """Supervised retrieval gain of each step against the qrels.
 
     Tracks which relevant doc ids have been seen so far in the sample.  Per
     step, over the step's unique doc ids:
 
-    - ``marginal_recall``: newly seen relevant docs / all relevant docs of
-      the query (the step's gain in recall).
-    - ``new_relevant_frac``: newly seen relevant docs / the step's docs.
+    - ``new_item_recall``: newly seen relevant docs / the step's docs
+      (0, 0.2, ..., 1 for 5 docs).
     - ``num_new_relevant``, ``num_repeated_relevant``, ``num_irrelevant``.
 
     Everything is null when the query has no relevant doc in the qrels or
@@ -330,8 +288,7 @@ class MarginalRecallSignal:
     """
 
     _NULL = {
-        "marginal_recall": None,
-        "new_relevant_frac": None,
+        "new_item_recall": None,
         "num_new_relevant": None,
         "num_repeated_relevant": None,
         "num_irrelevant": None,
@@ -363,8 +320,7 @@ class MarginalRecallSignal:
         new = relevant - self._relevant_seen
         self._relevant_seen.update(new)
         return {
-            "marginal_recall": round(len(new) / len(self._relevant_ids), 4),
-            "new_relevant_frac": round(len(new) / len(ids), 4),
+            "new_item_recall": round(len(new) / len(ids), 4),
             "num_new_relevant": len(new),
             "num_repeated_relevant": len(relevant) - len(new),
             "num_irrelevant": len(ids) - len(relevant),
@@ -374,8 +330,6 @@ class MarginalRecallSignal:
 # ---------------------------------------------------------------------------
 # Intermediate answer (extra)
 # ---------------------------------------------------------------------------
-
-REASONING_FALLBACK_PREFIX = "[reasoning_fallback]"
 
 # (original_query, trajectory, instruction) -> raw model output; the agent's
 # ``answer_from_trajectory``.
@@ -388,11 +342,14 @@ class IntermediateAnswerSignal:
     Asks the agent's model, through ``answer_fn``, for its most likely
     answer given the trajectory so far, in the agent's answer format.  The
     model may give one answer, several (a list) or none ("no candidate").
+    A reply that is only the answer value (one short line, no tags, e.g. a
+    bare ``no candidate``) is accepted as is.
 
     ``score`` returns ``{"answers": [...], "reasoning": str, "confidence":
     float | None}``; ``answers`` is empty when the model gave no answer and
     ``confidence`` is the stated confidence rescaled to [0, 1].
-    It raises when the call fails or the output has no answer format.
+    It returns ``None`` when the reply has no answer format, and raises
+    when the call fails.
 
     Args:
         answer_fn: The agent's ``answer_from_trajectory``.
@@ -402,18 +359,18 @@ class IntermediateAnswerSignal:
     def __init__(self, answer_fn: AnswerFn, agentic_model: str) -> None:
         self._answer_fn = answer_fn
         self._agentic_model = agentic_model
-        self.instruction = intermediate_answer_instruction(agentic_model)
 
-    def score(self, original_query: str, trajectory: Any) -> Dict[str, Any]:
-        raw = self._answer_fn(original_query, trajectory, self.instruction) or ""
+    def score(self, original_query: str, trajectory: Any) -> Optional[Dict[str, Any]]:
+        instruction = intermediate_answer_instruction(self._agentic_model)
+        raw = self._answer_fn(original_query, trajectory, instruction) or ""
         if raw.startswith(REASONING_FALLBACK_PREFIX):
             raw = raw[len(REASONING_FALLBACK_PREFIX):]
-        if not raw.strip():
-            raise ValueError("empty model output")
-
         outputs, format_matched = extract_answer_candidates(raw, expected_format=self._agentic_model)
         if not format_matched:
-            raise ValueError(f"no answer format in output: {raw.strip()[:200]!r}")
+            outputs = extract_bare_answer(raw)
+            if outputs is None:
+                logger.debug("Intermediate answer without answer format: %r", raw.strip()[:200])
+                return None
         answers = [o.candidate for o in outputs if o.candidate.lower() != "no candidate"]
         first = outputs[0] if outputs else None
         confidence = first.confidence if first else None

@@ -1,4 +1,4 @@
 Your last turn did not follow the turn format:
 {errors}
 
-Rewrite the whole turn: <think>, then exactly one <search> or <answer>.
+Rewrite the whole turn: <reasoning>, then exactly one <search> or <answer>.

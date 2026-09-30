@@ -23,7 +23,7 @@ from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     TAG_FORMAT,
-    TONGYI_FORCE_ANSWER,
+    force_answer_prompt,
 )
 from utils.text_utils import extract_tag_content, extract_all_tag_content, parse_tool_calls_xml_list
 from utils.text_utils import format_as_markdown
@@ -146,7 +146,7 @@ class TongyiDR_Agent(BasicAgent):
         messages: List[Dict[str, str]],
     ) -> Optional[str]:
         """Replace last message with force-answer instruction (AgentIR style)."""
-        messages[-1] = {"role": "user", "content": TONGYI_FORCE_ANSWER}
+        messages[-1] = {"role": "user", "content": force_answer_prompt(TAG_FORMAT)}
         try:
             return self._call_server(messages)
         except Exception as e:

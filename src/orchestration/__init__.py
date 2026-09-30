@@ -97,8 +97,8 @@ def build_uncertainty_estimator(
         mode: ``"off"``, ``"monitor"`` (observe only) or ``"inform"``
             (observe and inject a ``<certainty>`` tag into the trajectory).
         retriever: Retriever whose encoder gives the novelty embeddings
-            (dense retrievers only; others leave nu^q null and nu^D id-only).
-        qrels: Ground-truth relevance judgements, for marginal recall.
+            (dense retrievers only; others leave nu^q null).
+        qrels: Ground-truth relevance judgements, for new-item recall.
         llm_criteria: Model that extracts each query's criteria.  Without
             it the criteria-based signals are null.
         max_criteria: Cap on the number of criteria per query.
@@ -137,7 +137,7 @@ def build_uncertainty_estimator(
 
     encode_fn, encoder_name = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
     if encode_fn is None:
-        logger.warning("Retriever has no local encoder; query_novelty is null and doc_novelty uses ids only")
+        logger.warning("Retriever has no local encoder; query_novelty is null")
 
     intermediate_answer_fn = None
     if (
@@ -210,11 +210,6 @@ def build_agent(
     max_retries: int = 3,
     hard_mode: bool = True,
     max_passage_chars: int = 4000,
-    ua_max_turns: int = 8,
-    ua_max_passage_chars: int = 1500,
-    ua_max_format_retries: int = 2,
-    ua_max_tokens_per_call: int = 4096,
-    ua_disable_native_thinking: bool = True,
 ):
     """Instantiate an agent and attach its search tool.
 
@@ -273,11 +268,8 @@ def build_agent(
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["model_name"] = llm_model
     elif agentic_model == "uncertainty_aware":
-        _reasoning_extra["max_turns"] = ua_max_turns
-        _reasoning_extra["max_passage_chars"] = ua_max_passage_chars
-        _reasoning_extra["max_format_retries"] = ua_max_format_retries
-        _reasoning_extra["max_tokens_per_call"] = ua_max_tokens_per_call
-        _reasoning_extra["disable_native_thinking"] = ua_disable_native_thinking
+        _reasoning_extra["max_passage_chars"] = max_passage_chars
+        _reasoning_extra["max_retries"] = max_retries
 
     agent = model_class(
         llm_client=llm_client,
@@ -501,11 +493,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_retries=worker_config.get("max_retries", 3),
         hard_mode=worker_config.get("hard_mode", True),
         max_passage_chars=worker_config.get("max_passage_chars", 4000),
-        ua_max_turns=worker_config.get("ua_max_turns", 8),
-        ua_max_passage_chars=worker_config.get("ua_max_passage_chars", 1500),
-        ua_max_format_retries=worker_config.get("ua_max_format_retries", 2),
-        ua_max_tokens_per_call=worker_config.get("ua_max_tokens_per_call", 4096),
-        ua_disable_native_thinking=worker_config.get("ua_disable_native_thinking", True),
     )
 
     estimator = build_uncertainty_estimator(

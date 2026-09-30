@@ -23,18 +23,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils.ranking_results import RankingResults, RankingResult
+from utils.text_utils import doc_id as _doc_id
 from searcher_component.fusion import fuse_retrieval_results
 
 from .metrics import evaluate_results, metrics_at_n
 
 logger = logging.getLogger(__name__)
-
-
-def _doc_id(doc) -> str:
-    """Return the canonical doc_id, trying 'doc_id' then 'id'."""
-    if isinstance(doc, str):
-        return doc
-    return doc.get("doc_id") or doc.get("id") or ""
 
 
 def _rank_score(doc: Dict[str, Any], fallback_rank: int) -> float:

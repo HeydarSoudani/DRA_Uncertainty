@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import openai
 
+from reasoner_component import REASONING_FALLBACK_PREFIX
+
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import (
     CPM_EXPLORE_FORMAT,
@@ -313,7 +315,7 @@ class CPMExplore(BasicAgent):
         raw = message.content or ""
         reasoning = getattr(message, "reasoning_content", None)
         if not raw.strip() and reasoning:
-            return "[reasoning_fallback]" + reasoning
+            return REASONING_FALLBACK_PREFIX + reasoning
         return raw
 
     # ── History compression ──────────────────────────────────────────────────

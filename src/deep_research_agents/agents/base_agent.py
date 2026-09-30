@@ -7,10 +7,12 @@ import traceback
 from typing import Callable, Dict, List, Any, Optional, Union
 
 from utils.llm_client import LiteLLMClient
+from reasoner_component import REASONING_FALLBACK_PREFIX
 from searcher_component import normalize_retrieval_response
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     TAG_FORMAT,
+    force_answer_prompt,
 )
 from utils.text_utils import passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
@@ -448,7 +450,7 @@ class BasicAgent(AgentVerboseMixin):
                         p.text for p in item.content if hasattr(p, "text")
                     )
             if reasoning_parts:
-                return "[reasoning_fallback]" + "\n".join(reasoning_parts)
+                return REASONING_FALLBACK_PREFIX + "\n".join(reasoning_parts)
 
         return None
 
@@ -518,7 +520,7 @@ class BasicAgent(AgentVerboseMixin):
         trimmed = self._trim_first_iteration(messages)
         trimmed.append({
             "role": "user",
-            "content": f"{FINAL_ANSWER_INSTRUCTION}\n\n{cfg.format_instructions}",
+            "content": force_answer_prompt(cfg.format_instructions),
         })
         return self._make_responses_api_call(trimmed)
 
@@ -561,7 +563,7 @@ class BasicAgent(AgentVerboseMixin):
         trimmed = self._trim_first_iteration(messages)
         trimmed.append({
             "role": "user",
-            "content": f"{FINAL_ANSWER_INSTRUCTION}\n\n{cfg.format_instructions}",
+            "content": force_answer_prompt(cfg.format_instructions),
         })
         force_max_tokens = min(cfg.max_output_tokens, 4096)
         try:
@@ -660,6 +662,14 @@ class BasicAgent(AgentVerboseMixin):
     # run_single building blocks (shared by the base loop and overrides)
     # ------------------------------------------------------------------
 
+    def _result_extras(self) -> Dict[str, Any]:
+        """Agent-specific keys added to the result of the last ``inference``.
+
+        Added before the trajectory log is finalised, so keys listed in
+        ``utils.config.AGENT_META_KEYS`` reach the trajectory meta line.
+        """
+        return {}
+
     @staticmethod
     def _count_searches(reasoning_path: List[Dict[str, Any]]) -> int:
         """Number of trajectory steps that actually retrieved documents."""
@@ -739,6 +749,7 @@ class BasicAgent(AgentVerboseMixin):
 
             # Attach uncertainty signals when available
             self._attach_uncertainty_stats(result)
+            result.update(self._result_extras())
 
             # Attach per-query token usage when a meter is available.
             token_usage = self._token_usage_delta(_tok_start)

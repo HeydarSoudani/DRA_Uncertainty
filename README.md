@@ -110,16 +110,16 @@ the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Secti
 
 | field | report | meaning |
 |---|---|---|
-| `doc_novelty` | ν^D | novelty of the iteration's docs vs earlier docs: 0 for a seen id, else 1 − max cosine similarity |
+| `doc_novelty` | ν^D | fraction of the iteration's docs whose id was not seen in an earlier iteration (0, 0.2, ..., 1 for 5 docs) |
 | `criteria_delta` | Δ^D | change of the criteria state (uncovered 0, partially covered 1, fully covered 2) caused by the novel docs |
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
 | `criteria_targeting` | τ^q | how strongly the queries target criteria still uncovered or partially covered |
 
-Extra saved information: `marginal_recall` and `new_relevant_frac` (against qrels) and per-step intermediate answers (BrowseComp-Plus and
+Extra saved information: `new_item_recall` (against qrels) and per-step intermediate answers (BrowseComp-Plus and
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
 prompt in `src/uncertainty_estimator/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
-`query_novelty` is null and `doc_novelty` uses ids only. The judge behind `criteria_delta` and
+`query_novelty` is null. The judge behind `criteria_delta` and
 `criteria_targeting` is set by `criteria_judge` (`src/uncertainty_estimator/judges.py`):
 
 - `nli`: an NLI cross-encoder (`criteria_judge_model`, default DeBERTa-v3-large NLI) scores all k × t (passage,
@@ -145,13 +145,13 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
     <k2 status="partial">won a regional award</k2>
     <k3 status="not_covered">studied in Lisbon</k3>
   </criteria>
-  <retrieval_signals doc_novelty="0.42" criteria_delta="+1"/>
+  <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
   <reasoning_signals query_novelty="0.81" criteria_targeting="0.60"/>
 </certainty>
 ```
 
-Only the criteria state and the four signals above are shown; gold-based fields (`marginal_recall`,
-`new_relevant_frac`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
+Only the criteria state and the four signals above are shown; gold-based fields (`new_item_recall`,
+relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
 | agents | place |
@@ -164,7 +164,8 @@ The system prompts are unchanged. Where the tag goes:
 
 The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl` and as `certainty_tag` in
 `uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
-always runs in `inform` mode (the flag is ignored for it); its system prompt explains the tag.
+follows the flag like every other agent; in `inform` mode its system prompt also explains the tag, and in `monitor` and
+`off` modes the prompt never mentions it.
 
 ### Output format
 
@@ -212,8 +213,7 @@ Step line (one per search iteration, flat scalars first):
 | `agent_iteration` | the agent's own counter (base and meaning differ per agent) |
 | `num_subqueries`, `num_docs`, `num_new_docs` | step counts (unique doc ids) |
 | `doc_novelty`, `criteria_delta`, `query_novelty`, `criteria_targeting` | x_t, see the table above |
-| `marginal_recall` | newly seen relevant docs / all relevant docs of the query |
-| `new_relevant_frac` | newly seen relevant docs / the step's docs |
+| `new_item_recall` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
 | `intermediate_answer_confidence` | stated confidence in [0, 1] |

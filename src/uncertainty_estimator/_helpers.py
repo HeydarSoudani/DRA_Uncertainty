@@ -5,11 +5,6 @@ import re
 from typing import Any, Dict, Optional
 
 
-def doc_id(doc: Dict[str, Any]) -> str:
-    """The document id, from ``doc_id`` or ``id``; "" when neither is set."""
-    return doc.get("doc_id") or doc.get("id") or ""
-
-
 def parse_json_object(raw: str) -> Optional[Dict[str, Any]]:
     """Parse a JSON object from LLM output, with or without a code fence."""
     text = raw.strip()

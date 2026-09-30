@@ -55,16 +55,7 @@ ensure_novel_seen_docs: false            # Filter docs seen in previous iteratio
 use_plan: false                 # Enable planning in ReAct agent (only --agentic-model=react)
 max_extend_steps: 5             # Max outline extensions (cpm_report)
 hard_mode: true                 # Enforce strict validation rules (cpm_report)
-max_passage_chars: 4000         # Chars of one retrieved passage shown in full (cpm_report)
-
-# ── Uncertainty-aware agent (uncertainty_aware) ─────────────────────────────────
-# See docs/uncertainty_aware_agent.md. The run's max_iteration does not cap this agent;
-# ua_max_turns does.
-ua_max_turns: 8                   # generation steps before a run with no <answer> counts as a failure
-ua_max_passage_chars: 1500        # chars of one passage shown inside <information>
-ua_max_format_retries: 2          # re-asks after a malformed turn before the run stops
-ua_max_tokens_per_call: 4096      # output-token cap for one policy turn
-ua_disable_native_thinking: true  # switch the model's own reasoning mode off (policy turns and intermediate answers)
+max_passage_chars: 4000         # Chars of one retrieved passage shown to the agent (cpm_report, uncertainty_aware)
 
 # ── Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the uncertainty-aware agent, reasoning off
@@ -82,7 +73,7 @@ judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus acc
 
 # ── Execution & output ───────────────────────────────────────────────────────
 output: null                    # Root dir for results; null = experiments/run_outputs/
-max_iteration: 400              # Max iterations/steps per query (all agents; the uncertainty-aware agent is capped by ua_max_turns)
+max_iteration: 100              # Max iterations/steps per query (all agents)
 max_retries: 3                  # Max retries when output format fails (all agents)
 verbose: true                   # Print detailed logs
 gpu_ids: null                   # Comma-separated physical GPU IDs, e.g. '4,5,6,7'

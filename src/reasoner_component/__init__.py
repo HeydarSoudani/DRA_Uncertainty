@@ -13,7 +13,7 @@ Low-level transports (``LiteLLMClient``, ``VLLMClient``), provider routing
 """
 
 from .base import BaseGenerator, LiteLLMBackedGenerator
-from .litellm_client import LiteLLMClient
+from .litellm_client import REASONING_FALLBACK_PREFIX, LiteLLMClient, is_context_window_error
 from .api import APIGenerator, get_litellm_client, resolve_provider_config
 from .vllm import VLLMGenerator, VLLMClient, get_openai_client
 from .factory import create_generator, disable_native_thinking, no_thinking_extra_body
@@ -31,6 +31,8 @@ __all__ = [
     "no_thinking_extra_body",
     # Transports
     "LiteLLMClient",
+    "REASONING_FALLBACK_PREFIX",
+    "is_context_window_error",
     "VLLMClient",
     "get_openai_client",
     # Provider routing

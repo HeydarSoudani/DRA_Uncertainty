@@ -23,8 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from utils.text_utils import doc_text
-from ._helpers import doc_id as _doc_id, parse_json_object
+from utils.text_utils import doc_id as _doc_id, doc_text
+
+from ._helpers import parse_json_object
 from .prompts import (
     CRITERIA_JUDGE_DOC_SYSTEM,
     CRITERIA_JUDGE_DOC_USER_TEMPLATE,
@@ -93,6 +94,11 @@ class NLIDocJudge(DocCriteriaJudge):
 
         if not 0.0 < partial_threshold <= full_threshold <= 1.0:
             raise ValueError("expected 0 < partial_threshold <= full_threshold <= 1")
+        # DeBERTa's TorchScript helpers get fused into NVRTC-compiled GPU kernels
+        # after warm-up, which fails when libnvrtc-builtins is not loadable
+        # (cu13 venv); run them unfused instead.
+        torch._C._jit_set_texpr_fuser_enabled(False)
+        torch._C._jit_override_can_fuse_on_gpu(False)
         self._torch = torch
         self.model_name = model_name
         self.name = f"nli:{model_name}"

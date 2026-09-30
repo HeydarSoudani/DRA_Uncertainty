@@ -15,7 +15,7 @@ Order inside ``observe`` (tau^q uses sigma_{t-1}; the documents then move
 the state to sigma_t):
 
     tau^q -> nu^q -> nu^D (picks the novel documents) -> Delta^D (judges
-    the novel documents, sigma_t) -> marginal recall -> intermediate answer
+    the novel documents, sigma_t) -> new-item recall -> intermediate answer
 
 Step record, one per iteration (saved as one line of
 ``uncertainty/{query_id}.jsonl`` by ``UncertaintyEvaluator``); flat scalars
@@ -24,7 +24,7 @@ first, nested detail last::
     iteration, agent_iteration,
     num_subqueries, num_docs, num_new_docs,
     doc_novelty, criteria_delta, query_novelty, criteria_targeting   # x_t
-    marginal_recall, new_relevant_frac,
+    new_item_recall,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     intermediate_answers, intermediate_answer_confidence,
     subqueries[], queries[], docs[],
@@ -47,7 +47,8 @@ when the model gave no answer; its confidence is in [0, 1].
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from ._helpers import doc_id
+from utils.text_utils import doc_id
+
 from .certainty import render_certainty
 from .criteria import CriteriaSource
 from .judges import DocCriteriaJudge, QueryCriteriaScorer
@@ -58,7 +59,7 @@ from .signals import (
     DocNoveltySignal,
     EncodeFn,
     IntermediateAnswerSignal,
-    MarginalRecallSignal,
+    NewItemRecallSignal,
     QueryNoveltySignal,
 )
 from .types import Criterion
@@ -81,10 +82,9 @@ class UncertaintyEstimator:
         query_scorer: Targeting scorer of queries vs criteria.  None:
             tau^q is null.
         encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
-            (``encode_fn_from_retriever``).  None: nu^q is null and nu^D
-            uses document ids only.
+            (``encode_fn_from_retriever``).  None: nu^q is null.
         encoder_name: Saved in the meta line.
-        qrels: ``{query_id: {doc_id: relevance}}`` for marginal recall.
+        qrels: ``{query_id: {doc_id: relevance}}`` for new-item recall.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
             asked every step, its answers are saved (extra, not in x_t).
             None disables the intermediate answer.
@@ -111,12 +111,11 @@ class UncertaintyEstimator:
         self.inform = inform
         self._run_info = dict(run_info or {})
         self._criteria_source = criteria_source
-        self._encode_fn = encode_fn
         self._encoder_name = encoder_name
 
-        self._doc_novelty = DocNoveltySignal(encode_fn)
+        self._doc_novelty = DocNoveltySignal()
         self._query_novelty = QueryNoveltySignal(encode_fn)
-        self._marginal_recall = MarginalRecallSignal(qrels)
+        self._new_item_recall = NewItemRecallSignal(qrels)
         self._coverage = CriteriaCoverageSignal(doc_judge) if doc_judge is not None else None
         self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
@@ -146,7 +145,7 @@ class UncertaintyEstimator:
         """Start a new sample: clear all state and create its criteria list."""
         self._doc_novelty.reset()
         self._query_novelty.reset()
-        self._marginal_recall.reset(query_id)
+        self._new_item_recall.reset(query_id)
         self._step = 0
         self.steps = []
 
@@ -175,7 +174,7 @@ class UncertaintyEstimator:
             "num_criteria": len(self._criteria),
             "num_iterations": len(self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
-            "num_relevant": self._marginal_recall.num_relevant,
+            "num_relevant": self._new_item_recall.num_relevant,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
             "final_criteria_state": self._coverage.statuses() if self._tracks_state else None,
@@ -185,9 +184,7 @@ class UncertaintyEstimator:
     def close(self) -> None:
         """Drop every model and callback reference (encoder, judges, the
         agent's answer hook) so their GPU memory can be freed."""
-        self._encode_fn = None
-        self._doc_novelty._encode_fn = None
-        self._query_novelty._encode_fn = None
+        self._query_novelty.close()
         self._coverage = None
         self._targeting = None
         self._intermediate_answer = None
@@ -264,13 +261,13 @@ class UncertaintyEstimator:
                 errors.append(f"criteria_judgment: {e}")
             state_after = self._coverage.statuses()
 
-        # --- Marginal recall (extra) --------------------------------------------
+        # --- New-item recall (extra) --------------------------------------------
         try:
-            recall = self._marginal_recall.score(docs)
+            recall = self._new_item_recall.score(docs)
         except Exception as e:
-            logger.warning("UncertaintyEstimator: marginal recall failed", exc_info=True)
-            errors.append(f"marginal_recall: {e}")
-            recall = dict(MarginalRecallSignal._NULL)
+            logger.warning("UncertaintyEstimator: new-item recall failed", exc_info=True)
+            errors.append(f"new_item_recall: {e}")
+            recall = dict(NewItemRecallSignal._NULL)
 
         # --- Intermediate answer (extra) ----------------------------------------
         intermediate_answer = None

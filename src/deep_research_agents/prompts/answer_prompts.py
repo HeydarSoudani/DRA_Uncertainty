@@ -1,11 +1,16 @@
 """Answer prompts: instructions, format strings, and extraction utilities.
 
-- FINAL_ANSWER_INSTRUCTION  -- loop-end: agent must produce a definitive answer.
-- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...).
+- FINAL_ANSWER_INSTRUCTION  -- force answer at the context limit.
+- MAX_TURNS_ANSWER_INSTRUCTION -- force answer at the turn cap.
+- force_answer_prompt       -- a force-answer instruction plus an answer format.
+- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...)
+  and AGENT_ANSWER_FORMATS, the format each agent answers in.
 - AnswerCandidateOutput dataclass + extraction helpers, shared by the final
   answer evaluation and the uncertainty estimator's intermediate answers.
 
-The intermediate-answer instruction lives in ``uncertainty_estimator.prompts``.
+The forced answer is a user message; the agent keeps its own system prompt.
+
+The intermediate-answer instruction lives in ``uncertainty_estimator.prompts.user_prompts``.
 """
 
 import json
@@ -26,13 +31,10 @@ FINAL_ANSWER_INSTRUCTION = (
     "above, think again and provide what you consider the most likely answer."
 )
 
-TONGYI_FORCE_ANSWER = (
-    "You have now reached the maximum context length you can handle. "
-    "You should stop making tool calls and, based on all the information "
-    "above, think again and provide what you consider the most likely answer "
-    "in the following format:"
-    "<think>your final thinking</think>\n"
-    "<answer>your answer</answer>"
+MAX_TURNS_ANSWER_INSTRUCTION = (
+    "You have now reached the maximum number of turns you can take. "
+    "You should stop searching and, based on all the information above, "
+    "think again and provide what you consider the most likely answer."
 )
 
 # ======================================================================
@@ -41,6 +43,14 @@ TONGYI_FORCE_ANSWER = (
 TAG_FORMAT = (
     "Provide your answer in the following format:\n"
     "<think>your final thinking</think>\n"
+    "<answer>your answer</answer>"
+)
+
+# The uncertainty-aware agent's reasoning tag is <reasoning>, not <think> (see
+# agents.uncertainty_aware_agent).
+REASONING_TAG_FORMAT = (
+    "Provide your answer in the following format:\n"
+    "<reasoning>your final reasoning</reasoning>\n"
     "<answer>your answer</answer>"
 )
 
@@ -76,6 +86,27 @@ DRTULU_FORMAT = "Provide your answer using <answer>...</answer> tags."
 
 SELFASK_FORMAT = "So the final answer is: "
 
+# Answer format of each agent; others get TAG_FORMAT.  Parsed back by
+# extract_answer_candidates (_AGENT_TO_PATTERNS below).
+AGENT_ANSWER_FORMATS = {
+    "searcho1":    BOXED_FORMAT,
+    "react":       REACT_FORMAT,
+    "drtulu":      DRTULU_FORMAT,
+    "selfask":     SELFASK_FORMAT,
+    "oss":         OSS_FORMAT,
+    "glm":         OSS_FORMAT,
+    "cpm_explore": CPM_EXPLORE_FORMAT,
+    "tongyi":      TAG_FORMAT,
+    "webweaver":   WEBWEAVER_FORMAT,
+    "uncertainty_aware": REASONING_TAG_FORMAT,
+}
+
+
+def force_answer_prompt(answer_format: str, instruction: str = FINAL_ANSWER_INSTRUCTION) -> str:
+    """The force-answer user message: *instruction*, a blank line, *answer_format*."""
+    return f"{instruction}\n\n{answer_format}"
+
+
 # ======================================================================
 # Structured output + extraction
 # ======================================================================
@@ -109,6 +140,7 @@ def _parse_candidate_list(text: str) -> List[str]:
         return [c.strip().strip('"').strip("'") for c in inner.split(",") if c.strip()]
     return [stripped]
 
+# Parser patterns of each agent's answer format (AGENT_ANSWER_FORMATS).
 _AGENT_TO_PATTERNS = {
     "searcho1":    ["boxed"],
     "react":       ["finish_action"],
@@ -119,6 +151,7 @@ _AGENT_TO_PATTERNS = {
     "cpm_explore": ["answer_tag"],
     "tongyi":      ["answer_tag"],
     "webweaver":   ["answer_tag"],
+    "uncertainty_aware": ["answer_tag"],
 }
 
 _ALL_PATTERN_NAMES = ["answer_tag", "finish_action", "exact_answer", "boxed", "so_final"]
@@ -128,7 +161,7 @@ def extract_answer_candidates(
     raw: str,
     expected_format: Optional[str] = None,
 ) -> Tuple[List[AnswerCandidateOutput], bool]:
-    """Parse answer candidates and optional ``<think>`` tags from raw LLM output.
+    """Parse answer candidates and optional ``<think>`` / ``<reasoning>`` tags from raw LLM output.
 
     Returns ``(candidates, format_matched)`` where *format_matched* is
     ``True`` when at least one known format pattern was found in the text
@@ -139,7 +172,7 @@ def extract_answer_candidates(
     fallback.  When ``None``, all patterns run (backward-compatible).
     """
     thinking = ""
-    think_m = re.search(r"<think(?:ing)?>(.*?)(?:</think(?:ing)?>|$)", raw, re.DOTALL)
+    think_m = re.search(r"<(?:think(?:ing)?|reasoning)>(.*?)(?:</(?:think(?:ing)?|reasoning)>|$)", raw, re.DOTALL)
     if think_m:
         thinking = think_m.group(1).strip()
 
@@ -288,3 +321,22 @@ def extract_answer_candidates(
         ))
 
     return candidates, format_matched
+
+
+# A bare reply longer than this is prose, not an answer.
+_BARE_ANSWER_MAX_CHARS = 100
+
+
+def extract_bare_answer(raw: str) -> Optional[List[AnswerCandidateOutput]]:
+    """Candidates from a reply that is only the answer field's value.
+
+    Models sometimes drop the answer format and reply with the value alone
+    (``no candidate``, ``Paris``, ``[a, b]``).  Accepted only when the reply
+    is one short line with no tags; returns None otherwise.  ``no candidate``
+    gives the same single placeholder as :func:`extract_answer_candidates`.
+    """
+    text = (raw or "").strip()
+    if not text or "\n" in text or "<" in text or len(text) > _BARE_ANSWER_MAX_CHARS:
+        return None
+    values = _parse_candidate_list(text) or ["no candidate"]
+    return [AnswerCandidateOutput(candidate=v) for v in values]

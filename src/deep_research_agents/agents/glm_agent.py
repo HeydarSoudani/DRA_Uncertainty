@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import openai
 
+from reasoner_component import REASONING_FALLBACK_PREFIX
+
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE
 from deep_research_agents.prompts.answer_prompts import (
@@ -178,7 +180,7 @@ class GLM_Agent(BasicAgent):
         raw = message.content or ""
         reasoning = self._read_reasoning(message)
         if not raw.strip() and reasoning:
-            return "[reasoning_fallback]" + reasoning
+            return REASONING_FALLBACK_PREFIX + reasoning
         return raw
 
     # _force_answer_chat_in_conversation() and _force_answer_chat_compressed()

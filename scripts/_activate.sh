@@ -38,6 +38,11 @@ module load Java/21.0.7            # pyserini / Anserini JVM
 # ── Activate the project venv (if it exists) ──────────────────────────────────
 if [ -f "$DRA_VENV/bin/activate" ]; then
     source "$DRA_VENV/bin/activate"
+    # torch cu130 wheels ship NVRTC in nvidia/cu13/lib, which is not on the
+    # loader path; TorchScript GPU fusion (e.g. DeBERTa NLI judge) needs
+    # libnvrtc-builtins.so.13.0 from there.
+    _DRA_CU13_LIB="$(echo "$DRA_VENV"/lib/python3*/site-packages/nvidia/cu13/lib)"
+    [ -d "$_DRA_CU13_LIB" ] && export LD_LIBRARY_PATH="${_DRA_CU13_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 else
     echo "[_activate] WARNING: venv not found at $DRA_VENV — run scripts/build_venv.sh first" >&2
 fi

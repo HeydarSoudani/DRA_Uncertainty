@@ -64,12 +64,6 @@ FILE_BACKED_DEFAULTS = {
     "max_extend_steps": 5,
     "hard_mode": True,
     "max_passage_chars": 4000,
-    # Uncertainty-aware agent (uncertainty_aware)
-    "ua_max_turns": 8,
-    "ua_max_passage_chars": 1500,
-    "ua_max_format_retries": 2,
-    "ua_max_tokens_per_call": 4096,
-    "ua_disable_native_thinking": True,
     # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": 8,
@@ -329,6 +323,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "rrf_k":                      args.rrf_k,
         "max_iteration":              args.max_iteration,
         "max_retries":                args.max_retries,
+        "llm_max_tokens_per_call":    args.llm_max_tokens_per_call,
     }
 
     if args.dataset in ["trqa", "neuclir", "browsecomp_plus"]:
@@ -341,11 +336,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["max_extend_steps"] = args.max_extend_steps
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_chars"] = args.max_passage_chars
-    pipeline_kwargs["ua_max_turns"] = args.ua_max_turns
-    pipeline_kwargs["ua_max_passage_chars"] = args.ua_max_passage_chars
-    pipeline_kwargs["ua_max_format_retries"] = args.ua_max_format_retries
-    pipeline_kwargs["ua_max_tokens_per_call"] = args.ua_max_tokens_per_call
-    pipeline_kwargs["ua_disable_native_thinking"] = args.ua_disable_native_thinking
 
     pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
@@ -372,11 +362,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_retries":             args.max_retries,
         "hard_mode":               args.hard_mode,
         "max_passage_chars":       args.max_passage_chars,
-        "ua_max_turns": args.ua_max_turns,
-        "ua_max_passage_chars": args.ua_max_passage_chars,
-        "ua_max_format_retries": args.ua_max_format_retries,
-        "ua_max_tokens_per_call": args.ua_max_tokens_per_call,
-        "ua_disable_native_thinking": args.ua_disable_native_thinking,
         "temperature":             args.llm_temperature,
         "verbose":                 verbose,
         "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),

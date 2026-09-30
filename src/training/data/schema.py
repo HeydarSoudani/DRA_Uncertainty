@@ -43,7 +43,7 @@ class PromptRecord:
     id: str
     question: str
     answers: Optional[List[str]] = None            # gold answers -> outcome reward
-    qrels: Optional[Dict[str, int]] = None         # {doc_id: relevance} -> marginal-recall process reward
+    qrels: Optional[Dict[str, int]] = None         # {doc_id: relevance} -> new-item-recall process reward
     criteria: Optional[List[str]] = None           # info-need criteria -> coverage process reward
     meta: Dict[str, Any] = field(default_factory=dict)   # e.g. {"dataset": "trqa"}
 

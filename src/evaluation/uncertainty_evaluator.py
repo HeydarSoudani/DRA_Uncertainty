@@ -23,14 +23,14 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 2::
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
-             "doc_novelty": 0.93, "criteria_delta": 3, "query_novelty": 1.0, "criteria_targeting": 0.71,
-             "marginal_recall": 0.3333, "new_relevant_frac": 0.4,
+             "doc_novelty": 1.0, "criteria_delta": 3, "query_novelty": 1.0, "criteria_targeting": 0.71,
+             "new_item_recall": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "intermediate_answers": ["..."], "intermediate_answer_confidence": 0.75,
              "subqueries": ["..."],
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [0.71, 0.42, ...], "criteria_targeting": 0.71}],
-             "docs": [{"doc_id": "d1", "seen_before": false, "max_sim_to_seen": null, "novelty": 1.0}, ...],
+             "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
              "criteria_state_before": ["uncovered", ...], "criteria_state_after": ["fully_covered", ...],
              "criteria_judgments": [{"doc_id": "d1", "statuses": [...], "scores": [...]}, ...],
              "intermediate_answer_reasoning": "...", "errors": []}
@@ -60,7 +60,7 @@ SCHEMA_VERSION = 2
 # Per-step scalar signals: x_t of the report, then the extra ones.
 SIGNAL_KEYS = (
     "doc_novelty", "criteria_delta", "query_novelty", "criteria_targeting",
-    "marginal_recall", "new_relevant_frac", "intermediate_answer_confidence",
+    "new_item_recall", "intermediate_answer_confidence",
 )
 
 

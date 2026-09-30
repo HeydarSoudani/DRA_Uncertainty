@@ -90,12 +90,13 @@ def no_thinking_extra_body(generator) -> Optional[Dict[str, Any]]:
 def disable_native_thinking(generator) -> BaseGenerator:
     """Switch *generator*'s own reasoning off for every call; returns it.
 
-    For auxiliary models that must answer in plain text within a small token
-    budget (criteria extraction, LLM criteria judge): with reasoning on, a
-    thinking model can spend the whole budget before writing the answer.
+    For models that must answer in plain text within a token budget
+    (criteria extraction, LLM criteria judge, the uncertainty-aware policy):
+    with reasoning on, a thinking model can spend the whole budget before
+    writing the answer.
     """
     body = no_thinking_extra_body(generator)
-    client = getattr(generator, "_client", None)
+    client = getattr(generator, "_client", generator)
     if body is not None and isinstance(getattr(client, "config", None), dict):
         client.config["extra_body"] = body
     return generator

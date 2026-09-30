@@ -14,11 +14,17 @@ USER_TEMPLATE: str = (_DIR / "user.txt").read_text()
 FORMAT_ERROR_TEMPLATE: str = (_DIR / "format_error.txt").read_text()
 
 
-def render_system(max_turns: int) -> str:
-    """The policy's system prompt, with the section that explains <certainty>."""
+def render_system(inform: bool) -> str:
+    """The policy's system prompt.
+
+    With *inform* (``--uncertainty-estimator-mode inform``) it includes the
+    section that explains <certainty>; otherwise the prompt never mentions the
+    tag, since the trajectory carries none.  The turn cap is enforced in code
+    and never stated to the policy.
+    """
     return (SYSTEM_TEMPLATE
-            .replace("{max_turns}", str(max_turns))
-            .replace("{certainty_section}", CERTAINTY_SECTION))
+            .replace("{certainty_section}", CERTAINTY_SECTION if inform else "")
+            .replace("{injected_tags}", "<information> or <certainty>" if inform else "<information>"))
 
 
 def render_user(question: str) -> str:
