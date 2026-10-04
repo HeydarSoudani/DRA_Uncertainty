@@ -5,8 +5,11 @@ Index Builder Test Script
 Tests that the indexing pipeline works correctly by:
 1. Creating a small corpus from a subset of queries, their qrels, and gold passages
 2. Building an index on that small corpus
-3. Running retrieval using local retrieval models
-4. Evaluating entity recall
+3. Checking length-sorted batching (dense retrievers): a corpus sample is encoded
+   with corpus-order and length-sorted batches; embeddings must match per doc
+   (cosine ~1.0, fp16 rounding only), and the speedup is reported
+4. Running retrieval using local retrieval models
+5. Evaluating entity recall
 
 High recall indicates the indexing pipeline is working correctly (gold passages are in the corpus
 and should be retrievable when the index is built properly).
@@ -57,11 +60,16 @@ if _package_root not in sys.path:
 
 from tqdm import tqdm
 
-from indexing_corpus_dataset.index_builder import Index_Builder, MODEL2PATH, MODEL2POOLING
-from indexing_corpus_dataset.layout import default_corpus_path
+from indexing_corpus_dataset.index_builder import (
+    Index_Builder, MODEL2PATH, MODEL2POOLING,
+    load_model, get_device, doc_text, encode_texts, peek_corpus_has_title,
+)
+from indexing_corpus_dataset.layout import (
+    DATASETS, apply_dataset_defaults, default_corpus_path, query_max_length,
+)
 from indexing_corpus_dataset.dataset_loaders import load_qrels, load_queries, resolve_split_id, resolve_data_path
 from indexing_corpus_dataset.index_config import (
-    TEST_DEFAULTS, TEST_CONFIG_DEFAULT, resolve_index_config, resolve_split_defaults,
+    TEST_DEFAULTS, TEST_CONFIG_DEFAULT, resolve_index_config, resolve_max_length,
 )
 
 
@@ -180,6 +188,68 @@ def create_qrels_subset(qrels: dict, query_ids: set, output_path: str, qrel_file
     return count
 
 
+# Docs encoded by the length-sorted batching check, and the minimum per-doc
+# cosine between corpus-order and length-sorted embeddings (fp16 rounding
+# alone stays above 0.999; a write-back bug gives ~0.2, the cosine of
+# unrelated docs).
+LENGTH_SORT_CHECK_DOCS = 512
+LENGTH_SORT_MIN_COSINE = 0.995
+
+
+def check_length_sorted_batching(args, pooling_method, corpus_path, n_docs=LENGTH_SORT_CHECK_DOCS):
+    """Encode a corpus sample with corpus-order and length-sorted batches; compare.
+
+    Length-sorted batching must only change speed: every doc's embedding has to
+    match its corpus-order embedding.  Returns ``{min_cosine, mean_cosine,
+    corpus_order_s, length_sorted_s, speedup, passed}``.
+    """
+    import time
+    import numpy as np
+    import torch
+
+    device = get_device(args.device_id)
+    encoder, tokenizer = load_model(args.retriever, args.model_path, args.use_fp16, device)
+    has_title = peek_corpus_has_title([corpus_path])
+    with open(corpus_path, encoding='utf-8') as f:
+        texts = [doc_text(json.loads(line), has_title, args.retriever)
+                 for line, _ in zip(f, range(n_docs))]
+
+    def _encode(length_sorted):
+        return encode_texts(encoder, tokenizer, texts, args.retriever, pooling_method,
+                            args.max_length, device, args.batch_size, length_sorted)
+
+    _encode(True)  # warm-up (kernel selection, allocator) so timings compare fairly
+    timings, embeddings = {}, {}
+    for length_sorted in (False, True):
+        start = time.perf_counter()
+        emb = _encode(length_sorted).astype(np.float32)
+        timings[length_sorted] = time.perf_counter() - start
+        embeddings[length_sorted] = emb / np.linalg.norm(emb, axis=1, keepdims=True)
+    cos = (embeddings[False] * embeddings[True]).sum(axis=1)
+
+    del encoder, tokenizer
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    result = {
+        'n_docs': len(texts),
+        'min_cosine': float(cos.min()),
+        'mean_cosine': float(cos.mean()),
+        'corpus_order_s': timings[False],
+        'length_sorted_s': timings[True],
+        'speedup': timings[False] / timings[True],
+        'passed': bool(cos.min() >= LENGTH_SORT_MIN_COSINE),
+    }
+    print(f"Docs: {result['n_docs']}  (batch_size={args.batch_size}, max_length={args.max_length})")
+    print(f"Per-doc cosine, corpus-order vs length-sorted: min {result['min_cosine']:.6f}, "
+          f"mean {result['mean_cosine']:.6f}  (must be >= {LENGTH_SORT_MIN_COSINE})")
+    print(f"Encode time: corpus-order {result['corpus_order_s']:.1f}s, "
+          f"length-sorted {result['length_sorted_s']:.1f}s -> {result['speedup']:.2f}x faster")
+    print("OK: embeddings match" if result['passed']
+          else "MISMATCH: length-sorted embeddings differ from corpus order")
+    return result
+
+
 def _get_passage_id(doc):
     """Extract passage ID from retrieved doc."""
     for key in ('id', 'doc_id', 'passage_id', 'docid'):
@@ -219,7 +289,7 @@ def _parse_args():
 
     parser.add_argument('--config', type=str, default=TEST_CONFIG_DEFAULT, help='Path to the YAML config holding the mostly-fixed test variables. Any value in it can be overridden by passing the matching --flag.')
     parser.add_argument('--retriever', type=str, default='qwen3_emb_4b', dest='retriever', choices=['bm25', 'spladepp', 'spladev3', 'contriever', 'dpr', 'e5', 'bge', 'qwen3_emb_0.6b', 'qwen3_emb_4b', 'qwen3_emb_8b', 'rerank_l6', 'rerank_l12'])
-    parser.add_argument('--dataset', type=str, default='trqa', choices=['trqa', 'browsecomp_plus', 'neuclir'], help='Dataset name; corpus and index paths are derived from it.')
+    parser.add_argument('--dataset', type=str, default='trqa', choices=list(DATASETS), help='Dataset name; corpus and index paths are derived from it.')
 
     args, extras = parser.parse_known_args()
 
@@ -232,28 +302,11 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    # ── Auto-select dataset_year / subset (shared with index_builder.py) ──
-    resolve_split_defaults(args)
+    # ── Auto-select dataset_year / subset / query_key / min_relevance_score ──
+    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score"))
 
-    if args.query_key is None:
-        # Downloaders flatten each dataset's best query text into the "text"
-        # field (NeuCLIR's topic_* fields are collapsed at download time), so
-        # "text" is the correct key for every dataset.
-        args.query_key = "text"
-        print(f"Auto-selected query key: {args.query_key}")
-
-    # Auto-adjust max_length for browsecomp_plus + qwen3_emb
-    if args.dataset == "browsecomp_plus" and args.retriever.startswith("qwen3_emb"):
-        args.max_length = 4096
-        print(f"Auto-adjusted max_length to {args.max_length} for browsecomp_plus + {args.retriever}")
-
-    if args.min_relevance_score is None:
-        if args.dataset == "neuclir":
-            args.min_relevance_score = 3
-        elif args.dataset == "browsecomp_plus":
-            args.min_relevance_score = 1  # gold=2, evidence=1, skip hard negatives=0
-        elif args.dataset == "trqa":
-            args.min_relevance_score = 1  # binary qrels
+    # Auto-select max_length left null in config (per dataset + retriever).
+    resolve_max_length(args)
 
     # ── Resolve file_data_set ──
     file_data_set = resolve_split_id(args.dataset, args.dataset_year, args.subset)
@@ -292,6 +345,7 @@ def main():
     print(f"  pooling_method:     {pooling_method}")
     print(f"  max_length:         {args.max_length}")
     print(f"  batch_size:         {args.batch_size}")
+    print(f"  length_sorted:      {args.length_sorted}")
     print(f"  use_fp16:           {args.use_fp16}")
     print(f"  faiss_type:         {args.faiss_type}")
     print(f"  faiss_gpu:          {args.faiss_gpu}")
@@ -378,8 +432,17 @@ def main():
         save_embedding=args.save_embedding,
         faiss_gpu=args.faiss_gpu,
         device_id=args.device_id,
+        length_sorted=args.length_sorted,
     )
     index_builder.build_index()
+
+    is_dense = args.retriever in ('contriever', 'dpr', 'e5', 'bge') or args.retriever.startswith('qwen3_emb')
+
+    # 3b. Length-sorted batching must give the same embeddings as corpus order.
+    length_sort_check = None
+    if is_dense:
+        print("\n=== 3b. Length-sorted batching check ===")
+        length_sort_check = check_length_sorted_batching(args, pooling_method, small_corpus_path)
 
     # 4. Initialize retriever and run retrieval
     print("\n=== 4. Running retrieval ===")
@@ -394,10 +457,7 @@ def main():
     config.index_dir = args.save_dir
     config.retrieval_topk = 1000  # retrieve enough for recall@k
     config.retrieval_batch_size = 32
-    if args.dataset == "browsecomp_plus" and args.retriever.startswith("qwen3_emb"):
-        config.retrieval_query_max_length = 8196
-    else:
-        config.retrieval_query_max_length = 512
+    config.retrieval_query_max_length = query_max_length(args.dataset, args.retriever)
     config.retrieval_use_fp16 = args.use_fp16
     config.bm25_k1 = 0.9
     config.bm25_b = 0.4
@@ -409,7 +469,7 @@ def main():
         retriever = BM25Retriever(config)
     elif args.retriever in ('spladepp', 'spladev3'):
         retriever = SPLADERetriever(config)
-    elif args.retriever in ['contriever', 'dpr', 'e5', 'bge'] or args.retriever.startswith('qwen3_emb'):
+    elif is_dense:
         retriever = DenseRetriever(config)
     else:
         print(f"Error: Unsupported retriever for test: {args.retriever}")
@@ -443,12 +503,17 @@ def main():
             'retriever': args.retriever,
             'entity_recall': recall_all,
             'entity_recall_by_k': recall_by_k,
+            'length_sorted': args.length_sorted,
+            'length_sort_check': length_sort_check,
         }, f, indent=2)
     print(f"\nMetrics saved to {metrics_path}")
 
     # Interpretation
     print("\n" + "=" * 70)
-    if recall_all >= 0.9:
+    if length_sort_check is not None and not length_sort_check['passed']:
+        print("FAIL: length-sorted batching changed the embeddings (see step 3b); "
+              "run with --length_sorted false until fixed.")
+    elif recall_all >= 0.9:
         print("PASS: High recall indicates the indexing pipeline is working correctly.")
     elif recall_all >= 0.5:
         print("PARTIAL: Moderate recall. Check index build parameters and model compatibility.")
@@ -469,3 +534,4 @@ if __name__ == "__main__":
 # python src/indexing_corpus_dataset/index_builder_test.py
 # python src/indexing_corpus_dataset/index_builder_test.py --dataset neuclir --retriever bge
 # python src/indexing_corpus_dataset/index_builder_test.py --dataset trqa
+# python src/indexing_corpus_dataset/index_builder_test.py --dataset ragtime

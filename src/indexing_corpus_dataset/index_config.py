@@ -23,6 +23,7 @@ import yaml
 
 # Reuse the generic (config-dict-driven) merge helpers from the inference CLI.
 from utils.cli_setup import parse_cli_overrides, apply_config_to_args
+from indexing_corpus_dataset.layout import apply_dataset_defaults, doc_max_length
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs"
 
@@ -40,8 +41,8 @@ TEST_CONFIG_DEFAULT = str(_CONFIG_DIR / "index_build_test.yaml")
 # Production index builder (index_builder.py).
 BUILD_DEFAULTS = {
     # Dataset selection (--retriever and --dataset stay on the CLI).
-    "dataset_year": None,        # neuclir: 2023/2024; trqa: test/validation; null = auto
-    "subset": None,              # neuclir: news/technical; trqa: wiki1/wiki2/ecommerce; null = auto
+    "dataset_year": None,        # null = per dataset (layout.DATASET_SPECS)
+    "subset": None,              # null = per dataset (layout.DATASET_SPECS)
     "trqa_partial": True,        # use wiki_partial vs full wiki corpus (trqa only)
     # Path overrides (null = auto-derive from dataset/subset).
     "corpus_path": None,
@@ -49,8 +50,9 @@ BUILD_DEFAULTS = {
     "index_path": None,
     "embedding_path": None,
     # Index-build knobs.
-    "max_length": 512,
+    "max_length": None,          # null = per dataset + retriever (layout.doc_max_length)
     "batch_size": 16,
+    "length_sorted": True,       # encode in length-sorted batches (same embeddings, less padding)
     "faiss_type": "Flat",
     "save_embedding": True,
     "use_fp16": True,
@@ -62,8 +64,8 @@ BUILD_DEFAULTS = {
 TEST_DEFAULTS = {
     **BUILD_DEFAULTS,
     "data_path": None,            # root for queries/qrels (local or s3://); null = canonical
-    "query_key": None,            # JSONL key for query text; null = auto ("text")
-    "min_relevance_score": None,  # minimum qrel score treated as relevant; null = auto
+    "query_key": None,            # JSONL key for query text; null = per dataset
+    "min_relevance_score": None,  # minimum qrel score treated as relevant; null = per dataset
     "query_limit": 10,            # max queries to use
     "sub_corpus_max_size": 3000,  # gold + distractors up to this many; null = gold only
 }
@@ -103,27 +105,14 @@ def resolve_index_config(args, defaults: dict, extras: list) -> None:
     apply_config_to_args(args, config, overrides)
 
 
+def resolve_max_length(args) -> None:
+    """Auto-select ``max_length`` left null in config from dataset + retriever."""
+    if args.max_length is not None:
+        return
+    args.max_length = doc_max_length(args.dataset, args.retriever)
+    print(f"Auto-selected max_length: {args.max_length} ({args.dataset} + {args.retriever})")
+
+
 def resolve_split_defaults(args) -> None:
-    """Auto-select ``dataset_year`` / ``subset`` that were left null in config.
-
-    Shared by both index-build entry points so the per-dataset split defaults
-    have one definition.  Mirrors the inference pipeline's conventions.
-    """
-    if args.dataset_year is None:
-        if args.dataset == "neuclir":
-            args.dataset_year = "2024"
-            print(f"Auto-selected dataset year: {args.dataset_year}")
-        elif args.dataset == "trqa":
-            # TRQA carries the evaluation split (test/validation) in dataset_year.
-            args.dataset_year = "test"
-            print(f"Auto-selected eval split: {args.dataset_year}")
-
-    if args.subset is None:
-        if args.dataset == "neuclir":
-            args.subset = "news"
-        elif args.dataset == "trqa":
-            args.subset = "wiki1"
-        elif args.dataset == "browsecomp_plus":
-            args.subset = "test"
-        if args.subset is not None:
-            print(f"Auto-selected subset: {args.subset}")
+    """Auto-select ``dataset_year`` / ``subset`` left null in config from the dataset spec."""
+    apply_dataset_defaults(args, ("dataset_year", "subset"))

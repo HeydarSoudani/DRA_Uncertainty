@@ -21,6 +21,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
+from indexing_corpus_dataset.layout import DATASET_SPECS, query_max_length
 from utils.config import (
     OPENROUTER_BASE_URL,
     SELF_MANAGED_LLM_AGENTS,
@@ -52,10 +53,7 @@ def setup_retriever_from_args(args):
         corpus_path=args.corpus_path,
         topk=args.top_k,
     )
-    if args.dataset == "browsecomp_plus" and args.retriever.startswith("qwen3_emb"):
-        config.retrieval_query_max_length = 8196
-    if args.dataset == "browsecomp_plus" and args.retriever == "agentir_4b":
-        config.retrieval_query_max_length = 8196
+    config.retrieval_query_max_length = query_max_length(args.dataset, args.retriever)
     if args.retriever == "bm25":
         return BM25Retriever(config)
     elif args.retriever in ("spladepp", "spladev3"):
@@ -70,8 +68,6 @@ def setup_retriever_from_args(args):
 # Uncertainty estimator factory
 # ===========================================================================
 
-# Datasets whose answers are short enough for per-step intermediate answers.
-INTERMEDIATE_ANSWER_DATASETS = ("browsecomp_plus", "trqa")
 # Agents that write a long report rather than a short answer.
 NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
 
@@ -110,7 +106,7 @@ def build_uncertainty_estimator(
             per-step intermediate answers.
         agentic_model: Agent type name (answer format, intermediate answer
             gating).
-        dataset: Dataset name (intermediate answer gating).
+        dataset: Dataset name; intermediate answers only for ``task == "qa"``.
         llm_model: The agent's LLM; saved with the other run settings in
             every meta line.
     """
@@ -129,6 +125,7 @@ def build_uncertainty_estimator(
             llm_client=disable_native_thinking(create_generator(llm_criteria, backend="api")),
             model_name=llm_criteria,
             max_criteria=max_criteria,
+            task=DATASET_SPECS[dataset].task if dataset else "qa",
         )
         print(f"Uncertainty estimator: criteria from {llm_criteria}")
     else:
@@ -144,7 +141,8 @@ def build_uncertainty_estimator(
     elif (
         agent is not None
         and agentic_model not in NO_INTERMEDIATE_ANSWER_AGENTS
-        and dataset in INTERMEDIATE_ANSWER_DATASETS
+        # Only short-answer tasks: a report has no answer candidates.
+        and dataset is not None and DATASET_SPECS[dataset].task == "qa"
         and hasattr(agent, "answer_from_trajectory")
     ):
         intermediate_answer_fn = agent.answer_from_trajectory
@@ -171,6 +169,7 @@ def build_uncertainty_estimator(
             "agent": agentic_model,
             "llm_model": llm_model,
             "dataset": dataset,
+            "task": DATASET_SPECS[dataset].task if dataset else None,
             "llm_criteria": llm_criteria or None,
             "max_criteria": max_criteria,
             "add_intermediate_answer": add_intermediate_answer,
@@ -263,6 +262,11 @@ def build_agent(
     elif agentic_model == "uncertainty_aware":
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["max_retries"] = max_retries
+        # Report datasets get the report prompts (task from the dataset).
+        if dataset is not None:
+            spec = DATASET_SPECS[dataset]
+            _reasoning_extra["task"] = spec.task
+            _reasoning_extra["report_chars"] = spec.report_chars
 
     agent = model_class(
         llm_client=llm_client,
@@ -337,8 +341,7 @@ def _build_components_from_config(worker_config: dict):
         corpus_path=worker_config.get("corpus_path"),
         topk=worker_config["top_k"],
     )
-    if dataset == "browsecomp_plus" and worker_config["retriever_type"].startswith("qwen3_emb"):
-        cfg.retrieval_query_max_length = 8196
+    cfg.retrieval_query_max_length = query_max_length(dataset, worker_config["retriever_type"])
     retriever_type = worker_config["retriever_type"]
     if retriever_type == "bm25":
         retriever = BM25Retriever(cfg)

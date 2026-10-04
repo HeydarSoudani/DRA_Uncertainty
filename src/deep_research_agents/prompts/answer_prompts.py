@@ -2,6 +2,8 @@
 
 - FINAL_ANSWER_INSTRUCTION  -- force answer at the context limit.
 - MAX_TURNS_ANSWER_INSTRUCTION -- force answer at the turn cap.
+- REPORT_FINAL_INSTRUCTION / REPORT_MAX_TURNS_INSTRUCTION -- the same for
+  report tasks, which ask for the report instead of an answer.
 - force_answer_prompt       -- a force-answer instruction plus an answer format.
 - Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...)
   and AGENT_ANSWER_FORMATS, the format each agent answers in.
@@ -37,6 +39,20 @@ MAX_TURNS_ANSWER_INSTRUCTION = (
     "think again and provide what you consider the most likely answer."
 )
 
+# Report tasks (layout.DATASET_SPECS task == "report"): the forced final turn
+# asks for the report instead of the most likely answer.
+REPORT_FINAL_INSTRUCTION = (
+    "You have now reached the maximum context length you can handle. "
+    "You should stop making tool calls and, based on all the information "
+    "above, write the report."
+)
+
+REPORT_MAX_TURNS_INSTRUCTION = (
+    "You have now reached the maximum number of turns you can take. "
+    "You should stop searching and, based on all the information above, "
+    "write the report."
+)
+
 # ======================================================================
 # Per-agent format instructions
 # ======================================================================
@@ -52,6 +68,12 @@ REASONING_TAG_FORMAT = (
     "Provide your answer in the following format:\n"
     "<reasoning>your final reasoning</reasoning>\n"
     "<answer>your answer</answer>"
+)
+
+REPORT_REASONING_TAG_FORMAT = (
+    "Provide your report in the following format:\n"
+    "<reasoning>your final reasoning</reasoning>\n"
+    "<answer>your report</answer>"
 )
 
 OSS_FORMAT = (

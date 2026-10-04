@@ -80,6 +80,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
+from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import AGENTIC_MODEL_TO_LLM, AGENTIC_MODEL_ALIAS, resolve_temperature
@@ -104,6 +105,7 @@ from utils.trajectory_logger import TrajectoryLogger
 from utils.io_utils import (
     get_processed_queries,
     setup_output_dirs,
+    build_dataset_dir_name,
     build_run_name_for_pipeline,
     build_uncertainty_config_name,
     write_run_config,
@@ -125,14 +127,14 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
     Args:
         data_path:     Path to dataset directory.
-        subset:        Dataset subset identifier.  "news" or "technical" for
-                       neuclir; "test" for browsecomp_plus.
-        dataset_year:  Year of the dataset version (e.g. "2023", "2024").
-                       Used for neuclir.
+        subset:        Dataset subset identifier, e.g. "news" or "technical"
+                       for neuclir, "wiki2" for trqa.
+        dataset_year:  Dataset year (neuclir "2024", ragtime "2025"); trqa
+                       carries its eval split (test|validation) here.
         query_key:     Key in each JSONL query record to use as the query text.
-                       Defaults to "text", which is correct for every dataset:
-                       the downloaders flatten each source's best query text
-                       (including NeuCLIR's topic_* fields) into "text".
+                       None = the dataset's default (layout.DATASET_SPECS),
+                       e.g. "request" for neuclir.  Records without the key
+                       are not run.
         output_path:   Root path for saving results (optional).
         agentic_model: Agent to use; one of ALL_AGENTS.
         limit:         Cap the number of queries (for quick tests).
@@ -151,13 +153,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
     # ==================== Resolve file-level dataset identifier ====================
     # Build the split string used to locate queries/qrels files on disk
-    # (e.g. "2023_news", "2024", "test"); see resolve_split_id.
+    # (e.g. "2024_news", "2025", "wiki2_test"); see resolve_split_id.
     dataset = kwargs.pop("dataset", "trqa")
     qrels_data_path = kwargs.pop("qrels_data_path", None) or data_path
     file_data_set = resolve_split_id(dataset, dataset_year, subset)
 
     if query_key is None:
-        query_key = "text"
+        query_key = DATASET_SPECS[dataset].query_key
 
     # ==================== Load Dataset ====================
     # Single-pass load of queries + qrels + answers; filter to queries with qrels.
@@ -186,8 +188,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     if output_path:
         run_name = build_run_name_for_pipeline(agentic_model=agentic_model, llm_model=llm_model, **kwargs)
         retriever_label = kwargs.get("retriever_name", "e5")
-        qk_part = f"_{query_key}" if query_key and query_key != "text" else ""
-        dataset_dir = f"{dataset}_{file_data_set}{qk_part}_{retriever_label}"
+        dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, retriever_label)
         uncertainty_config_name = build_uncertainty_config_name(**kwargs)
 
         run_dir = str(Path(output_path) / dataset_dir / run_name / uncertainty_config_name)
@@ -584,6 +585,11 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 # ============================================================================
 # CLI
 # ============================================================================
+def _none_if_null(value: str) -> Optional[str]:
+    """Read the literal ``null`` on the CLI as None (auto-select), like the YAML."""
+    return None if value == "null" else value
+
+
 def _parse_args():
     """Build and parse the CLI argument parser.
 
@@ -604,9 +610,9 @@ def _parse_args():
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
-    parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=["trqa", "browsecomp_plus", "neuclir"], help="Dataset. trqa/neuclir/browsecomp_plus use local indices.")
-    parser.add_argument("--subset", type=str, default="test", help="Dataset subset/collection (null = auto-selected from --dataset). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical|report; browsecomp_plus: test.")
-    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever type for public datasets (neuclir only)")
+    parser.add_argument("--dataset", type=str, default="trqa", choices=list(DATASETS), help="Dataset; all use local indices.")
+    parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────

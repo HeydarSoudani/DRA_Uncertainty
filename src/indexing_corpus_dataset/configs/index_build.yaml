@@ -14,14 +14,15 @@
 #
 # Fields left as `null` are auto-derived at runtime:
 #   dataset_year / subset  -> auto-selected from --dataset
+#   max_length             -> auto-selected from --dataset + --retriever
 #   corpus_path            -> DATA_ROOT/<dataset>/corpus/<stem>.jsonl (per subset)
 #   save_dir               -> DATA_ROOT/<dataset>/indices/
 #   index_path             -> derived from corpus stem + retrieval method
 # ============================================================================
 
 # ── Dataset selection (--retriever and --dataset are CLI) ─────────────
-dataset_year: null      # neuclir: 2023|2024; trqa: test|validation; null = auto
-subset: null            # neuclir: news|technical; trqa: wiki1|wiki2|ecommerce; null = auto
+dataset_year: null      # null = per dataset (layout.DATASET_SPECS); trqa: test|validation
+subset: null            # null = per dataset (layout.DATASET_SPECS); neuclir: news|technical; trqa: wiki1|wiki2|ecommerce
 trqa_partial: true      # trqa: use wiki_partial corpus (vs full wiki) when true
 
 # ── Path overrides (null = auto-derive from dataset/subset) ──────────────────
@@ -31,8 +32,9 @@ index_path: null        # explicit output index path; derived from corpus stem i
 embedding_path: null    # pre-computed embeddings (.memmap); skips encoding if set
 
 # ── Index-build knobs ────────────────────────────────────────────────────────
-max_length: 512         # max token length per passage (auto-raised for bcomp+qwen3)
+max_length: null        # max tokens per passage; null = per dataset for long-context encoders (layout.DATASET_SPECS), else 512
 batch_size: 16          # encoding batch size
+length_sorted: true     # batch similar-length docs: same embeddings, less padding (1.3x on RAGTIME)
 faiss_type: Flat        # FAISS index factory string (dense retrievers)
 save_embedding: true    # persist the encoded embeddings alongside the index
 use_fp16: true          # encode in half precision

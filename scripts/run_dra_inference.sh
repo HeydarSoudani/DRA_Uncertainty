@@ -28,8 +28,8 @@ mkdir -p script_logging
 export OMP_NUM_THREADS=16
 
 # DATASET + RETRIEVER must match the built index (see scripts/run_index_builder.sh).
-DATASET=trqa                       # trqa | neuclir | browsecomp_plus
-SUBSET=wiki2                       # trqa: wiki1|wiki2|ecommerce (eval split defaults to 'test')
+DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
+SUBSET=                            # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
 AGENT=uncertainty_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 UNCERTAINTY_ESTIMATOR=off          # off | monitor | inform (uncertainty_aware always runs inform)
@@ -38,7 +38,7 @@ NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
 
 python experiments/dra_inference.py \
     --dataset "$DATASET" \
-    --subset "$SUBSET" \
+    ${SUBSET:+--subset "$SUBSET"} \
     --retriever "$RETRIEVER" \
     --agentic-model "$AGENT" \
     --uncertainty-estimator-mode "$UNCERTAINTY_ESTIMATOR" \

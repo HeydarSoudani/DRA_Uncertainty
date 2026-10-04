@@ -11,18 +11,27 @@ Canonical layout::
 
     {data_path}/queries/queries_{split}.jsonl   (or .tsv)
     {data_path}/qrels/qrels_{split}.txt         (or .tsv)
+    {data_path}/nuggets/nuggets_{split}.jsonl   (report-generation datasets only)
     {data_path}/corpus/{name}.jsonl
 
 Record schemas:
-    queries : {"id": str, "text": str, "answer"?: str}   (NeuCLIR uses topic_*)
+    queries : {"id": str, "text": str, "answer"?: str}   (NeuCLIR/RAGTIME add topic
+              fields, e.g. "request", "title", "limit")
     qrels   : TREC -> "qid 0 docid rel"
+    nuggets : {"id": str, "nuggets": [{"id", "question", "answers": [str],
+                                       "importance": str | None, "support_docs": [str]}]}
     corpus  : {"id": str, "contents": str}
 
-Deliberately import-light (only :mod:`pathlib`) so any module — including the
-low-level ``utils.config`` — can import it without pulling heavy dependencies.
+Per-dataset defaults (split, query key, relevance threshold, task type, encoder
+lengths) live in :data:`DATASET_SPECS`, read by the inference CLI, the index
+builder and its test.
+
+Deliberately import-light (only the standard library) so any module — including
+the low-level ``utils.config`` — can import it without pulling heavy dependencies.
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -62,11 +71,114 @@ DATA_ROOT = Path(os.environ.get(
     "DRA_DATA_ROOT", "/projects/0/prjs0834/heydars/DRA_training/data"
 ))
 
+# ===========================================================================
+# Per-dataset defaults
+# ===========================================================================
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """Defaults for one dataset, applied wherever the run leaves a value null.
+
+    Attributes:
+        dataset_year:        Year of the release; TRQA carries its eval split
+                             (test|validation) here.  None = not used.
+        subset:              Subset / collection.  None = not used.
+        query_key:           Queries-file field used as the query text.
+        min_relevance_score: Lowest qrel grade counted as relevant.  Queries
+                             with no qrel at this grade are not run.
+        task:                ``"qa"`` (short answer) or ``"report"`` (a report
+                             request).  Report tasks get report prompts and no
+                             intermediate answers.
+        answer_eval:         Answer-correctness evaluator: ``"numeric_match"``,
+                             ``"llm_judge"``, or None (retrieval-only evaluation).
+        doc_max_length:      Max tokens per passage at index build, for
+                             long-context encoders.
+        query_max_length:    Max tokens per query at retrieval, for long-context
+                             encoders.
+        report_chars:        Target report length in characters (report tasks).
+    """
+    dataset_year: str | None
+    subset: str | None
+    query_key: str
+    min_relevance_score: int
+    task: str
+    answer_eval: str | None
+    doc_max_length: int
+    query_max_length: int
+    report_chars: int | None = None
+
+
+DATASET_SPECS = {
+    # TRQA passages are short; answers are numeric.
+    "trqa": DatasetSpec(
+        dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
+        task="qa", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+    ),
+    # Long web pages and long multi-clue questions; grades: gold=2, evidence=1.
+    "browsecomp_plus": DatasetSpec(
+        dataset_year=None, subset="test", query_key="text", min_relevance_score=1,
+        task="qa", answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
+    ),
+    # Grades 0/1/3; only the 59 report-generation topics carry ``request``.
+    # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
+    "neuclir": DatasetSpec(
+        dataset_year="2024", subset="news", query_key="request", min_relevance_score=3,
+        task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        report_chars=2000,
+    ),
+    # Grades 0-3; ``text`` is the report request (background + problem statement).
+    "ragtime": DatasetSpec(
+        dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
+        task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        report_chars=2000,
+    ),
+}
+
+# Datasets with a local corpus + index under ``DATA_ROOT/{dataset}``.
+DATASETS = tuple(DATASET_SPECS)
+
+# BERT-style and SPLADE encoders are capped at 512 positions; the long-context
+# encoders (Qwen3-Embedding, AgentIR) take the per-dataset lengths above.
+SHORT_ENCODER_MAX_LENGTH = 512
+
+
+def _long_context_encoder(retriever: str) -> bool:
+    return retriever.startswith("qwen3_emb") or retriever == "agentir_4b"
+
+
+def apply_dataset_defaults(args, fields: tuple[str, ...]) -> None:
+    """Fill each of ``fields`` left None on ``args`` from ``args.dataset``'s spec."""
+    spec = DATASET_SPECS[args.dataset]
+    for field in fields:
+        if getattr(args, field, None) is None:
+            value = getattr(spec, field)
+            setattr(args, field, value)
+            if value is not None:
+                print(f"Auto-selected {field}: {value}")
+
+
+def doc_max_length(dataset: str, retriever: str) -> int:
+    """Max tokens per passage at index build for this dataset + retriever."""
+    if _long_context_encoder(retriever):
+        return DATASET_SPECS[dataset].doc_max_length
+    return SHORT_ENCODER_MAX_LENGTH
+
+
+def query_max_length(dataset: str, retriever: str) -> int:
+    """Max tokens per query at retrieval for this dataset + retriever."""
+    if _long_context_encoder(retriever):
+        return DATASET_SPECS[dataset].query_max_length
+    return SHORT_ENCODER_MAX_LENGTH
+
 # Per-subset NeuCLIR English-MT corpus file stems (no ``.jsonl`` suffix).
 _NEUCLIR_CORPUS_NAMES = {
     "news":      "corpus_en_news",
     "technical": "corpus_en_technical",
 }
+
+# RAGTIME1 English corpus file stem: native English docs + Arabic/Russian/
+# Chinese docs machine-translated to English.
+RAGTIME_CORPUS_NAME = "corpus_en"
 
 # Per-subset TRQA corpus file stems (no ``.jsonl`` suffix).  wiki1 and wiki2
 # share the single Wikipedia corpus; ecommerce has its own.  The partial
@@ -90,6 +202,11 @@ def queries_base(data_path: Path | str, split: str) -> Path:
 def qrels_base(data_path: Path | str, split: str) -> Path:
     """Return the suffix-less qrels path, e.g. ``.../qrels/qrels_test``."""
     return Path(data_path) / "qrels" / f"qrels_{split}"
+
+
+def nuggets_base(data_path: Path | str, split: str) -> Path:
+    """Return the suffix-less nuggets path, e.g. ``.../nuggets/nuggets_2025``."""
+    return Path(data_path) / "nuggets" / f"nuggets_{split}"
 
 
 def corpus_path(data_path: Path | str, name: str = "corpus") -> Path:
@@ -141,6 +258,7 @@ def resolve_split_id(
     Mirrors the conventions used across the pipeline:
       neuclir         -> "{year}_{subset}"  (falls back to subset/year)
       trqa            -> "{subset}_{eval}"  (eval split carried in dataset_year)
+      ragtime         -> "{year}"           (single task; subset unused)
       browsecomp_plus -> subset or "test"
       other           -> subset or "set1"
     """
@@ -155,6 +273,8 @@ def resolve_split_id(
         # HuggingFace split names, e.g. "wiki1_test".
         eval_split = dataset_year or "test"
         return f"{subset}_{eval_split}" if subset else eval_split
+    if dataset == "ragtime":
+        return dataset_year or "2025"
     if dataset == "browsecomp_plus":
         return subset or "test"
     return subset or "set1"
@@ -191,6 +311,8 @@ def default_corpus_path(
         return DATA_ROOT / "neuclir" / "corpus" / f"{corpus_name(subset)}.jsonl"
     if dataset == "trqa":
         return DATA_ROOT / "trqa" / "corpus" / f"{trqa_corpus_name(subset, partial)}.jsonl"
+    if dataset == "ragtime":
+        return DATA_ROOT / "ragtime" / "corpus" / f"{RAGTIME_CORPUS_NAME}.jsonl"
     if dataset == "browsecomp_plus":
         return DATA_ROOT / "browsecomp_plus" / "corpus" / "corpus.jsonl"
     # Unknown dataset: best-effort canonical location.

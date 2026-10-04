@@ -9,6 +9,13 @@ Identify each criterion, clue, or condition stated in the query and list them as
 List at most {max_criteria} criteria. This list will be FIXED for the entire search.\
 """
 
+CRITERIA_INIT_REPORT_USER_TEMPLATE = """\
+Request: {query}
+
+Identify each requirement the report must address and list them as criteria. \
+List at most {max_criteria} criteria. This list will be FIXED for the entire search.\
+"""
+
 CRITERIA_JUDGE_DOC_USER_TEMPLATE = """\
 Query: {query}
 

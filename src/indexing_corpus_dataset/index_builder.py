@@ -59,6 +59,7 @@ MODEL2PATH = {
 
 # Canonical dataset root + path derivation (single source of truth in layout.py).
 from indexing_corpus_dataset.layout import (
+    DATASETS,
     DATA_ROOT,
     default_corpus_path,
     default_index_dir,
@@ -221,13 +222,63 @@ def _encode_batch_core(encoder, tokenizer, batch_texts, retriever, pooling_metho
     return cast(torch.Tensor, embeddings).detach().cpu().numpy()
 
 
+# Length-sorted batching: the corpus is read in chunks of this many batches and
+# each chunk is encoded in batches of similar-length docs, so a batch pads to
+# its own longest doc instead of to whichever long doc sits next to it in the
+# corpus.  Embeddings are written back in corpus order, so the index is the same
+# as with corpus-order batching (identical up to fp16 rounding); measured 1.3x
+# faster on RAGTIME at max_length=1024, batch 16 (index_builder_test step 3b).
+SORT_CHUNK_BATCHES = 256
+
+
+def doc_text(doc: dict, corpus_has_title: bool, retriever: str) -> str:
+    """Return the text encoded for one corpus record."""
+    if corpus_has_title:
+        text = '"' + doc.get('title', '') + '"\n' + doc.get('contents', '')
+    else:
+        text = doc.get('contents', '')
+    if retriever == "e5":
+        text = f"passage: {text}"
+    return text
+
+
+def encode_texts(encoder, tokenizer, texts, retriever, pooling_method, max_length, device,
+                 batch_size, length_sorted=True, on_batch=None):
+    """Encode ``texts`` in batches of ``batch_size``; return embeddings in input order.
+
+    With ``length_sorted``, each batch groups texts of similar length (character
+    count, a cheap proxy for token count), so less compute goes to padding.
+    Embeddings keep the encoder's dtype (fp16 with ``use_fp16``), so buffered
+    chunks take no more host memory than per-batch arrays did. ``on_batch(k)``,
+    if given, is called with the size of each finished batch.
+    """
+    if length_sorted:
+        order = np.argsort([len(t) for t in texts], kind="stable")
+    else:
+        order = np.arange(len(texts))
+    embeddings = None
+    for start in range(0, len(texts), batch_size):
+        idx = order[start:start + batch_size]
+        emb = _encode_batch_core(encoder, tokenizer, [texts[i] for i in idx],
+                                 retriever, pooling_method, max_length, device)
+        if embeddings is None:
+            embeddings = np.empty((len(texts), emb.shape[1]), dtype=emb.dtype)
+        embeddings[idx] = emb
+        if on_batch is not None:
+            on_batch(len(idx))
+    return embeddings
+
+
 def _encode_shard_worker(rank, world_size, corpus_files, corpus_size, corpus_has_title,
                          retriever, model_path, use_fp16, pooling_method,
-                         max_length, batch_size, output_path):
+                         max_length, batch_size, output_path, length_sorted,
+                         ready, progress):
     """Worker process: load model on GPU ``rank`` and encode a contiguous shard of the corpus.
 
     Results are saved to ``output_path`` (numpy memmap) with shape metadata in
-    ``output_path + '.shape.npy'``.
+    ``output_path + '.shape.npy'``. The worker increments the shared ``ready``
+    counter once its model is loaded and adds each encoded batch to the shared
+    ``progress`` counter; the main process draws one progress bar from these.
     """
     device = torch.device(f"cuda:{rank}")
 
@@ -238,36 +289,33 @@ def _encode_shard_worker(rank, world_size, corpus_files, corpus_size, corpus_has
     n_docs = end_idx - start_idx
 
     if n_docs <= 0:
-        print(f"[GPU {rank}] No documents in shard, skipping")
+        print(f"[GPU {rank}] No documents in shard, skipping", flush=True)
         np.save(output_path + '.shape.npy', np.array([0, 0]))
+        with ready.get_lock():
+            ready.value += 1
         return
 
     print(f"[GPU {rank}] Loading model on cuda:{rank}")
     encoder, tokenizer = load_model(retriever, model_path, use_fp16, device)
 
     print(f"[GPU {rank}] Encoding docs [{start_idx:,}, {end_idx:,}) — {n_docs:,} documents", flush=True)
+    with ready.get_lock():
+        ready.value += 1
     all_embeddings = []
-    batch_texts = []
+    chunk_texts = []
+    chunk_size = batch_size * SORT_CHUNK_BATCHES
     doc_idx = 0
-    # tqdm's stacked live bars (position=) rely on terminal cursor-control escape
-    # codes; in a non-TTY slurm log those pile up as garbled fragments across the
-    # 4 worker processes. So keep the live bar only on a real terminal and fall
-    # back to clean, append-only milestone lines when writing to a file.
-    is_tty = sys.stderr.isatty()
-    pbar = tqdm(total=n_docs, desc=f'GPU-{rank}', miniters=max(1, n_docs // 100),
-                 position=rank, leave=True, disable=not is_tty)
-    done = 0
-    log_every = max(batch_size, n_docs // 20)  # ~5% steps
-    next_log = log_every
 
     def _advance(k):
-        nonlocal done, next_log
-        pbar.update(k)
-        done += k
-        if not is_tty and done >= next_log:
-            print(f"[GPU {rank}] {done:,}/{n_docs:,} ({100 * done / n_docs:.0f}%)", flush=True)
-            while next_log <= done:
-                next_log += log_every
+        with progress.get_lock():
+            progress.value += k
+
+    def _flush_chunk():
+        nonlocal chunk_texts
+        all_embeddings.append(encode_texts(encoder, tokenizer, chunk_texts, retriever,
+                                           pooling_method, max_length, device,
+                                           batch_size, length_sorted, on_batch=_advance))
+        chunk_texts = []
 
     for f in corpus_files:
         if doc_idx >= end_idx:
@@ -280,31 +328,13 @@ def _encode_shard_worker(rank, world_size, corpus_files, corpus_size, corpus_has
                 if not line_s:
                     continue
                 if doc_idx >= start_idx:
-                    doc = json.loads(line_s)
-                    if corpus_has_title:
-                        text = '"' + doc.get('title', '') + '"\n' + doc.get('contents', '')
-                    else:
-                        text = doc.get('contents', '')
-                    if retriever == "e5":
-                        text = f"passage: {text}"
-                    batch_texts.append(text)
-
-                    if len(batch_texts) >= batch_size:
-                        emb = _encode_batch_core(encoder, tokenizer, batch_texts,
-                                                 retriever, pooling_method, max_length, device)
-                        all_embeddings.append(emb)
-                        _advance(len(batch_texts))
-                        batch_texts = []
+                    chunk_texts.append(doc_text(json.loads(line_s), corpus_has_title, retriever))
+                    if len(chunk_texts) >= chunk_size:
+                        _flush_chunk()
                 doc_idx += 1
 
-    if batch_texts:
-        emb = _encode_batch_core(encoder, tokenizer, batch_texts,
-                                 retriever, pooling_method, max_length, device)
-        all_embeddings.append(emb)
-        _advance(len(batch_texts))
-    pbar.close()
-    if not is_tty:
-        print(f"[GPU {rank}] {done:,}/{n_docs:,} (100%) — encoding done", flush=True)
+    if chunk_texts:
+        _flush_chunk()
 
     all_embeddings_np = np.concatenate(all_embeddings, axis=0).astype(np.float32)
 
@@ -315,15 +345,13 @@ def _encode_shard_worker(rank, world_size, corpus_files, corpus_size, corpus_has
     del memmap
     np.save(output_path + '.shape.npy', np.array(all_embeddings_np.shape))
 
-    print(f"[GPU {rank}] Done — {all_embeddings_np.shape[0]:,} embeddings saved")
-
     del encoder, tokenizer, all_embeddings, all_embeddings_np
     torch.cuda.empty_cache()
 
 
 class Index_Builder:
     r"""A tool class used to build an index used in retrieval."""
-    def __init__(self, retriever, model_path, corpus_path, save_dir, max_length, batch_size, use_fp16, pooling_method, faiss_type=None, index_path=None, embedding_path=None, save_embedding=False, faiss_gpu=False, device_id=None):
+    def __init__(self, retriever, model_path, corpus_path, save_dir, max_length, batch_size, use_fp16, pooling_method, faiss_type=None, index_path=None, embedding_path=None, save_embedding=False, faiss_gpu=False, device_id=None, length_sorted=True):
         self.retriever = retriever.lower()
         self.model_path = model_path
         self.corpus_path = corpus_path
@@ -331,6 +359,7 @@ class Index_Builder:
         self.index_save_path = None
         self.max_length = max_length
         self.batch_size = batch_size
+        self.length_sorted = length_sorted
         self.use_fp16 = use_fp16
         self.pooling_method = pooling_method
         self.faiss_type = faiss_type if faiss_type is not None else 'Flat'
@@ -630,25 +659,17 @@ class Index_Builder:
 
         # --- Single device path (GPU / CPU / MPS) ---
         all_embeddings = []
-        n_batches = (self.corpus_size + self.batch_size - 1) // self.batch_size
-
-        for batch_docs in tqdm(iter_corpus_batches(self.corpus_files, self.batch_size),
-                               total=n_batches, desc='Inference Embeddings:'):
-            if self.corpus_has_title:
-                batch_data = ['"' + doc.get('title', '') + '"\n' + doc.get('contents', '')
-                              for doc in batch_docs]
-            else:
-                batch_data = [doc.get('contents', '') for doc in batch_docs]
-
-            if self.retriever == "e5":
-                batch_data = [f"passage: {doc}" for doc in batch_data]
-
-            embeddings = _encode_batch_core(
-                self.encoder, self.tokenizer, batch_data,
-                self.retriever, self.pooling_method,
-                self.max_length, self.device,
-            )
-            all_embeddings.append(embeddings)
+        chunk_size = self.batch_size * SORT_CHUNK_BATCHES
+        with tqdm(total=self.corpus_size, desc='Inference Embeddings:', unit='doc') as pbar:
+            for chunk_docs in iter_corpus_batches(self.corpus_files, chunk_size):
+                texts = [doc_text(doc, self.corpus_has_title, self.retriever) for doc in chunk_docs]
+                all_embeddings.append(encode_texts(
+                    self.encoder, self.tokenizer, texts,
+                    self.retriever, self.pooling_method,
+                    self.max_length, self.device,
+                    self.batch_size, self.length_sorted,
+                ))
+                pbar.update(len(texts))
 
         all_embeddings = np.concatenate(all_embeddings, axis=0)
         return all_embeddings.astype(np.float32)
@@ -660,12 +681,13 @@ class Index_Builder:
         This avoids the GPU-0 memory bottleneck and communication overhead of
         DataParallel, giving near-linear scaling.
         """
-        import tempfile
+        import time
         import torch.multiprocessing as mp
 
         print(f"\n{'='*50}")
         print(f"Multi-GPU Encoding (process-based sharding)")
-        print(f"GPUs: {self.gpu_num}, Batch size per GPU: {self.batch_size}")
+        print(f"GPUs: {self.gpu_num}, Batch size per GPU: {self.batch_size}, "
+              f"length-sorted batching: {self.length_sorted}")
         print(f"Corpus: {self.corpus_size:,} documents")
         print(f"{'='*50}\n")
 
@@ -675,6 +697,8 @@ class Index_Builder:
         shard_paths = [os.path.join(shard_dir, f'shard_{i}.memmap') for i in range(self.gpu_num)]
 
         ctx = mp.get_context('spawn')
+        ready = ctx.Value('i', 0)     # workers with model loaded (or empty shard)
+        progress = ctx.Value('q', 0)  # documents encoded, summed over all workers
         processes = []
         for rank in range(self.gpu_num):
             p = ctx.Process(
@@ -684,16 +708,29 @@ class Index_Builder:
                     self.corpus_files, self.corpus_size, self.corpus_has_title,
                     self.retriever, self.model_path, self.use_fp16, self.pooling_method,
                     self.max_length, self.batch_size, shard_paths[rank],
+                    self.length_sorted, ready, progress,
                 ),
             )
             p.start()
             processes.append(p)
 
+        # One aggregated bar in the main process. Per-worker bars would interleave
+        # their carriage returns in a non-TTY slurm log. Start it only after every
+        # worker has finished loading, so the workers' startup lines do not land
+        # in the middle of the bar. In a log file, refresh every 30 s: `tail -f`
+        # still renders the bar in place, and the file grows by ~3 KB per hour.
+        while ready.value < self.gpu_num and any(p.is_alive() for p in processes):
+            time.sleep(1)
+        is_tty = sys.stderr.isatty()
+        with tqdm(total=self.corpus_size, desc='Encoding', unit='doc', unit_scale=True,
+                  mininterval=1 if is_tty else 30, ncols=None if is_tty else 100) as pbar:
+            while any(p.is_alive() for p in processes):
+                time.sleep(1)
+                pbar.update(progress.value - pbar.n)
+            pbar.update(progress.value - pbar.n)
+
         for p in processes:
             p.join()
-
-        # Move cursor below all progress bars
-        print('\n' * self.gpu_num)
 
         # Check for worker failures
         for i, p in enumerate(processes):
@@ -805,12 +842,13 @@ class Index_Builder:
 def main():
     from indexing_corpus_dataset.index_config import (
         BUILD_DEFAULTS, BUILD_CONFIG_DEFAULT, resolve_index_config, resolve_split_defaults,
+        resolve_max_length,
     )
 
     parser = argparse.ArgumentParser(description="Creating index...")
     parser.add_argument('--config', type=str, default=BUILD_CONFIG_DEFAULT, help='Path to the YAML config holding the mostly-fixed index-build variables. Any value in it can be overridden by passing the matching --flag.')
     parser.add_argument('--retriever', type=str, default='qwen3_emb_4b', dest='retriever', choices=['bm25', 'spladepp', 'spladev3', 'contriever', 'dpr', 'e5', 'bge', 'reasonir', 'qwen3_emb_0.6b', 'qwen3_emb_4b', 'qwen3_emb_8b'])
-    parser.add_argument('--dataset', type=str, default='browsecomp_plus', choices=['trqa', 'neuclir', 'browsecomp_plus'], help='Dataset name; corpus and index paths are derived from it.')
+    parser.add_argument('--dataset', type=str, default='browsecomp_plus', choices=list(DATASETS), help='Dataset name; corpus and index paths are derived from it.')
 
     args, extras = parser.parse_known_args()
 
@@ -827,10 +865,8 @@ def main():
             args.dataset, args.subset, partial=args.trqa_partial))
         print(f"Auto-selected corpus path: {args.corpus_path}")
 
-    # Auto-adjust max_length for browsecomp_plus + qwen3_emb
-    if args.dataset == 'browsecomp_plus' and args.retriever.startswith('qwen3_emb'):
-        args.max_length = 4096
-        print(f"Auto-adjusted max_length to {args.max_length} for browsecomp_plus + {args.retriever}")
+    # Auto-select max_length left null in config (per dataset for qwen3).
+    resolve_max_length(args)
 
     # Derive save_dir as {dataset_root}/indices/ (sibling of the corpus/ directory)
     if args.save_dir is None:
@@ -859,6 +895,7 @@ def main():
         ("embedding_path", args.embedding_path),
         ("max_length", args.max_length),
         ("batch_size", args.batch_size),
+        ("length_sorted", args.length_sorted),
         ("faiss_type", args.faiss_type),
         ("faiss_gpu", args.faiss_gpu),
         ("use_fp16", args.use_fp16),
@@ -883,6 +920,7 @@ def main():
         save_embedding=args.save_embedding,
         faiss_gpu=args.faiss_gpu,
         device_id=args.device_id,
+        length_sorted=args.length_sorted,
     )
     index_builder.build_index()
 

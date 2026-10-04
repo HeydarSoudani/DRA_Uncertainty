@@ -258,6 +258,19 @@ def load_result_from_saved_files(
 # Run / output directory naming
 # ===========================================================================
 
+def build_dataset_dir_name(dataset: str, split: str, query_key: str, retriever: str) -> str:
+    """Name of the per-dataset output directory: ``{dataset}_{split}[_{query_key}]_{retriever}``.
+
+    The query key is part of the name only when it is not the dataset's
+    default (layout.DATASET_SPECS), e.g. ``neuclir_2024_news_qwen3_emb_4b`` for
+    the default ``request`` and ``neuclir_2024_news_topic_title_qwen3_emb_4b``.
+    """
+    from indexing_corpus_dataset.layout import DATASET_SPECS
+
+    qk_part = f"_{query_key}" if query_key != DATASET_SPECS[dataset].query_key else ""
+    return f"{dataset}_{split}{qk_part}_{retriever}"
+
+
 def build_run_name_for_pipeline(agentic_model: str, llm_model: str, **kwargs) -> str:
     """Build a consistent output directory name for the current pipeline run.
 

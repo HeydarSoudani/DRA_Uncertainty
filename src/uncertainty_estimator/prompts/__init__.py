@@ -7,6 +7,7 @@ System prompts are the .txt files next to this module; user prompts are in
 from pathlib import Path
 
 from .user_prompts import (
+    CRITERIA_INIT_REPORT_USER_TEMPLATE,
     CRITERIA_INIT_USER_TEMPLATE,
     CRITERIA_JUDGE_DOC_USER_TEMPLATE,
     CRITERIA_JUDGE_QUERY_USER_TEMPLATE,
@@ -21,5 +22,8 @@ def _read(name: str) -> str:
 
 
 CRITERIA_INIT_SYSTEM = _read("criteria_init_system.txt")
+# Report tasks (layout.DATASET_SPECS task == "report"): the criteria are the
+# requirements the report must address.
+CRITERIA_INIT_REPORT_SYSTEM = _read("criteria_init_report_system.txt")
 CRITERIA_JUDGE_DOC_SYSTEM = _read("criteria_judge_doc_system.txt")
 CRITERIA_JUDGE_QUERY_SYSTEM = _read("criteria_judge_query_system.txt")

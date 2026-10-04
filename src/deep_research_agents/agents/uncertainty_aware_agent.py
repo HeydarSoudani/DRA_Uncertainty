@@ -49,6 +49,9 @@ from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     MAX_TURNS_ANSWER_INSTRUCTION,
     REASONING_TAG_FORMAT,
+    REPORT_FINAL_INSTRUCTION,
+    REPORT_MAX_TURNS_INSTRUCTION,
+    REPORT_REASONING_TAG_FORMAT,
     force_answer_prompt,
 )
 from deep_research_agents.prompts.uncertainty_aware import (
@@ -240,9 +243,9 @@ class SearchBlock:
 
 
 def render_transcript(question: str, blocks: List[SearchBlock],
-                      keep_last: Optional[int] = None) -> str:
+                      keep_last: Optional[int] = None, task: str = "qa") -> str:
     """The policy's user message; with *keep_last*, older passages are omitted."""
-    parts = [render_user(question)]
+    parts = [render_user(question, task)]
     first_kept = 0 if keep_last is None else max(len(blocks) - keep_last, 0)
     for i, block in enumerate(blocks):
         information = block.information if i >= first_kept else _OMITTED_INFORMATION
@@ -258,6 +261,13 @@ STOP_SEQUENCES = ["</search>", "</answer>"]
 # Intermediate answer: stop at the answer, and before a search the model
 # starts instead (it would go on to invent the <information> block).
 ANSWER_STOP_SEQUENCES = ["</answer>", "<search>"]
+
+# Forced final turn per task: (turn-cap instruction, context-limit instruction,
+# answer format).
+FORCED_TURN_PROMPTS = {
+    "qa": (MAX_TURNS_ANSWER_INSTRUCTION, FINAL_ANSWER_INSTRUCTION, REASONING_TAG_FORMAT),
+    "report": (REPORT_MAX_TURNS_INSTRUCTION, REPORT_FINAL_INSTRUCTION, REPORT_REASONING_TAG_FORMAT),
+}
 
 # Forced-answer step types, shared with the other agents and the trajectory
 # evaluator's force-answer set.
@@ -283,11 +293,18 @@ class UncertaintyAwareAgent(BasicAgent):
 
     def __init__(self, llm_client, retriever: Optional[Any] = None, max_iteration: int = 100,
                  seen_top_k: int = 5, verbose: bool = True, max_passage_chars: int = 4000,
-                 max_retries: int = 3):
+                 max_retries: int = 3, task: str = "qa", report_chars: Optional[int] = None):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
         self.max_passage_chars = max_passage_chars
         self.max_retries = max_retries
+        # The dataset's task (layout.DATASET_SPECS): "qa" answers a question,
+        # "report" writes a report of about *report_chars* characters.  Only
+        # the prompts differ; the turn protocol is the same.
+        if task not in FORCED_TURN_PROMPTS:
+            raise ValueError(f"unknown task {task!r}; expected one of {tuple(FORCED_TURN_PROMPTS)}")
+        self.task = task
+        self.report_chars = report_chars
         # The backbone's own reasoning mode is always off, as in the Search-R1
         # family: the protocol's <reasoning> is the only reasoning.  With it on,
         # the model can spend the whole output cap on hidden reasoning and
@@ -375,8 +392,8 @@ class UncertaintyAwareAgent(BasicAgent):
         an <answer>, ``errors`` otherwise.
         """
         at_cap = forced_by == END_MAX_TURNS
-        instruction = MAX_TURNS_ANSWER_INSTRUCTION if at_cap else FINAL_ANSWER_INSTRUCTION
-        prompt = force_answer_prompt(REASONING_TAG_FORMAT, instruction)
+        cap_instruction, context_instruction, answer_format = FORCED_TURN_PROMPTS[self.task]
+        prompt = force_answer_prompt(answer_format, cap_instruction if at_cap else context_instruction)
         step: Dict[str, Any] = {
             "iteration": iteration,
             "action_type": ACTION_MAX_ITER_FORCE if at_cap else ACTION_CONTEXT_LIMIT,
@@ -384,7 +401,7 @@ class UncertaintyAwareAgent(BasicAgent):
         forced: Optional[Turn] = None
         error: Optional[str] = None
         for keep_last in ((None, _KEEP_LAST_RESULTS) if at_cap else (_KEEP_LAST_RESULTS,)):
-            transcript = render_transcript(question, blocks, keep_last=keep_last)
+            transcript = render_transcript(question, blocks, keep_last=keep_last, task=self.task)
             try:
                 raw = self._call(self._messages(system, f"{transcript}\n\n{prompt}"),
                                  temperature, stop=ANSWER_STOP_SEQUENCES)
@@ -418,7 +435,7 @@ class UncertaintyAwareAgent(BasicAgent):
 
         # Read per query: the estimator is attached after the agent is built.
         informs = self._informs
-        system = render_system(inform=informs)
+        system = render_system(inform=informs, task=self.task, report_chars=self.report_chars)
         registry = DocRegistry()
         blocks: List[SearchBlock] = []
         records: List[Dict[str, Any]] = []
@@ -430,7 +447,7 @@ class UncertaintyAwareAgent(BasicAgent):
 
         for t in range(self.max_iteration):
             self._notify_progress("turn", t)
-            transcript = render_transcript(question, blocks)
+            transcript = render_transcript(question, blocks, task=self.task)
             turn, attempts, error = self._generate_turn(self._messages(system, transcript), t, generation_temp)
             if turn is None:
                 if is_context_window_error(error):
@@ -499,7 +516,7 @@ class UncertaintyAwareAgent(BasicAgent):
             tag = self._observe_step(
                 query, shown, t, question,
                 seen_docs=shown,
-                trajectory=self._messages(system, render_transcript(question, blocks)),
+                trajectory=self._messages(system, render_transcript(question, blocks, task=self.task)),
             )
             if tag:
                 block.certainty = tag
@@ -533,6 +550,8 @@ class UncertaintyAwareAgent(BasicAgent):
                                          if r.get("action") == ACTION_SEARCH and not r.get("certainty"))
                                      if informs else None,
                 "config": {
+                    "task": self.task,
+                    "report_chars": self.report_chars,
                     "max_iteration": self.max_iteration,
                     "max_retries": self.max_retries,
                     "max_passage_chars": self.max_passage_chars,

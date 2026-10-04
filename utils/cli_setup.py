@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from indexing_corpus_dataset.layout import corpus_name, trqa_corpus_name
+from indexing_corpus_dataset.layout import apply_dataset_defaults, default_corpus_path
 from utils.config import _IR_ROOT
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,7 @@ _FILE_BACKED_CHOICES = {
 _FILE_BACKED_TYPES = {
     "llm_temperature": float,
     "min_relevance_score": int,
+    "max_length": int,  # index build
 }
 
 
@@ -229,62 +230,23 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
 
 
 def resolve_dataset_defaults(args) -> None:
-    """Auto-select dataset-related CLI arguments that were left as None."""
+    """Auto-select dataset-related CLI arguments that were left as None.
+
+    Split, query key and relevance threshold come from the dataset's
+    :data:`~indexing_corpus_dataset.layout.DATASET_SPECS` entry.
+    """
     if args.data_path is None:
-        data_paths = {
-            "trqa":            _IR_ROOT / "trqa",
-            "neuclir":         _IR_ROOT / "neuclir",
-            "browsecomp_plus": _IR_ROOT / "browsecomp_plus",
-        }
-        args.data_path = str(data_paths[args.dataset])
+        args.data_path = str(_IR_ROOT / args.dataset)
         print(f"Auto-selected data path: {args.data_path}")
 
-    if args.dataset_year is None and args.dataset == "neuclir":
-        args.dataset_year = "2024"
-        print(f"Auto-selected dataset year: {args.dataset_year}")
+    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score"))
 
-    # TRQA carries the evaluation split (test/validation) in dataset_year.
-    if args.dataset_year is None and args.dataset == "trqa":
-        args.dataset_year = "test"
-        print(f"Auto-selected eval split: {args.dataset_year}")
-
-    if args.subset is None:
-        if args.dataset == "neuclir":
-            args.subset = "news"
-            print(f"Auto-selected subset: {args.subset}")
-        elif args.dataset == "trqa":
-            args.subset = "wiki1"
-            print(f"Auto-selected subset: {args.subset}")
-        elif args.dataset == "browsecomp_plus":
-            args.subset = "test"
-            print(f"Auto-selected subset: {args.subset}")
-
-    if args.min_relevance_score is None and args.dataset == "neuclir":
-        args.min_relevance_score = 3
-    if args.min_relevance_score is None and args.dataset == "trqa":
-        args.min_relevance_score = 1
-
-    if args.query_key is None:
-        # Downloaders flatten each dataset's best query text into the "text"
-        # field (NeuCLIR's topic_* fields are collapsed at download time), so
-        # "text" is the correct key for every dataset.
-        args.query_key = "text"
-        print(f"Auto-selected query key: {args.query_key}")
-
-    if args.dataset in {"trqa", "neuclir", "browsecomp_plus"}:
-        if args.index_dir is None:
-            args.index_dir = str(_IR_ROOT / args.dataset / "indices")
-            print(f"Auto-selected index directory: {args.index_dir}")
-        if args.corpus_path is None:
-            if args.dataset == "neuclir":
-                _corpus_file = f"{corpus_name(args.subset)}.jsonl"
-                args.corpus_path = str(_IR_ROOT / "neuclir" / "corpus" / _corpus_file)
-            elif args.dataset == "trqa":
-                _corpus_file = f"{trqa_corpus_name(args.subset)}.jsonl"
-                args.corpus_path = str(_IR_ROOT / "trqa" / "corpus" / _corpus_file)
-            else:  # browsecomp_plus
-                args.corpus_path = str(_IR_ROOT / "browsecomp_plus" / "corpus" / "corpus.jsonl")
-            print(f"Auto-selected corpus path: {args.corpus_path}")
+    if args.index_dir is None:
+        args.index_dir = str(_IR_ROOT / args.dataset / "indices")
+        print(f"Auto-selected index directory: {args.index_dir}")
+    if args.corpus_path is None:
+        args.corpus_path = str(default_corpus_path(args.dataset, args.subset))
+        print(f"Auto-selected corpus path: {args.corpus_path}")
 
     if getattr(args, "qrels_data_path", None) is None:
         args.qrels_data_path = args.data_path
@@ -323,10 +285,8 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_iteration":              args.max_iteration,
         "max_retries":                args.max_retries,
         "llm_max_tokens_per_call":    args.llm_max_tokens_per_call,
+        "retriever_name":             args.retriever,
     }
-
-    if args.dataset in ["trqa", "neuclir", "browsecomp_plus"]:
-        pipeline_kwargs["retriever_name"] = args.retriever
 
     pipeline_kwargs["qrels_data_path"] = getattr(args, "qrels_data_path", None)
     pipeline_kwargs["temperature"] = args.llm_temperature

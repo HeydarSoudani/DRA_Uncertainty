@@ -1,4 +1,4 @@
-"""Read dataset queries, qrels, and answers from the canonical layout.
+"""Read dataset queries, qrels, answers, and nuggets from the canonical layout.
 
 The on-disk layout, path builders, split-id rule, and record schemas live in
 :mod:`indexing_corpus_dataset.layout` (the single source of truth, shared with
@@ -19,6 +19,7 @@ from .layout import (
     DATA_ROOT,
     queries_base,
     qrels_base,
+    nuggets_base,
     corpus_path,
     corpus_name,
     resolve_split_id,
@@ -48,6 +49,7 @@ def _load_queries_and_answers(
 
     queries: dict[str, str] = {}
     answers: dict[str, str] = {}
+    n_records = 0
     try:
         if file_path.suffix == ".jsonl":
             # Supports standard {"id","text"} and NeuCLIR {"topic_id","topic_title",...}.
@@ -60,12 +62,17 @@ def _load_queries_and_answers(
                     qid = obj.get("id") or obj.get("topic_id")
                     if not qid:
                         continue
+                    n_records += 1
                     text = obj.get(query_key)
                     if text:
                         queries[qid] = text
                     answer = obj.get("answer")
                     if answer:
                         answers[qid] = answer
+            if len(queries) < n_records:
+                # e.g. NeuCLIR: only the report-generation topics carry "request".
+                print(f"{len(queries)} of {n_records} queries have '{query_key}'; "
+                      f"the rest are skipped")
         else:  # .tsv
             with open(file_path, "r", encoding="utf-8") as f:
                 reader = csv.reader(f, delimiter="\t")
@@ -87,9 +94,8 @@ def load_queries(
         data_path:  Path to dataset directory.
         data_set:   Split identifier (e.g. "test", "2024_news").
         query_key:  Key in each JSONL record to use as the query text.
-                    Defaults to "text", which is correct for every dataset:
-                    the downloaders flatten each source's best query text
-                    (including NeuCLIR's topic_* fields) into "text".
+                    The per-dataset default is in layout.DATASET_SPECS
+                    ("request" for neuclir, "text" for the others).
     """
     return _load_queries_and_answers(data_path, data_set, query_key)[0]
 
@@ -149,6 +155,29 @@ def load_qrels(
         return {}
 
     return qrels
+
+
+# ===========================================================================
+# Nuggets
+# ===========================================================================
+
+def load_nuggets(data_path: Path | str, data_set: str) -> dict[str, list[dict]]:
+    """Load report-generation nuggets from a dataset directory.
+
+    Returns ``{query_id: [nugget, ...]}`` where each nugget is
+    ``{"id", "question", "answers", "importance", "support_docs"}``; empty for
+    datasets without a nuggets file.
+    """
+    file_path = nuggets_base(data_path, data_set).with_suffix(".jsonl")
+    if not file_path.exists():
+        return {}
+    nuggets: dict[str, list[dict]] = {}
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rec = json.loads(line)
+                nuggets[rec["id"]] = rec["nuggets"]
+    return nuggets
 
 
 # ===========================================================================

@@ -1,0 +1,7 @@
+Write a report for the given request.
+You must conduct reasoning inside <reasoning> and </reasoning> first every time you get new information.
+After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>.
+You can search as many times as you want.
+If you find no further external knowledge needed, write the report inside <answer> and </answer>. The report addresses every requirement of the request, states only what the search results support, and is about {report_chars} characters long.
+{certainty_section}
+Every turn is <reasoning>, then exactly one <search> or <answer>. Then stop. Never write {injected_tags} yourself. A run that ends without an <answer> is a failure.

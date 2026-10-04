@@ -13,7 +13,7 @@ a document index.
 | Outline / report (vLLM) | `webweaver`, `cpm_report` |
 
 **Datasets:** `trqa` (Wikipedia / e-commerce), `neuclir` (news + technical, 2022–2024),
-`browsecomp_plus`.
+`browsecomp_plus`, `ragtime` (multilingual news, 2025).
 
 **Retrievers:** `bm25`, `spladepp`, `spladev3` (sparse); `bge`, `e5`, `dpr`,
 `contriever`, `reasonir`, `qwen3_emb_{0.6b,4b,8b}` (dense).
@@ -34,8 +34,11 @@ control where data is read/written.
 # trqa  (subset: wiki1 | wiki2 | ecommerce)
 python src/indexing_corpus_dataset/download_datasets.py trqa --subset wiki1
 
-# neuclir  (subset: news | technical)
-python src/indexing_corpus_dataset/download_datasets.py neuclir --year 2023 --subset news
+# neuclir  (subset: news | technical; 2024 news also writes report nuggets)
+python src/indexing_corpus_dataset/download_datasets.py neuclir --year 2024 --subset news
+
+# ragtime  (2025; queries, qrels, nuggets, English corpus)
+python src/indexing_corpus_dataset/download_datasets.py ragtime
 
 # browsecomp_plus  (corpus only)
 python src/indexing_corpus_dataset/download_datasets.py browsecomp_plus --skip-queries-qrels
@@ -46,6 +49,7 @@ Canonical layout written under `$DRA_DATA_ROOT/<dataset>/`:
 ```
 queries/queries_{split}.jsonl     {"id","text","answer"?}
 qrels/qrels_{split}.txt           TREC: qid 0 docid rel
+nuggets/nuggets_{split}.jsonl     {"id","nuggets":[{"id","question","answers","importance","support_docs"}]}
 corpus/{name}.jsonl               {"id","contents"}
 ```
 

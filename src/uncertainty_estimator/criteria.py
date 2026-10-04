@@ -19,12 +19,22 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ._helpers import parse_json_object
-from .prompts import CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE
+from .prompts import (
+    CRITERIA_INIT_REPORT_SYSTEM, CRITERIA_INIT_REPORT_USER_TEMPLATE,
+    CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE,
+)
 from .types import (
     PARTIALLY_COVERED, STATUS_VALUE, STATUSES, UNCOVERED, Criterion, CriterionUpdate, Evidence,
 )
 
 logger = logging.getLogger(__name__)
+
+# Criteria-extraction prompts per task (layout.DATASET_SPECS): a question's
+# conditions for "qa", a request's requirements for "report".
+_CRITERIA_INIT_PROMPTS = {
+    "qa": (CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE),
+    "report": (CRITERIA_INIT_REPORT_SYSTEM, CRITERIA_INIT_REPORT_USER_TEMPLATE),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +64,8 @@ class LLMCriteriaSource(CriteriaSource):
         max_criteria: Cap on the number of criteria kept.
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
+        task: ``"qa"`` (conditions of a question) or ``"report"``
+            (requirements of a report request).
     """
 
     name = "llm"
@@ -65,7 +77,11 @@ class LLMCriteriaSource(CriteriaSource):
         max_criteria: int = 8,
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        task: str = "qa",
     ) -> None:
+        if task not in _CRITERIA_INIT_PROMPTS:
+            raise ValueError(f"unknown task {task!r}; expected one of {tuple(_CRITERIA_INIT_PROMPTS)}")
+        self._system, self._user_template = _CRITERIA_INIT_PROMPTS[task]
         self._llm = llm_client
         self.model_name = model_name
         self._max_criteria = max_criteria
@@ -75,8 +91,8 @@ class LLMCriteriaSource(CriteriaSource):
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
         info: Dict[str, Any] = {"model": self.model_name, "reasoning": "", "errors": []}
         messages = [
-            {"role": "system", "content": CRITERIA_INIT_SYSTEM},
-            {"role": "user", "content": CRITERIA_INIT_USER_TEMPLATE.format(
+            {"role": "system", "content": self._system},
+            {"role": "user", "content": self._user_template.format(
                 query=query, max_criteria=self._max_criteria,
             )},
         ]

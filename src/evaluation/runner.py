@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from tqdm import tqdm
 
+from indexing_corpus_dataset.layout import DATASET_SPECS
 from utils.io_utils import (
     load_result_from_trec,
     load_result_from_saved_files,
@@ -54,11 +55,11 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
         qrels:     Qrels dict loaded from the dataset.
         kwargs:    Pipeline configuration dict.
         answers:   Optional mapping of query_id -> ground-truth answer.
-                   When provided, an answer-correctness evaluator is created in
-                   the accuracy slot: for ``dataset == "trqa"`` this is the
-                   rule-based numeric :class:`TRQAGenerationEvaluator` (no LLM);
-                   otherwise (e.g. BrowseComp-Plus) the LLM-as-judge
-                   :class:`AccuracyEvaluator`.
+                   When provided, the dataset's ``answer_eval``
+                   (layout.DATASET_SPECS) picks the accuracy-slot evaluator:
+                   ``"numeric_match"`` (TRQA) is the rule-based
+                   :class:`TRQAGenerationEvaluator` (no LLM), ``"llm_judge"``
+                   (BrowseComp-Plus) the LLM-as-judge :class:`AccuracyEvaluator`.
         questions: Optional mapping of query_id -> question text.
         dataset:   Dataset name; selects the accuracy-slot evaluator.
 
@@ -68,6 +69,7 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
           report_evaluator, uncertainty_evaluator)`` where
         ``accuracy_evaluator`` is None when no answers are available, and
         ``report_evaluator`` is None unless ``kwargs["report_eval"]`` is set.
+        Both are None for retrieval-only datasets (``answer_eval`` None).
     """
     k_values = kwargs.get("k_values", [1, 3, 5, 10, 25, 100])
     retrieval_evaluator = SurfacedDocEvaluator(
@@ -87,10 +89,16 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
         rrf_k=kwargs.get("rrf_k", 60),
     )
     judge_model = kwargs.get("judge_model")
+    answer_eval = DATASET_SPECS[dataset].answer_eval if dataset else "llm_judge"
 
     accuracy_evaluator = None
-    if answers:
-        if dataset == "trqa":
+    report_evaluator = None
+    if answer_eval is None:
+        # Retrieval-only datasets (NeuCLIR, RAGTIME): reports are saved but not graded.
+        if kwargs.get("report_eval"):
+            print(f"--report-eval ignored: {dataset} is evaluated on retrieval only")
+    elif answers:
+        if answer_eval == "numeric_match":
             # TRQA answers are numeric → rule-based exact/soft match, no LLM judge.
             accuracy_evaluator = TRQAGenerationEvaluator(
                 answers=answers,
@@ -107,8 +115,7 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
                 **judge_kwargs,
             )
 
-    report_evaluator = None
-    if kwargs.get("report_eval"):
+    if answer_eval is not None and kwargs.get("report_eval"):
         report_kwargs: Dict[str, Any] = {}
         if judge_model:
             report_kwargs["judge_model"] = judge_model
