@@ -18,15 +18,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from utils.text_utils import doc_id as _doc_id, doc_text
+from utils.text_utils import doc_id as _doc_id, doc_text, parse_json_object
 
-from ._helpers import parse_json_object
 from .criteria import CriteriaState
 from .prompts import (
-    CRITERIA_JUDGE_DOC_SYSTEM,
     CRITERIA_JUDGE_DOC_USER_TEMPLATE,
     CRITERIA_JUDGE_QUERY_SYSTEM,
     CRITERIA_JUDGE_QUERY_USER_TEMPLATE,
+    coverage_judge_system,
 )
 from .types import CriterionUpdate, Evidence
 
@@ -38,11 +37,11 @@ def _quote(spans: List[str]) -> str:
 
 
 def format_state_summary(state: CriteriaState) -> str:
-    """Per criterion, its status, the verified spans of its latest evidence
-    passage that has any, and what it still lacks."""
+    """Per criterion, its kind and status, the verified spans of its latest
+    evidence passage that has any, and what it still lacks."""
     blocks = []
     for k, c in enumerate(state.criteria):
-        lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
+        lines = [f"{c.id} [{c.kind}, {state.statuses[k]}]: {c.text}"]
         latest = next((e for e in reversed(state.attached(k)) if e.verified_spans), None)
         if latest is not None:
             lines.append(f"  evidence ({latest.role}): {_quote(latest.verified_spans)}")
@@ -91,7 +90,7 @@ def passage_head(text: str, num_words: int) -> str:
 class LLMCoverageJudge:
     """Stateful LLM judge: one call per step updates the criteria state.
 
-    The prompt shows each criterion with its status and its last
+    The prompt shows each criterion with its kind, its status and its last
     ``max_evidence_per_criterion`` evidence passages (each as the cited
     spans that occur verbatim and the first ``head_words`` words of the
     passage; a passage attached to several criteria is shown under each) and,
@@ -117,7 +116,7 @@ class LLMCoverageJudge:
         max_passage_chars: int = 3000,
         head_words: int = 100,
         max_evidence_per_criterion: int = 4,
-        max_tokens: int = 2048,
+        max_tokens: int = 4096,
         temperature: float = 0.0,
     ) -> None:
         self._llm = llm_client
@@ -132,7 +131,7 @@ class LLMCoverageJudge:
     def _format_state(self, state: CriteriaState) -> str:
         blocks = []
         for k, c in enumerate(state.criteria):
-            lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
+            lines = [f"{c.id} [{c.kind}, {state.statuses[k]}]: {c.text}"]
             attached = state.attached(k, self._max_evidence)
             if not attached:
                 lines.append("  evidence: none")
@@ -188,7 +187,7 @@ class LLMCoverageJudge:
             f"[{i + 1}] {doc_text(doc, max_length=self._max_passage_chars)}" for i, doc in enumerate(kept)
         )
         messages = [
-            {"role": "system", "content": CRITERIA_JUDGE_DOC_SYSTEM},
+            {"role": "system", "content": coverage_judge_system({c.kind for c in state.criteria})},
             {"role": "user", "content": CRITERIA_JUDGE_DOC_USER_TEMPLATE.format(
                 query=query, criteria=self._format_state(state), passages=passages,
             )},

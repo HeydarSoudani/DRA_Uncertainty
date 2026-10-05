@@ -59,7 +59,7 @@ max_passage_chars: 4000         # Chars of one retrieved passage shown to the ag
 
 # ── Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the uncertainty-aware agent, reasoning off
-max_criteria: 8                     # Cap on the number of criteria per query
+max_criteria: null                  # Cap on the number of criteria per query (null = the dataset's default in layout.DATASET_SPECS)
 criteria_judge_model: ""            # LLM of the stateful coverage judge (criteria_delta) and the query scorer (criteria attempts); "" = llm_criteria
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 
@@ -69,7 +69,7 @@ interleaving_window: 3          # Block size for interleaving fusion
 rrf_k: 60                       # K parameter for reciprocal rank fusion
 fusion_k: 100                   # Only first K docs per list passed to fusion method
 fusion_methods: ["interleaving"]  # Subset of aggregation fusion methods to evaluate
-judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus accuracy + report rubric (OpenRouter; needs OPENROUTER_API_KEY). TRQA uses rule-based numeric match (no judge).
+judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus accuracy and the Auto-ARGUE report evaluation of NeuCLIR / RAGTIME (OpenRouter; needs OPENROUTER_API_KEY). TRQA uses rule-based numeric match (no judge).
 
 # ── Execution & output ───────────────────────────────────────────────────────
 output: null                    # Root dir for results; null = experiments/run_outputs/
@@ -77,4 +77,3 @@ max_iteration: 100              # Max iterations/steps per query (all agents)
 max_retries: 3                  # Max retries when output format fails (all agents)
 verbose: true                   # Print detailed logs
 gpu_ids: null                   # Comma-separated physical GPU IDs, e.g. '4,5,6,7'
-report_eval: false              # Run the long-form ReportEvaluator (LLM-judge rubric)

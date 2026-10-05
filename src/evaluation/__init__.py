@@ -1,90 +1,41 @@
-"""Evaluation utilities for agentic retrieval research.
+"""Evaluation of deep-research agent runs.
 
-Subsystems
-----------
-retrieval (package)
-    Three document-level evaluators sharing one base class and metric set:
-    SurfacedDocEvaluator (retriever-returned), SeenDocEvaluator (passed to the
-    agent), CitedDocEvaluator (cited by the report), plus the TREC metric
-    functions and the pure citation metric functions
-    (``retrieval.citation_metrics``: precision/recall/F1, Recall@N).  The
-    multi-method fusion evaluation lives in ``retrieval.fusion`` and is imported
-    explicitly (``from evaluation.retrieval.fusion import ...``) to keep
-    ``import evaluation`` free of heavy searcher/indexing dependencies.
-generation (package)
-    ``generation.basic_stats.GenerationEvaluator`` (length, words, citations,
-    optional ROUGE), ``generation.short_answer.ShortAnswerEvaluator``
-    (LLM-as-judge short-answer correctness; alias ``AccuracyEvaluator``), and
-    ``generation.report.ReportEvaluator`` (LLM-judge rubric + citation
-    faithfulness for long-form reports).
-trajectory_evaluator
-    Per-step trajectory statistics (incl. token usage) and persistence.
-uncertainty_evaluator
-    Per-iteration uncertainty-signal persistence.
+The subpackages follow the groups of a run's ``summary.json``:
 
-Per-query/per-step token usage is recorded by the agents (via
-``utils.token_meter.TokenMeter`` attached to the LLM clients) and aggregated by
-``TrajectoryEvaluator``.
+answer
+    Answer correctness (``AccuracyEvaluator`` by LLM judge,
+    ``NumericMatchEvaluator`` by numeric match) and the report evaluation
+    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE).
+retrieval
+    Surfaced / seen / cited document evaluators on one base class and metric
+    set, the citation helpers, and the surfaced-doc fusion evaluation
+    (``retrieval.fusion``).
+trajectory
+    Trajectory statistics (incl. token usage) and the per-query trajectory
+    file.
+generation
+    Generation statistics and the per-query generation file.
+uncertainty
+    The per-query uncertainty-signal file.
+
+Beside them: ``runner`` (evaluation of an inference run), ``judge`` (the
+LLM-judge client), ``common`` (file and statistics helpers), and the offline
+criteria evaluation (``criteria``, ``python -m evaluation.criteria``) with its
+gold units and matchers (``gold``).
 """
 
-# Retrieval evaluation (functions + classes; legacy aliases preserved)
-from .retrieval import (
-    compute_trec_metrics,
-    evaluate_from_ranking_results,
-    evaluate_results,
-    metrics_at_n,
-    BaseDocRetrievalEvaluator,
-    SurfacedDocEvaluator,
-    SeenDocEvaluator,
-    CitedDocEvaluator,
-)
-
-# Pure citation metric functions (live under the retrieval subpackage)
-from .retrieval.citation_metrics import (
-    extract_citations_from_text,
-    compute_citation_metrics,
-    evaluate_citation_quality,
-    compute_recall_at_n,
-)
-
-# Generation evaluation
-from .generation import (
-    GenerationEvaluator,
-    ShortAnswerEvaluator,
-    AccuracyEvaluator,
-    TRQAGenerationEvaluator,
-    ReportEvaluator,
-)
-
-# Trajectory evaluation
-from .trajectory_evaluator import TrajectoryEvaluator
-
-# Uncertainty evaluation (per-iteration signal persistence)
-from .uncertainty_evaluator import UncertaintyEvaluator
+from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
+from .generation import GenerationEvaluator
+from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
+from .trajectory import TrajectoryEvaluator
 
 __all__ = [
-    # Retrieval evaluation
-    "compute_trec_metrics",
-    "evaluate_from_ranking_results",
-    "evaluate_results",
-    "metrics_at_n",
-    "BaseDocRetrievalEvaluator",
+    "AccuracyEvaluator",
+    "NumericMatchEvaluator",
+    "ArgueReportEvaluator",
+    "GenerationEvaluator",
     "SurfacedDocEvaluator",
     "SeenDocEvaluator",
     "CitedDocEvaluator",
-    # Citation metric functions
-    "extract_citations_from_text",
-    "compute_citation_metrics",
-    "evaluate_citation_quality",
-    "compute_recall_at_n",
-    # Generation evaluation
-    "GenerationEvaluator",
-    "ShortAnswerEvaluator",
-    "AccuracyEvaluator",
-    "TRQAGenerationEvaluator",
-    "ReportEvaluator",
-    # Trajectory evaluation
     "TrajectoryEvaluator",
-    # Uncertainty evaluation
-    "UncertaintyEvaluator",
 ]

@@ -1533,7 +1533,7 @@ class CPMReport(BasicAgent):
         forwarded: this agent builds ``state["trajectory"]`` during the run and
         only converts it to the standard step shape afterwards, so there is
         nothing to stream yet.  Its ``.jsonl`` still comes from
-        ``TrajectoryEvaluator.save_item()``.
+        ``evaluation.trajectory.save_trajectory()``.
         """
         self._current_query_id = query_id
         self._current_survey = {}

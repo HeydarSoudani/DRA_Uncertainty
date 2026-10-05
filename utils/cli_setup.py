@@ -66,7 +66,7 @@ FILE_BACKED_DEFAULTS = {
     "max_passage_chars": 4000,
     # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
-    "max_criteria": 8,
+    "max_criteria": None,
     "criteria_judge_model": "",
     "add_intermediate_answer": True,
     # Evaluation
@@ -82,7 +82,6 @@ FILE_BACKED_DEFAULTS = {
     "max_retries": 3,
     "verbose": True,
     "gpu_ids": None,
-    "report_eval": False,
 }
 
 # Allowed values for the file-backed enum knobs (argparse ``choices=``
@@ -105,6 +104,7 @@ _FILE_BACKED_CHOICES = {
 _FILE_BACKED_TYPES = {
     "llm_temperature": float,
     "min_relevance_score": int,
+    "max_criteria": int,
     "max_length": int,  # index build
 }
 
@@ -152,7 +152,7 @@ def parse_cli_overrides(extras) -> dict:
     """Turn argparse ``parse_known_args`` leftovers into an overrides dict.
 
     Handles ``--key value``, ``--key=value``, repeated/space-separated list
-    values (``--k-values 1 3 5``), and bare boolean flags (``--report-eval``).
+    values (``--k-values 1 3 5``), and bare boolean flags (``--eval-only``).
     Dashes in flag names are normalised to underscores to match attr names.
     """
     overrides: dict = {}
@@ -218,7 +218,7 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
             flat = [tok for v in raw_vals for tok in v.split()]
             elem_ref = ref[0] if ref else ""
             coerced = [_coerce_scalar(tok, elem_ref) for tok in flat]
-        elif not raw_vals:  # bare flag, e.g. --report-eval
+        elif not raw_vals:  # bare flag, e.g. --eval-only
             coerced = True
         elif ref is None and key in _FILE_BACKED_TYPES:
             coerced = _FILE_BACKED_TYPES[key](raw_vals[0])
@@ -232,14 +232,14 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
 def resolve_dataset_defaults(args) -> None:
     """Auto-select dataset-related CLI arguments that were left as None.
 
-    Split, query key and relevance threshold come from the dataset's
-    :data:`~indexing_corpus_dataset.layout.DATASET_SPECS` entry.
+    Split, query key, relevance threshold and criteria cap come from the
+    dataset's :data:`~indexing_corpus_dataset.layout.DATASET_SPECS` entry.
     """
     if args.data_path is None:
         args.data_path = str(_IR_ROOT / args.dataset)
         print(f"Auto-selected data path: {args.data_path}")
 
-    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score"))
+    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score", "max_criteria"))
 
     if args.index_dir is None:
         args.index_dir = str(_IR_ROOT / args.dataset / "indices")
@@ -298,7 +298,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
 
     pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
-    pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", 8)
+    pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", None)
     pipeline_kwargs["criteria_judge_model"] = getattr(args, "criteria_judge_model", "")
     pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
 
@@ -333,7 +333,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "use_plan":                      getattr(args, "use_plan", False),
         "uncertainty_estimator_mode":    getattr(args, "uncertainty_estimator_mode", "off"),
         "llm_criteria":                  getattr(args, "llm_criteria", None),
-        "max_criteria":                  getattr(args, "max_criteria", 8),
+        "max_criteria":                  getattr(args, "max_criteria", None),
         "criteria_judge_model":          getattr(args, "criteria_judge_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),

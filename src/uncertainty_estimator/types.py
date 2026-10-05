@@ -14,15 +14,32 @@ FULLY_COVERED = "fully_covered"
 STATUS_VALUE: Dict[str, int] = {UNCOVERED: 0, PARTIALLY_COVERED: 1, FULLY_COVERED: 2}
 STATUSES = tuple(STATUS_VALUE)
 
+# Criterion kinds: a closed criterion is one fact that a single document can
+# establish; an open one has several parts or answers that documents
+# establish only together (``CriteriaState`` needs several sources for it).
+CLOSED = "closed"
+OPEN = "open"
+KINDS = (CLOSED, OPEN)
+
+# Query shapes (layout.DATASET_SPECS): one entity or value described by clues,
+# a value computed over every member of a set, or a report on several aspects
+# of a topic.  The shape picks the criteria-extraction prompt and the kind of
+# each criterion; the extractor never chooses either.
+SINGLE_TARGET = "single_target"
+SET = "set"
+MULTI_ASPECT = "multi_aspect"
+QUERY_SHAPES = (SINGLE_TARGET, SET, MULTI_ASPECT)
+
 
 @dataclass
 class Criterion:
     """One criterion c_k of the per-query criteria list."""
     id: str
     text: str
+    kind: str = CLOSED
 
     def to_dict(self) -> Dict[str, str]:
-        return {"id": self.id, "text": self.text}
+        return {"id": self.id, "text": self.text, "kind": self.kind}
 
 
 @dataclass

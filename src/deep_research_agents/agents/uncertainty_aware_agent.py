@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from reasoner_component import disable_native_thinking, is_context_window_error
-from utils.text_utils import doc_id, doc_text, doc_title
+from utils.text_utils import doc_id, doc_text, doc_title, number_citations
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     MAX_TURNS_ANSWER_INSTRUCTION,
@@ -184,7 +184,11 @@ def parse_turn(text: str) -> Turn:
 
 # ── Passage labels ────────────────────────────────────────────────────────────
 # Every passage shown to the policy gets a label ``d1, d2, …`` that is unique in
-# the run and stable: the same ``doc_id`` always gets the same label.
+# the run and stable: the same ``doc_id`` always gets the same label.  A report
+# cites passages by label (``[d3]``, ``[d1, d4]``); the final report carries
+# them as numbered citations (``[1]``) with ``citation_to_doc_id``.
+
+_LABEL_CITATION_RE = re.compile(r"\[\s*(?P<ids>d\d+(?:\s*[,;]\s*d\d+)*)\s*\]")
 
 @dataclass
 class DocRegistry:
@@ -534,7 +538,13 @@ class UncertaintyAwareAgent(BasicAgent):
                 prediction = forced_step["prediction"]
                 end = END_FORCED
 
+        citation_to_doc_id: Dict[int, str] = {}
+        if self.task == "report" and prediction:
+            prediction, citation_to_doc_id = number_citations(
+                prediction, _LABEL_CITATION_RE, registry.doc_of.get)
+
         self._extras = {
+            "citation_to_doc_id": citation_to_doc_id,
             "ua_records": records,
             "ua_doc_labels": dict(registry.doc_of),
             "ua_outcome": {

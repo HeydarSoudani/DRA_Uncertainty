@@ -49,11 +49,14 @@ Output structure:
     │   └── {query_id}.md            same trajectory, human-readable, written live (one block per step)
     ├── uncertainty/
     │   └── {query_id}.jsonl         per-query uncertainty signals: meta line + one line per iteration
+    ├── accuracy.jsonl               per-query answer correctness (datasets with answers)
+    ├── report_eval.jsonl            per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
+    ├── report_eval/                 Auto-ARGUE inputs and cached judgments (nuggets/, judgments/)
     └── summary.json                 grouped run metrics (mirrors the dir layout):
                                        num_queries,
                                        answer     {accuracy, report},
                                        retrieval  {fusion, seen, cited},
-                                       trajectory, generation, uncertainty
+                                       trajectory, generation
 """
 
 import argparse
@@ -80,7 +83,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS
+from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import AGENTIC_MODEL_TO_LLM, AGENTIC_MODEL_ALIAS, resolve_temperature
@@ -110,12 +113,10 @@ from utils.io_utils import (
     build_uncertainty_config_name,
     write_run_config,
 )
-from evaluation.runner import evaluate_and_save, build_evaluators, load_processed_results
+from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results, save_query_outputs
 from evaluation.retrieval.fusion import run_fusion_eval
 
-_OUTPUT_PREFIX = os.environ.get(
-    "DRA_OUTPUT_ROOT", "/projects/0/prjs0834/heydars/DRA_training/run_outputs"
-)
+_OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parent / "configs" / "dra_inference.yaml")
 
 
@@ -229,37 +230,30 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             print(f"--eval-only: run_dir does not exist: {run_dir}")
             return
 
-        _retrieval_prefix = f"{_run_dir_str.rstrip('/')}/retrieval/surfaced"
         processed_all = get_processed_queries(run_dir)
         if not processed_all:
-            print(f"No retrieval data found in {_retrieval_prefix}. "
+            print(f"No retrieval data found in {_run_dir_str.rstrip('/')}/retrieval/surfaced. "
                   "Run the full pipeline first (without --eval-only).")
             return
 
-        results: dict = {}
-        load_processed_results(processed_all, _retrieval_prefix, results, lightweight=True)
+        results = load_run_results(run_dir, processed_all)
         if not results:
             print(f"Could not load any results from {_run_dir_str}.")
             return
         print(f"Loaded {len(results)} queries for evaluation")
 
-        retrieval_evaluator, generation_evaluator, trajectory_evaluator, \
-            cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, _ = \
-            build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset,
-                             graded_qrels=graded_qrels)
+        evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
+                                      dataset=dataset, graded_qrels=graded_qrels,
+                                      data_path=data_path, split=file_data_set)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
         # into the single summary.json written by evaluate_and_save.
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus, gain_qrels=graded_qrels)
+        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, gain_qrels=graded_qrels)
 
-        # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, report rubric)
-        # call the OpenRouter-hosted judge directly — no local server to start.
-        evaluate_and_save(
-            results, generation_evaluator, trajectory_evaluator, run_dir,
-            cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-            report_evaluator=report_evaluator,
-            fusion_metrics=fusion_metrics,
-        )
+        # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE
+        # reports) call the OpenRouter-hosted judge directly and reuse the
+        # verdicts saved in the run directory; no local server to start.
+        evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
         return
 
     # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
@@ -324,7 +318,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             qrels=qrels,
             graded_qrels=graded_qrels,
             llm_criteria=kwargs.get("llm_criteria"),
-            max_criteria=kwargs.get("max_criteria", 8),
+            max_criteria=kwargs.get("max_criteria"),
             criteria_judge_model=kwargs.get("criteria_judge_model", ""),
             add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
             agent=agent if hasattr(agent, "uncertainty_estimator") else None,
@@ -336,17 +330,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agent.uncertainty_estimator = estimator
 
     # ==================== Setup output dirs + evaluators ====================
-    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, uncertainty_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset, graded_qrels=graded_qrels)
+    evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
+                                  dataset=dataset, graded_qrels=graded_qrels,
+                                      data_path=data_path, split=file_data_set)
 
-    retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = uncertainty_dir = None
+    trajectory_dir = None
     if output_path:
-        _dirs = setup_output_dirs(run_dir, ["retrieval/surfaced", "generation", "trajectory", "retrieval/cited", "retrieval/seen", "uncertainty"])
-        retrieval_dir  = _dirs["retrieval/surfaced"]
-        generation_dir = _dirs["generation"]
-        trajectory_dir = _dirs["trajectory"]
-        cited_doc_dir  = _dirs["retrieval/cited"]
-        seen_doc_dir   = _dirs["retrieval/seen"]
-        uncertainty_dir = _dirs["uncertainty"]
+        trajectory_dir = setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)["trajectory"]
         write_run_config(run_dir, agentic_model=agentic_model, llm_model=llm_model, **kwargs)
         print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
 
@@ -492,23 +482,20 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             results[query_id] = result
 
             if output_path:
-                retrieval_evaluator.save_item(query_id, result, retrieval_dir)
-                generation_evaluator.save_item(query_id, result, generation_dir)
-                trajectory_evaluator.save_item(query_id, query_text, result, trajectory_dir)
-                cited_doc_evaluator.save_item(query_id, result, cited_doc_dir)
-                seen_doc_evaluator.save_item(query_id, result, seen_doc_dir)
-                uncertainty_evaluator.save_item(query_id, query_text, result, uncertainty_dir)
+                save_query_outputs(run_dir, query_id, query_text, result)
                 print(f"  ✓ Saved: {query_id}")
 
         if agent:
             agent.cleanup()
         print(f"\nCompleted {len(results)} queries")
 
-    # ==================== Load already-processed results from disk ====================
-    # When resuming a run, `results` only contains newly-processed queries.
-    # Load the saved TREC files for previously-skipped queries so evaluation
-    # covers ALL processed queries, not just the current batch.
-    load_processed_results(processed, retrieval_dir, results)
+    # ==================== Read the run back from disk ====================
+    # Every query of the run (this batch and earlier ones) is evaluated from
+    # its saved files, exactly as --eval-only does, so both write the same
+    # summary.json.  Without an output directory the in-memory results are
+    # evaluated.
+    if run_dir:
+        results = load_run_results(run_dir, get_processed_queries(run_dir))
 
     # ==================== Evaluate + Save ====================
     _vllm_mgr = kwargs.get("vllm_manager")
@@ -566,21 +553,11 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # into the single summary.json written by evaluate_and_save.
     fusion_metrics = {}
     if results:
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus, gain_qrels=graded_qrels)
+        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, gain_qrels=graded_qrels)
 
-    # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, report rubric)
-    # call the OpenRouter-hosted judge directly — no local server to start.
-    evaluate_and_save(
-        results,
-        generation_evaluator,
-        trajectory_evaluator,
-        run_dir,
-        cited_doc_evaluator,
-        seen_doc_evaluator,
-        accuracy_evaluator,
-        report_evaluator=report_evaluator,
-        fusion_metrics=fusion_metrics,
-    )
+    # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE reports)
+    # call the OpenRouter-hosted judge directly; no local server to start.
+    evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
 
     # ==================== Final status ==========================================
     if output_path and run_dir:
@@ -625,7 +602,7 @@ def _parse_args():
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and run only evaluation on already-generated results. Runs all evaluators (generation, trajectory, uncertainty, cited-doc, seen-doc, accuracy, fusion). Requires the run to have been completed at least once so that trajectory/ and retrieval/ files exist. Accuracy evaluation runs automatically whenever the dataset has ground-truth answers (LLM-as-judge via --judge-model for BrowseComp-Plus; rule-based numeric match for TRQA).")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl and report_eval/, so an unchanged run makes no LLM call.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -756,7 +733,6 @@ def main():
         "fusion_k": args.fusion_k,
         "fusion_methods": args.fusion_methods,
         "eval_only": args.eval_only,
-        "report_eval": args.report_eval,
         "vllm_manager": vllm_manager,
         "total_gpus_on_machine": total_gpus_on_machine,
         "judge_model": args.judge_model,
@@ -831,9 +807,12 @@ if __name__ == "__main__":
 #     │   └── {query_id}.md     same trajectory, human-readable, written live
 #     ├── uncertainty/
 #     │   └── {query_id}.jsonl  per-query uncertainty signals: meta line + one line per iteration
+#     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
+#     ├── report_eval.jsonl     per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
+#     ├── report_eval/          Auto-ARGUE inputs and cached judgments
 #     └── summary.json          grouped: num_queries, answer{accuracy,report},
 #                                        retrieval{fusion,seen,cited},
-#                                        trajectory, generation, uncertainty
+#                                        trajectory, generation
 #
 # ============================================================================
 # EXAMPLE USAGE

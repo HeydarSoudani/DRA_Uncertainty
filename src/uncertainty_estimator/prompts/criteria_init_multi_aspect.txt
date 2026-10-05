@@ -1,0 +1,19 @@
+== Rules ==
+The agent will write a report that covers several aspects of a topic.
+1. Every requirement stated in the request leads to at least one criterion.
+2. For a broad requirement, one that a single fact cannot satisfy, list specific sub-questions instead of copying it, each one a document could answer: for example figures and trends, the groups affected, causes, responses, consequences and comparisons, as far as the requirement asks for them. A broad requirement usually yields several sub-questions; name the specific quantity, group, event or cause each one asks about.
+3. Do not list background on who is asking, what the request asks to leave out, or instructions on the format or length of the report.
+
+---example---
+Example query: "I am a policy advisor for a regional water authority and need background for an upcoming hearing. I need a report on how microplastics enter freshwater ecosystems and their measured effects on the health of freshwater fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems."
+Example output:
+{
+  "criteria": [
+    "the main sources and pathways by which microplastics enter freshwater ecosystems",
+    "measured concentrations of microplastics in rivers and lakes",
+    "the effects on fish health measured in studies of freshwater fish exposed to microplastics",
+    "which freshwater fish species or life stages are most affected",
+    "the regulations proposed to limit microplastic pollution and who proposed them",
+    "the current status of the proposed regulations"
+  ]
+}

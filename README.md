@@ -102,14 +102,26 @@ python experiments/dra_inference.py --dataset browsecomp_plus --limit 1 --num-gp
 python experiments/dra_inference.py --dataset browsecomp_plus --eval-only --num-gpus 0
 ```
 
+A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
+`summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`) and reused for
+queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU. The terminal
+log ends with the time of each evaluation stage. `_eval_results_cache*.pkl.gz` files left by older code are no longer
+read and can be deleted.
+
 Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
 `experiments/configs/dra_inference.yaml`.
 
 ### Uncertainty estimator
 
 `--uncertainty-estimator-mode monitor` plugs a passive monitor (`src/uncertainty_estimator/`) into any agent; `off` (the
-default) disables it. It never changes the trajectory. At the start of each sample it extracts a fixed list of
-criteria from the query (`llm_criteria`); at the end of each search iteration it computes the per-step signals of
+default) disables it. It never changes the trajectory. At the start of each sample it derives a fixed list of
+criteria from the query (`llm_criteria`, at most `max_criteria`, null = the dataset's default in `layout.DATASET_SPECS`).
+The dataset's `query_shape` (`layout.DATASET_SPECS`) picks the prompt, a shared core plus one block per shape, and the
+model only lists the pieces of information a complete response must establish: the clues of a single target (BCP,
+copied verbatim), the set and one "member: property" per known member of a set query (TRQA), or the sub-questions of a
+report request (NeuCLIR, RAGTIME). Each criterion is `closed` (one fact) or `open` (several parts or answers), set by
+code from the shape: all clues are closed, the set (always the first criterion) is open and its members closed, all
+report criteria are open. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
@@ -136,7 +148,9 @@ model `criteria_judge_model`, default `llm_criteria`):
   split first); a span that is not verbatim is not shown, but the citation still counts (`span_verified` is saved per
   span). `CriteriaState.apply` enforces the rules: a raise needs a
   supporting passage, a lowering needs a contradicting passage and moves one level at most per iteration, and an
-  update that keeps the status only attaches its evidence. Several partial passages can together make a criterion
+  update that keeps the status only attaches its evidence. An open criterion is fully covered only once its support
+  comes from 3 distinct documents (`OPEN_MIN_SOURCES`); before that it is capped at partially covered, with the
+  missing sources as its `missing`. Several partial passages can together make a criterion
   fully covered, and a contradiction lowers it, so `criteria_delta` is negative when coverage was lost.
 - `criteria_attempts_after`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
   each criterion's status, the verified spans of its latest evidence passage and what is `missing`, so a query naming
@@ -155,14 +169,14 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
   <criteria covered="1" partial="1" not_covered="1">
     <k1 status="covered" attempts="1">born in the 1960s</k1>
     <k2 status="partial" attempts="2">won a regional award</k2>
-    <k3 status="not_covered" attempts="0">studied in Lisbon</k3>
+    <k3 status="not_covered" kind="open" attempts="0">the films they directed</k3>
   </criteria>
   <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
   <reasoning_signals query_novelty="0.81"/>
 </certainty>
 ```
 
-Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
+`kind="open"` marks an open criterion; closed criteria carry no kind. Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
 `new_item_graded_recall`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
@@ -179,6 +193,70 @@ The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jso
 follows the flag like every other agent; in `inform` mode its system prompt also explains the tag, and in `monitor` and
 `off` modes the prompt never mentions it.
 
+#### Criteria evaluation
+
+`python -m evaluation.criteria` scores the criteria list without an agent run (`src/evaluation/criteria/`, gold and
+matchers in `src/evaluation/gold/`). It derives the criteria of a split with `LLMCriteriaSource` (or reads them from a
+run with `--run-dir`) and compares them with the dataset's `criteria_gold` (`layout.DATASET_SPECS`):
+
+- `entities` (TRQA): closed criteria are matched to the query's gold entities by name (normalized string match, then an
+  LLM for aliases); `recall` over the entities, `precision` over the closed criteria.
+- `nuggets` (NeuCLIR, RAGTIME): an LLM lists each nugget question's qualifiers (group, measure, time, place, event,
+  cause) and scores every (nugget, criterion) pair 1 (the criterion names every qualifier), 0.5 (same topic, a
+  qualifier missing) or 0; `recall_strict` / `recall_lenient`, `precision_strict` / `precision_lenient`,
+  `recall_strict_vital` (NeuCLIR) and `recall_strict_rare` (at most 5 support documents).
+- No gold (BrowseComp-Plus): extraction only, or scored against a reference criteria list (`--reference`) with the
+  nugget scores.
+
+```bash
+python -m evaluation.criteria --dataset trqa --subset wiki2 --sample 100
+python -m evaluation.criteria --dataset neuclir --prompt-file other_prompt.txt --tag other
+```
+
+`--prompt-file` replaces the criteria-extraction prompt, for comparisons. Outputs (`criteria.jsonl`, reused on a rerun;
+`eval.jsonl`; `summary.json`) go to `{DRA_OUTPUT_ROOT}/criteria_eval/{dataset}_{split}/{tag}/`.
+
+#### Report evaluation (Auto-ARGUE)
+
+On the report datasets (`report_eval: "argue"` in `layout.DATASET_SPECS`: NeuCLIR, RAGTIME) every run, and every
+`--eval-only` pass, scores the reports against the nuggets with the official
+[Auto-ARGUE](https://github.com/hltcoe/auto-argue) package (`src/evaluation/answer/argue.py`). There is no flag. The
+package runs unmodified with our judge (`judge_model`, Qwen3-32B, temperature 0, reasoning off) instead of its
+Llama-3.3-70B.
+
+- Input: `generation/{qid}.md` split into sentences, each with the documents its `[N]` markers cite (resolved through
+  the References block), cut at the dataset's `report_chars` (2000) as in the tracks.
+- Nuggets: the dataset's nuggets as v3 banks. NeuCLIR uses the NIST QC'd bank with importance (vital counts 2, okay 1),
+  the AND/OR aggregation and each answer's supporting documents; only its 22 requests with supporting documents can be
+  scored. RAGTIME has no importance labels, so the weighted scores equal the plain ones.
+- Scores (mean over requests, an empty report scores 0): `nugget_coverage` (`_weighted`), `sentence_support`,
+  `citation_support`, `citation_relevance`, `f1` (`_weighted`). A nugget only counts when its sentence cites one of
+  its supporting documents.
+- Cache: `report_eval/` keeps the nugget banks, the cited documents and each report's judgments keyed by a hash of
+  what was judged; an unchanged run is rescored without LLM calls. Cited document texts come from the corpus through a
+  byte-offset index built once next to it (`{corpus}.jsonl.offsets.npz`).
+
+Install (pinned; the provider integrations are not needed): `pip install langchain<1.0 langchain-core langsmith
+"rag_run_validator @ git+https://github.com/hltcoe/rag-run-validator.git@v0.1"` and
+`pip install --no-deps "auto-argue @ git+https://github.com/hltcoe/auto-argue.git@81dda60"`.
+
+### Evaluation code
+
+`src/evaluation/` follows the groups of `summary.json`; each group also writes its per-query files.
+
+```
+src/evaluation/
+├── runner.py        save_query_outputs, build_evaluators, load_run_results, evaluate_and_save
+├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports)
+├── retrieval/       surfaced / seen / cited evaluators, citations, TREC metrics, fusion evaluation
+├── trajectory/      TrajectoryEvaluator (statistics), save_trajectory
+├── generation/      GenerationEvaluator (length, words, citations, generation/{qid}.md)
+├── uncertainty/     save_uncertainty (uncertainty/{qid}.jsonl schema)
+├── criteria/, gold/ offline criteria evaluation (python -m evaluation.criteria)
+├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
+└── common.py        file, statistics and terminal helpers
+```
+
 ### Output format
 
 ```
@@ -192,6 +270,9 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 ├── generation/{qid}.md             per-query report (markdown)
 ├── trajectory/{qid}.jsonl          meta line + one line per step
 ├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
+├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
+├── report_eval.jsonl               per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
+├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs) and cached judgments/
 └── summary.json                    grouped metrics (answer / retrieval / trajectory / generation)
 ```
 
@@ -215,7 +296,7 @@ Meta line (one per query):
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `total_gain` | summed official gain of the query's relevant docs (null without graded qrels) |
 | `criteria` | `[{id, text}]` |
-| `criteria_info` | criteria LLM `model`, `reasoning`, `errors` |
+| `criteria_info` | criteria LLM `model`, `query_shape`, `errors` |
 | `final_criteria_attempts` | last attempts, one per criterion |
 | `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 

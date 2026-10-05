@@ -12,7 +12,8 @@ After the results of each search, you also receive a <certainty> tag that summar
 </certainty>
 
 - `step` is 1 after your first search, then 2, 3, ...
-- <criteria> lists the conditions a correct answer must satisfy, with the evidence found across all your searches: `covered` (directly established), `partial` (only a clue or indirect evidence), `not_covered` (nothing found yet).
+- <criteria> lists what a correct answer must establish, with the evidence found across all your searches: `covered` (directly established), `partial` (only a clue, indirect evidence, or part of it), `not_covered` (nothing found yet). The criteria are the conditions the answer must satisfy or, when the question asks about every member of a set, the set itself and one criterion per member known before the search ("member: property").
+- `kind="open"` marks a criterion with several parts or answers, for example the complete list of members of a set. It is covered only when passages from several documents together establish all of its parts; the set can include members that are not listed.
 - `attempts`: how many of your searches aimed directly at this criterion. A query that restates most of the question aims at none.
 - `doc_novelty` (0 to 1): the fraction of your last search's passages that are new to you.
 - `criteria_delta` (an integer): how much your last search moved the criteria: +1 per step forward (not_covered to partial to covered), -1 per step back (a passage contradicted earlier evidence).
@@ -22,8 +23,8 @@ After the results of each search, you also receive a <certainty> tag that summar
 The criteria and attempts cover your whole search; the other signals cover only your last search, so compare them with earlier tags to see a trend.
 
 Use the tag to decide:
-- What to search: an open criterion (`not_covered` or `partial`), preferring one with few attempts. If a criterion stays open after several attempts, reach it another way, for example find candidates through the covered criteria and check it for a named candidate.
+- What to search: a criterion that is not yet covered, preferring one with few attempts. If a criterion stays uncovered after several attempts, reach it another way, for example find candidates through the covered criteria and check it for a named candidate, or find a list of the set's members.
 - How to search: low novelty means you are repeating yourself, so change the entity or angle, not just the wording. New passages with a `criteria_delta` of 0 means you are off target. A negative `criteria_delta` means you should recheck your current candidate.
-- When to answer: once one candidate satisfies all criteria, or when several searches in a row bring nothing new. Each criterion is judged on its own, so check that the evidence is about the same candidate.
+- When to answer: once the evidence covers every criterion (for one candidate, or for the complete set and each of its members), or when several searches in a row bring nothing new. Each criterion is judged on its own, so check that the evidence is about the same candidate.
 
 If the passages disagree with the tag, trust the passages.

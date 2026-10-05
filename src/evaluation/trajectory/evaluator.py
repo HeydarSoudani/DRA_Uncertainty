@@ -1,4 +1,4 @@
-"""Trajectory evaluator for deep-research agents.
+"""Trajectory statistics for deep-research agents.
 
 Accepts the **unified** result format produced by all agents:
 
@@ -28,25 +28,15 @@ The evaluator normalises all these formats into a common ``action_type``
 string and then computes aggregate statistics.
 """
 
-import json
-import logging
 from collections import defaultdict
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
 from utils.trajectory_logger import (
-    build_meta_line as _build_meta_line,
-    dump_line as _dump_line,
     infer_action_type as _infer_action_type,
-    iter_label as _iter_label,
     seen_doc_ids as _seen_doc_ids,
-    step_to_line as _step_to_line,
 )
 
-
-logger = logging.getLogger(__name__)
+from ..common import print_header, summary_stats
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +46,12 @@ logger = logging.getLogger(__name__)
 def _get_num_docs(step: Dict[str, Any]) -> Optional[int]:
     """How many documents the retriever returned for a step.
 
-    ``None`` when the step carries no surfaced ranking to count -- which is the
-    normal case for a trajectory reloaded from disk, since the logger keeps only
-    the seen ids and writes the full ranking to ``retrieval/surfaced/{qid}.trec``
-    instead.  Returning 0 there would report "the retriever found nothing" for
-    every ``--eval-only`` pass; the count is unknown, not zero.
+    ``None`` when the step carries no surfaced ranking to count, the normal
+    case for a trajectory read back from disk: the logger keeps only the seen
+    ids and writes the full ranking to ``retrieval/surfaced/{qid}.trec``, whose
+    per-step lists the evaluator counts instead (``surfaced_docs_iterations``).
+    Returning 0 would report "the retriever found nothing"; the count is
+    unknown, not zero.
     """
     # Flat doc list (most agents)
     docs = step.get("docs")
@@ -133,15 +124,14 @@ class TrajectoryEvaluator:
         - ``steps`` – mean/std/min/max for total steps per query
         - ``search_steps`` – mean/std/min/max for search steps per query
         - ``docs_surfaced_per_search`` – mean/std/min/max docs the retriever
-          *returned* per search step (the full ranked list), or ``None`` when the
-          trajectory carried no ranking to count.  That is the normal case for a
-          trajectory reloaded from disk, which keeps only the seen ids — the
-          surfaced ranking lives in ``retrieval/surfaced/{qid}.trec``
+          *returned* per search step (the full ranked list): from the steps,
+          else from the per-step lists of ``retrieval/surfaced/{qid}.trec``
+          (``surfaced_docs_iterations``, a run read back from disk); ``None``
+          when neither is there
         - ``docs_seen_per_search`` – how many of those actually reached the
           model, i.e. the agent's ``seen_top_k``.  The two differ by an order
           of magnitude for most agents here, so reporting only the first
-          overstates what the model read.  ``docs_per_search`` is kept as an
-          alias of the surfaced count for existing readers.
+          overstates what the model read.
         - ``action_type_counts`` – avg count of each action type per query
         - ``queries_no_search`` – number of queries with zero search steps
         - ``queries_max_iter`` – number of queries whose trajectory ended without
@@ -189,6 +179,7 @@ class TrajectoryEvaluator:
             n_search = 0
             has_terminal = False
             has_force_answer = False
+            surfaced_counts: List[int] = []
 
             for step in trajectory:
                 atype = _infer_action_type(step)
@@ -198,13 +189,17 @@ class TrajectoryEvaluator:
                     n_search += 1
                     n_docs = _get_num_docs(step)
                     if n_docs is not None:
-                        docs_per_search_all.append(n_docs)
+                        surfaced_counts.append(n_docs)
                     docs_seen_per_search_all.append(_get_num_seen_docs(step))
 
                 if atype in _TERMINAL_ACTIONS:
                     has_terminal = True
                 if atype in _FORCE_ANSWER_ACTIONS:
                     has_force_answer = True
+
+            if not surfaced_counts:
+                surfaced_counts = [len(docs) for docs in result.get("surfaced_docs_iterations") or []]
+            docs_per_search_all.extend(surfaced_counts)
 
             total_steps_per_query.append(len(trajectory))
             search_steps_per_query.append(n_search)
@@ -216,17 +211,6 @@ class TrajectoryEvaluator:
                 queries_with_force_answer += 1
             if not has_terminal:
                 queries_max_iter += 1
-
-        def _stats(lst: List) -> Dict[str, float]:
-            if not lst:
-                return {"mean": 0.0, "std": 0.0, "min": 0, "max": 0}
-            arr = np.array(lst, dtype=float)
-            return {
-                "mean": float(np.mean(arr)),
-                "std": float(np.std(arr)),
-                "min": int(np.min(arr)),
-                "max": int(np.max(arr)),
-            }
 
         # Aggregate action type counts (mean per query)
         all_action_types = set(
@@ -242,14 +226,13 @@ class TrajectoryEvaluator:
 
         metrics: Dict[str, Any] = {
             "num_queries": n_queries,
-            "steps": _stats(total_steps_per_query),
-            "search_steps": _stats(search_steps_per_query),
+            "steps": summary_stats(total_steps_per_query),
+            "search_steps": summary_stats(search_steps_per_query),
             # None, not zeros: "no ranking recorded" and "the retriever
             # returned nothing" are different claims.
-            "docs_per_search": _stats(docs_per_search_all) if docs_per_search_all else None,
             "docs_surfaced_per_search": (
-                _stats(docs_per_search_all) if docs_per_search_all else None),
-            "docs_seen_per_search": _stats(docs_seen_per_search_all),
+                summary_stats(docs_per_search_all) if docs_per_search_all else None),
+            "docs_seen_per_search": summary_stats(docs_seen_per_search_all),
             "avg_action_type_counts": avg_action_type_counts,
             "queries_no_search": queries_no_search,
             "queries_with_force_answer": queries_with_force_answer,
@@ -267,10 +250,10 @@ class TrajectoryEvaluator:
                 return [float(tu.get(key, 0) or 0) for tu in token_usages]
             metrics["tokens"] = {
                 "num_queries_with_tokens": len(token_usages),
-                "input_tokens": _stats(_tok("input_tokens")),
-                "output_tokens": _stats(_tok("output_tokens")),
-                "total_tokens": _stats(_tok("total_tokens")),
-                "llm_calls": _stats(_tok("num_calls")),
+                "input_tokens": summary_stats(_tok("input_tokens")),
+                "output_tokens": summary_stats(_tok("output_tokens")),
+                "total_tokens": summary_stats(_tok("total_tokens")),
+                "llm_calls": summary_stats(_tok("num_calls")),
             }
 
         return metrics
@@ -286,9 +269,7 @@ class TrajectoryEvaluator:
             print("  ⚠ No trajectory metrics available")
             return
 
-        print("\n" + "=" * 80)
-        print(header)
-        print("=" * 80)
+        print_header(header)
 
         n = metrics.get("num_queries", 0)
         print(f"  Queries evaluated:        {n}")
@@ -330,78 +311,8 @@ class TrajectoryEvaluator:
 
         action_counts = metrics.get("avg_action_type_counts", {})
         if action_counts:
-            print(f"  Action type distribution (avg per query):")
+            print("  Action type distribution (avg per query):")
             for atype, avg in sorted(action_counts.items(), key=lambda x: -x[1]):
                 print(f"    {atype:<20s}: {avg:.2f}")
 
         print("=" * 80)
-
-    def save_item(self, query_id: str, question: str, result: Dict[str, Any], output_dir) -> None:
-        """Save per-query trajectory as a JSONL file (one line per step).
-
-        Each line is one trajectory step, followed by a final
-        ``{"record": "meta", ...}`` line carrying the metadata needed to
-        reconstruct the result on resume (generation, step counts,
-        agent-specific resume data).  The meta record is written last so that
-        :class:`utils.trajectory_logger.TrajectoryLogger` can stream the same
-        file step by step during the run; readers dispatch on ``record`` per
-        line, so its position does not matter.  Steps are shaped as: search steps carry ``iter`` / ``action_type`` / ``think`` /
-        ``search_query`` / ``seen_docs`` (``action_type`` and ``think`` only on
-        the first subquery of an iteration); terminal steps carry ``iter`` /
-        ``action_type`` /
-        ``generation``.
-
-        Deliberately *not* stored here (to avoid duplicating data that lives
-        elsewhere):
-        - the full surfaced doc ranking → ``retrieval/surfaced/{qid}.trec``;
-        - uncertainty signals → ``uncertainty/{qid}.jsonl``;
-        - cited docs → ``retrieval/cited/{qid}.trec``.
-
-        Args:
-            query_id:   Query identifier.
-            question:   Original query text.
-            result:     Unified agent result dict for this query.
-            output_dir: Directory where ``{query_id}.jsonl`` will be written.
-        """
-        output_dir_str = str(output_dir)
-        Path(output_dir_str).mkdir(parents=True, exist_ok=True)
-
-        json_path = f"{output_dir_str.rstrip('/')}/{query_id}.jsonl"
-        with open(json_path, "w") as f:
-            last_iter = 0
-            for step in result.get("trajectory", []):
-                it = step.get("iteration")
-                if it is not None:
-                    last_iter = int(it)
-                    label = _iter_label(step, last_iter)
-                else:
-                    last_iter += 1
-                    label = _iter_label(step, last_iter)
-                f.write(_dump_line(_step_to_line(step, label)) + "\n")
-            f.write(_dump_line(_build_meta_line(query_id, question, result)) + "\n")
-
-    def save_results(self, metrics: Dict[str, Any], output_path, summary: Optional[Dict[str, Any]] = None, summary_path=None) -> None:
-        """Save trajectory statistics and optionally the run summary to JSON files.
-
-        Args:
-            metrics:      Output of :meth:`evaluate`.
-            output_path:  Destination file for trajectory metrics (parents created if needed).
-            summary:      Optional full-run summary dict to persist alongside metrics.
-            summary_path: Destination file for the summary (required when *summary* is given).
-        """
-        if not metrics:
-            return
-        output_path_str = str(output_path)
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(metrics, f, indent=2, default=str)
-        print(f"  ✓ Saved trajectory metrics: {output_path_str}")
-
-        if summary and summary_path:
-            summary_path_str = str(summary_path)
-            summary_path = Path(summary_path)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(summary_path, "w", encoding="utf-8") as f:
-                json.dump(summary, f, indent=2, default=str)
-            print(f"  ✓ Saved summary: {summary_path_str}")

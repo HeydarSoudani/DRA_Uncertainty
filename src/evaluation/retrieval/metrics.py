@@ -1,8 +1,8 @@
 """Shared retrieval metric computation.
 
 TREC metric computation (NDCG, MAP, Recall, Precision, F1, Success) via
-pytrec_eval, the ``Metrics@N`` helper (where N = number of retrieved docs
-per query), and result persistence.
+pytrec_eval, and the ``Metrics@N`` helper (where N = number of retrieved docs
+per query).
 
 Core evaluation functions modified from:
 https://github.com/beir-cellar/beir/blob/main/beir/retrieval/evaluation.py
@@ -16,6 +16,9 @@ import pytrec_eval
 from utils.ranking_results import RankingResults
 
 logger = logging.getLogger(__name__)
+
+#: Metric cut-offs when the run sets none (the inference config's default).
+DEFAULT_K_VALUES = (1, 3, 5, 10, 25, 50, 75, 100, 500, 1000)
 
 
 def compute_trec_metrics(
@@ -40,7 +43,7 @@ def compute_trec_metrics(
     Args:
         qrels: Query relevance judgments {query_id: {doc_id: relevance_score}}
         results: Search results {query_id: {doc_id: score}}
-        k_values: List of k values for metrics (default: [1, 3, 5, 10, 25, 100])
+        k_values: List of k values for metrics (default: DEFAULT_K_VALUES)
         ignore_identical_ids: Whether to ignore query-doc pairs with identical IDs
         include_all_metrics: Also compute uncut @all metrics.
         gain_qrels: ``{query_id: {doc_id: gain}}`` with the official gains,
@@ -50,7 +53,7 @@ def compute_trec_metrics(
     Returns:
         Tuple of (NDCG, MAP, Recall, Precision, F1, Success) dictionaries
     """
-    k_values = sorted(set(k_values)) if k_values else [1, 3, 5, 10, 25, 100]
+    k_values = sorted(set(k_values or DEFAULT_K_VALUES))
 
     if ignore_identical_ids:
         for qid, rels in results.items():
@@ -172,52 +175,6 @@ def compute_trec_metrics(
     return ndcg, _map, recall, precision, f1, success
 
 
-def evaluate_from_ranking_results(
-    qrels: dict[str, dict[str, int]],
-    results: RankingResults,
-    k_values: list[int] | None = None,
-    ignore_identical_ids: bool = True,
-) -> dict[str, dict[int, float]]:
-    """Evaluate RankingResults and return metrics as {metric_name: {k: value}}.
-
-    Converts RankingResults to dict format, computes metrics, and returns them
-    structured by metric name and k value.
-    """
-    # Normalize scores so that pytrec_eval (which re-sorts by score) sees the
-    # same ordering as our rank column.
-    results.normalize_scores_by_rank()
-
-    search_results = {
-        query_id: {
-            result.doc_id: result.rank_score
-            for result in results.get_results_for_query(query_id)
-        }
-        for query_id in results.get_unique_queries()
-    }
-    evaluation_results = compute_trec_metrics(
-        qrels=qrels,
-        results=search_results,
-        k_values=k_values,
-        ignore_identical_ids=ignore_identical_ids,
-    )
-    final_results = {}
-    for metric_dict in evaluation_results:
-        if not metric_dict:
-            continue
-        for metric_name, metric_value in metric_dict.items():
-            m, k = metric_name.split("@") if "@" in metric_name else (metric_name, "0")
-            # Keep "all" as string, convert numeric k values to int
-            if k != "all":
-                try:
-                    k = int(k)
-                except ValueError:
-                    k = 0
-            if m not in final_results:
-                final_results[m] = {}
-            final_results[m][k] = metric_value
-    return final_results
-
-
 def evaluate_results(
     results: RankingResults,
     qrels: Dict[str, Dict[str, int]],
@@ -240,13 +197,10 @@ def evaluate_results(
     # same ordering as our rank column.
     results.normalize_scores_by_rank()
 
-    search_results = {}
-    for query_id in results.get_unique_queries():
-        query_results = results.get_results_for_query(query_id)
-        search_results[query_id] = {
-            result.doc_id: result.rank_score
-            for result in query_results
-        }
+    search_results = {
+        query_id: {result.doc_id: result.rank_score for result in query_results}
+        for query_id, query_results in results.by_query().items()
+    }
 
     ndcg, map_scores, recall, precision, f1, success = compute_trec_metrics(
         qrels=qrels,
@@ -301,12 +255,12 @@ def metrics_at_n(
     graded_vals: List[float] = []
     n_vals: List[int] = []
 
-    for query_id in ranking_results.get_unique_queries():
+    for query_id, query_results in ranking_results.by_query().items():
         gold = qrels.get(query_id, {})
         gold_ids = {doc_id for doc_id, rel in gold.items() if rel > 0}
         if not gold_ids:
             continue
-        retrieved_ids = {r.doc_id for r in ranking_results.get_results_for_query(query_id)}
+        retrieved_ids = {r.doc_id for r in query_results}
         n_q = len(retrieved_ids)
         n_vals.append(n_q)
         hits = len(gold_ids & retrieved_ids)

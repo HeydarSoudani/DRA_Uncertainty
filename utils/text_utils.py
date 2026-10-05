@@ -2,7 +2,7 @@
 
 All pure-Python with no heavy dependencies:
 
-  Parsing    — extract content from XML tags and tool calls
+  Parsing    — extract content from XML tags, tool calls and JSON objects
   Printing   — format and display agent loop progress to the terminal
   Formatting — convert doc dicts to strings for the LLM prompt
   Citations  — extract which docs were actually cited from an agent result
@@ -11,7 +11,7 @@ All pure-Python with no heavy dependencies:
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
     import json5 as _json5
@@ -23,6 +23,25 @@ except ImportError:
 # ===========================================================================
 # Parsing: extract content from LLM output
 # ===========================================================================
+
+def parse_json_object(raw: str) -> Optional[Dict[str, Any]]:
+    """Parse a JSON object from LLM output, with or without a code fence."""
+    text = raw.strip()
+    fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
 
 def extract_tag_content(text: str, tag: str) -> Optional[str]:
     """Extract the content of the first ``<tag>…</tag>`` block in *text*."""
@@ -465,6 +484,38 @@ def format_as_snippets(
     return "\n".join(parts), ids
 
 
+def number_citations(
+    text: str, citation_re: re.Pattern, doc_of: Callable[[str], Optional[str]],
+) -> Tuple[str, Dict[int, str]]:
+    """Turn an agent's own citations into numbered ``[N]`` markers.
+
+    Every match of *citation_re* is replaced by ``[N]`` markers, one per cited
+    document, after the match's ``span`` group when the pattern has one (a
+    tag that wraps the cited text).  The match's ``ids`` group holds the
+    agent's ids (separated by commas, semicolons or spaces), resolved to doc
+    ids by *doc_of*; an id it cannot resolve is dropped.  N counts the
+    documents in order of first citation.
+
+    Returns the text and ``{N: doc_id}``, the ``citation_to_doc_id`` that
+    :func:`build_references_section` lists.
+    """
+    number_of: Dict[str, int] = {}
+
+    def replace(m: re.Match) -> str:
+        markers: List[str] = []
+        for agent_id in re.split(r"[\s,;]+", m.group("ids").strip()):
+            did = doc_of(agent_id) if agent_id else None
+            if did:
+                marker = f"[{number_of.setdefault(did, len(number_of) + 1)}]"
+                if marker not in markers:
+                    markers.append(marker)
+        span = m.groupdict().get("span") or ""
+        return span + "".join(markers)
+
+    numbered = citation_re.sub(replace, text)
+    return numbered, {n: did for did, n in number_of.items()}
+
+
 def build_references_section(result: dict) -> str:
     """Build a formatted References section from an agent result's trajectory.
 
@@ -486,6 +537,16 @@ def build_references_section(result: dict) -> str:
     # gets no reference list invented from the documents it merely saw.
     if result.get("records_citations") is False:
         return ""
+
+    # An agent that numbers its own citations (WebWeaver, the uncertainty-aware
+    # agent's reports) gets its own mapping, so every [N] in the text resolves
+    # to the document it names.
+    citation_to_doc_id = result.get("citation_to_doc_id")
+    if citation_to_doc_id:
+        numbered = sorted((int(n), did) for n, did in citation_to_doc_id.items() if did and str(n).isdigit())
+        if not numbered:
+            return ""
+        return "\n".join(["\n\n## References\n"] + [f"[{n}] {did}" for n, did in numbered])
 
     cited_docs = _collect_cited_docs(result)
     if not cited_docs:

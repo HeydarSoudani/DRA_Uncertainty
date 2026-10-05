@@ -27,6 +27,7 @@ from utils.config import InferenceConfig
 from utils.text_utils import (
     extract_tag_content as _extract_tag,
     format_react_history,
+    number_citations,
     parse_tool_call_xml,
 )
 from deep_research_agents.prompts.webweaver.user_prompts import (
@@ -34,6 +35,11 @@ from deep_research_agents.prompts.webweaver.user_prompts import (
     WRITER_USER_TEMPLATE,
 )
 from searcher_component.fusion import interleaving_fusion
+
+# An inline citation of the writer: <cite id="id_3">span</cite> (ids may be a
+# list), or a self-closing <cite id="id_3"/>.
+_CITE_TAG_RE = re.compile(
+    r"""<cite\s+id\s*=\s*["']?(?P<ids>[^"'>/]+?)["']?\s*(?:/>|>(?P<span>.*?)</cite>)""", re.DOTALL)
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +170,7 @@ class WebWeaver_Agent(BasicAgent):
 
         ``trajectory_logger`` is accepted for signature compatibility but not yet
         honoured: this agent's steps do not go through ``_record_step``, so it has
-        no online log and keeps relying on ``TrajectoryEvaluator.save_item()``.
+        no online log and keeps relying on ``evaluation.trajectory.save_trajectory()``.
         """
 
         self._status_callback = status_callback
@@ -654,6 +660,15 @@ class WebWeaver_Agent(BasicAgent):
                 cit_counter += 1
                 citation_to_doc_id[cit_counter] = doc_id
         self._print(f"Cited docs: {len(citation_to_doc_id)} unique docs from {len(writer_state.retrieved_entry_ids)} writer retrieve calls")
+
+        # The writer cites inline as <cite id="id_X">span</cite>; the report
+        # carries them as numbered [N] markers, and citation_to_doc_id then
+        # holds the documents the text cites.  A report without cite tags
+        # keeps the writer's retrieved entries.
+        numbered, cited = number_citations(
+            report, _CITE_TAG_RE, lambda eid: (memory_bank.get(eid) or {}).get("url"))
+        if cited:
+            report, citation_to_doc_id = numbered, cited
 
         self._print(f"Done: {len(reasoning_path)} total reasoning steps")
         return reasoning_path, report, citation_to_doc_id

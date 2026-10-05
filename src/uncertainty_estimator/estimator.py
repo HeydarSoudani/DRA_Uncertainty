@@ -19,7 +19,7 @@ documents then move the state to sigma_t):
     gain -> intermediate answer
 
 Step record, one per iteration (saved as one line of
-``uncertainty/{query_id}.jsonl`` by ``UncertaintyEvaluator``); flat scalars
+``uncertainty/{query_id}.jsonl`` by ``evaluation.uncertainty.save_uncertainty``); flat scalars
 first, nested detail last::
 
     iteration, agent_iteration,

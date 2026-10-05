@@ -197,6 +197,27 @@ def load_nuggets(data_path: Path | str, data_set: str) -> dict[str, list[dict]]:
     return nuggets
 
 
+def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[str, dict]:
+    """Load the per-query intermediate information (TRQA).
+
+    Reads ``queries/queries_{split}_intermediate_info.jsonl`` and returns
+    ``{query_id: record}``, where a record is ``{"qid", "entity_values":
+    [{"entity", "value"}], "property": {"label", ...}, "aggregation",
+    "answer"}``; empty for datasets without the file.
+    """
+    base = queries_base(data_path, data_set)
+    file_path = base.with_name(f"{base.name}_intermediate_info.jsonl")
+    if not file_path.exists():
+        return {}
+    info: dict[str, dict] = {}
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                rec = json.loads(line)
+                info[str(rec["qid"])] = rec
+    return info
+
+
 # ===========================================================================
 # One-pass convenience loader
 # ===========================================================================

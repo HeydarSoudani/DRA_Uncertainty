@@ -94,6 +94,16 @@ class RankingResults:
         )
         return results[:top_k] if top_k >= 0 else results
 
+    def by_query(self) -> Dict[str, List[RankingResult]]:
+        """Every query's results in rank order, grouped in one pass (calling
+        :meth:`get_results_for_query` per query scans all results each time)."""
+        grouped: Dict[str, List[RankingResult]] = {}
+        for r in self.results:
+            grouped.setdefault(r.query_id, []).append(r)
+        for results in grouped.values():
+            results.sort(key=lambda r: (r.rank, -r.rank_score))
+        return grouped
+
     def get_unique_queries(self) -> List[str]:
         """Get list of unique query IDs."""
         return list(set(r.query_id for r in self.results))

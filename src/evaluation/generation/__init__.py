@@ -1,23 +1,9 @@
-"""Generation evaluation.
+"""Generation statistics (the ``generation`` group of ``summary.json``).
 
-* :class:`GenerationEvaluator` — basic surface stats (length, words, citations, ROUGE).
-* :class:`ShortAnswerEvaluator` — LLM-as-judge short-answer correctness
-  (alias: ``AccuracyEvaluator``); used for BrowseComp-Plus.
-* :class:`TRQAGenerationEvaluator` — rule-based numeric exact/soft match; used
-  for TRQA (no LLM judge).
-* :class:`ReportEvaluator` — LLM-as-judge rubric + citation faithfulness for
-  long-form reports.
+* :class:`GenerationEvaluator`: length, words and citation markers of the
+  generation, and the ``generation/{query_id}.md`` writer.
 """
 
-from .basic_stats import GenerationEvaluator
-from .short_answer import ShortAnswerEvaluator, AccuracyEvaluator
-from .trqa_match import TRQAGenerationEvaluator
-from .report import ReportEvaluator
+from .stats import GenerationEvaluator
 
-__all__ = [
-    "GenerationEvaluator",
-    "ShortAnswerEvaluator",
-    "AccuracyEvaluator",
-    "TRQAGenerationEvaluator",
-    "ReportEvaluator",
-]
+__all__ = ["GenerationEvaluator"]

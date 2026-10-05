@@ -7,13 +7,14 @@ iteration's step record::
       <criteria covered="1" partial="1" not_covered="1">
         <k1 status="covered" attempts="1">born in the 1960s</k1>
         <k2 status="partial" attempts="2">won a regional award</k2>
-        <k3 status="not_covered" attempts="0">studied in Lisbon</k3>
+        <k3 status="not_covered" kind="open" attempts="0">the films they directed</k3>
       </criteria>
       <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
       <reasoning_signals query_novelty="0.81"/>
     </certainty>
 
-Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
+``kind="open"`` marks an open criterion (several parts or answers); a closed
+criterion, the common case, carries no kind.  Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
 criteria state and the attempts (``criteria_attempts_after``; left out when
 null) are read, so gold-based signals (new-item precision, new-item
 graded recall, relevant counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
@@ -25,7 +26,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from .types import FULLY_COVERED, PARTIALLY_COVERED, UNCOVERED, Criterion
+from .types import FULLY_COVERED, OPEN, PARTIALLY_COVERED, UNCOVERED, Criterion
 
 # Document side of x_t (nu^D, Delta^D) and query side (nu^q; the attempts
 # a are shown per criterion).
@@ -72,7 +73,11 @@ def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> Optio
             f'not_covered="{labels.count("not_covered")}">'
         )
         for i, (c, label, n) in enumerate(zip(criteria, labels, attempts), 1):
-            attrs = f'status="{label}"' + (f' attempts="{n}"' if n is not None else "")
+            attrs = (
+                f'status="{label}"'
+                + (' kind="open"' if c.kind == OPEN else "")
+                + (f' attempts="{n}"' if n is not None else "")
+            )
             lines.append(f'    <k{i} {attrs}>{escape(c.text, quote=False)}</k{i}>')
         lines.append("  </criteria>")
 

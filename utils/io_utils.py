@@ -114,30 +114,27 @@ def load_result_from_trec(trec_file: Union[str, Path], query_id: str) -> dict:
     return {"trajectory": trajectory}
 
 
-def load_result_from_saved_files(
-    run_dir: Union[str, Path], query_id: str, *, lightweight: bool = False,
-) -> dict:
-    """Reconstruct a full result dict from all saved per-query files.
+def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> dict:
+    """Reconstruct a result dict from the saved per-query files.
 
-    Tries to load from the trajectory JSON first (which contains trajectory,
-    generation, num_steps, num_searches, and agent-specific metadata).  Falls
-    back to TREC-only reconstruction when the trajectory JSON is unavailable.
+    The evaluation reads every run back this way, after a run as in
+    ``--eval-only``, so both score the same result.  Sources:
 
-    Also loads the generation markdown and cited-docs TREC when available and
-    the trajectory JSON didn't already provide them.
+    * ``trajectory/{qid}.jsonl``: the steps (seen doc ids, no doc text) and the
+      meta line (generation, counts, :data:`utils.config.AGENT_META_KEYS`);
+    * ``generation/{qid}.md`` when the meta line has no generation;
+    * ``retrieval/cited``, ``seen`` and ``surfaced`` TRECs: the cited list and
+      the per-step seen and surfaced lists.
+
+    A query without a trajectory file (its run stopped between the writes)
+    keeps its retrieval lists and an empty trajectory.
 
     Args:
-        run_dir:  Root directory of the run.  Contains retrieval/
-                  (with surfaced/, seen/, cited/ subdirs), trajectory/,
-                  and generation/ subdirectories.
+        run_dir:  Root directory of the run.
         query_id: Query identifier.
-        lightweight: When True, skip the (potentially large) trajectory JSON
-                     and reconstruct from TREC + generation + cited-docs files
-                     only.  Evaluators need only doc_ids and scores, not the
-                     full document text stored in trajectory JSONs.
 
     Returns:
-        Reconstructed result dict, or ``{}`` on failure.
+        Reconstructed result dict, or ``{}`` when the query has no file.
     """
     run_dir_str = str(run_dir).rstrip("/")
 
@@ -149,48 +146,46 @@ def load_result_from_saved_files(
 
     result: dict = {}
 
-    # ── 1. Try trajectory JSONL (richest source) ────────────────────────────
+    # ── 1. Trajectory JSONL ──────────────────────────────────────────────────
     # One line per trajectory step plus a ``{"record": "meta", ...}`` line (last
-    # in files written online, first in older runs — position is irrelevant here).  The full surfaced ranking is not stored here (it lives in
+    # in files written online, first in older runs; position is irrelevant
+    # here).  The full surfaced ranking is not stored here (it lives in
     # retrieval/surfaced/*.trec, reconstructed in step 5b); uncertainty signals
     # are under uncertainty/{qid}.jsonl and are not reloaded (analysed offline).
-    if not lightweight:
-        try:
-            content = _read_text("trajectory", f"{query_id}.jsonl")
-            meta: dict = {}
-            trajectory: list = []
-            for line in content.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                obj = _json_loads(line)
-                if obj.get("record") == "meta":
-                    meta = obj
-                else:
-                    trajectory.append(obj)
-            if meta or trajectory:
-                result = {
-                    "trajectory":     trajectory,
-                    "generation":     meta.get("generation", ""),
-                    "num_steps":      meta.get("num_steps", 0),
-                    "num_searches":   meta.get("num_searches", 0),
-                    "num_iterations": meta.get("num_iterations"),
-                }
-                for key in AGENT_META_KEYS:
-                    if meta.get(key):
-                        result[key] = meta[key]
-        except (FileNotFoundError, OSError):
-            pass
-        except Exception as e:
-            print(f"Warning: could not load trajectory JSONL for {query_id}: {e}")
+    try:
+        content = _read_text("trajectory", f"{query_id}.jsonl")
+        meta: dict = {}
+        trajectory: list = []
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            obj = _json_loads(line)
+            if obj.get("record") == "meta":
+                meta = obj
+            else:
+                trajectory.append(obj)
+        if meta or trajectory:
+            result = {
+                "trajectory":     trajectory,
+                "generation":     meta.get("generation", ""),
+                "num_steps":      meta.get("num_steps", 0),
+                "num_searches":   meta.get("num_searches", 0),
+                "num_iterations": meta.get("num_iterations"),
+            }
+            for key in AGENT_META_KEYS:
+                if meta.get(key):
+                    result[key] = meta[key]
+    except (FileNotFoundError, OSError):
+        pass
+    except Exception as e:
+        print(f"Warning: could not load trajectory JSONL for {query_id}: {e}")
 
-    # ── 2. Fall back to TREC if no trajectory loaded ─────────────────────────
+    # ── 2. No trajectory file: the retrieval lists only ──────────────────────
     if not result:
-        try:
-            trec_path = _file_path("retrieval/surfaced", f"{query_id}.trec")
-            result = load_result_from_trec(trec_path, query_id)
-        except (FileNotFoundError, OSError):
-            pass
+        if not Path(_file_path("retrieval/surfaced", f"{query_id}.trec")).exists():
+            return {}
+        result = {"trajectory": [], "generation": ""}
 
     if not result:
         return {}
@@ -340,7 +335,7 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
         "uncertainty_estimator": {
             "mode": kwargs.get("uncertainty_estimator_mode", "off"),
             "llm_criteria": kwargs.get("llm_criteria"),
-            "max_criteria": kwargs.get("max_criteria", 8),
+            "max_criteria": kwargs.get("max_criteria"),
             "criteria_judge_model": kwargs.get("criteria_judge_model", ""),
             "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
         },

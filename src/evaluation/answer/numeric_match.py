@@ -1,33 +1,30 @@
-"""Rule-based generation evaluator for TRQA (Total-Recall-QA).
+"""Answer accuracy by numeric match, for datasets with numeric answers (TRQA).
 
-TRQA answers are numeric, so correctness is judged by **numeric matching** rather
-than an LLM-as-judge.  The matching logic (number extraction + exact / tolerant
-comparison) is ported verbatim from the official Total-Recall-QA repository:
+Correctness is judged by numeric matching rather than an LLM judge
+(``DATASET_SPECS[...].answer_eval == "numeric_match"``).  The matching logic
+(number extraction and exact / tolerant comparison) is ported verbatim from the
+official Total-Recall-QA repository:
 
     https://github.com/mahta-r/total-recall-qa/blob/main/c5_task_evaluation/metrics/generation_eval_metrics.py
 
-Metrics reported (matching ``run_evalution.py`` in that repo):
-    * ``exact_match``        — fraction with an exact numeric match.
-    * ``soft_exact_match``   — fraction within each tolerance % in
-                               ``[1, 5, 10, 20, 50, 90]``.
+Metrics (as in ``run_evalution.py`` of that repository):
+    * ``exact_match``        fraction with an exact numeric match.
+    * ``soft_exact_match``   fraction within each tolerance % in
+                             ``[1, 5, 10, 20, 50, 90]``.
 
-The agent's final short answer is extracted from the (possibly long) generation
-with :func:`deep_research_agents.prompts.answer_prompts.extract_answer_candidates`
-(the same ``\\boxed{}`` / ``<answer>`` / ``Exact Answer:`` parsers the answer
-candidates use), falling back to the raw generation text when no structured answer is found.
-
-The public interface mirrors
-:class:`evaluation.generation.short_answer.AccuracyEvaluator`
-(``evaluate`` / ``print_results`` / ``save_results`` / ``save_item``) so the
-evaluation runner can use it interchangeably in the accuracy slot.
+The agent's final short answer is extracted from the generation by
+:func:`extract_prediction`.  The interface matches
+:class:`evaluation.answer.llm_judge.AccuracyEvaluator`, so the runner uses
+either one in the accuracy slot.
 """
 
-import json
 import logging
 import math
 import re
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
+from ..common import print_header, write_jsonl
+from ..judge import strip_references
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +33,7 @@ DEFAULT_TOLERANCE_PCTS = (1.0, 5.0, 10.0, 20.0, 50.0, 90.0)
 
 
 # ---------------------------------------------------------------------------
-# Numeric matching — ported verbatim from total-recall-qa generation_eval_metrics
+# Numeric matching, ported verbatim from total-recall-qa generation_eval_metrics
 # ---------------------------------------------------------------------------
 
 def normalize_number(value, decimals=2):
@@ -123,17 +120,16 @@ def soft_exact_match(prediction, gold, decimals=3, tolerance_pct=None):
 # Final-answer extraction from the agent generation
 # ---------------------------------------------------------------------------
 
-def _extract_prediction(generation: str) -> str:
-    """Pull the agent's final short answer from its (possibly long) generation.
+def extract_prediction(generation: str) -> str:
+    """The agent's final short answer from its (possibly long) generation.
 
-    Reuses the answer-candidate structured-answer parsers (``\\boxed{}``,
-    ``<answer>``, ``Exact Answer:`` …).  Falls back to the raw text — with any
-    appended ``## References`` block stripped — when nothing structured matches,
-    so ``extract_number_from_string`` still has a chance to find the number.
+    Uses the answer-candidate parsers (``\\boxed{}``, ``<answer>``,
+    ``Exact Answer:``, ...).  Falls back to the generation without its
+    ``## References`` block when nothing structured matches, so
+    :func:`extract_number_from_string` can still find the number.
     """
     if not generation:
         return ""
-
     try:
         from deep_research_agents.prompts.answer_prompts import extract_answer_candidates
 
@@ -142,69 +138,48 @@ def _extract_prediction(generation: str) -> str:
             return candidates[0].candidate
     except Exception as e:  # pragma: no cover - extraction is best-effort
         logger.debug(f"Answer extraction failed, using raw generation: {e}")
-
-    # Fallback: strip the References section appended to the generation.
-    marker = "\n\n## References\n"
-    idx = generation.find(marker)
-    if idx != -1:
-        generation = generation[:idx]
-    return generation.strip()
+    return strip_references(generation)
 
 
 # ---------------------------------------------------------------------------
-# TRQAGenerationEvaluator
+# NumericMatchEvaluator
 # ---------------------------------------------------------------------------
 
-class TRQAGenerationEvaluator:
-    """Numeric exact / soft-exact match evaluator for TRQA.
+class NumericMatchEvaluator:
+    """Numeric exact / soft-exact match of the final answer.
 
     Usage::
 
-        evaluator = TRQAGenerationEvaluator(answers={"q1": "8269", ...})
-        metrics = evaluator.evaluate(results)
+        evaluator = NumericMatchEvaluator(answers={"q1": "8269", ...})
+        metrics = evaluator.evaluate(results)   # {query_id: {"generation": str, ...}}
         evaluator.print_results(metrics)
 
-    where ``results`` is the unified agent result dict
-    ``{query_id: {"generation": str, ...}, ...}``.
+    Args:
+        answers: ``query_id -> ground-truth answer``.
+        tolerance_pcts: Tolerance percentages of the soft match.
+        decimals: Decimals kept before comparison.
     """
 
     def __init__(
         self,
         answers: Dict[str, str],
-        questions: Optional[Dict[str, str]] = None,
         tolerance_pcts=DEFAULT_TOLERANCE_PCTS,
         decimals: int = 3,
     ) -> None:
-        """Initialise the evaluator.
-
-        Args:
-            answers:        Mapping of ``query_id -> ground-truth answer``.
-            questions:      Mapping of ``query_id -> question text`` (unused by
-                            the numeric matcher; accepted for interface parity).
-            tolerance_pcts: Tolerance percentages for soft match.
-            decimals:       Decimals for numeric rounding before comparison.
-        """
         self.answers = answers
-        self.questions = questions or {}
         self.tolerance_pcts = tuple(tolerance_pcts)
         self.decimals = decimals
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
+        """Exact and soft-exact match over the queries with a ground-truth answer
+        (*run_dir* is unused: the match needs no judge to cache).
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """Compute exact-match and soft-exact-match metrics over all answered queries.
-
-        Returns a dict with keys:
-            ``exact_match`` (fraction), ``soft_exact_match`` (dict pct->fraction),
-            ``accuracy`` (alias of ``exact_match``), ``num_correct``,
-            ``num_evaluated``, and ``per_query``.
+        Returns ``exact_match``, ``accuracy`` (the same value, for the
+        accuracy slot of the summary), ``soft_exact_match`` (``{pct:
+        fraction}``), ``num_correct``, ``num_evaluated`` and ``per_query``;
+        ``{}`` when no query has an answer.
         """
-        evaluable_ids = [
-            qid for qid in results
-            if qid in self.answers and self.answers[qid]
-        ]
+        evaluable_ids = [qid for qid in results if self.answers.get(qid)]
         if not evaluable_ids:
             logger.warning("No queries with ground-truth answers to evaluate")
             return {}
@@ -215,14 +190,10 @@ class TRQAGenerationEvaluator:
 
         for qid in evaluable_ids:
             gold = self.answers[qid]
-            generation = results[qid].get("generation", "")
-            prediction = _extract_prediction(generation)
+            prediction = extract_prediction(results[qid].get("generation", ""))
 
-            exact = soft_exact_match(
-                prediction, gold, decimals=self.decimals, tolerance_pct=None,
-            )["exact_match"]
-            if exact:
-                exact_count += 1
+            exact = soft_exact_match(prediction, gold, decimals=self.decimals)["exact_match"]
+            exact_count += exact
 
             soft_flags: Dict[str, bool] = {}
             for pct in self.tolerance_pcts:
@@ -230,8 +201,7 @@ class TRQAGenerationEvaluator:
                     prediction, gold, decimals=self.decimals, tolerance_pct=pct,
                 )["soft_match"]
                 soft_flags[str(pct)] = soft
-                if soft:
-                    soft_counts[pct] += 1
+                soft_counts[pct] += soft
 
             per_query.append({
                 "query_id": qid,
@@ -244,7 +214,7 @@ class TRQAGenerationEvaluator:
         num_evaluated = len(per_query)
         return {
             "exact_match": round(exact_count / num_evaluated, 5),
-            "accuracy": round(exact_count / num_evaluated, 5),  # alias for runner/summary
+            "accuracy": round(exact_count / num_evaluated, 5),
             "soft_exact_match": {
                 str(pct): round(soft_counts[pct] / num_evaluated, 5)
                 for pct in self.tolerance_pcts
@@ -257,15 +227,13 @@ class TRQAGenerationEvaluator:
     def print_results(
         self,
         metrics: Dict[str, Any],
-        header: str = "TRQA GENERATION EVALUATION (numeric exact / soft match)",
+        header: str = "NUMERIC MATCH EVALUATION (exact / soft match)",
     ) -> None:
         """Pretty-print the numeric-match metrics."""
         if not metrics:
-            print("  No TRQA metrics available (no ground-truth answers)")
+            print("  No numeric-match metrics available (no ground-truth answers)")
             return
-        print("\n" + "=" * 80)
-        print(header)
-        print("=" * 80)
+        print_header(header)
         print(f"  Queries evaluated:  {metrics.get('num_evaluated', 0)}")
         print(f"  Exact Match:        {metrics.get('exact_match', 0):.4f}")
         soft = metrics.get("soft_exact_match", {})
@@ -275,21 +243,11 @@ class TRQAGenerationEvaluator:
                 print(f"    {pct:5.1f}% tolerance: {soft[str(pct)]:.4f}")
         print("=" * 80)
 
-    def save_item(self, query_id: str, result: Dict[str, Any], output_dir) -> None:
-        """No-op; per-query results are saved in bulk via :meth:`save_results`."""
-        pass
-
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
-        """Save TRQA metrics as a JSONL file (one line per sample).
-
-        Mirrors the trajectory saving convention: line 1 is a
-        ``{"record": "meta", ...}`` header carrying the run-level aggregates
-        (exact / soft-exact match, correct/evaluated counts); each subsequent
-        line is one query's numeric-match result.
-        """
+        """Write ``accuracy.jsonl``: a ``{"record": "meta", ...}`` line with the
+        run-level aggregates, then one line per query."""
         if not metrics:
             return
-
         meta = {
             "record": "meta",
             "exact_match": metrics.get("exact_match"),
@@ -298,15 +256,5 @@ class TRQAGenerationEvaluator:
             "num_correct": metrics.get("num_correct"),
             "num_evaluated": metrics.get("num_evaluated"),
         }
-
-        def _dump(obj: Dict[str, Any]) -> str:
-            return json.dumps(obj, separators=(",", ":"), default=str)
-
-        output_path_str = str(output_path)
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(_dump(meta) + "\n")
-            for r in metrics.get("per_query", []):
-                f.write(_dump(r) + "\n")
-        print(f"  Saved TRQA generation metrics: {output_path_str}")
+        write_jsonl(output_path, [meta] + metrics.get("per_query", []))
+        print(f"  Saved numeric-match results: {output_path}")

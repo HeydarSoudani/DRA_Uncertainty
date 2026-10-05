@@ -78,7 +78,7 @@ def build_uncertainty_estimator(
     qrels=None,
     graded_qrels=None,
     llm_criteria: Optional[str] = None,
-    max_criteria: int = 8,
+    max_criteria: Optional[int] = None,
     criteria_judge_model: str = "",
     add_intermediate_answer: bool = True,
     agent=None,
@@ -100,7 +100,8 @@ def build_uncertainty_estimator(
             the new-item graded recall.
         llm_criteria: Model that extracts each query's criteria.  Without
             it the criteria-based signals are null.
-        max_criteria: Cap on the number of criteria per query.
+        max_criteria: Cap on the number of criteria per query; None = the
+            dataset's ``max_criteria`` (layout.DATASET_SPECS).
         criteria_judge_model: LLM behind criteria_delta (stateful coverage
             judge) and the criteria attempts (targeting scorer); "" = *llm_criteria*.
         add_intermediate_answer: Ask the agent for an intermediate answer
@@ -122,13 +123,16 @@ def build_uncertainty_estimator(
         LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges, encode_fn_from_retriever,
     )
 
+    if max_criteria is None:
+        max_criteria = DATASET_SPECS[dataset].max_criteria if dataset else 8
+
     criteria_source = None
     if llm_criteria:
         criteria_source = LLMCriteriaSource(
             llm_client=disable_native_thinking(create_generator(llm_criteria, backend="api")),
-            model_name=llm_criteria,
             max_criteria=max_criteria,
-            task=DATASET_SPECS[dataset].task if dataset else "qa",
+            model_name=llm_criteria,
+            query_shape=DATASET_SPECS[dataset].query_shape if dataset else "single_target",
         )
         print(f"Uncertainty estimator: criteria from {llm_criteria}")
     else:
@@ -174,6 +178,7 @@ def build_uncertainty_estimator(
             "llm_model": llm_model,
             "dataset": dataset,
             "task": DATASET_SPECS[dataset].task if dataset else None,
+            "query_shape": DATASET_SPECS[dataset].query_shape if dataset else None,
             "llm_criteria": llm_criteria or None,
             "max_criteria": max_criteria,
             "add_intermediate_answer": add_intermediate_answer,
@@ -501,7 +506,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         qrels=worker_config.get("qrels"),
         graded_qrels=worker_config.get("graded_qrels"),
         llm_criteria=worker_config.get("llm_criteria"),
-        max_criteria=worker_config.get("max_criteria", 8),
+        max_criteria=worker_config.get("max_criteria"),
         criteria_judge_model=worker_config.get("criteria_judge_model", ""),
         add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
         agent=agent if hasattr(agent, "uncertainty_estimator") else None,
@@ -532,23 +537,12 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             progress_queue.put(None)
         return {}
 
-    temp_dir       = Path(temp_dir_str)
-    retrieval_dir  = str(temp_dir / "retrieval" / "surfaced")
-    generation_dir = str(temp_dir / "generation")
-    trajectory_dir = str(temp_dir / "trajectory")
-    cited_doc_dir  = str(temp_dir / "retrieval" / "cited")
-    seen_doc_dir   = str(temp_dir / "retrieval" / "seen")
-    uncertainty_dir = str(temp_dir / "uncertainty")
-    for _d in [retrieval_dir, generation_dir, trajectory_dir, cited_doc_dir, seen_doc_dir, uncertainty_dir]:
-        Path(_d).mkdir(parents=True, exist_ok=True)
+    from evaluation.runner import QUERY_OUTPUT_DIRS, save_query_outputs
 
-    from evaluation import SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, UncertaintyEvaluator, CitedDocEvaluator, SeenDocEvaluator
-    _ret_eval        = SurfacedDocEvaluator(qrels={}, k_values=[])
-    _gen_eval        = GenerationEvaluator()
-    _traj_eval       = TrajectoryEvaluator()
-    _uncertainty_eval = UncertaintyEvaluator()
-    _cited_eval      = CitedDocEvaluator(qrels={}, k_values=[])
-    _seen_eval       = SeenDocEvaluator(qrels={}, k_values=[])
+    temp_dir = Path(temp_dir_str)
+    for _d in QUERY_OUTPUT_DIRS:
+        (temp_dir / _d).mkdir(parents=True, exist_ok=True)
+    trajectory_dir = str(temp_dir / "trajectory")
 
     results     = {}
     temperature = worker_config.get("temperature", 0.7)
@@ -601,12 +595,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         if references:
             result["generation"] = result["generation"].rstrip() + references
         results[query_id] = result
-        _ret_eval.save_item(query_id, result, retrieval_dir)
-        _gen_eval.save_item(query_id, result, generation_dir)
-        _traj_eval.save_item(query_id, query_text, result, trajectory_dir)
-        _cited_eval.save_item(query_id, result, cited_doc_dir)
-        _seen_eval.save_item(query_id, result, seen_doc_dir)
-        _uncertainty_eval.save_item(query_id, query_text, result, uncertainty_dir)
+        save_query_outputs(temp_dir, query_id, query_text, result)
         if progress_queue is not None:
             num_iters = result.get("num_iterations", "?")
             progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))

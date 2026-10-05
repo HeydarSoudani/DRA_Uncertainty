@@ -358,6 +358,9 @@ class NeuCLIRDownloader(DatasetDownloader):
     ``--query-key request`` runs exactly the report requests.  Their nuggets
     are the NIST QC'd assessor nugget bank (question, gold answers, importance),
     with supporting documents for the topics that have answer-level judgments.
+    Those topics' per-topic files also give each question's AND/OR answer
+    aggregation (``aggregator``) and the supporting documents of each answer
+    (``answer_docs``, for the bank answers whose text the file has verbatim).
 
     The corpus is the English machine translation hosted on HuggingFace.
     """
@@ -495,50 +498,61 @@ class NeuCLIRDownloader(DatasetDownloader):
         self._write_qrels(self.split, qrels_triples)
 
     # --- nuggets (2024 report-generation requests) ---
-    def _nugget_support_docs(self) -> dict[tuple[str, str], list[str]]:
-        """Map (query id, question) -> supporting doc ids, from nuggets_{qid}.json.
+    def _nugget_judgments(self) -> dict[tuple[str, str], tuple[str, dict[str, list[str]]]]:
+        """Map (query id, question) -> (aggregator, {answer: doc ids}), from nuggets_{qid}.json.
 
-        Each file maps a question to ``[combine_type, {answer: [doc ids]}]``;
-        the doc ids of all answers are pooled per question.
+        Each file maps a question to ``[aggregator, {answer: [doc ids]}]``,
+        the aggregator being ``AND`` (every answer is needed) or ``OR`` (any).
         """
         from huggingface_hub import list_repo_files
 
-        support = {}
+        judgments = {}
         for filename in list_repo_files(self._NUGGETS_HF_REPO, repo_type="dataset"):
             m = re.fullmatch(r"nuggets_(\d+)\.json", filename)
             if not m:
                 continue
             data = json.loads(hf_dataset_file(self._NUGGETS_HF_REPO, filename).read_text())
-            for question, (_combine, answers) in data.items():
-                docs = {doc for doc_ids in answers.values() for doc in doc_ids}
-                support[(m.group(1), question.strip())] = sorted(docs)
-        return support
+            for question, (aggregator, answers) in data.items():
+                judgments[(m.group(1), question.strip())] = (
+                    aggregator, {a.strip(): sorted(set(docs)) for a, docs in answers.items()})
+        return judgments
 
     def download_nuggets(self) -> None:
         if (self.year, self.subset) != ("2024", "news"):
             return
         print(f"Downloading NeuCLIR 2024 report nuggets from {self._NUGGETS_HF_REPO}...")
-        support = self._nugget_support_docs()
+        judgments = self._nugget_judgments()
         bank = iter_jsonl(hf_dataset_file(self._NUGGETS_HF_REPO, self._NUGGET_BANK))
 
         records = []
+        n_answers = n_answer_docs = 0
         for row in bank:
             qid = str(row["query_id"])
             nuggets = []
             for item in row["items"]:
                 question = item["question_text"].strip()
-                nuggets.append({
+                nugget = {
                     "id": item["question_id"],
                     "question": question,
                     "answers": item["gold_answers"],
                     "importance": item["info"].get("importance"),
-                    "support_docs": support.get((qid, question), []),
-                })
+                    "support_docs": [],
+                }
+                if (qid, question) in judgments:
+                    aggregator, answer_docs = judgments[(qid, question)]
+                    nugget["support_docs"] = sorted({d for docs in answer_docs.values() for d in docs})
+                    nugget["aggregator"] = aggregator
+                    nugget["answer_docs"] = {a: answer_docs[a.strip()] for a in item["gold_answers"]
+                                             if answer_docs.get(a.strip())}
+                    n_answers += len(item["gold_answers"])
+                    n_answer_docs += len(nugget["answer_docs"])
+                nuggets.append(nugget)
             if nuggets:
                 records.append({"id": qid, "nuggets": nuggets})
 
         n_supported = sum(1 for r in records for n in r["nuggets"] if n["support_docs"])
-        print(f"  {n_supported} nuggets have supporting documents")
+        print(f"  {n_supported} nuggets have supporting documents; "
+              f"{n_answer_docs} of their {n_answers} answers have their own")
         self._write_nuggets(self.split, records)
 
     # --- corpus ---

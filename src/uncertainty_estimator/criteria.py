@@ -6,35 +6,54 @@ sigma_t(k) in {uncovered, partially_covered, fully_covered}, updated by
 documents only (it can move up or down).
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
-  ``LLMCriteriaSource`` extracts the criteria stated in the query.
+  ``LLMCriteriaSource`` derives the criteria from the query.
   TODO(criteria-file): a source that reads C from a file, keyed by query id.
 - ``CriteriaState``: sigma_t and the evidence attached to each criterion.
+
+Each criterion is closed (one fact) or open (several parts or answers that
+documents establish only together); an open criterion is fully covered only
+once ``OPEN_MIN_SOURCES`` distinct documents support it.  The kind follows
+from the dataset's query shape and the criterion's position (``_kinds``);
+the extractor only lists the criteria.
 
 The judges that update the state and score queries against C are in
 ``judges``.
 """
 
+import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ._helpers import parse_json_object
-from .prompts import (
-    CRITERIA_INIT_REPORT_SYSTEM, CRITERIA_INIT_REPORT_USER_TEMPLATE,
-    CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE,
-)
+from utils.text_utils import parse_json_object
+from .prompts import CRITERIA_INIT_SYSTEMS, CRITERIA_INIT_USER_TEMPLATE
 from .types import (
-    PARTIALLY_COVERED, STATUS_VALUE, STATUSES, UNCOVERED, Criterion, CriterionUpdate, Evidence,
+    CLOSED, FULLY_COVERED, MULTI_ASPECT, OPEN, PARTIALLY_COVERED, QUERY_SHAPES, SET, STATUS_VALUE,
+    STATUSES, UNCOVERED,
+    Criterion, CriterionUpdate, Evidence,
 )
 
 logger = logging.getLogger(__name__)
 
-# Criteria-extraction prompts per task (layout.DATASET_SPECS): a question's
-# conditions for "qa", a request's requirements for "report".
-_CRITERIA_INIT_PROMPTS = {
-    "qa": (CRITERIA_INIT_SYSTEM, CRITERIA_INIT_USER_TEMPLATE),
-    "report": (CRITERIA_INIT_REPORT_SYSTEM, CRITERIA_INIT_REPORT_USER_TEMPLATE),
-}
+# Distinct supporting documents an open criterion needs to be fully covered;
+# with fewer it stays partially covered.
+OPEN_MIN_SOURCES = 3
+
+# One complete string item of the criteria list, for output that is not
+# valid JSON (cut at the token limit, or a stray character between items).
+_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"\s*(?=[,\]])')
+
+
+def _kinds(shape: str, n: int) -> List[str]:
+    """Kind of each of *n* criteria of a *shape* query: every clue of a single
+    target is closed; the first criterion of a set query (the complete set)
+    is open and its members are closed; every report criterion is open."""
+    if shape == MULTI_ASPECT:
+        return [OPEN] * n
+    if shape == SET:
+        return [OPEN] + [CLOSED] * (n - 1) if n else []
+    return [CLOSED] * n
 
 
 # ---------------------------------------------------------------------------
@@ -56,16 +75,23 @@ class CriteriaSource(ABC):
 
 
 class LLMCriteriaSource(CriteriaSource):
-    """Extracts the criteria stated in the query with one LLM call.
+    """Derives the criteria of the query with one LLM call.
+
+    The dataset's query shape (single target, set or multi-aspect) picks the
+    prompt and the kind of each criterion; the model only lists the
+    criteria, as strings.  The shape is saved in *info* as ``query_shape``.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
+        max_criteria: Cap on the number of criteria kept (the dataset's
+            ``max_criteria`` in layout.DATASET_SPECS).
         model_name: Saved in the meta line.
-        max_criteria: Cap on the number of criteria kept.
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
-        task: ``"qa"`` (conditions of a question) or ``"report"``
-            (requirements of a report request).
+        query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
+            (the dataset's ``query_shape`` in layout.DATASET_SPECS).
+        system_prompt: Replaces the criteria-extraction system prompt (for
+            offline prompt comparisons, ``python -m evaluation.criteria``).
     """
 
     name = "llm"
@@ -73,15 +99,17 @@ class LLMCriteriaSource(CriteriaSource):
     def __init__(
         self,
         llm_client: Any,
+        max_criteria: int,
         model_name: Optional[str] = None,
-        max_criteria: int = 8,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
         temperature: float = 0.0,
-        task: str = "qa",
+        query_shape: str = "single_target",
+        system_prompt: Optional[str] = None,
     ) -> None:
-        if task not in _CRITERIA_INIT_PROMPTS:
-            raise ValueError(f"unknown task {task!r}; expected one of {tuple(_CRITERIA_INIT_PROMPTS)}")
-        self._system, self._user_template = _CRITERIA_INIT_PROMPTS[task]
+        if query_shape not in QUERY_SHAPES:
+            raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
+        self._shape = query_shape
+        self._system = system_prompt or CRITERIA_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
         self.model_name = model_name
         self._max_criteria = max_criteria
@@ -89,10 +117,10 @@ class LLMCriteriaSource(CriteriaSource):
         self._temperature = temperature
 
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        info: Dict[str, Any] = {"model": self.model_name, "reasoning": "", "errors": []}
+        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
         messages = [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": self._user_template.format(
+            {"role": "user", "content": CRITERIA_INIT_USER_TEMPLATE.format(
                 query=query, max_criteria=self._max_criteria,
             )},
         ]
@@ -105,23 +133,32 @@ class LLMCriteriaSource(CriteriaSource):
 
         data = parse_json_object(raw or "")
         if data is None or not isinstance(data.get("criteria"), list):
-            info["errors"].append("parse: no JSON object with a 'criteria' list")
-            info["raw"] = raw
-            return [], info
+            # Keep the complete items of malformed or truncated output.
+            body = (raw or "").partition('"criteria"')[2].partition("[")[2]
+            salvaged = [json.loads(f'"{t}"') for t in _ITEM_RE.findall(body)]
+            if not salvaged:
+                info["errors"].append("parse: no JSON object with a 'criteria' list")
+                info["raw"] = raw
+                return [], info
+            info["warnings"] = [f"parse: invalid JSON, kept {len(salvaged)} complete items"]
+            data = {"criteria": salvaged}
 
         texts: List[str] = []
         for item in data["criteria"]:
             if isinstance(item, dict):
-                item = item.get("text") or item.get("name") or ""
+                item = item.get("text") or ""
             item = str(item).strip()
             if item and item not in texts:
                 texts.append(item)
         if not texts:
             info["errors"].append("parse: empty criteria list")
             info["raw"] = raw
-        info["reasoning"] = str(data.get("reasoning", ""))
 
-        criteria = [Criterion(id=f"c{k + 1}", text=t) for k, t in enumerate(texts[:self._max_criteria])]
+        texts = texts[:self._max_criteria]
+        criteria = [
+            Criterion(id=f"c{k + 1}", text=t, kind=kind)
+            for k, (t, kind) in enumerate(zip(texts, _kinds(self._shape, len(texts))))
+        ]
         return criteria, info
 
 
@@ -136,6 +173,9 @@ class CriteriaState:
     updates from the step's novel documents and ``apply`` enforces:
 
     - a raise needs at least one supporting passage;
+    - an open criterion is fully covered only once its supporting passages
+      come from ``OPEN_MIN_SOURCES`` distinct documents; before that it is
+      capped at partially covered;
     - a lowering needs at least one contradicting passage and moves one
       level at most per step;
     - an update that keeps the status only attaches its evidence.
@@ -209,17 +249,30 @@ class CriteriaState:
             if proposed < current - 1:
                 proposed = current - 1
                 record["note"] = "lowered by one level at most"
-            self.statuses[k] = STATUSES[proposed]
             self._evidence[k].extend(u.support + u.contradict)
-            self.missing[k] = u.missing if self.statuses[k] == PARTIALLY_COVERED else ""
+            missing = u.missing
+            if self.criteria[k].kind == OPEN and STATUSES[proposed] == FULLY_COVERED:
+                sources = self.num_sources(k)
+                if sources < OPEN_MIN_SOURCES:
+                    proposed = STATUS_VALUE[PARTIALLY_COVERED]
+                    record["note"] = f"open criterion needs {OPEN_MIN_SOURCES} sources, has {sources}"
+                    missing = missing or (
+                        f"support from more documents ({sources} of {OPEN_MIN_SOURCES} so far)"
+                    )
+            self.statuses[k] = STATUSES[proposed]
+            self.missing[k] = missing if self.statuses[k] == PARTIALLY_COVERED else ""
             record["to"] = self.statuses[k]
             record["applied"] = True
         return records
 
+    def num_sources(self, k: int) -> int:
+        """Distinct documents among the supporting evidence of criterion *k*."""
+        return len({e.doc_id for e in self._evidence[k] if e.role == "support"})
+
     def evidence(self) -> List[Dict[str, Any]]:
-        """Per criterion, its status, what it still lacks and its attached
-        evidence (without text)."""
+        """Per criterion, its kind, status, what it still lacks and its
+        attached evidence (without text)."""
         return [
-            {"id": c.id, "status": st, "missing": m, "evidence": [e.to_dict() for e in ev]}
+            {"id": c.id, "kind": c.kind, "status": st, "missing": m, "evidence": [e.to_dict() for e in ev]}
             for c, st, m, ev in zip(self.criteria, self.statuses, self.missing, self._evidence)
         ]

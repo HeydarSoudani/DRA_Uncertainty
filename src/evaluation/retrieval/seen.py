@@ -7,7 +7,7 @@ They are recorded in each trajectory search step as ``step["output"]["doc_ids"]`
 GLM, OSS, Tongyi).
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .base import BaseDocRetrievalEvaluator
 
@@ -63,7 +63,8 @@ class SeenDocEvaluator(BaseDocRetrievalEvaluator):
     emit_metrics_at_n = True
     default_header = "SEEN DOC RETRIEVAL EVALUATION RESULTS"
 
-    def _doc_iterations(self, query_id: str, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
+    @classmethod
+    def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
         iterations = _extract_seen_iterations(result.get("trajectory", []))
         if not iterations:
             iterations = result.get("seen_docs_iterations", [])

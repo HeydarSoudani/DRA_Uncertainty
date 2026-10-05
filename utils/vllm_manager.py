@@ -212,7 +212,7 @@ _RERANKER_SERVER_SPECS: Dict[str, ServerSpec] = {
 
 # NOTE: The LLM-as-judge for accuracy/report evaluation is no longer run on
 # local GPUs.  It uses the OpenRouter-hosted ``openrouter/qwen/qwen3-32b`` model
-# (see ``evaluation.generation.short_answer`` / ``report``), so this manager no
+# (see ``evaluation.answer.llm_judge`` / ``report``), so this manager no
 # longer launches a judge server.
 
 # Agents whose LLM connection is self-managed (they create their own OpenAI

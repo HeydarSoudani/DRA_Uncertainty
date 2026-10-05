@@ -53,6 +53,15 @@ tevatron==0.1.0
 openai==2.44.0
 litellm==1.90.1
 
+# --- Report evaluation (evaluation/answer/argue.py) ---
+# Auto-ARGUE is installed without its dependencies (its LLM provider
+# integrations are not used; the judge is our client):
+#   pip install --no-deps "auto-argue @ git+https://github.com/hltcoe/auto-argue.git@81dda60"
+langchain==0.3.28
+langchain-core==0.3.76
+langsmith==0.14.4
+rag_run_validator @ git+https://github.com/hltcoe/rag-run-validator.git@v0.1
+
 # --- Utilities ---
 pydantic==2.13.4
 Jinja2==3.1.6

@@ -1,240 +1,170 @@
-"""evaluation.runner — evaluation orchestration for the inference pipeline.
+"""Evaluation of an inference run, used by ``experiments/dra_inference.py``.
 
-Wires the evaluator classes together and runs them over a completed inference
-run.  Used by ``experiments/dra_inference.py``:
+    save_query_outputs      Write one query's files under the run directory.
+    build_evaluators        Instantiate the evaluators of a dataset.
+    load_run_results        Read the run's queries back from their saved files.
+    evaluate_and_save       Run every evaluator and write ``summary.json``
+                            (grouped: answer / retrieval / trajectory /
+                            generation), plus the terminal log.
 
-    build_evaluators                Instantiate Retrieval/Generation/Trajectory/
-                                    CitedDoc/SeenDoc/Accuracy evaluators.
-    load_processed_results          Reload saved files for resumed queries.
-    evaluate_and_save               Run all evaluations and write summary.json
-                                    (grouped: answer / retrieval / trajectory /
-                                    generation), plus terminal log.
-
-Related code now lives elsewhere:
-    * Reranker construction      → ``searcher_component.rerankers.build_reranker_from_config``
-    * Multi-method fusion eval   → ``evaluation.retrieval.fusion``
-both imported directly by the callers that need them.
+A run with an output directory is always evaluated from its saved files, at
+the end of the run as with ``--eval-only``, so both write the same
+``summary.json``.  The LLM-judged evaluators keep their verdicts in the run
+directory (``accuracy.jsonl``, ``report_eval/``) and judge only what changed.
+The surfaced-doc fusion metrics come from
+:func:`evaluation.retrieval.fusion.run_fusion_eval`, which the caller runs
+first and passes to :func:`evaluate_and_save`.
 """
 
-import gzip
-import json
-import pickle
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Union
 
 from tqdm import tqdm
 
+from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.io_utils import (
-    load_result_from_trec,
-    load_result_from_saved_files,
+from utils.io_utils import load_result_from_saved_files
+
+from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
+from .common import RULE, write_json
+from .generation import GenerationEvaluator
+from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
+from .retrieval.metrics import DEFAULT_K_VALUES
+from .trajectory import TrajectoryEvaluator, save_trajectory
+from .uncertainty import save_uncertainty
+
+logger = logging.getLogger(__name__)
+
+#: Per-query output directories under the run directory.
+QUERY_OUTPUT_DIRS = (
+    "retrieval/surfaced", "retrieval/seen", "retrieval/cited",
+    "generation", "trajectory", "uncertainty",
 )
 
-from . import (
-    SurfacedDocEvaluator,
-    GenerationEvaluator,
-    TrajectoryEvaluator,
-    UncertaintyEvaluator,
-    CitedDocEvaluator,
-    SeenDocEvaluator,
-    AccuracyEvaluator,
-    TRQAGenerationEvaluator,
-    ReportEvaluator,
-)
+
+def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, result: Dict[str, Any]) -> None:
+    """Write every per-query file of *result* under *run_dir*.
+
+    ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
+    ``trajectory/{qid}.jsonl`` and ``uncertainty/{qid}.jsonl`` (the last only
+    when the uncertainty estimator ran).
+    """
+    run_dir = Path(run_dir)
+    SurfacedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "surfaced")
+    SeenDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "seen")
+    CitedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "cited")
+    GenerationEvaluator.save_item(query_id, result, run_dir / "generation")
+    save_trajectory(query_id, question, result, run_dir / "trajectory")
+    save_uncertainty(query_id, question, result, run_dir / "uncertainty")
 
 
-# ===========================================================================
-# Evaluator construction + results loading / evaluation
-# ===========================================================================
+@dataclass
+class Evaluators:
+    """The evaluators of one run.
 
-def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None, graded_qrels: Optional[Dict] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], UncertaintyEvaluator]:
-    """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, and Uncertainty evaluators.
+    ``accuracy`` is None without ground-truth answers or for a dataset
+    without ``answer_eval``; ``report`` is None for a dataset without
+    ``report_eval`` (``layout.DATASET_SPECS``).
+    """
+    seen: SeenDocEvaluator
+    cited: CitedDocEvaluator
+    trajectory: TrajectoryEvaluator
+    generation: GenerationEvaluator
+    accuracy: Optional[Union[AccuracyEvaluator, NumericMatchEvaluator]] = None
+    report: Optional[ArgueReportEvaluator] = None
+
+
+def build_evaluators(
+    qrels: Dict,
+    kwargs: Dict[str, Any],
+    answers: Optional[Dict[str, str]] = None,
+    questions: Optional[Dict[str, str]] = None,
+    dataset: Optional[str] = None,
+    graded_qrels: Optional[Dict] = None,
+    data_path: Optional[Union[str, Path]] = None,
+    split: Optional[str] = None,
+) -> Evaluators:
+    """Instantiate the evaluators of a run.
 
     Args:
-        qrels:     Qrels dict loaded from the dataset.
-        kwargs:    Pipeline configuration dict.
-        answers:   Optional mapping of query_id -> ground-truth answer.
-                   When provided, the dataset's ``answer_eval``
-                   (layout.DATASET_SPECS) picks the accuracy-slot evaluator:
-                   ``"numeric_match"`` (TRQA) is the rule-based
-                   :class:`TRQAGenerationEvaluator` (no LLM), ``"llm_judge"``
-                   (BrowseComp-Plus) the LLM-as-judge :class:`AccuracyEvaluator`.
-        questions: Optional mapping of query_id -> question text.
-        dataset:   Dataset name; selects the accuracy-slot evaluator.
+        qrels:        Qrels dict loaded from the dataset.
+        kwargs:       Pipeline configuration (read: ``k_values``,
+                      ``interleaving_window``, ``rrf_k``, ``judge_model``,
+                      ``corpus_path``).
+        answers:      ``query_id -> ground-truth answer``.  The dataset's
+                      ``answer_eval`` (``layout.DATASET_SPECS``) picks the
+                      accuracy evaluator: ``"numeric_match"`` (TRQA)
+                      :class:`NumericMatchEvaluator`, ``"llm_judge"``
+                      (BrowseComp-Plus) :class:`AccuracyEvaluator`.
+        questions:    ``query_id -> question text``, for the judges.
+        dataset:      Dataset name.
         graded_qrels: ``{query_id: {doc_id: gain}}`` (official gains) for
-                   GradedRecall@N on the seen and cited docs and as the
-                   NDCG gains of every retrieval evaluator.
-
-    Returns:
-        ``(retrieval_evaluator, generation_evaluator, trajectory_evaluator,
-          cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator,
-          report_evaluator, uncertainty_evaluator)`` where
-        ``accuracy_evaluator`` is None when no answers are available, and
-        ``report_evaluator`` is None unless ``kwargs["report_eval"]`` is set.
-        Both are None for retrieval-only datasets (``answer_eval`` None).
+                      GradedRecall@N and as the NDCG gains.
+        data_path:    Dataset directory and *split*: the nuggets of a dataset
+                      whose ``report_eval`` is ``"argue"``
+                      (:class:`ArgueReportEvaluator`).
     """
-    k_values = kwargs.get("k_values", [1, 3, 5, 10, 25, 100])
-    retrieval_evaluator = SurfacedDocEvaluator(
+    retrieval_kwargs = dict(
         qrels=qrels,
-        k_values=k_values,
-        fusion_method=kwargs.get("consolidation_fusion_method", "interleaving"),
-        interleaving_window=kwargs.get("interleaving_window", 3),
-        rrf_k=kwargs.get("rrf_k", 60),
-        eval_top_k=kwargs.get("eval_top_k"),
-        graded_qrels=graded_qrels,
-    )
-    cited_doc_evaluator = CitedDocEvaluator(qrels=qrels, k_values=k_values, graded_qrels=graded_qrels)
-    seen_doc_evaluator = SeenDocEvaluator(
-        qrels=qrels,
-        k_values=k_values,
-        fusion_method=kwargs.get("consolidation_fusion_method", "interleaving"),
+        k_values=kwargs.get("k_values") or list(DEFAULT_K_VALUES),
         interleaving_window=kwargs.get("interleaving_window", 3),
         rrf_k=kwargs.get("rrf_k", 60),
         graded_qrels=graded_qrels,
     )
-    judge_model = kwargs.get("judge_model")
-    answer_eval = DATASET_SPECS[dataset].answer_eval if dataset else "llm_judge"
+    evaluators = Evaluators(
+        seen=SeenDocEvaluator(**retrieval_kwargs),
+        cited=CitedDocEvaluator(**retrieval_kwargs),
+        trajectory=TrajectoryEvaluator(),
+        generation=GenerationEvaluator(),
+    )
 
-    accuracy_evaluator = None
-    report_evaluator = None
-    if answer_eval is None:
-        # Retrieval-only datasets (NeuCLIR, RAGTIME): reports are saved but not graded.
-        if kwargs.get("report_eval"):
-            print(f"--report-eval ignored: {dataset} is evaluated on retrieval only")
-    elif answers:
-        if answer_eval == "numeric_match":
-            # TRQA answers are numeric → rule-based exact/soft match, no LLM judge.
-            accuracy_evaluator = TRQAGenerationEvaluator(
-                answers=answers,
-                questions=questions,
-            )
-        else:
-            # BrowseComp-Plus (and other short-answer datasets) → LLM-as-judge.
-            judge_kwargs: Dict[str, Any] = {}
-            if judge_model:
-                judge_kwargs["judge_model"] = judge_model
-            accuracy_evaluator = AccuracyEvaluator(
-                answers=answers,
-                questions=questions,
-                **judge_kwargs,
-            )
-
-    if answer_eval is not None and kwargs.get("report_eval"):
-        report_kwargs: Dict[str, Any] = {}
-        if judge_model:
-            report_kwargs["judge_model"] = judge_model
-        report_evaluator = ReportEvaluator(
-            questions=questions,
-            qrels=qrels,
-            **report_kwargs,
+    spec = DATASET_SPECS[dataset] if dataset else None
+    answer_eval = spec.answer_eval if spec else "llm_judge"
+    judge_kwargs = {"judge_model": kwargs["judge_model"]} if kwargs.get("judge_model") else {}
+    if answers and answer_eval == "numeric_match":
+        evaluators.accuracy = NumericMatchEvaluator(answers=answers)
+    elif answers and answer_eval == "llm_judge":
+        evaluators.accuracy = AccuracyEvaluator(answers=answers, questions=questions, **judge_kwargs)
+    if spec is not None and spec.report_eval == "argue":
+        evaluators.report = ArgueReportEvaluator(
+            nuggets=load_nuggets(data_path, split), questions=questions or {},
+            corpus_path=kwargs["corpus_path"], max_chars=spec.report_chars, **judge_kwargs,
         )
-    return retrieval_evaluator, GenerationEvaluator(), TrajectoryEvaluator(), cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, UncertaintyEvaluator()
+    return evaluators
 
 
-def _load_single_query(run_dir, query_id, retrieval_dir_str, lightweight=False):
-    """Load a single query's result files (used by ThreadPoolExecutor)."""
-    result = load_result_from_saved_files(run_dir, query_id, lightweight=lightweight)
-    if not result:
-        trec_path = Path(retrieval_dir_str) / f"{query_id}.trec"
-        result = load_result_from_trec(trec_path, query_id)
-    return result or None
+def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """``{query_id: result}`` read back from the run's saved files
+    (``utils.io_utils.load_result_from_saved_files``); a query without files
+    is left out."""
+    run_dir = Path(run_dir)
+    query_ids = sorted(query_ids)
+    if not query_ids:
+        return {}
+    start = time.time()
+    with ThreadPoolExecutor(max_workers=min(8, len(query_ids))) as pool:
+        loaded = list(tqdm(pool.map(lambda qid: load_result_from_saved_files(run_dir, qid), query_ids),
+                           total=len(query_ids), desc="Loading results", unit="query"))
+    results = {qid: r for qid, r in zip(query_ids, loaded) if r}
+    print(f"Loaded {len(results)} queries from {run_dir} in {time.time() - start:.1f}s")
+    return results
 
 
-def load_processed_results(processed: set, retrieval_dir, results: Dict[str, Any], *, lightweight: bool = False) -> None:
-    """Reload saved files for queries that were skipped due to resume logic.
+def evaluate_and_save(
+    results: Dict[str, Any],
+    evaluators: Evaluators,
+    run_dir: Optional[Union[str, Path]],
+    fusion_metrics: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Run every evaluator, print the results and write ``summary.json``.
 
-    Tries to load the full result from trajectory JSON + generation MD + cited
-    docs TREC first (via ``load_result_from_saved_files``).  Falls back to
-    TREC-only reconstruction for backwards compatibility with older runs that
-    only saved retrieval TREC files.
-
-    Mutates ``results`` in-place by adding entries for any ``query_id`` that
-    is in ``processed`` but not yet in ``results``.
-    """
-    if not processed or retrieval_dir is None:
-        return
-
-    retrieval_dir_str = str(retrieval_dir)
-
-    if not Path(retrieval_dir_str).exists():
-        return
-
-    # run_dir is two levels up from the surfaced retrieval dir
-    # (retrieval_dir = {run_dir}/retrieval/surfaced)
-    run_dir = Path(retrieval_dir_str).parent.parent
-
-    to_load = [qid for qid in processed if qid not in results]
-    if not to_load:
-        return
-
-    source = "local"
-
-    # ── Try loading from pickle cache ────────────────────────────────────────
-    # gzip-compressed pickle of {query_id: reconstructed_result}.  Purely a
-    # speed cache for repeated/resumed eval runs — always rebuildable from the
-    # per-query files on disk (trajectory JSONL, generation MD, retrieval TRECs),
-    # so it is safe to delete.  gzip shrinks it ~7x (the surfaced-doc rankings
-    # dominate and compress well); level 6 is the fast default.
-    cache_filename = (
-        "_eval_results_cache_lightweight.pkl.gz" if lightweight
-        else "_eval_results_cache.pkl.gz"
-    )
-    cache_path = Path(run_dir) / cache_filename
-
-    to_load_set = set(to_load)
-    try:
-        if Path(cache_path).exists():
-            with gzip.open(cache_path, "rb") as f:
-                cached = pickle.load(f)
-            if to_load_set <= set(cached.keys()):
-                for qid in to_load:
-                    results[qid] = cached[qid]
-                print(f"Loaded {len(to_load)} queries from eval cache ({source})")
-                return
-    except Exception as e:
-        print(f"Warning: eval cache invalid or corrupted ({e}), rebuilding...")
-
-    # ── Parallel load ────────────────────────────────────────────────────────
-    max_workers = min(8, len(to_load))
-    loaded_count = 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_load_single_query, run_dir, qid, retrieval_dir_str, lightweight): qid
-            for qid in to_load
-        }
-        for future in tqdm(as_completed(futures), total=len(futures),
-                           desc=f"Loading results from {source}", unit="query"):
-            qid = futures[future]
-            try:
-                result = future.result()
-                if result:
-                    results[qid] = result
-                    loaded_count += 1
-            except Exception as e:
-                print(f"Warning: failed to load {qid}: {e}")
-
-    if loaded_count:
-        print(f"Loaded {loaded_count} previously processed queries from {source} for evaluation")
-
-    # ── Save cache for next run ──────────────────────────────────────────────
-    if loaded_count > 0:
-        try:
-            loaded_results = {qid: results[qid] for qid in to_load if qid in results}
-            with gzip.open(cache_path, "wb", compresslevel=6) as f:
-                pickle.dump(loaded_results, f, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f"Saved eval cache ({loaded_count} queries)")
-        except Exception as e:
-            print(f"Warning: could not save eval cache: {e}")
-
-
-def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationEvaluator, trajectory_evaluator: TrajectoryEvaluator, run_dir: Optional[Path], cited_doc_evaluator: Optional[CitedDocEvaluator] = None, seen_doc_evaluator: Optional[SeenDocEvaluator] = None, accuracy_evaluator: Optional[AccuracyEvaluator] = None, report_evaluator: Optional[ReportEvaluator] = None, fusion_metrics: Optional[Dict[str, Any]] = None) -> None:
-    """Run all evaluations, print results, and write summary.json in one pass.
-
-    Builds a single grouped ``summary`` dict and derives both the terminal log
-    and the on-disk ``summary.json`` from it, so the two never drift.  The
-    schema mirrors the ``run_outputs/.../`` directory layout:
+    One grouped ``summary`` dict is the source of both the terminal log and
+    ``summary.json``, so the two never drift.  The schema mirrors the run
+    directory::
 
         {
           "num_queries": N,
@@ -244,128 +174,67 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
           "generation": {...},
         }
 
-    Fusion metrics are computed beforehand by :func:`run_fusion_eval` and
-    passed in via *fusion_metrics* so the file is written exactly once (no
-    read-modify-write second pass).
-
     Args:
-        results:               Unified results dict keyed by query_id.
-        generation_evaluator:  Configured generation evaluator.
-        trajectory_evaluator:  Configured trajectory evaluator.
-        run_dir:               Output directory; if None, saving is skipped.
-        cited_doc_evaluator:   Optional evaluator for cited docs (memory bank).
-        seen_doc_evaluator:    Optional evaluator for seen docs (docs passed to LLM).
-        accuracy_evaluator:    Optional LLM-as-judge accuracy evaluator
-                               (used when ground-truth answers are available, e.g. BrowseComp-Plus).
-        report_evaluator:      Optional long-form report evaluator.
-        fusion_metrics:        Per-method surfaced-doc fusion metrics from
-                               :func:`run_fusion_eval`; nested under
-                               ``retrieval.fusion``.
+        results:        Unified results dict keyed by query_id.
+        evaluators:     From :func:`build_evaluators`.
+        run_dir:        Run directory; None skips every file.
+        fusion_metrics: Per-method surfaced-doc metrics from
+                        :func:`evaluation.retrieval.fusion.run_fusion_eval`,
+                        nested under ``retrieval.fusion``.
     """
-    # ------------------------------------------------------------------
-    # 1. Evaluate everything (no printing yet)
-    # ------------------------------------------------------------------
-    generation_metrics = generation_evaluator.evaluate(results)
-    trajectory_metrics = trajectory_evaluator.evaluate(results)
+    ev = evaluators
+    timings: Dict[str, float] = {}
 
-    cited_doc_metrics = {}
-    if cited_doc_evaluator is not None:
-        cited_doc_metrics = cited_doc_evaluator.evaluate(results)
+    def timed(name: str, fn, *args):
+        start = time.time()
+        out = fn(*args)
+        timings[name] = time.time() - start
+        return out
 
-    seen_doc_metrics = {}
-    if seen_doc_evaluator is not None:
-        seen_doc_metrics = seen_doc_evaluator.evaluate(results)
+    generation_metrics = timed("generation", ev.generation.evaluate, results)
+    trajectory_metrics = timed("trajectory", ev.trajectory.evaluate, results)
+    cited_metrics = timed("cited", ev.cited.evaluate, results)
+    seen_metrics = timed("seen", ev.seen.evaluate, results)
+    accuracy_metrics = timed("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else {}
+    report_metrics = timed("report", ev.report.evaluate, results, run_dir) if ev.report else {}
 
-    accuracy_metrics = {}
-    if accuracy_evaluator is not None:
-        accuracy_metrics = accuracy_evaluator.evaluate(results)
-
-    report_metrics = {}
-    if report_evaluator is not None:
-        report_metrics = report_evaluator.evaluate(results)
-
-    # ------------------------------------------------------------------
-    # 2. Guard: all evaluators must process the same number of queries
-    # ------------------------------------------------------------------
+    # Every evaluator must cover the same queries.
     num_queries = generation_metrics.get("num_queries", 0)
-    _evaluator_counts = {"generation": num_queries}
-    if trajectory_metrics:
-        _evaluator_counts["trajectory"] = trajectory_metrics.get("num_queries", 0)
-    if cited_doc_metrics:
-        _evaluator_counts["cited_doc_retrieval"] = cited_doc_metrics.get("num_queries", 0)
-    if seen_doc_metrics:
-        _evaluator_counts["seen_doc_retrieval"] = seen_doc_metrics.get("num_queries", 0)
-    if accuracy_metrics:
-        _evaluator_counts["accuracy"] = accuracy_metrics.get("num_evaluated", 0)
-
-    mismatches = {k: v for k, v in _evaluator_counts.items() if v != num_queries}
+    counts = {
+        "trajectory": trajectory_metrics.get("num_queries", 0) if trajectory_metrics else num_queries,
+        "cited_doc_retrieval": cited_metrics.get("num_queries", 0) if cited_metrics else num_queries,
+        "seen_doc_retrieval": seen_metrics.get("num_queries", 0) if seen_metrics else num_queries,
+        "accuracy": accuracy_metrics.get("num_evaluated", 0) if accuracy_metrics else num_queries,
+    }
+    mismatches = {k: v for k, v in counts.items() if v != num_queries}
     if mismatches:
-        import logging
-        _logger = logging.getLogger(__name__)
-        _logger.warning(
-            "Evaluator query-count mismatch! Expected %d (from generation). "
-            "Mismatches: %s", num_queries, mismatches,
-        )
+        logger.warning("Evaluator query-count mismatch! Expected %d (from generation). "
+                       "Mismatches: %s", num_queries, mismatches)
 
-    # ------------------------------------------------------------------
-    # 3. Assemble the grouped summary (single source of truth)
-    # ------------------------------------------------------------------
-    # Headline Metrics@N comes from the cited-doc evaluator; it stays nested
-    # inside retrieval.cited (and retrieval.seen) rather than being duplicated
-    # at the top level.
-    metrics_at_n = {}
-    if cited_doc_metrics:
-        metrics_at_n = {k: v for k, v in cited_doc_metrics.get("Metrics@N", {}).items()
-                        if k != "num_queries"}
-
+    # ── Grouped summary ──────────────────────────────────────────────────
     summary: Dict[str, Any] = {"num_queries": num_queries}
 
-    # -- answer: accuracy (+ long-form report)
     answer: Dict[str, Any] = {}
     if accuracy_metrics:
-        acc = {
-            "accuracy": accuracy_metrics["accuracy"],
-            "num_correct": accuracy_metrics["num_correct"],
-            "num_evaluated": accuracy_metrics["num_evaluated"],
-        }
-        # TRQA (rule-based) also reports exact-match and soft-match by tolerance.
-        if "exact_match" in accuracy_metrics:
-            acc["exact_match"] = accuracy_metrics["exact_match"]
-        if "soft_exact_match" in accuracy_metrics:
-            acc["soft_exact_match"] = accuracy_metrics["soft_exact_match"]
-        answer["accuracy"] = acc
+        answer["accuracy"] = {k: accuracy_metrics[k] for k in (
+            "accuracy", "num_correct", "num_evaluated", "num_judge_errors", "exact_match", "soft_exact_match",
+        ) if k in accuracy_metrics}
     if report_metrics:
-        answer["report"] = {
-            "num_evaluated": report_metrics.get("num_evaluated", 0),
-            "rubric": report_metrics.get("rubric", {}),
-            "citation_faithfulness": report_metrics.get("citation_faithfulness"),
-        }
+        answer["report"] = ev.report.summary(report_metrics)
     if answer:
         summary["answer"] = answer
 
-    # -- retrieval: surfaced fusion + seen + cited (mirrors retrieval/ on disk)
-    retrieval: Dict[str, Any] = {}
-    if fusion_metrics:
-        retrieval["fusion"] = fusion_metrics
-    if seen_doc_metrics:
-        retrieval["seen"] = seen_doc_metrics
-    if cited_doc_metrics:
-        retrieval["cited"] = cited_doc_metrics
+    retrieval = {k: v for k, v in (("fusion", fusion_metrics), ("seen", seen_metrics),
+                                   ("cited", cited_metrics)) if v}
     if retrieval:
         summary["retrieval"] = retrieval
-
-    # -- trajectory / generation
     if trajectory_metrics:
         summary["trajectory"] = trajectory_metrics
     summary["generation"] = generation_metrics
 
-    # ------------------------------------------------------------------
-    # 4. Print the terminal log in the same order as the summary
-    # ------------------------------------------------------------------
-    # -- header: num_queries + Metrics@N
-    print(f"\n{'=' * 80}")
-    print("EVALUATION SUMMARY")
-    print("=" * 80)
+    # ── Terminal log, in summary order (fusion was printed by run_fusion_eval)
+    metrics_at_n = {k: v for k, v in cited_metrics.get("Metrics@N", {}).items() if k != "num_queries"}
+    print(f"\n{RULE}\nEVALUATION SUMMARY\n{RULE}")
     print(f"  num_queries: {num_queries}")
     if metrics_at_n:
         print("  Metrics@N:")
@@ -375,39 +244,24 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         if "GradedRecall@N" in metrics_at_n:
             print(f"    GradedRecall@N: {metrics_at_n['GradedRecall@N']:.4f}")
         print(f"    avg_N:       {metrics_at_n.get('avg_N', 0):.1f}")
-    print("=" * 80)
+    print(RULE)
+    if ev.accuracy:
+        ev.accuracy.print_results(accuracy_metrics)
+    if ev.report:
+        ev.report.print_results(report_metrics)
+    ev.cited.print_results(cited_metrics, header="RETRIEVAL EVALUATION RESULTS (CITED DOCS)")
+    ev.seen.print_results(seen_metrics, header="RETRIEVAL EVALUATION RESULTS (SEEN DOCS)")
+    ev.trajectory.print_results(trajectory_metrics)
+    ev.generation.print_results(generation_metrics)
+    print("  Evaluation time: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings.items()))
 
-    # -- answer: accuracy, then long-form report
-    if accuracy_evaluator is not None:
-        accuracy_evaluator.print_results(accuracy_metrics)
-    if report_evaluator is not None:
-        report_evaluator.print_results(report_metrics)
-
-    # -- retrieval: cited + seen tables (fusion already printed by run_fusion_eval)
-    if cited_doc_evaluator is not None:
-        cited_doc_evaluator.print_results(cited_doc_metrics, header="RETRIEVAL EVALUATION RESULTS (CITED DOCS)")
-    if seen_doc_evaluator is not None:
-        seen_doc_evaluator.print_results(seen_doc_metrics, header="RETRIEVAL EVALUATION RESULTS (SEEN DOCS)")
-
-    # -- trajectory
-    trajectory_evaluator.print_results(trajectory_metrics)
-
-    # -- generation
-    generation_evaluator.print_results(generation_metrics)
-
-    # -- Save accuracy / report detail files
-    if accuracy_metrics and run_dir and accuracy_evaluator is not None:
-        acc_path = str(Path(str(run_dir)) / "accuracy.jsonl")
-        accuracy_evaluator.save_results(accuracy_metrics, acc_path)
-    if report_metrics and run_dir and report_evaluator is not None:
-        report_path = str(Path(str(run_dir)) / "report_eval.json")
-        report_evaluator.save_results(report_metrics, report_path)
-
-    # ------------------------------------------------------------------
-    # 5. Write summary.json once
-    # ------------------------------------------------------------------
-    if run_dir:
-        run_dir_str = str(run_dir)
-        with open(Path(run_dir_str) / "summary.json", "w") as f:
-            f.write(json.dumps(summary, indent=2))
-        print(f"  ✓ Saved summary: {run_dir_str}/summary.json")
+    # ── Files ────────────────────────────────────────────────────────────
+    if not run_dir:
+        return
+    run_dir = Path(run_dir)
+    if accuracy_metrics:
+        ev.accuracy.save_results(accuracy_metrics, run_dir / "accuracy.jsonl")
+    if report_metrics:
+        ev.report.save_results(report_metrics, run_dir / "report_eval.jsonl")
+    write_json(run_dir / "summary.json", summary)
+    print(f"  ✓ Saved summary: {run_dir}/summary.json")

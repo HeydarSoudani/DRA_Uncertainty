@@ -79,7 +79,6 @@ Usage::
 import argparse
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -101,7 +100,7 @@ import pandas as pd
 from scipy.stats import rankdata
 
 from indexing_corpus_dataset.dataset_loaders import resolve_split_id
-from indexing_corpus_dataset.layout import DATASETS
+from indexing_corpus_dataset.layout import DATASETS, OUTPUT_ROOT
 from utils.cli_setup import (
     apply_config_to_args,
     load_run_config,
@@ -113,9 +112,7 @@ from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, 
 
 logger = logging.getLogger(__name__)
 
-_OUTPUT_PREFIX = os.environ.get(
-    "DRA_OUTPUT_ROOT", "/projects/0/prjs0834/heydars/DRA_training/run_outputs"
-)
+_OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(_REPO_ROOT / "experiments" / "configs" / "dra_inference.yaml")
 
 MIN_SCHEMA_VERSION = 5

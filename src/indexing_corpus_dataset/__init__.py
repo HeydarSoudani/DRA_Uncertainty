@@ -33,6 +33,7 @@ from .dataset_loaders import (
     graded_qrels,
     load_query_answers,
     load_nuggets,
+    load_query_intermediate_info,
     load_split,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "graded_qrels",
     "load_query_answers",
     "load_nuggets",
+    "load_query_intermediate_info",
     "load_split",
     "resolve_split_id",
     "resolve_data_path",

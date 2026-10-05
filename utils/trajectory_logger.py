@@ -19,7 +19,7 @@ The ``meta`` line moving to the end of the JSONL needs no reader change:
 "meta"`` per line, so its position is irrelevant.
 
 The step-shaping helpers below are shared with
-:mod:`evaluation.trajectory_evaluator`, which writes the same JSONL at the end
+:func:`evaluation.trajectory.save_trajectory`, which writes the same JSONL at the end
 of a query as a self-healing safety net.  Keeping one implementation is what
 stops the online and end-of-run files from drifting apart.
 """
@@ -41,7 +41,7 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 # ---------------------------------------------------------------------------
-# Step shaping (shared with evaluation.trajectory_evaluator)
+# Step shaping (shared with evaluation.trajectory.writer)
 # ---------------------------------------------------------------------------
 
 def infer_action_type(step: Dict[str, Any]) -> str:
