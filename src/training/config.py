@@ -88,7 +88,7 @@ class RewardConfig:
     judge_model: str = "openrouter/qwen/qwen3-32b"   # llm_judge; the inference default
     lambda_process: float = 0.0               # weight on process reward (0 = outcome only)
     clamp_process: bool = True                # bound process shaping so it can't dominate outcome
-    signals: tuple = ("doc_novelty", "new_item_recall")  # TODO(reward): which uncertainty-estimator signals to use
+    signals: tuple = ("doc_novelty", "new_item_precision")  # TODO(reward): which uncertainty-estimator signals to use
 
 
 @dataclass

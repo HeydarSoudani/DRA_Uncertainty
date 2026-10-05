@@ -228,8 +228,10 @@ def verbose_print_uncertainty(
         f"query_novelty={_fmt(record.get('query_novelty'))}"
     )
     gold = (
-        f"new_item_recall={_fmt(record.get('new_item_recall'))} "
-        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant)"
+        f"new_item_precision={_fmt(record.get('new_item_precision'))} "
+        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant) | "
+        f"new_item_graded_recall={_fmt(record.get('new_item_graded_recall'))} "
+        f"({_fmt(record.get('new_gain'), 'd')}/{_fmt(record.get('total_gain'), 'd')} gain)"
     )
     answers = record.get("intermediate_answers")
     if answers is None:

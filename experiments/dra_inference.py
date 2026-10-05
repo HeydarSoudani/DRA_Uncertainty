@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore", message=".*AttentionMaskConverter.*")
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
-from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
+from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
 from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS
 
 from deep_research_agents.agents import ALL_AGENTS
@@ -173,6 +173,10 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         # qrels live in a separate directory; reload and re-filter against them.
         qrels = load_qrels(qrels_data_path, file_data_set, min_relevance_score=min_rel_score)
         queries = {qid: q for qid, q in queries.items() if qid in qrels}
+    # Graded metrics use every grade with the official gains, not the threshold.
+    graded_qrels = to_graded_qrels(
+        load_qrels(qrels_data_path, file_data_set), DATASET_SPECS[dataset].relevance_gains,
+    )
     if answers:
         print(f"Loaded {len(answers)} ground-truth answers (accuracy evaluation available)")
 
@@ -241,11 +245,12 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         retrieval_evaluator, generation_evaluator, trajectory_evaluator, \
             cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, _ = \
-            build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
+            build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset,
+                             graded_qrels=graded_qrels)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
         # into the single summary.json written by evaluate_and_save.
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus)
+        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus, gain_qrels=graded_qrels)
 
         # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, report rubric)
         # call the OpenRouter-hosted judge directly — no local server to start.
@@ -261,6 +266,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
     if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
+        worker_config["graded_qrels"] = graded_qrels
 
     # ==================== Build search tool ====================
     from searcher_component.searcher import RetrievalSearchTool
@@ -316,6 +322,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             mode=_estimator_mode,
             retriever=_retriever,
             qrels=qrels,
+            graded_qrels=graded_qrels,
             llm_criteria=kwargs.get("llm_criteria"),
             max_criteria=kwargs.get("max_criteria", 8),
             criteria_judge_model=kwargs.get("criteria_judge_model", ""),
@@ -329,7 +336,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agent.uncertainty_estimator = estimator
 
     # ==================== Setup output dirs + evaluators ====================
-    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, uncertainty_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset)
+    retrieval_evaluator, generation_evaluator, trajectory_evaluator, cited_doc_evaluator, seen_doc_evaluator, accuracy_evaluator, report_evaluator, uncertainty_evaluator = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions, dataset=dataset, graded_qrels=graded_qrels)
 
     retrieval_dir = generation_dir = trajectory_dir = cited_doc_dir = seen_doc_dir = uncertainty_dir = None
     if output_path:
@@ -559,7 +566,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # into the single summary.json written by evaluate_and_save.
     fusion_metrics = {}
     if results:
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus)
+        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, num_gpus, gain_qrels=graded_qrels)
 
     # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, report rubric)
     # call the OpenRouter-hosted judge directly — no local server to start.
@@ -610,8 +617,8 @@ def _parse_args():
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
-    parser.add_argument("--dataset", type=str, default="trqa", choices=list(DATASETS), help="Dataset; all use local indices.")
-    parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--dataset", type=str, default="ragtime", choices=list(DATASETS), help="Dataset; all use local indices.")
+    parser.add_argument("--subset", type=_none_if_null, default="news", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 

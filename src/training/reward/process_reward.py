@@ -2,7 +2,7 @@
 
 Per-search-turn credit.  The plan is to
 wrap the finalized ``uncertainty_estimator.signals`` (READ-ONLY) — DocNovelty,
-QueryNovelty, NewItemRecall (needs qrels), the criteria signals — and pair information-gain with a
+QueryNovelty, RetrievalGain (needs qrels), the criteria signals — and pair information-gain with a
 redundancy penalty (StepSearch-style) to resist novelty-farming.
 
 Only the INTERFACE is fixed here; which signals and how they map to a scalar per
@@ -27,9 +27,9 @@ class ProcessReward(ProcessComponent):
     def __init__(self, cfg: RewardConfig) -> None:
         self.cfg = cfg
         # TODO(reward-process): lazily construct the requested signals, e.g.
-        #   from uncertainty_estimator.signals import DocNoveltySignal, NewItemRecallSignal
-        #   self._novelty = DocNoveltySignal(); self._recall = NewItemRecallSignal(qrels=...)
-        # NOTE: NewItemRecall needs qrels at RL time -> thread prompt.qrels through.
+        #   from uncertainty_estimator.signals import DocNoveltySignal, RetrievalGainSignal
+        #   self._novelty = DocNoveltySignal(); self._gain = RetrievalGainSignal(qrels=...)
+        # NOTE: RetrievalGain needs qrels at RL time -> thread prompt.qrels through.
 
     def per_turn(self, traj: Trajectory, prompt: PromptRecord) -> List[float]:
         # TODO(reward-process): for each search turn, run signals over

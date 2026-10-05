@@ -30,6 +30,7 @@ from .layout import (
 from .dataset_loaders import (
     load_queries,
     load_qrels,
+    graded_qrels,
     load_query_answers,
     load_nuggets,
     load_split,
@@ -39,6 +40,7 @@ __all__ = [
     "DATA_ROOT",
     "load_queries",
     "load_qrels",
+    "graded_qrels",
     "load_query_answers",
     "load_nuggets",
     "load_split",

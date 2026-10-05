@@ -240,6 +240,12 @@ def build_ranking_with_fusion(results: Dict[str, Any], fusion_method: str, rrf_k
                     per_section_lists.append(step["docs"])
 
         if not per_section_lists:
+            # Fallback: a resumed query's trajectory keeps only the seen doc ids;
+            # its per-step surfaced lists are rebuilt from surfaced/{qid}.trec
+            # into ``surfaced_docs_iterations`` (see utils.io_utils).
+            per_section_lists = [it for it in result.get("surfaced_docs_iterations", []) if it]
+
+        if not per_section_lists:
             continue
 
         # Track which iteration/section each doc_id first appeared in (1-based)

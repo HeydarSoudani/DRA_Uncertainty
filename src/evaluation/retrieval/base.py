@@ -59,6 +59,7 @@ class BaseDocRetrievalEvaluator:
         fusion_method: str = "interleaving",
         interleaving_window: Optional[int] = 3,
         rrf_k: int = 60,
+        graded_qrels: Optional[Dict[str, Dict[str, int]]] = None,
     ):
         """Initialise the evaluator.
 
@@ -69,8 +70,13 @@ class BaseDocRetrievalEvaluator:
                                  ("interleaving" or "rrf").
             interleaving_window: Block size for interleaving fusion. Ignored for rrf.
             rrf_k:               K constant for reciprocal rank fusion. Ignored otherwise.
+            graded_qrels:        {query_id: {doc_id: gain}} with the official gains,
+                                 for GradedRecall@N and as the NDCG gains.
+                                 None: GradedRecall@N is not reported and
+                                 NDCG uses the ``qrels`` grades.
         """
         self.qrels = qrels
+        self.graded_qrels = graded_qrels
         self.k_values = k_values or [1, 3, 5, 10, 25, 100]
         self.fusion_method = fusion_method
         self.interleaving_window = interleaving_window
@@ -161,6 +167,7 @@ class BaseDocRetrievalEvaluator:
             results=ranking_results,
             qrels=self.qrels,
             k_values=self.k_values,
+            gain_qrels=self.graded_qrels,
         )
         metrics["num_queries"] = num_queries
         metrics["avg_docs_per_query"] = (
@@ -168,7 +175,7 @@ class BaseDocRetrievalEvaluator:
         )
 
         if self.emit_metrics_at_n:
-            metrics["Metrics@N"] = metrics_at_n(self.qrels, ranking_results)
+            metrics["Metrics@N"] = metrics_at_n(self.qrels, ranking_results, self.graded_qrels)
 
         return metrics
 
@@ -201,6 +208,8 @@ class BaseDocRetrievalEvaluator:
                   f"(avg N={metrics_at_n_block.get('avg_N', 0):.1f})")
             print(f"  Precision@N (mean):     {metrics_at_n_block.get('Precision@N', 0):.4f}")
             print(f"  F1@N (mean):            {metrics_at_n_block.get('F1@N', 0):.4f}")
+            if "GradedRecall@N" in metrics_at_n_block:
+                print(f"  GradedRecall@N (mean):  {metrics_at_n_block['GradedRecall@N']:.4f}")
         print()
         for metric_name, metric_value in metrics.items():
             if metric_name in scalar_keys:

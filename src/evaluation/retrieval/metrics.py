@@ -9,7 +9,7 @@ https://github.com/beir-cellar/beir/blob/main/beir/retrieval/evaluation.py
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import pytrec_eval
 
@@ -24,6 +24,7 @@ def compute_trec_metrics(
     k_values: list[int] | None = None,
     ignore_identical_ids: bool = True,
     include_all_metrics: bool = True,
+    gain_qrels: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> tuple[
     dict[str, float],
     dict[str, float],
@@ -42,6 +43,9 @@ def compute_trec_metrics(
         k_values: List of k values for metrics (default: [1, 3, 5, 10, 25, 100])
         ignore_identical_ids: Whether to ignore query-doc pairs with identical IDs
         include_all_metrics: Also compute uncut @all metrics.
+        gain_qrels: ``{query_id: {doc_id: gain}}`` with the official gains,
+            used as the NDCG gains instead of the ``qrels`` grades.  None:
+            NDCG uses the ``qrels`` grades.
 
     Returns:
         Tuple of (NDCG, MAP, Recall, Precision, F1, Success) dictionaries
@@ -94,9 +98,16 @@ def compute_trec_metrics(
     recall_evaluator = pytrec_eval.RelevanceEvaluator(qrels, {recall_string})
     recall_scores = recall_evaluator.evaluate(results)
 
+    # NDCG on the official gains when given; a query without a positive gain
+    # has NDCG 0.
+    ndcg_scores = scores
+    if gain_qrels:
+        ndcg_measures = {ndcg_string, "ndcg"} if include_all_metrics else {ndcg_string}
+        ndcg_scores = pytrec_eval.RelevanceEvaluator(gain_qrels, ndcg_measures).evaluate(results)
+
     for query_id in scores.keys():
         for k in k_values:
-            ndcg[f"NDCG@{k}"] += scores[query_id]["ndcg_cut_" + str(k)]
+            ndcg[f"NDCG@{k}"] += ndcg_scores.get(query_id, {}).get("ndcg_cut_" + str(k), 0.0)
             _map[f"MAP@{k}"] += scores[query_id]["map_cut_" + str(k)]
             recall[f"Recall@{k}"] += recall_scores[query_id]["recall_" + str(k)]
             precision[f"P@{k}"] += scores[query_id]["P_" + str(k)]
@@ -104,7 +115,7 @@ def compute_trec_metrics(
 
         if include_all_metrics:
             # Add @all metrics (without cutoff)
-            ndcg["NDCG@all"] += scores[query_id].get("ndcg", 0.0)
+            ndcg["NDCG@all"] += ndcg_scores.get(query_id, {}).get("ndcg", 0.0)
             _map["MAP@all"] += scores[query_id].get("map", 0.0)
 
             # For Recall@all, Precision@all, Success@all: compute across all retrieved docs
@@ -212,8 +223,12 @@ def evaluate_results(
     qrels: Dict[str, Dict[str, int]],
     k_values: list,
     ignore_identical_ids: bool = True,
+    gain_qrels: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Dict[str, Any]:
     """Evaluate RankingResults with logging (high-level function).
+
+    ``gain_qrels`` (official gains) replaces the ``qrels`` grades as the NDCG
+    gains; see :func:`compute_trec_metrics`.
 
     Returns:
         Dict with keys NDCG, MAP, Recall, Precision, F1, Success, each mapping
@@ -238,6 +253,7 @@ def evaluate_results(
         results=search_results,
         k_values=k_values,
         ignore_identical_ids=ignore_identical_ids,
+        gain_qrels=gain_qrels,
     )
 
     evaluation_results = {
@@ -262,6 +278,7 @@ def evaluate_results(
 def metrics_at_n(
     qrels: Dict[str, Dict[str, int]],
     ranking_results: RankingResults,
+    graded_qrels: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Dict[str, Any]:
     """Compute Metrics@N where N = number of retrieved docs for each query.
 
@@ -269,11 +286,19 @@ def metrics_at_n(
     docs retrieved for that query.  Recall/Precision/F1 are computed at cutoff
     N_q, then averaged across queries.
 
+    With ``graded_qrels`` (``{query_id: {doc_id: gain}}``, official gains) it
+    also reports GradedRecall@N: summed gain of the retrieved docs / summed
+    gain of all the query's docs, averaged over the queries that have a
+    positive gain (``num_queries_graded``; the same queries as Recall@N
+    unless ``min_relevance_score`` admits a grade with gain 0).  It equals
+    Recall@N when every relevant doc has the same gain.
+
     Returns ``{}`` when no query can be evaluated.
     """
     recall_vals: List[float] = []
     precision_vals: List[float] = []
     f1_vals: List[float] = []
+    graded_vals: List[float] = []
     n_vals: List[int] = []
 
     for query_id in ranking_results.get_unique_queries():
@@ -291,15 +316,25 @@ def metrics_at_n(
         recall_vals.append(r)
         precision_vals.append(p)
         f1_vals.append(f)
+        gains = (graded_qrels or {}).get(query_id, {})
+        if gains:
+            graded_vals.append(
+                sum(g for doc_id, g in gains.items() if doc_id in retrieved_ids) / sum(gains.values())
+            )
 
     if not recall_vals:
         return {}
 
     num_q = len(recall_vals)
-    return {
+    metrics = {
         "Recall@N": sum(recall_vals) / num_q,
         "Precision@N": sum(precision_vals) / num_q,
         "F1@N": sum(f1_vals) / num_q,
-        "avg_N": sum(n_vals) / num_q,
-        "num_queries": num_q,
     }
+    if graded_vals:
+        metrics["GradedRecall@N"] = sum(graded_vals) / len(graded_vals)
+    metrics["avg_N"] = sum(n_vals) / num_q
+    metrics["num_queries"] = num_q
+    if graded_vals:
+        metrics["num_queries_graded"] = len(graded_vals)
+    return metrics

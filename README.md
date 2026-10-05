@@ -119,7 +119,7 @@ the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Secti
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
 | `criteria_attempts_after` | a | per criterion, the number of iterations whose queries directly targeted it (a state, like the criteria state) |
 
-Extra saved information: `new_item_recall` (against qrels) and per-step intermediate answers (BrowseComp-Plus and
+Extra saved information: `new_item_precision` and `new_item_graded_recall` (against qrels) and per-step intermediate answers (BrowseComp-Plus and
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
 prompt in `src/uncertainty_estimator/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
@@ -162,8 +162,8 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
 </certainty>
 ```
 
-Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_recall`,
-relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
+Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
+`new_item_graded_recall`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
 | agents | place |
@@ -207,12 +207,13 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 5 |
+| `schema_version` | 6 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
 | `criteria_source`, `criteria_judge`, `query_scorer`, `encoder` | components in use (null when off) |
 | `num_criteria`, `num_iterations`, `num_unique_docs` | per-query counts |
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
+| `total_gain` | summed official gain of the query's relevant docs (null without graded qrels) |
 | `criteria` | `[{id, text}]` |
 | `criteria_info` | criteria LLM `model`, `reasoning`, `errors` |
 | `final_criteria_attempts` | last attempts, one per criterion |
@@ -226,8 +227,10 @@ Step line (one per search iteration, flat scalars first):
 | `agent_iteration` | the agent's own counter (base and meaning differ per agent) |
 | `num_subqueries`, `num_docs`, `num_new_docs` | step counts (unique doc ids) |
 | `doc_novelty`, `criteria_delta`, `query_novelty` | x_t, see the table above |
-| `new_item_recall` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
+| `new_item_precision` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
+| `new_item_graded_recall` | `new_gain` / `total_gain`; sums over the steps to GradedRecall@N |
+| `new_gain`, `total_gain` | summed official gain of the relevant docs first seen this step, and of all the query's relevant docs |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
 | `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
 | `criteria_state_before`, `criteria_state_after` | one status per criterion, in `criteria` order |

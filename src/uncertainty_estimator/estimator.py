@@ -15,8 +15,8 @@ Order inside ``observe`` (the targeting scorer sees sigma_{t-1}; the
 documents then move the state to sigma_t):
 
     a (targeting) -> nu^q -> nu^D (picks the novel documents) -> Delta^D (the
-    stateful judge updates sigma with the novel documents) -> new-item
-    recall -> intermediate answer
+    stateful judge updates sigma with the novel documents) -> retrieval
+    gain -> intermediate answer
 
 Step record, one per iteration (saved as one line of
 ``uncertainty/{query_id}.jsonl`` by ``UncertaintyEvaluator``); flat scalars
@@ -25,8 +25,9 @@ first, nested detail last::
     iteration, agent_iteration,
     num_subqueries, num_docs, num_new_docs,
     doc_novelty, criteria_delta, query_novelty     # x_t, with criteria_attempts_after
-    new_item_recall,
+    new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
+    new_item_graded_recall, new_gain, total_gain,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after,
@@ -72,7 +73,7 @@ from .signals import (
     DocNoveltySignal,
     EncodeFn,
     IntermediateAnswerSignal,
-    NewItemRecallSignal,
+    RetrievalGainSignal,
     QueryNoveltySignal,
 )
 from .types import Criterion
@@ -97,7 +98,10 @@ class UncertaintyEstimator:
         encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
             (``encode_fn_from_retriever``).  None: nu^q is null.
         encoder_name: Saved in the meta line.
-        qrels: ``{query_id: {doc_id: relevance}}`` for new-item recall.
+        qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
+            binary new-item precision.
+        graded_qrels: ``{query_id: {doc_id: gain}}`` with the official
+            gains, for the new-item graded recall.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
             asked every step, its answers are saved (extra, not in x_t).
             None disables the intermediate answer.
@@ -116,6 +120,7 @@ class UncertaintyEstimator:
         encode_fn: Optional[EncodeFn] = None,
         encoder_name: Optional[str] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
+        graded_qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         intermediate_answer_fn: Optional[AnswerFn] = None,
         agentic_model: str = "",
         run_info: Optional[Dict[str, Any]] = None,
@@ -128,7 +133,7 @@ class UncertaintyEstimator:
 
         self._doc_novelty = DocNoveltySignal()
         self._query_novelty = QueryNoveltySignal(encode_fn)
-        self._new_item_recall = NewItemRecallSignal(qrels)
+        self._retrieval_gain = RetrievalGainSignal(qrels, graded_qrels)
         self._coverage = CriteriaCoverageSignal(coverage_judge) if coverage_judge is not None else None
         self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
@@ -162,7 +167,7 @@ class UncertaintyEstimator:
         """Start a new sample: clear all state and create its criteria list."""
         self._doc_novelty.reset()
         self._query_novelty.reset()
-        self._new_item_recall.reset(query_id)
+        self._retrieval_gain.reset(query_id)
         self._step = 0
         self.steps = []
 
@@ -191,7 +196,8 @@ class UncertaintyEstimator:
             "num_criteria": len(self._criteria),
             "num_iterations": len(self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
-            "num_relevant": self._new_item_recall.num_relevant,
+            "num_relevant": self._retrieval_gain.num_relevant,
+            "total_gain": self._retrieval_gain.total_gain,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
             "final_criteria_state": self._coverage.statuses() if self._tracks_state else None,
@@ -282,13 +288,13 @@ class UncertaintyEstimator:
                 errors.append(f"criteria_judgment: {e}")
             state_after = self._coverage.statuses()
 
-        # --- New-item recall (extra) --------------------------------------------
+        # --- Retrieval gain (extra) ---------------------------------------------
         try:
-            recall = self._new_item_recall.score(docs)
+            gain = self._retrieval_gain.score(docs)
         except Exception as e:
-            logger.warning("UncertaintyEstimator: new-item recall failed", exc_info=True)
-            errors.append(f"new_item_recall: {e}")
-            recall = dict(NewItemRecallSignal._NULL)
+            logger.warning("UncertaintyEstimator: retrieval gain failed", exc_info=True)
+            errors.append(f"retrieval_gain: {e}")
+            gain = dict(RetrievalGainSignal._NULL)
 
         # --- Intermediate answer (extra) ----------------------------------------
         intermediate_answer, intermediate_answer_status = None, "disabled"
@@ -313,7 +319,7 @@ class UncertaintyEstimator:
             "doc_novelty": _round(doc_novelty),
             "criteria_delta": criteria_delta,
             "query_novelty": _round(query_novelty),
-            **recall,
+            **gain,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
             "subqueries": subqueries,

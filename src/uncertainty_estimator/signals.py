@@ -13,7 +13,8 @@ Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t):
 
 Extra, not part of x_t:
 
-- ``NewItemRecallSignal``: supervised new-item recall against qrels.
+- ``RetrievalGainSignal``: supervised retrieval gain against qrels
+  (binary new-item precision, new-item graded recall).
 - ``IntermediateAnswerSignal``: the agent's own answer(s) after each turn,
   not evaluated.
 
@@ -271,62 +272,100 @@ class CriteriaTargetingSignal:
 
 
 # ---------------------------------------------------------------------------
-# Supervised new-item recall (extra)
+# Supervised retrieval gain (extra)
 # ---------------------------------------------------------------------------
 
-class NewItemRecallSignal:
+class RetrievalGainSignal:
     """Supervised retrieval gain of each step against the qrels.
 
-    Tracks which relevant doc ids have been seen so far in the sample.  Per
-    step, over the step's unique doc ids:
+    Binary (``qrels``, relevant = grade >= ``min_relevance_score``), over the
+    step's unique doc ids:
 
-    - ``new_item_recall``: newly seen relevant docs / the step's docs
+    - ``new_item_precision``: newly seen relevant docs / the step's docs
       (0, 0.2, ..., 1 for 5 docs).
     - ``num_new_relevant``, ``num_repeated_relevant``, ``num_irrelevant``.
 
-    Everything is null when the query has no relevant doc in the qrels or
-    the step has no docs.  Call :meth:`reset` at the start of each query to
-    load its relevant doc ids.
+    Graded (``graded_qrels``, ``{query_id: {doc_id: gain}}`` with the official
+    gains):
+
+    - ``new_item_graded_recall``: ``new_gain / total_gain``.  Summed over the
+      steps it is the trajectory's GradedRecall@N.
+    - ``new_gain``: summed gain of the relevant docs first seen in this step.
+    - ``total_gain``: summed gain of all relevant docs of the query.
+
+    The binary fields are null when the query has no relevant doc in the
+    qrels, the graded one when it has none in the graded qrels; all are null
+    when the step has no docs.  Call :meth:`reset` at the start of each query.
     """
 
     _NULL = {
-        "new_item_recall": None,
+        "new_item_precision": None,
         "num_new_relevant": None,
         "num_repeated_relevant": None,
         "num_irrelevant": None,
+        "new_item_graded_recall": None,
+        "new_gain": None,
+        "total_gain": None,
     }
 
-    def __init__(self, qrels: Optional[Dict[str, Dict[str, Any]]] = None) -> None:
+    def __init__(
+        self,
+        qrels: Optional[Dict[str, Dict[str, Any]]] = None,
+        graded_qrels: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> None:
         self._qrels = qrels or {}
+        self._graded_qrels = graded_qrels or {}
         self._relevant_ids: Set[str] = set()
         self._relevant_seen: Set[str] = set()
+        self._gains: Dict[str, int] = {}
+        self._gain_seen: Set[str] = set()
 
     @property
     def num_relevant(self) -> Optional[int]:
         """Relevant docs of the current query; None without qrels for it."""
         return len(self._relevant_ids) or None
 
+    @property
+    def total_gain(self) -> Optional[int]:
+        """Summed gain of the current query's relevant docs; None without graded qrels."""
+        return sum(self._gains.values()) or None
+
     def reset(self, query_id: Optional[str] = None) -> None:
-        """Reset per-query state and load the relevant ids of ``query_id``."""
+        """Reset per-query state and load the relevant ids and gains of ``query_id``."""
         self._relevant_seen.clear()
+        self._gain_seen.clear()
         judged = self._qrels.get(query_id, {}) if query_id else {}
         self._relevant_ids = {d for d, r in judged.items() if float(r) > 0}
+        graded = self._graded_qrels.get(query_id, {}) if query_id else {}
+        self._gains = {d: int(g) for d, g in graded.items() if int(g) > 0}
 
     def score(self, docs: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Return the step's recall statistics (see the class docstring)."""
+        """Return the step's gain statistics (see the class docstring)."""
         ids = {_doc_id(doc) for doc in docs}
         ids.discard("")
-        if not self._relevant_ids or not ids:
-            return dict(self._NULL)
-        relevant = ids & self._relevant_ids
-        new = relevant - self._relevant_seen
-        self._relevant_seen.update(new)
-        return {
-            "new_item_recall": round(len(new) / len(ids), 4),
-            "num_new_relevant": len(new),
-            "num_repeated_relevant": len(relevant) - len(new),
-            "num_irrelevant": len(ids) - len(relevant),
-        }
+        result = dict(self._NULL)
+        if not ids:
+            return result
+        if self._relevant_ids:
+            relevant = ids & self._relevant_ids
+            new = relevant - self._relevant_seen
+            self._relevant_seen.update(new)
+            result.update({
+                "new_item_precision": round(len(new) / len(ids), 4),
+                "num_new_relevant": len(new),
+                "num_repeated_relevant": len(relevant) - len(new),
+                "num_irrelevant": len(ids) - len(relevant),
+            })
+        if self._gains:
+            new_graded = (ids & self._gains.keys()) - self._gain_seen
+            self._gain_seen.update(new_graded)
+            gain = sum(self._gains[d] for d in new_graded)
+            result.update({
+                "new_item_graded_recall": round(gain / self.total_gain, 4),
+                "new_gain": gain,
+                "total_gain": self.total_gain,
+            })
+        return result
 
 
 # ---------------------------------------------------------------------------

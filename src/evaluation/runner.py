@@ -48,7 +48,7 @@ from . import (
 # Evaluator construction + results loading / evaluation
 # ===========================================================================
 
-def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], UncertaintyEvaluator]:
+def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict[str, str]] = None, questions: Optional[Dict[str, str]] = None, dataset: Optional[str] = None, graded_qrels: Optional[Dict] = None) -> Tuple[SurfacedDocEvaluator, GenerationEvaluator, TrajectoryEvaluator, CitedDocEvaluator, SeenDocEvaluator, Optional[AccuracyEvaluator], Optional[ReportEvaluator], UncertaintyEvaluator]:
     """Instantiate Retrieval, Generation, Trajectory, CitedDoc, SeenDoc, Accuracy, Report, and Uncertainty evaluators.
 
     Args:
@@ -62,6 +62,9 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
                    (BrowseComp-Plus) the LLM-as-judge :class:`AccuracyEvaluator`.
         questions: Optional mapping of query_id -> question text.
         dataset:   Dataset name; selects the accuracy-slot evaluator.
+        graded_qrels: ``{query_id: {doc_id: gain}}`` (official gains) for
+                   GradedRecall@N on the seen and cited docs and as the
+                   NDCG gains of every retrieval evaluator.
 
     Returns:
         ``(retrieval_evaluator, generation_evaluator, trajectory_evaluator,
@@ -79,14 +82,16 @@ def build_evaluators(qrels: Dict, kwargs: Dict[str, Any], answers: Optional[Dict
         interleaving_window=kwargs.get("interleaving_window", 3),
         rrf_k=kwargs.get("rrf_k", 60),
         eval_top_k=kwargs.get("eval_top_k"),
+        graded_qrels=graded_qrels,
     )
-    cited_doc_evaluator = CitedDocEvaluator(qrels=qrels, k_values=k_values)
+    cited_doc_evaluator = CitedDocEvaluator(qrels=qrels, k_values=k_values, graded_qrels=graded_qrels)
     seen_doc_evaluator = SeenDocEvaluator(
         qrels=qrels,
         k_values=k_values,
         fusion_method=kwargs.get("consolidation_fusion_method", "interleaving"),
         interleaving_window=kwargs.get("interleaving_window", 3),
         rrf_k=kwargs.get("rrf_k", 60),
+        graded_qrels=graded_qrels,
     )
     judge_model = kwargs.get("judge_model")
     answer_eval = DATASET_SPECS[dataset].answer_eval if dataset else "llm_judge"
@@ -367,6 +372,8 @@ def evaluate_and_save(results: Dict[str, Any], generation_evaluator: GenerationE
         print(f"    Recall@N:    {metrics_at_n.get('Recall@N', 0):.4f}")
         print(f"    Precision@N: {metrics_at_n.get('Precision@N', 0):.4f}")
         print(f"    F1@N:        {metrics_at_n.get('F1@N', 0):.4f}")
+        if "GradedRecall@N" in metrics_at_n:
+            print(f"    GradedRecall@N: {metrics_at_n['GradedRecall@N']:.4f}")
         print(f"    avg_N:       {metrics_at_n.get('avg_N', 0):.1f}")
     print("=" * 80)
 

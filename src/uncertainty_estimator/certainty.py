@@ -15,8 +15,8 @@ iteration's step record::
 
 Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
 criteria state and the attempts (``criteria_attempts_after``; left out when
-null) are read, so gold-based signals (new-item recall, relevant
-counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
+null) are read, so gold-based signals (new-item precision, new-item
+graded recall, relevant counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
 analysis.  A null signal is left out; an element with nothing to show is left
 out; with nothing to show at all there is no tag.
 """

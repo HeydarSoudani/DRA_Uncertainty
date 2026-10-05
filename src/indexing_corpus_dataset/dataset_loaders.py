@@ -157,6 +157,23 @@ def load_qrels(
     return qrels
 
 
+def graded_qrels(
+    qrels: dict[str, dict[str, int]], gains: dict[int, int]
+) -> dict[str, dict[str, int]]:
+    """Map unfiltered qrels to ``{query_id: {doc_id: gain}}`` with gain > 0.
+
+    ``gains`` is the dataset's official grade -> gain map
+    (``DatasetSpec.relevance_gains``); a grade not in it has gain 0.  Queries
+    without a doc of positive gain are left out.
+    """
+    graded: dict[str, dict[str, int]] = {}
+    for qid, docs in qrels.items():
+        positive = {did: gains[rel] for did, rel in docs.items() if gains.get(rel, 0) > 0}
+        if positive:
+            graded[qid] = positive
+    return graded
+
+
 # ===========================================================================
 # Nuggets
 # ===========================================================================

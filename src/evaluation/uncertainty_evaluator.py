@@ -8,14 +8,14 @@ stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 5::
+Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 6::
 
-    line 1  {"record": "meta", "schema_version": 5, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 6, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
              "criteria_source": "llm", "criteria_judge": "llm:...",
              "query_scorer": "llm:...", "encoder": "...",
-             "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
+             "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6, "total_gain": 9,
              "criteria": [{"id": "c1", "text": "..."}, ...],
              "criteria_info": {"model": ..., "reasoning": ..., "errors": []},
              "final_criteria_state": ["fully_covered", "uncovered", ...],
@@ -27,8 +27,9 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 5::
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
              "doc_novelty": 1.0, "criteria_delta": 3, "query_novelty": 1.0,
-             "new_item_recall": 0.4,
+             "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
+             "new_item_graded_recall": 0.3333, "new_gain": 3, "total_gain": 9,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "subqueries": ["..."],
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
@@ -61,7 +62,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _clean(obj: Any) -> Any:

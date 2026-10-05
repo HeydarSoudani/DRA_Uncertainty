@@ -2,7 +2,7 @@
 
 A step is productive when it found at least one relevant document not seen
 in an earlier step of the same sample (``num_new_relevant > 0``, the same as
-``new_item_recall > 0``).  Productive steps are frequent early and rarer
+``new_item_precision > 0``).  Productive steps are frequent early and rarer
 later, and most signals also decay with the step index, so a signal can
 separate the two classes only because both follow the step index.  The
 analysis has three parts:

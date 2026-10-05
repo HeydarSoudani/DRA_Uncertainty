@@ -27,7 +27,7 @@ from .builders import (
 # Worker function (must be top-level for pickling by ProcessPoolExecutor)
 # ---------------------------------------------------------------------------
 
-def _evaluate_one_fusion_worker(method: str, results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], rrf_k: int, interleaving_window: int, fusion_k: Optional[int], run_dir_str: Optional[str], embeddings_dictionary: Optional[Dict[str, Any]] = None, worker_idx: int = 0) -> Dict[str, Any]:
+def _evaluate_one_fusion_worker(method: str, results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], rrf_k: int, interleaving_window: int, fusion_k: Optional[int], run_dir_str: Optional[str], embeddings_dictionary: Optional[Dict[str, Any]] = None, worker_idx: int = 0, gain_qrels: Optional[Dict[str, Dict[str, int]]] = None) -> Dict[str, Any]:
     """Run one fusion method end-to-end: build ranking, evaluate, save TREC.
 
     Returns a dict with keys ``method``, ``metrics`` (or ``None`` on skip),
@@ -53,6 +53,7 @@ def _evaluate_one_fusion_worker(method: str, results: Dict[str, Any], qrels: Dic
             results=ranking_results,
             qrels=qrels,
             k_values=k_values,
+            gain_qrels=gain_qrels,
         )
         num_queries = len(ranking_results.get_unique_queries())
         metrics["num_queries"] = num_queries
@@ -71,7 +72,7 @@ def _evaluate_one_fusion_worker(method: str, results: Dict[str, Any], qrels: Dic
         return {"method": method, "metrics": None, "trec_path": None, "error": str(exc), "skipped": False}
 
 
-def _evaluate_gpu_fusion_worker(method: str, results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], rrf_k: int, interleaving_window: int, fusion_k: Optional[int], run_dir_str: Optional[str], encoder_kwargs: Dict[str, Any], device: str, worker_idx: int = 0) -> Dict[str, Any]:
+def _evaluate_gpu_fusion_worker(method: str, results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], rrf_k: int, interleaving_window: int, fusion_k: Optional[int], run_dir_str: Optional[str], encoder_kwargs: Dict[str, Any], device: str, worker_idx: int = 0, gain_qrels: Optional[Dict[str, Dict[str, int]]] = None) -> Dict[str, Any]:
     """Run one GPU-based (diversity) fusion method on a dedicated GPU device.
 
     Creates a fresh :class:`Encoder` on *device*, builds the embeddings
@@ -95,13 +96,13 @@ def _evaluate_gpu_fusion_worker(method: str, results: Dict[str, Any], qrels: Dic
         return _evaluate_one_fusion_worker(
             method, results, qrels, k_values, rrf_k, interleaving_window,
             fusion_k, run_dir_str, embeddings_dictionary=embeddings_dictionary,
-            worker_idx=worker_idx,
+            worker_idx=worker_idx, gain_qrels=gain_qrels,
         )
     except Exception as exc:
         return {"method": method, "metrics": None, "trec_path": None, "error": str(exc), "skipped": False}
 
 
-def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], run_dir: Optional[Path], fusion_methods: Optional[List[str]] = None, rrf_k: int = 60, interleaving_window: int = 3, fusion_k: Optional[int] = None, max_workers: Optional[int] = None, encoder=None, num_gpus: int = 0, reranker=None, rerank_top_k: int = 100) -> Dict[str, Any]:
+def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict[str, int]], k_values: List[int], run_dir: Optional[Path], fusion_methods: Optional[List[str]] = None, rrf_k: int = 60, interleaving_window: int = 3, fusion_k: Optional[int] = None, max_workers: Optional[int] = None, encoder=None, num_gpus: int = 0, reranker=None, rerank_top_k: int = 100, gain_qrels: Optional[Dict[str, Dict[str, int]]] = None) -> Dict[str, Any]:
     """Evaluate retrieval with every aggregation fusion method and save TREC + summary.
 
     For each method in *fusion_methods* this function:
@@ -132,6 +133,9 @@ def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict
                              Required for diversity fusion methods.  The embeddings
                              dictionary is built once and reused across all
                              diversity methods.
+        gain_qrels:          ``{query_id: {doc_id: gain}}`` with the official
+                             gains, used as the NDCG gains.  None: the
+                             ``qrels`` grades.
 
     Returns:
         Dict ``{method_name: metrics_dict}`` for every evaluated method.
@@ -198,7 +202,8 @@ def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict
                 print(f"  ⚠  [{method}] No results or qrels — skipping evaluation")
                 continue
 
-            metrics = evaluate_results(results=ranking_results, qrels=qrels, k_values=k_values)
+            metrics = evaluate_results(results=ranking_results, qrels=qrels, k_values=k_values,
+                                       gain_qrels=gain_qrels)
             num_queries = len(ranking_results.get_unique_queries())
             metrics["num_queries"] = num_queries
             metrics["avg_docs_per_query"] = (
@@ -242,7 +247,7 @@ def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict
                         _evaluate_gpu_fusion_worker,
                         method, results, qrels, k_values,
                         rrf_k, interleaving_window, fusion_k, run_dir_str,
-                        encoder_kwargs, device, worker_idx,
+                        encoder_kwargs, device, worker_idx, gain_qrels,
                     )
                 else:
                     emb_dict = embeddings_dictionary
@@ -250,7 +255,7 @@ def evaluate_all_fusions_and_save(results: Dict[str, Any], qrels: Dict[str, Dict
                         _evaluate_one_fusion_worker,
                         method, results, qrels, k_values,
                         rrf_k, interleaving_window, fusion_k, run_dir_str,
-                        emb_dict, worker_idx,
+                        emb_dict, worker_idx, gain_qrels,
                     )
                 futures[f] = method
 
@@ -291,6 +296,7 @@ def run_fusion_eval(
     kwargs: Dict[str, Any],
     run_dir: Optional[Path],
     num_gpus: int,
+    gain_qrels: Optional[Dict[str, Dict[str, int]]] = None,
 ) -> Dict[str, Any]:
     """Evaluate all aggregation fusion methods and return their metrics.
 
@@ -308,6 +314,7 @@ def run_fusion_eval(
                     encoder).
         run_dir:    Output directory for the fusion TREC files.
         num_gpus:   Number of GPU workers for diversity fusion methods.
+        gain_qrels: ``{query_id: {doc_id: gain}}`` (official gains) for NDCG.
 
     Returns:
         ``{method_name: metrics_dict}`` for every evaluated method.
@@ -338,6 +345,7 @@ def run_fusion_eval(
         num_gpus=num_gpus,
         reranker=kwargs.get("reranker", None),
         rerank_top_k=kwargs.get("rerank_top_k", 100),
+        gain_qrels=gain_qrels,
     )
     # Fusion TREC files are written by ``evaluate_all_fusions_and_save`` above.
     # The metrics themselves are folded into summary.json by

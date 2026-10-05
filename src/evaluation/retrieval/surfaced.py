@@ -65,6 +65,7 @@ class SurfacedDocEvaluator(BaseDocRetrievalEvaluator):
         interleaving_window: Optional[int] = 3,
         rrf_k: int = 60,
         eval_top_k: Optional[int] = None,
+        graded_qrels: Optional[Dict[str, Dict[str, int]]] = None,
     ):
         """See :class:`BaseDocRetrievalEvaluator`.
 
@@ -78,6 +79,7 @@ class SurfacedDocEvaluator(BaseDocRetrievalEvaluator):
             fusion_method=fusion_method,
             interleaving_window=interleaving_window,
             rrf_k=rrf_k,
+            graded_qrels=graded_qrels,
         )
         self.eval_top_k = eval_top_k
 

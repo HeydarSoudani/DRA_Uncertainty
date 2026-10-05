@@ -84,8 +84,14 @@ class DatasetSpec:
                              (test|validation) here.  None = not used.
         subset:              Subset / collection.  None = not used.
         query_key:           Queries-file field used as the query text.
-        min_relevance_score: Lowest qrel grade counted as relevant.  Queries
-                             with no qrel at this grade are not run.
+        min_relevance_score: Lowest qrel grade counted as relevant by the
+                             binary metrics (Recall@N, new_item_precision).
+                             Queries with no qrel at this grade are not run.
+        relevance_gains:     Official gain of each qrel grade, for the graded
+                             metrics (GradedRecall@N, new_item_graded_recall,
+                             NDCG);
+                             a grade not listed has gain 0.  Independent of
+                             ``min_relevance_score``.
         task:                ``"qa"`` (short answer) or ``"report"`` (a report
                              request).  Report tasks get report prompts and no
                              intermediate answers.
@@ -101,6 +107,7 @@ class DatasetSpec:
     subset: str | None
     query_key: str
     min_relevance_score: int
+    relevance_gains: dict[int, int]
     task: str
     answer_eval: str | None
     doc_max_length: int
@@ -112,24 +119,30 @@ DATASET_SPECS = {
     # TRQA passages are short; answers are numeric.
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
-        task="qa", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
     # Long web pages and long multi-clue questions; grades: gold=2, evidence=1.
+    # Both are evidence (the owners' qrel_evidence) for the binary metrics; the
+    # owners define no gains, so gold (contains the answer) gets gain 2 by choice.
     "browsecomp_plus": DatasetSpec(
         dataset_year=None, subset="test", query_key="text", min_relevance_score=1,
-        task="qa", answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
+        relevance_gains={1: 1, 2: 2}, task="qa", answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
-    # Grades 0/1/3; only the 59 report-generation topics carry ``request``.
+    # Grades 0/1/3 are already the official points (very valuable 3, somewhat
+    # valuable 1); relevant = >=1 as in the track's R@1000.  Only the 59
+    # report-generation topics carry ``request``.
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
     "neuclir": DatasetSpec(
-        dataset_year="2024", subset="news", query_key="request", min_relevance_score=3,
-        task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        dataset_year="2024", subset="news", query_key="request", min_relevance_score=1,
+        relevance_gains={1: 1, 3: 3}, task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000,
     ),
-    # Grades 0-3; ``text`` is the report request (background + problem statement).
+    # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
+    # 0 irrelevant.  Official points 3/1/0/0, so relevant = >=2.  ``text`` is
+    # the report request (background + problem statement).
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
-        task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={2: 1, 3: 3}, task="report", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000,
     ),
 }
