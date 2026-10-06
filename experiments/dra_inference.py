@@ -51,7 +51,6 @@ Output structure:
     │   └── {query_id}.jsonl         per-query uncertainty signals: meta line + one line per iteration
     ├── accuracy.jsonl               per-query answer correctness (datasets with answers)
     ├── report_eval/                 Auto-ARGUE inputs, cached judgments and per-query scores.tsv
-    ├── criteria_eval.jsonl          per-query criteria scores (estimator on, datasets with criteria gold)
     └── summary.json                 grouped run metrics:
                                        num_queries,
                                        retrieval  {seen, cited, fusion},
@@ -605,16 +604,16 @@ def _parse_args():
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="ragtime", choices=list(DATASETS), help="Dataset; all use local indices.")
-    parser.add_argument("--subset", type=_none_if_null, default="wiki2", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; criteria vs the dataset's criteria gold when the estimator is on) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and the criteria scores (uncertainty meta lines, criteria_eval.jsonl), so an unchanged run makes no LLM call.")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; criteria vs the dataset's criteria gold when the estimator is on) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and the criteria scores (uncertainty meta lines), so an unchanged run makes no LLM call.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -821,7 +820,6 @@ if __name__ == "__main__":
 #     │   └── {query_id}.jsonl  per-query uncertainty signals: meta line + one line per iteration
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
-#     ├── criteria_eval.jsonl   per-query criteria scores (estimator on, datasets with criteria gold)
 #     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},
 #                                        generation{correctness|nuggets,stats},
 #                                        criteria, trajectory
@@ -832,4 +830,4 @@ if __name__ == "__main__":
 #   CUDA_VISIBLE_DEVICES=5,6 python experiments/dra_inference.py --dataset browsecomp_plus --limit 1
 #   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/dra_inference.py --dataset neuclir --limit 1
 #   python experiments/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
-#   python experiments/dra_inference.py --limit 1
+#   python experiments/dra_inference.py --limit 2

@@ -9,8 +9,8 @@
 """
 
 from .evaluator import (
-    CRITERIA_EVAL_FILE, CRITERIA_JUDGMENTS_FILE, CriteriaEvaluator, build_criteria_evaluator, compare_with_report,
+    CRITERIA_JUDGMENTS_FILE, CriteriaEvaluator, build_criteria_evaluator, compare_with_report,
 )
 
-__all__ = ["CRITERIA_EVAL_FILE", "CRITERIA_JUDGMENTS_FILE", "CriteriaEvaluator", "build_criteria_evaluator",
+__all__ = ["CRITERIA_JUDGMENTS_FILE", "CriteriaEvaluator", "build_criteria_evaluator",
            "compare_with_report"]

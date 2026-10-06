@@ -49,17 +49,21 @@ keeps its record (with ``errors``) but is left out of the averages.
 
 Every query also gets ``num_criteria``, ``num_open``, ``num_gold``, the
 match details, the ``method`` and ``judge_model`` and a ``criteria_hash`` of
-the scored list.  The summary macro-averages each metric over the queries
-where it is defined and the judges did not fail (``num_scored``).
+the scored list.  The summary (:meth:`CriteriaEvaluator.summarize`) is laid
+out as the report's (``generation.nuggets``): the method and counts, then
+``metrics`` (the scores, macro-averaged over the queries where they are
+defined and the judges did not fail) and ``stats`` (list sizes and
+diagnostics).
 
 In a run (uncertainty estimator ``monitor`` or ``inform``, dataset with
 ``criteria_gold``) the estimator scores each query's criteria in the
 background while the agent runs (:meth:`CriteriaEvaluator.score`) and keeps
 the record in the meta line of ``uncertainty/{qid}.jsonl`` as
-``criteria_eval``; :meth:`CriteriaEvaluator.evaluate_run` reuses it, and the
-rows of ``criteria_eval.jsonl``, while the criteria, the method and the judge
-are unchanged.  The nugget judgments of the queries judged at evaluation are
-cached one by one in ``criteria_eval_judgments.jsonl``.
+``criteria_eval``.  :meth:`CriteriaEvaluator.evaluate_run` reuses it while
+the criteria, the method and the judge are unchanged, and writes a record it
+judges again back into that meta line.  The nugget judgments of the queries
+judged at evaluation are cached one by one in ``criteria_eval_judgments.jsonl``
+under the run directory.
 """
 
 import hashlib
@@ -75,9 +79,9 @@ from indexing_corpus_dataset.layout import DATASET_SPECS
 from uncertainty_estimator.types import MULTI_ASPECT, MULTI_SOURCE_KINDS
 
 from ..answer.argue import nugget_covered
-from ..common import mean_or_none, read_jsonl, write_jsonl
+from ..common import mean_or_none
 from ..gold import GoldUnit, LLMEntityMatcher, LLMInfoMatcher, NuggetAskMatcher, match_entities
-from ..uncertainty import load_uncertainty_meta
+from ..uncertainty import load_uncertainty_meta, update_uncertainty_meta
 from .request_coverage import RequestCoverageJudge
 
 logger = logging.getLogger(__name__)
@@ -88,18 +92,16 @@ GOLD_MODES = ("entities", "nuggets", "info")
 #: method is judged again.
 METHODS = {"entities": "entity_match", "nuggets": "argue_nugget_ask", "info": "info_match"}
 
-#: Metrics of each mode, macro-averaged in the summary.
+#: Metrics of each mode, macro-averaged in the summary's ``metrics``.
 MODE_METRICS = {
     "entities": ("recall", "precision"),
-    "nuggets": ("nugget_coverage", "nugget_coverage_weighted", "num_unmatched_criteria"),
-    "info": ("recall_lenient", "recall_strict", "precision_lenient", "precision_strict"),
+    "nuggets": ("nugget_coverage", "nugget_coverage_weighted"),
+    "info": ("recall_strict", "recall_lenient", "precision_strict", "precision_lenient"),
 }
 
 # Auto-ARGUE's nugget weights (``auto_argue.score``); without any, all 1.
 _IMPORTANCE_WEIGHTS = {"vital": 2.0, "okay": 1.0}
 
-#: Per-query criteria scores of a run, under the run directory.
-CRITERIA_EVAL_FILE = "criteria_eval.jsonl"
 #: Cached YES/NO nugget judgments (``nuggets`` mode), under the run directory.
 CRITERIA_JUDGMENTS_FILE = "criteria_eval_judgments.jsonl"
 
@@ -390,10 +392,11 @@ class CriteriaEvaluator:
 
         The criteria come from the meta line of ``uncertainty/{qid}.jsonl``
         (or ``result["uncertainty_meta"]`` without a run directory).  A score
-        is reused from the meta line's ``criteria_eval`` or from
-        ``criteria_eval.jsonl`` when :meth:`reusable`; only the rest are
-        judged.  Returns ``{"summary", "per_query"}``, plus ``num_judged``
-        (the queries judged now); ``{}`` when no query has criteria.
+        is reused from the meta line's ``criteria_eval`` when
+        :meth:`reusable`; the rest are judged, and their records written
+        into the meta line.  Returns ``{"summary", "per_query"}``, plus
+        ``num_judged`` (the queries judged now); ``{}`` when no query has
+        criteria.
         """
         metas = load_uncertainty_meta(run_dir) if run_dir else {
             q: r["uncertainty_meta"] for q, r in (results or {}).items() if r.get("uncertainty_meta")
@@ -401,18 +404,13 @@ class CriteriaEvaluator:
         qids = [q for q in sorted(query_ids) if q in metas and self.gold.get(q)]
         if not qids:
             return {}
-        saved: Dict[str, Dict] = {}
-        if run_dir:
-            saved = {str(r["query_id"]): r for r in read_jsonl(Path(run_dir) / CRITERIA_EVAL_FILE)}
 
         records: Dict[str, Dict] = {}
         todo = []
         for q in qids:
-            criteria = metas[q].get("criteria") or []
-            for cached in (metas[q].get("criteria_eval"), saved.get(q)):
-                if self.reusable(cached, criteria):
-                    records[q] = cached
-                    break
+            cached = metas[q].get("criteria_eval")
+            if self.reusable(cached, metas[q].get("criteria") or []):
+                records[q] = cached
             else:
                 todo.append(q)
         if todo:
@@ -425,68 +423,77 @@ class CriteriaEvaluator:
                     lambda q: self.evaluate_query(q, metas[q].get("question", ""), metas[q].get("criteria") or []),
                     todo))
             records.update(zip(todo, fresh))
+            if run_dir:
+                for q in todo:
+                    update_uncertainty_meta(run_dir, q, {"criteria_eval": records[q]})
 
         per_query = [records[q] for q in qids]
         infos = {q: metas[q].get("criteria_info") or {} for q in qids}
         return {"summary": self.summarize(per_query, infos), "per_query": per_query, "num_judged": len(todo)}
 
-    def save_results(self, metrics: Dict[str, Any], run_dir: Union[str, Path]) -> None:
-        """Write the per-query records of :meth:`evaluate_run` to ``criteria_eval.jsonl``."""
-        if metrics:
-            write_jsonl(Path(run_dir) / CRITERIA_EVAL_FILE, metrics["per_query"])
-
     def summarize(self, per_query: List[Dict], infos: Optional[Dict[str, Dict]] = None) -> Dict[str, Any]:
+        """The ``criteria`` group of ``summary.json``, laid out as the
+        report's: ``method``, ``judge_model``, the counts, ``metrics`` and
+        ``stats``.  *infos* (``{query_id: criteria_info}``) adds the
+        extraction errors."""
         # A query whose judge failed has partial scores: left out of the means.
         scored = [r for r in per_query if not r.get("errors")]
-        summary: Dict[str, Any] = {"mode": self.mode, "method": self.method, "judge_model": self.judge_model,
-                                   "num_queries": len(per_query), "num_scored": len(scored)}
-        for m in MODE_METRICS[self.mode]:
-            summary[m] = _mean([r[m] for r in scored if r.get(m) is not None])
+        metrics: Dict[str, Any] = {m: _mean([r[m] for r in scored if r.get(m) is not None])
+                                   for m in MODE_METRICS[self.mode]}
+        stats: Dict[str, Any] = {"avg_num_criteria": _mean([r["num_criteria"] for r in per_query])}
+        if self.mode == "entities":
+            stats["avg_num_open"] = _mean([r["num_open"] for r in per_query])
+        stats["avg_num_gold"] = _mean([r["num_gold"] for r in per_query])
+
         checked = [r["request_coverage"] for r in scored if r.get("request_coverage")]
         if checked:
-            for m in ("constraint_recall", "exclusion_recall", "num_constraints", "num_violations"):
-                summary[m] = _mean([c[m] for c in checked if c.get(m) is not None])
-        for m in ("num_criteria", "num_open", "num_gold"):
-            summary[f"mean_{m}"] = _mean([r[m] for r in per_query])
-        summary["num_empty_criteria"] = sum(r["num_criteria"] == 0 for r in per_query)
-        summary["num_matcher_errors"] = sum(bool(r["errors"]) for r in per_query)
+            metrics["constraint_recall"] = _mean([c["constraint_recall"] for c in checked
+                                                  if c.get("constraint_recall") is not None])
+            metrics["exclusion_recall"] = _mean([c["exclusion_recall"] for c in checked
+                                                 if c.get("exclusion_recall") is not None])
+            metrics["violations_per_query"] = _mean([c["num_violations"] for c in checked])
+            stats["avg_num_constraints"] = _mean([c["num_constraints"] for c in checked])
         if self.mode == "nuggets":
-            summary["judge_malformed"] = sum(r.get("judge_malformed", 0) for r in per_query)
+            stats["avg_unmatched_criteria"] = _mean([r["num_unmatched_criteria"] for r in scored])
+            stats["num_judge_malformed"] = sum(r.get("judge_malformed", 0) for r in per_query)
         if infos:
-            summary["num_extraction_errors"] = sum(
+            stats["num_extraction_errors"] = sum(
                 bool((infos.get(r["query_id"]) or {}).get("errors")) for r in per_query
             )
-        return summary
+        return {
+            "method": self.method,
+            "judge_model": self.judge_model,
+            "num_evaluated": len(scored),
+            "num_empty_criteria": sum(r["num_criteria"] == 0 for r in per_query),
+            "num_judge_failures": len(per_query) - len(scored),
+            "metrics": metrics,
+            "stats": stats,
+        }
 
     def summary_lines(self, summary: Dict[str, Any]) -> List[str]:
         """The terminal lines of the run summary for a :meth:`summarize`
-        result (with ``vs_report`` from :func:`compare_with_report`)."""
-        c = summary
-        lines = [f"Criteria ({c['mode']}, {c['judge_model']}): {c['num_queries']} queries,"
-                 f" {_fmt(c.get('mean_num_criteria'), 1)} criteria vs {_fmt(c.get('mean_num_gold'), 1)} gold"
-                 f" (matcher errors {c.get('num_matcher_errors', 0)})"]
-        if c["mode"] == "entities":
-            lines.append(f"  recall {_fmt(c.get('recall'))} | precision {_fmt(c.get('precision'))}")
-        elif c["mode"] == "nuggets":
-            lines.append(f"  nugget coverage {_fmt(c.get('nugget_coverage'))}"
-                         f" (weighted {_fmt(c.get('nugget_coverage_weighted'))})"
-                         f" | scored {c.get('num_scored')}/{c['num_queries']}")
-            if c.get("constraint_recall") is not None:
-                lines.append(f"  request constraints {_fmt(c.get('constraint_recall'))}"
-                             f" | exclusions {_fmt(c.get('exclusion_recall'))}"
-                             f" | violations/query {_fmt(c.get('num_violations'), 2)}")
-            v = c.get("vs_report")
-            if v:
-                lines.append(f"  vs report ({v['num_queries']} queries): asked & answered {_fmt(v.get('asked_answered'))}"
-                             f" | asked, not answered {_fmt(v.get('asked_not_answered'))}"
-                             f" | answered, not asked {_fmt(v.get('answered_not_asked'))}"
-                             f" | neither {_fmt(v.get('neither'))}")
-                lines.append(f"    report answers {_fmt(v.get('answered_if_asked'))} of the asked nuggets,"
-                             f" {_fmt(v.get('answered_if_not_asked'))} of the others")
+        result (with the report comparison of :func:`compare_with_report`)."""
+        c, m, s = summary, summary["metrics"], summary["stats"]
+        lines = [f"Criteria ({c['method']}, {c['judge_model']}): {c['num_evaluated']} lists"
+                 f" (empty {c['num_empty_criteria']}, judge failures {c['num_judge_failures']}),"
+                 f" {_fmt(s.get('avg_num_criteria'), 1)} criteria vs {_fmt(s.get('avg_num_gold'), 1)} gold"]
+        if self.mode == "entities":
+            lines.append(f"  recall {_fmt(m.get('recall'))} | precision {_fmt(m.get('precision'))}")
+        elif self.mode == "nuggets":
+            lines.append(f"  coverage {_fmt(m.get('nugget_coverage'))}"
+                         f" (weighted {_fmt(m.get('nugget_coverage_weighted'))})"
+                         f" | unmatched criteria/query {_fmt(s.get('avg_unmatched_criteria'), 2)}")
+            if "constraint_recall" in m:
+                lines.append(f"  request constraints {_fmt(m.get('constraint_recall'))}"
+                             f" | exclusions {_fmt(m.get('exclusion_recall'))}"
+                             f" | violations/query {_fmt(m.get('violations_per_query'), 2)}")
+            if "answered_if_asked" in m:
+                lines.append(f"  report answers {_fmt(m.get('answered_if_asked'))} of the asked nuggets,"
+                             f" {_fmt(m.get('answered_if_not_asked'))} of the others")
         else:
-            lines.append(f"  recall strict {_fmt(c.get('recall_strict'))} / lenient {_fmt(c.get('recall_lenient'))}"
-                         f" | precision strict {_fmt(c.get('precision_strict'))}"
-                         f" / lenient {_fmt(c.get('precision_lenient'))}")
+            lines.append(f"  recall strict {_fmt(m.get('recall_strict'))} / lenient {_fmt(m.get('recall_lenient'))}"
+                         f" | precision strict {_fmt(m.get('precision_strict'))}"
+                         f" / lenient {_fmt(m.get('precision_lenient'))}")
         return lines
 
 
@@ -494,56 +501,31 @@ class CriteriaEvaluator:
 # Criteria against the report, nugget by nugget
 # ----------------------------------------------------------------------
 
-#: The four cells of :func:`compare_with_report`: (asked by the criteria,
-#: answered by the report).
-COMPARISON_CELLS = {
-    "asked_answered": (True, True),
-    "asked_not_answered": (True, False),
-    "answered_not_asked": (False, True),
-    "neither": (False, False),
-}
-
-
-def compare_with_report(criteria_metrics: Dict[str, Any], report_records: List[Dict]) -> Optional[Dict[str, Any]]:
+def compare_with_report(criteria_metrics: Dict[str, Any], report_records: List[Dict]) -> None:
     """Cross each nugget's criteria label (``nuggets`` mode: covered by the
     criteria) with its report label (Auto-ARGUE: answered by the report).
 
-    Uses the queries scored by both, without judge errors.  Per query: the
-    share of nuggets in each cell (``COMPARISON_CELLS``), plain and weighted
-    as ``nugget_coverage`` / ``_weighted``, and ``answered_if_asked`` /
-    ``answered_if_not_asked`` (the report's coverage of the nuggets the
-    criteria asked for / did not ask for; None without such nuggets).
-
-    The rows go into *criteria_metrics* (:meth:`CriteriaEvaluator.evaluate_run`'s
-    result): each per-query record gets its row as ``vs_report`` (None when
-    not compared) and the summary their macro-average as ``vs_report``,
-    which is also returned; None when no query is scored by both.
+    Uses the queries scored by both, without judge errors.  Per query:
+    ``answered_if_asked`` / ``answered_if_not_asked``, the report's coverage
+    of the nuggets the criteria asked for / did not ask for (None without
+    such nuggets).  With the two coverages, they fix the whole asked x
+    answered table.  Their macro-averages go into the ``metrics`` of
+    *criteria_metrics*' summary (:meth:`CriteriaEvaluator.evaluate_run`'s
+    result); nothing is added when no query is scored by both.
     """
     reports = {str(r["query_id"]): r for r in report_records}
-    rows: Dict[str, Dict[str, Any]] = {}
+    rows: List[Dict[str, Optional[float]]] = []
     for rec in criteria_metrics["per_query"]:
         qid = str(rec["query_id"])
         if rec.get("errors") or "matches" not in rec or qid not in reports:
             continue
         answered = set(reports[qid].get("answered_nuggets") or [])
-        nuggets = rec["matches"]
-        weights = _nugget_weights([m.get("importance") for m in nuggets])
-        labels = [(bool(m["covered"]), m["gold"] in answered) for m in nuggets]
-        row: Dict[str, Any] = {"nuggets": len(nuggets)}
-        for cell, key in COMPARISON_CELLS.items():
-            row[cell] = round(sum(lab == key for lab in labels) / max(len(labels), 1), 4)
-            row[f"{cell}_weighted"] = round(
-                sum(w for w, lab in zip(weights, labels) if lab == key) / max(sum(weights), 1), 4)
+        labels = [(bool(m["covered"]), m["gold"] in answered) for m in rec["matches"]]
+        row = {}
         for name, asked in (("answered_if_asked", True), ("answered_if_not_asked", False)):
             group = [lab[1] for lab in labels if lab[0] == asked]
             row[name] = round(sum(group) / len(group), 4) if group else None
-        rows[qid] = row
-    for rec in criteria_metrics["per_query"]:
-        rec["vs_report"] = rows.get(str(rec["query_id"]))
-    if not rows:
-        return None
-    keys = [k for k in next(iter(rows.values())) if k != "nuggets"]
-    summary = {"num_queries": len(rows)}
-    summary.update({k: _mean([r[k] for r in rows.values() if r[k] is not None]) for k in keys})
-    criteria_metrics["summary"]["vs_report"] = summary
-    return summary
+        rows.append(row)
+    if rows:
+        criteria_metrics["summary"]["metrics"].update(
+            {k: _mean([r[k] for r in rows if r[k] is not None]) for k in rows[0]})

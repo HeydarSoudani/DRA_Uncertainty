@@ -104,7 +104,7 @@ python experiments/dra_inference.py --dataset browsecomp_plus --eval-only --num-
 
 A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
 `summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`,
-`criteria_eval.jsonl`, `criteria_eval_judgments.jsonl` and the `criteria_eval` of the uncertainty meta lines) and
+the `criteria_eval` of the uncertainty meta lines and `criteria_eval_judgments.jsonl`) and
 reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU. The terminal log prints one
 EVALUATION SUMMARY block in the order of `summary.json`: retrieval (seen docs), generation (correctness or nuggets, and
 length), criteria, trajectory, then the time of each evaluation stage. Cited-doc and fusion metrics and the full @k
@@ -122,16 +122,17 @@ criteria from the query (`llm_criteria`, at most `max_criteria`, null = the data
 for a report request it is the number of criteria the extractor may add, asked in the prompt).
 The dataset's `query_shape` (`layout.DATASET_SPECS`) picks the prompt, a shared core plus one block per shape, and the
 model only lists the pieces of information a complete response must establish: the clues of a single target (BCP,
-copied verbatim), the set with the property of each member (including the members found only by the search) and one
-"member: property" per known member of a set query (TRQA), or, for a report
+copied verbatim), the set, one "member: property" per known member and a last "any other member: property" (for the
+members found only by the search) of a set query (TRQA), or, for a report
 request (NeuCLIR, RAGTIME), every constraint the request states (no cap) followed by at most `max_criteria` (5)
 criteria the extractor adds, as one plain list (the limit on added criteria is asked in the prompt; code never cuts a
 report list). A report criterion keeps the request's own limits in its
 wording; what the request leaves out is written into the criterion it narrows ("..., not ..."), an exception
 ("unless ...") is its own criterion, and background on the asker is kept only when it limits what information applies
-(country, location, situation). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers) or `aspect` (one
-aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion) is
-open and its members closed, all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
+(country, location, situation). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers), `rest` or `aspect`
+(one aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion)
+is open, its members closed and its "any other member" criterion rest (added by code when the model leaves it out;
+fully covered only while the set is), all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
@@ -210,7 +211,9 @@ scored against it with the judge `judge_model`, in a background thread while the
 not delay the agent. The score is printed when the query ends
 (`[Agent] criteria eval (nuggets, 9 criteria, 15 gold): nugget coverage ... `) and saved as `criteria_eval` in the meta
 line of `uncertainty/{qid}.jsonl`; it never reaches the agent. The run's evaluation reuses it (or recomputes it when
-the criteria or the judge changed) and writes `criteria_eval.jsonl` and the `criteria` group of `summary.json`.
+the criteria or the judge changed, writing the new score back into the meta line) and writes the `criteria` group
+of `summary.json`, laid out as the report's: `method`, `judge_model`, the counts (`num_evaluated`,
+`num_empty_criteria`, `num_judge_failures`), `metrics` and `stats` (list sizes and diagnostics).
 The nugget judgments made at evaluation are cached one by one (`criteria_eval_judgments.jsonl`, keyed by judge,
 prompt, criterion, question and answer), so a changed criteria list costs only its new criteria.
 
@@ -226,13 +229,13 @@ run with `--run-dir`) and compares them with the dataset's `criteria_gold` (`lay
   off, YES/NO asked again twice, then NO), and the same covered rule. For every (criterion, nugget question, gold
   answer) the judge says whether the criterion asks for that question-answer pair (`src/evaluation/gold/nugget_ask.py`).
   A nugget is covered when the matched answers meet its aggregator (one for OR, all for AND).
-  Metrics: `nugget_coverage`, `nugget_coverage_weighted` (vital 2, okay 1, as Auto-ARGUE) and `num_unmatched_criteria` (a diagnostic). The request check scores the criteria
+  Metrics: `nugget_coverage`, `nugget_coverage_weighted` (vital 2, okay 1, as Auto-ARGUE); `avg_unmatched_criteria`
+  (criteria that ask for no nugget answer) is a diagnostic in `stats`. The request check scores the criteria
   against the request itself: an LLM lists the request's constraints (requirement, limit, exclusion, exception,
   background) and the criteria that carry each, then the criteria that ask for what the request leaves out
-  (`constraint_recall`, `exclusion_recall`, `num_violations`). In a run's evaluation, each nugget's criteria label is
-  crossed with Auto-ARGUE's answered label (`criteria.vs_report` in `summary.json`): the share of nuggets asked and
-  answered, asked but not answered, answered but not asked, or neither, and the report's coverage of the nuggets the
-  criteria asked for vs the rest.
+  (`constraint_recall`, `exclusion_recall`, `violations_per_query`). In a run's evaluation, each nugget's criteria
+  label is crossed with Auto-ARGUE's answered label: `answered_if_asked` / `answered_if_not_asked` in
+  `criteria.metrics` are the report's coverage of the nuggets the criteria asked for / did not ask for.
 - No gold (BrowseComp-Plus): extraction only, or scored against a reference criteria list (`--reference`): an LLM
   lists each reference unit's qualifiers and scores every (unit, criterion) pair 1, 0.5 or 0; `recall_strict` /
   `recall_lenient`, `precision_strict` / `precision_lenient`.
@@ -302,7 +305,6 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 ├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
 ├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
-├── criteria_eval.jsonl             per-query criteria scores (estimator on, datasets with criteria gold)
 ├── criteria_eval_judgments.jsonl   cached YES/NO nugget judgments of the criteria eval (report datasets)
 └── summary.json                    grouped metrics (retrieval / generation / criteria / trajectory)
 ```
@@ -315,8 +317,9 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
   "retrieval":  {"seen": {...}, "cited": {...}, "fusion": {...}},
   "generation": {"correctness": {...}  (datasets with answers) | "nuggets": {...}  (Auto-ARGUE),
                  "stats": {avg_generation_length, avg_generation_words, avg_citations}},
-  "criteria":   {mode, method, judge_model, coverage (or recall / precision) scores, mean_num_criteria, ...,
-                 vs_report (report datasets)},
+  "criteria":   {method, judge_model, num_evaluated, num_empty_criteria, num_judge_failures,
+                 "metrics": {coverage (or recall / precision) scores, request check, answered_if_asked (report datasets)},
+                 "stats": {avg_num_criteria, avg_num_gold, ...}},
   "trajectory": {...}
 }
 ```

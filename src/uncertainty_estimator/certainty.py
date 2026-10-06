@@ -13,7 +13,8 @@ iteration's step record::
       <reasoning_signals query_novelty="0.81"/>
     </certainty>
 
-``kind="open"`` marks an open criterion (several parts or answers); a closed criterion, the
+``kind="open"`` marks an open criterion (several parts or answers) and
+``kind="rest"`` the rest criterion of a set query; a closed criterion, the
 common case, carries no kind, nor does an aspect criterion (every criterion
 of a report request is one, so the kind tells the agent nothing).  Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
 criteria state and the attempts (``criteria_attempts_after``; left out when
@@ -27,7 +28,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from .types import FULLY_COVERED, OPEN, PARTIALLY_COVERED, UNCOVERED, Criterion
+from .types import FULLY_COVERED, OPEN, PARTIALLY_COVERED, REST, UNCOVERED, Criterion
 
 # Document side of x_t (nu^D, Delta^D) and query side (nu^q; the attempts
 # a are shown per criterion).
@@ -76,7 +77,7 @@ def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> Optio
         for i, (c, label, n) in enumerate(zip(criteria, labels, attempts), 1):
             attrs = (
                 f'status="{label}"'
-                + (f' kind="{c.kind}"' if c.kind == OPEN else "")
+                + (f' kind="{c.kind}"' if c.kind in (OPEN, REST) else "")
                 + (f' attempts="{n}"' if n is not None else "")
             )
             lines.append(f'    <k{i} {attrs}>{escape(c.text, quote=False)}</k{i}>')

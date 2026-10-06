@@ -3,7 +3,8 @@ You will receive the user query and the criteria a complete response must establ
 
 == Kinds ==
 - "closed": One fact: a condition the answer must satisfy, or one property of one entity.
-- "open": Several parts or answers that passages establish only together, for example the complete list of members of a set with the property of each. It is fully covered when the evidence establishes all of its parts; a passage that gives some of them establishes only part of it.
+- "open": Several parts or answers that passages establish only together, for example the complete list of members of a set. It is fully covered when the evidence establishes all of its parts; a passage that gives some of them establishes only part of it.
+- "rest": The property of every member of the set that has no criterion of its own ("any other member: <property>"). It is fully covered when the evidence gives the property of every further member, or shows there is none; partially covered when it gives it for some.
 - "aspect": One aspect of a report topic. It is fully covered when the evidence gives specific facts (such as figures, named cases, findings or measures) for every part its wording names, including each limit; partially covered when the evidence touches it only in general terms, or leaves a named part or limit without specific facts.
 
 == Statuses ==

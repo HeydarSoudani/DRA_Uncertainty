@@ -31,7 +31,9 @@ first, nested detail last::
     doc_novelty, criteria_delta, query_novelty     # x_t, with criteria_attempts_after
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
+    recall_so_far, num_relevant_seen, num_relevant,
     new_item_graded_recall, new_gain, total_gain,
+    graded_recall_so_far, gain_seen,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after,

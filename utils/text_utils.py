@@ -238,7 +238,8 @@ def verbose_print_uncertainty(
     """Print the uncertainty estimator's record for one search iteration, one
     row per signal family: retrieval (criteria state, criteria delta, doc
     novelty), reasoner (criteria attempts, targeted criteria, query novelty),
-    gold (new-item recall, intermediate answer), then any errors.
+    gold (new-item precision, recall and graded recall so far, intermediate
+    answer), then any errors.
 
     ``criteria_state`` is one letter per criterion (u = uncovered,
     p = partially_covered, c = fully_covered) in criterion order, index-aligned
@@ -273,18 +274,23 @@ def verbose_print_uncertainty(
         f"targeted={targeted if targeted is not None else '—'} | "
         f"query_novelty={_fmt(record.get('query_novelty'))}"
     )
+    # recall: +new this step -> seen so far / all relevant; graded the same in gain.
     gold = (
-        f"new_item_precision={_fmt(record.get('new_item_precision'))} "
-        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)} new relevant) | "
-        f"new_item_graded_recall={_fmt(record.get('new_item_graded_recall'))} "
-        f"({_fmt(record.get('new_gain'), 'd')}/{_fmt(record.get('total_gain'), 'd')} gain)"
+        f"new_prec={_fmt(record.get('new_item_precision'))} "
+        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)}) | "
+        f"recall={_fmt(record.get('recall_so_far'))} "
+        f"({_fmt(record.get('num_new_relevant'), '+d')} → "
+        f"{_fmt(record.get('num_relevant_seen'), 'd')}/{_fmt(record.get('num_relevant'), 'd')}) | "
+        f"graded_recall={_fmt(record.get('graded_recall_so_far'))} "
+        f"({_fmt(record.get('new_gain'), '+d')} → "
+        f"{_fmt(record.get('gain_seen'), 'd')}/{_fmt(record.get('total_gain'), 'd')})"
     )
     answers = record.get("intermediate_answers")
     if answers is None:
-        gold += f" | intermediate_answer=null ({record.get('intermediate_answer_status') or 'disabled'})"
+        gold += f" | answer=null ({record.get('intermediate_answer_status') or 'disabled'})"
     else:
         answers = [a.replace(chr(10), " ") for a in answers]
-        gold += f" | intermediate_answer={answers if answers else 'none'}"
+        gold += f" | answer={answers if answers else 'none'}"
 
     rows = [("retrieval", retrieval), ("reasoner", reasoner), ("gold", gold)]
     if record.get("errors"):

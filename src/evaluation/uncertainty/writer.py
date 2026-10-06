@@ -30,7 +30,9 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 7::
              "doc_novelty": 1.0, "criteria_delta": 3, "query_novelty": 1.0,
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
+             "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
              "new_item_graded_recall": 0.3333, "new_gain": 3, "total_gain": 9,
+             "graded_recall_so_far": 0.3333, "gain_seen": 3,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "subqueries": ["..."],
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
@@ -47,7 +49,8 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 7::
 
 ``criteria_eval`` is the criteria list scored against the dataset's gold
 (``evaluation.criteria.CriteriaEvaluator``, in the background while the
-agent runs), null when not scored.  A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
+agent runs, or at evaluation when that score is missing or stale:
+:func:`update_uncertainty_meta`), null when not scored.  A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
 or answers; fully covered only with several supporting documents), new in
 schema_version 7.  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
 agent's own counter.  A signal that could not be computed is null, never 0,
@@ -116,6 +119,23 @@ def save_uncertainty(query_id: str, question: str, result: Dict[str, Any], outpu
         for step in result.get("uncertainty_steps") or []:
             f.write(_dump({"record": "step", "query_id": query_id, **step}) + "\n")
     os.replace(tmp_path, path)
+
+
+def update_uncertainty_meta(path: Union[str, Path], query_id: str, fields: Dict[str, Any]) -> None:
+    """Set *fields* in the meta line of ``{query_id}.jsonl`` (the step lines
+    are kept as they are); *path* is the run directory or its
+    ``uncertainty/`` directory.  Written atomically, as :func:`save_uncertainty`."""
+    path = Path(path)
+    unc = path / "uncertainty" if (path / "uncertainty").is_dir() else path
+    file = unc / f"{query_id}.jsonl"
+    with open(file, "r", encoding="utf-8") as fh:
+        meta = json.loads(fh.readline())
+        rest = fh.read()
+    meta.update(fields)
+    tmp_path = unc / f".{query_id}.jsonl.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(_dump(meta) + "\n" + rest)
+    os.replace(tmp_path, file)
 
 
 def load_uncertainty_meta(path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:

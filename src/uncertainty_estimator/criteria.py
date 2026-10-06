@@ -13,11 +13,11 @@ documents only (it can move up or down).
 Each criterion is closed (one fact), open (several parts or answers that
 documents establish only together) or, in a report request, an aspect of the
 topic; an open or aspect criterion is fully covered only once
-``OPEN_MIN_SOURCES`` distinct documents support it.  The set criterion of
-a set query is open: it asks for every member and its property, so members
-the extractor did not list are covered by it.  The kind follows from the
-dataset's query shape and the criterion's position (``_kinds``); the
-extractor only lists the criteria.
+``OPEN_MIN_SOURCES`` distinct documents support it.  A set query ends
+with a rest criterion, "any other member: <property>", for the members the
+extractor did not list; it is fully covered only once the set criterion is.
+The kind follows from the dataset's query shape and the criterion's position
+and text (``_kinds``); the extractor only lists the criteria.
 
 The judges that update the state and score queries against C are in
 ``judges``.
@@ -33,7 +33,7 @@ from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
     ASPECT, CLOSED, FULLY_COVERED, MULTI_ASPECT, MULTI_SOURCE_KINDS, OPEN, PARTIALLY_COVERED,
-    QUERY_SHAPES, SET, STATUS_VALUE, STATUSES, UNCOVERED,
+    QUERY_SHAPES, REST, SET, STATUS_VALUE, STATUSES, UNCOVERED,
     Criterion, CriterionUpdate, Evidence,
 )
 
@@ -62,23 +62,45 @@ def _salvage(body: str) -> List[Any]:
     return objects or [json.loads(f'"{t}"') for t in _ITEM_RE.findall(body)]
 
 
+# Subject of the rest criterion of a set query ("any other member: <property>").
+REST_SUBJECT = "any other member"
+
+
+def _is_rest(text: str) -> bool:
+    subject = text.rsplit(":", 1)[0] if ":" in text else text
+    return " ".join(re.findall(r"[a-z]+", subject.lower())) in (REST_SUBJECT, REST_SUBJECT + "s")
+
+
 def _kinds(shape: str, texts: List[str]) -> List[str]:
     """Kind of each criterion of a *shape* query: every clue of a single
     target is closed; the first criterion of a set query (the complete set)
-    is open and its members are closed; every report criterion is an aspect."""
+    is open, its rest criterion is rest and its members are closed; every
+    report criterion is an aspect."""
     if shape == MULTI_ASPECT:
         return [ASPECT] * len(texts)
     if shape == SET:
-        return [OPEN if k == 0 else CLOSED for k in range(len(texts))]
+        return [OPEN if k == 0 else REST if _is_rest(t) else CLOSED for k, t in enumerate(texts)]
     return [CLOSED] * len(texts)
 
 
-def _cap_set(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
-    """A set query's criteria within *cap*: the set criterion, then the
-    members, leaving out the last ones."""
-    if len(items) > cap:
-        info.setdefault("warnings", []).append(f"cap: kept {max(cap - 1, 0)} of {len(items) - 1} members")
-    return items[:cap]
+def _set_with_rest(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
+    """A set query's criteria as the prompt asks: the set criterion, the
+    members, then one rest criterion (added with the members' property when
+    the model left it out), within *cap* by leaving out members."""
+    if not items:
+        return items
+    first, rest = items[0], [t for t in items[1:] if _is_rest(t)]
+    members = [t for t in items[1:] if not _is_rest(t)]
+    if rest:
+        rest_item = rest[0]
+    else:
+        prop = next((t.rsplit(":", 1)[1].strip() for t in members if ":" in t), "")
+        rest_item = f"{REST_SUBJECT}: {prop or 'the property the query asks about'}"
+        info.setdefault("warnings", []).append("rest: added the missing rest criterion")
+    keep = max(cap - 2, 0)
+    if len(members) > keep:
+        info.setdefault("warnings", []).append(f"cap: kept {keep} of {len(members)} members")
+    return [first] + members[:keep] + [rest_item]
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +203,7 @@ class LLMCriteriaSource(CriteriaSource):
             info["raw"] = raw
 
         if self._shape == SET:
-            items = _cap_set(items, self._max_criteria, info)
+            items = _set_with_rest(items, self._max_criteria, info)
         elif self._shape != MULTI_ASPECT:
             items = items[:self._max_criteria]
         criteria = [
@@ -205,6 +227,9 @@ class CriteriaState:
     - an open or aspect criterion is fully covered only once its supporting passages
       come from ``OPEN_MIN_SOURCES`` distinct documents; before that it is
       capped at partially covered;
+    - a rest criterion is fully covered only while the set criterion (the
+      open one) is; before that it is capped at partially covered (its
+      update is applied after the step's other updates);
     - a lowering needs at least one contradicting passage and moves one
       level at most per step;
     - an update that keeps the status only attaches its evidence.
@@ -239,6 +264,9 @@ class CriteriaState:
         """
         records: List[Dict[str, Any]] = []
         done: Set[int] = set()
+        # A rest criterion depends on the set criterion: apply it last.
+        updates = sorted(updates, key=lambda u: self._index.get(u.id) is not None
+                         and self.criteria[self._index[u.id]].kind == REST)
         for u in updates:
             k = self._index.get(u.id)
             record = {
@@ -288,6 +316,12 @@ class CriteriaState:
                     missing = missing or (
                         f"support from more documents ({sources} of {OPEN_MIN_SOURCES} so far)"
                     )
+            if self.criteria[k].kind == REST and STATUSES[proposed] == FULLY_COVERED:
+                set_ks = [i for i, c in enumerate(self.criteria) if c.kind == OPEN]
+                if any(self.statuses[i] != FULLY_COVERED for i in set_ks):
+                    proposed = STATUS_VALUE[PARTIALLY_COVERED]
+                    record["note"] = "rest criterion needs the complete set first"
+                    missing = missing or "the complete list of members"
             self.statuses[k] = STATUSES[proposed]
             self.missing[k] = missing if self.statuses[k] == PARTIALLY_COVERED else ""
             record["to"] = self.statuses[k]

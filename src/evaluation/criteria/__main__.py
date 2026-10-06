@@ -160,7 +160,7 @@ def main() -> None:
     if gold is None:
         counts = [len(r["criteria"]) for r in records.values()]
         summary = {"settings": settings, "num_queries": len(records),
-                   "mean_num_criteria": round(sum(counts) / len(counts), 4) if counts else None}
+                   "avg_num_criteria": round(sum(counts) / len(counts), 4) if counts else None}
         write_json(out_dir / "summary.json", summary)
         print(f"Saved criteria (not scored) to {out_dir}")
         return

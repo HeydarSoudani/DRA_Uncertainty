@@ -10,9 +10,9 @@
 A run with an output directory is always evaluated from its saved files, at
 the end of the run as with ``--eval-only``, so both write the same
 ``summary.json``.  The LLM-judged evaluators keep their verdicts in the run
-directory (``accuracy.jsonl``, ``report_eval/``, ``criteria_eval.jsonl``,
-``criteria_eval_judgments.jsonl`` and the ``criteria_eval`` of the
-uncertainty meta lines) and judge only what changed.
+directory (``accuracy.jsonl``, ``report_eval/``, the ``criteria_eval`` of
+the uncertainty meta lines and ``criteria_eval_judgments.jsonl``) and judge
+only what changed.
 The surfaced-doc fusion metrics come from
 :func:`evaluation.retrieval.fusion.run_fusion_eval`, which the caller runs
 first and passes to :func:`evaluate_and_save`.
@@ -188,8 +188,9 @@ def evaluate_and_save(
           "generation": {"correctness": {...}   # datasets with answers
                          | "nuggets": {...},     # report datasets (Auto-ARGUE)
                          "stats": {...}},
-          "criteria":   {...,                    # estimator on, dataset with criteria gold
-                         "vs_report": {...}},    # report datasets: nugget by nugget vs Auto-ARGUE
+          "criteria":   {"method", "judge_model", counts,   # estimator on, dataset with criteria gold
+                         "metrics": {...},       # report datasets: also answered_if_asked / _not_asked
+                         "stats": {...}},
           "trajectory": {...},
         }
 
@@ -318,7 +319,5 @@ def evaluate_and_save(
     run_dir = Path(run_dir)
     if accuracy_metrics:
         ev.accuracy.save_results(accuracy_metrics, run_dir / "accuracy.jsonl")
-    if criteria_metrics:
-        ev.criteria.save_results(criteria_metrics, run_dir)
     write_json(run_dir / "summary.json", summary)
     print(f"  ✓ Saved summary: {run_dir}/summary.json")

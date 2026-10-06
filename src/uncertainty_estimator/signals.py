@@ -284,6 +284,8 @@ class RetrievalGainSignal:
     - ``new_item_precision``: newly seen relevant docs / the step's docs
       (0, 0.2, ..., 1 for 5 docs).
     - ``num_new_relevant``, ``num_repeated_relevant``, ``num_irrelevant``.
+    - ``recall_so_far``: ``num_relevant_seen / num_relevant``, the relevant
+      docs seen up to and including this step.
 
     Graded (``graded_qrels``, ``{query_id: {doc_id: gain}}`` with the official
     gains):
@@ -292,6 +294,8 @@ class RetrievalGainSignal:
       steps it is the trajectory's GradedRecall@N.
     - ``new_gain``: summed gain of the relevant docs first seen in this step.
     - ``total_gain``: summed gain of all relevant docs of the query.
+    - ``graded_recall_so_far``: ``gain_seen / total_gain``, the gain seen up
+      to and including this step.
 
     The binary fields are null when the query has no relevant doc in the
     qrels, the graded one when it has none in the graded qrels; all are null
@@ -303,9 +307,14 @@ class RetrievalGainSignal:
         "num_new_relevant": None,
         "num_repeated_relevant": None,
         "num_irrelevant": None,
+        "recall_so_far": None,
+        "num_relevant_seen": None,
+        "num_relevant": None,
         "new_item_graded_recall": None,
         "new_gain": None,
         "total_gain": None,
+        "graded_recall_so_far": None,
+        "gain_seen": None,
     }
 
     def __init__(
@@ -355,15 +364,21 @@ class RetrievalGainSignal:
                 "num_new_relevant": len(new),
                 "num_repeated_relevant": len(relevant) - len(new),
                 "num_irrelevant": len(ids) - len(relevant),
+                "recall_so_far": round(len(self._relevant_seen) / self.num_relevant, 4),
+                "num_relevant_seen": len(self._relevant_seen),
+                "num_relevant": self.num_relevant,
             })
         if self._gains:
             new_graded = (ids & self._gains.keys()) - self._gain_seen
             self._gain_seen.update(new_graded)
             gain = sum(self._gains[d] for d in new_graded)
+            gain_seen = sum(self._gains[d] for d in self._gain_seen)
             result.update({
                 "new_item_graded_recall": round(gain / self.total_gain, 4),
                 "new_gain": gain,
                 "total_gain": self.total_gain,
+                "graded_recall_so_far": round(gain_seen / self.total_gain, 4),
+                "gain_seen": gain_seen,
             })
         return result
 

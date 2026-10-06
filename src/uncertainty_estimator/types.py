@@ -16,15 +16,16 @@ STATUSES = tuple(STATUS_VALUE)
 
 # Criterion kinds: a closed criterion is one fact that a single document can
 # establish; an open one has several parts or answers that documents
-# establish only together (``CriteriaState`` needs several sources for it),
-# such as the complete set of a set query with the property of each member,
-# listed or not; an aspect criterion is one
+# establish only together (``CriteriaState`` needs several sources for it);
+# the rest criterion of a set query ("any other member: <property>") stands
+# for the members the extractor did not list; an aspect criterion is one
 # aspect of a report topic, which has no complete list of parts, so it is
 # fully covered once specific facts establish every part its wording names.
 CLOSED = "closed"
 OPEN = "open"
+REST = "rest"
 ASPECT = "aspect"
-KINDS = (CLOSED, OPEN, ASPECT)
+KINDS = (CLOSED, OPEN, REST, ASPECT)
 # Kinds that documents establish only together (``OPEN_MIN_SOURCES``).
 MULTI_SOURCE_KINDS = (OPEN, ASPECT)
 
