@@ -103,9 +103,12 @@ python experiments/dra_inference.py --dataset browsecomp_plus --eval-only --num-
 ```
 
 A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
-`summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`) and reused for
-queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU. The terminal
-log ends with the time of each evaluation stage. `_eval_results_cache*.pkl.gz` files left by older code are no longer
+`summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`,
+`criteria_eval.jsonl`, `criteria_eval_judgments.jsonl` and the `criteria_eval` of the uncertainty meta lines) and
+reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU. The terminal log prints one
+EVALUATION SUMMARY block in the order of `summary.json`: retrieval (seen docs), generation (correctness or nuggets, and
+length), criteria, trajectory, then the time of each evaluation stage. Cited-doc and fusion metrics and the full @k
+tables are only in `summary.json`. `_eval_results_cache*.pkl.gz` files left by older code are no longer
 read and can be deleted.
 
 Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
@@ -115,13 +118,20 @@ Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
 
 `--uncertainty-estimator-mode monitor` plugs a passive monitor (`src/uncertainty_estimator/`) into any agent; `off` (the
 default) disables it. It never changes the trajectory. At the start of each sample it derives a fixed list of
-criteria from the query (`llm_criteria`, at most `max_criteria`, null = the dataset's default in `layout.DATASET_SPECS`).
+criteria from the query (`llm_criteria`, at most `max_criteria`, null = the dataset's default in `layout.DATASET_SPECS`;
+for a report request it is the number of criteria the extractor may add, asked in the prompt).
 The dataset's `query_shape` (`layout.DATASET_SPECS`) picks the prompt, a shared core plus one block per shape, and the
 model only lists the pieces of information a complete response must establish: the clues of a single target (BCP,
-copied verbatim), the set and one "member: property" per known member of a set query (TRQA), or the sub-questions of a
-report request (NeuCLIR, RAGTIME). Each criterion is `closed` (one fact) or `open` (several parts or answers), set by
-code from the shape: all clues are closed, the set (always the first criterion) is open and its members closed, all
-report criteria are open. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
+copied verbatim), the set with the property of each member (including the members found only by the search) and one
+"member: property" per known member of a set query (TRQA), or, for a report
+request (NeuCLIR, RAGTIME), every constraint the request states (no cap) followed by at most `max_criteria` (5)
+criteria the extractor adds, as one plain list (the limit on added criteria is asked in the prompt; code never cuts a
+report list). A report criterion keeps the request's own limits in its
+wording; what the request leaves out is written into the criterion it narrows ("..., not ..."), an exception
+("unless ...") is its own criterion, and background on the asker is kept only when it limits what information applies
+(country, location, situation). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers) or `aspect` (one
+aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion) is
+open and its members closed, all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
@@ -195,18 +205,37 @@ follows the flag like every other agent; in `inform` mode its system prompt also
 
 #### Criteria evaluation
 
+In a run with the estimator on (`monitor` or `inform`) on a dataset with `criteria_gold`, each query's criteria are
+scored against it with the judge `judge_model`, in a background thread while the agent runs, so the judge calls do
+not delay the agent. The score is printed when the query ends
+(`[Agent] criteria eval (nuggets, 9 criteria, 15 gold): nugget coverage ... `) and saved as `criteria_eval` in the meta
+line of `uncertainty/{qid}.jsonl`; it never reaches the agent. The run's evaluation reuses it (or recomputes it when
+the criteria or the judge changed) and writes `criteria_eval.jsonl` and the `criteria` group of `summary.json`.
+The nugget judgments made at evaluation are cached one by one (`criteria_eval_judgments.jsonl`, keyed by judge,
+prompt, criterion, question and answer), so a changed criteria list costs only its new criteria.
+
 `python -m evaluation.criteria` scores the criteria list without an agent run (`src/evaluation/criteria/`, gold and
 matchers in `src/evaluation/gold/`). It derives the criteria of a split with `LLMCriteriaSource` (or reads them from a
 run with `--run-dir`) and compares them with the dataset's `criteria_gold` (`layout.DATASET_SPECS`):
 
 - `entities` (TRQA): closed criteria are matched to the query's gold entities by name (normalized string match, then an
   LLM for aliases); `recall` over the entities, `precision` over the closed criteria.
-- `nuggets` (NeuCLIR, RAGTIME): an LLM lists each nugget question's qualifiers (group, measure, time, place, event,
-  cause) and scores every (nugget, criterion) pair 1 (the criterion names every qualifier), 0.5 (same topic, a
-  qualifier missing) or 0; `recall_strict` / `recall_lenient`, `precision_strict` / `precision_lenient`,
-  `recall_strict_vital` (NeuCLIR) and `recall_strict_rare` (at most 5 support documents).
-- No gold (BrowseComp-Plus): extraction only, or scored against a reference criteria list (`--reference`) with the
-  nugget scores.
+- `nuggets` (NeuCLIR, RAGTIME): scored the way Auto-ARGUE scores the reports, so the two evaluations compare nugget
+  by nugget. Both use the same nuggets and requests (the Auto-ARGUE nugget banks: questions grouped, answers without
+  documents and questions without answers dropped), the same judge and settings (Qwen3-32B, temperature 0, reasoning
+  off, YES/NO asked again twice, then NO), and the same covered rule. For every (criterion, nugget question, gold
+  answer) the judge says whether the criterion asks for that question-answer pair (`src/evaluation/gold/nugget_ask.py`).
+  A nugget is covered when the matched answers meet its aggregator (one for OR, all for AND).
+  Metrics: `nugget_coverage`, `nugget_coverage_weighted` (vital 2, okay 1, as Auto-ARGUE) and `num_unmatched_criteria` (a diagnostic). The request check scores the criteria
+  against the request itself: an LLM lists the request's constraints (requirement, limit, exclusion, exception,
+  background) and the criteria that carry each, then the criteria that ask for what the request leaves out
+  (`constraint_recall`, `exclusion_recall`, `num_violations`). In a run's evaluation, each nugget's criteria label is
+  crossed with Auto-ARGUE's answered label (`criteria.vs_report` in `summary.json`): the share of nuggets asked and
+  answered, asked but not answered, answered but not asked, or neither, and the report's coverage of the nuggets the
+  criteria asked for vs the rest.
+- No gold (BrowseComp-Plus): extraction only, or scored against a reference criteria list (`--reference`): an LLM
+  lists each reference unit's qualifiers and scores every (unit, criterion) pair 1, 0.5 or 0; `recall_strict` /
+  `recall_lenient`, `precision_strict` / `precision_lenient`.
 
 ```bash
 python -m evaluation.criteria --dataset trqa --subset wiki2 --sample 100
@@ -214,7 +243,7 @@ python -m evaluation.criteria --dataset neuclir --prompt-file other_prompt.txt -
 ```
 
 `--prompt-file` replaces the criteria-extraction prompt, for comparisons. Outputs (`criteria.jsonl`, reused on a rerun;
-`eval.jsonl`; `summary.json`) go to `{DRA_OUTPUT_ROOT}/criteria_eval/{dataset}_{split}/{tag}/`.
+`eval.jsonl`; `summary.json`; `criteria_eval_judgments.jsonl`, the cached nugget judgments) go to `{DRA_OUTPUT_ROOT}/criteria_eval/{dataset}_{split}/{tag}/`.
 
 #### Report evaluation (Auto-ARGUE)
 
@@ -247,12 +276,13 @@ Install (pinned; the provider integrations are not needed): `pip install langcha
 ```
 src/evaluation/
 ├── runner.py        save_query_outputs, build_evaluators, load_run_results, evaluate_and_save
-├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports)
+├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports);
+│                    summary group generation.correctness / generation.nuggets
 ├── retrieval/       surfaced / seen / cited evaluators, citations, TREC metrics, fusion evaluation
 ├── trajectory/      TrajectoryEvaluator (statistics), save_trajectory
 ├── generation/      GenerationEvaluator (length, words, citations, generation/{qid}.md)
 ├── uncertainty/     save_uncertainty (uncertainty/{qid}.jsonl schema)
-├── criteria/, gold/ offline criteria evaluation (python -m evaluation.criteria)
+├── criteria/, gold/ CriteriaEvaluator (in a run and offline: python -m evaluation.criteria), gold units, matchers
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
 └── common.py        file, statistics and terminal helpers
 ```
@@ -271,9 +301,24 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 ├── trajectory/{qid}.jsonl          meta line + one line per step
 ├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
 ├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
-├── report_eval.jsonl               per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
-├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs) and cached judgments/
-└── summary.json                    grouped metrics (answer / retrieval / trajectory / generation)
+├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
+├── criteria_eval.jsonl             per-query criteria scores (estimator on, datasets with criteria gold)
+├── criteria_eval_judgments.jsonl   cached YES/NO nugget judgments of the criteria eval (report datasets)
+└── summary.json                    grouped metrics (retrieval / generation / criteria / trajectory)
+```
+
+`summary.json`:
+
+```
+{
+  "num_queries": N,
+  "retrieval":  {"seen": {...}, "cited": {...}, "fusion": {...}},
+  "generation": {"correctness": {...}  (datasets with answers) | "nuggets": {...}  (Auto-ARGUE),
+                 "stats": {avg_generation_length, avg_generation_words, avg_citations}},
+  "criteria":   {mode, method, judge_model, coverage (or recall / precision) scores, mean_num_criteria, ...,
+                 vs_report (report datasets)},
+  "trajectory": {...}
+}
 ```
 
 With the estimator on, `{uncertainty_config}` is `ue-{mode}` (e.g. `ue-monitor`, `ue-inform`).
@@ -295,9 +340,10 @@ Meta line (one per query):
 | `num_criteria`, `num_iterations`, `num_unique_docs` | per-query counts |
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `total_gain` | summed official gain of the query's relevant docs (null without graded qrels) |
-| `criteria` | `[{id, text}]` |
+| `criteria` | `[{id, text, kind}]` |
 | `criteria_info` | criteria LLM `model`, `query_shape`, `errors` |
 | `final_criteria_attempts` | last attempts, one per criterion |
+| `criteria_eval` | the criteria scored against the gold during the run (`CriteriaEvaluator` record; null when not scored) |
 | `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
 Step line (one per search iteration, flat scalars first):

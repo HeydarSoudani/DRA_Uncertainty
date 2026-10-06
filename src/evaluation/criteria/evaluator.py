@@ -1,6 +1,6 @@
 """Criteria evaluator: score per-query criteria lists against gold units.
 
-Two modes, by the gold (``evaluation.gold.loaders``):
+Three modes, by the gold (``evaluation.gold.loaders``):
 
 * ``entities`` (TRQA): the closed criteria are matched to the query's gold
   entities by name (:func:`~evaluation.gold.match_entities`, then
@@ -9,8 +9,33 @@ Two modes, by the gold (``evaluation.gold.loaders``):
   - ``recall``: matched entities / gold entities.
   - ``precision``: closed criteria that match an entity / closed criteria.
 
-* ``info`` (nugget questions, reference clues): every (unit, criterion)
-  pair is scored 0 / 0.5 / 1 by :class:`~evaluation.gold.LLMInfoMatcher`
+* ``nuggets`` (NeuCLIR, RAGTIME): scored as Auto-ARGUE scores the reports
+  (``evaluation.answer.argue``), so the two compare nugget by nugget: the
+  same nuggets and queries (the Auto-ARGUE banks), the same judge and
+  settings, and the same rule for a covered nugget.  The judge
+  (:class:`~evaluation.gold.NuggetAskMatcher`) says YES or NO for every
+  (criterion, nugget question, gold answer): does the criterion ask for that
+  question-answer pair?  A nugget is covered when the answers matched by
+  all the criteria meet its aggregator (one answer for OR, all for AND).
+
+  - ``nugget_coverage``: covered nuggets / nuggets.
+  - ``nugget_coverage_weighted``: the same with vital nuggets weighted 2 and
+    okay ones 1 (all 1 without importance labels), as Auto-ARGUE.
+  - ``num_unmatched_criteria``: criteria that ask for no nugget answer (a
+    diagnostic: the nuggets are not every piece of useful information).
+
+  The criteria are also checked against the request itself
+  (:class:`.request_coverage.RequestCoverageJudge`, report requests):
+  ``constraint_recall`` (the request's constraints carried by a criterion),
+  ``exclusion_recall`` (the same over what the
+  request leaves out) and ``num_violations`` (criteria that ask for what the
+  request leaves out).
+
+  :func:`compare_with_report` crosses each nugget's criteria label with the
+  report's (Auto-ARGUE's answered nuggets).
+
+* ``info`` (a reference criteria list, ``--reference``): every (unit,
+  criterion) pair is scored 0 / 0.5 / 1 by :class:`~evaluation.gold.LLMInfoMatcher`
   (1: the criterion names every qualifier of the unit; 0.5: the unit is
   only within the criterion's topic).
 
@@ -18,33 +43,122 @@ Two modes, by the gold (``evaluation.gold.loaders``):
     at least 0.5, over all units.
   - ``precision_strict`` / ``precision_lenient``: criteria whose best score
     is 1 / at least 0.5, over all criteria.
-  - ``recall_strict_vital``: ``recall_strict`` over the ``vital`` units
-    (NeuCLIR); ``recall_strict_rare``: over the units with at most
-    ``RARE_MAX_DOCS`` support documents (where support documents exist).
 
-Every query also gets ``num_criteria``, ``num_open``, ``num_gold`` and the
-match details.  The summary macro-averages each metric over the queries where
-it is defined.
+A judge call that fails is retried once; a query whose judge still fails
+keeps its record (with ``errors``) but is left out of the averages.
+
+Every query also gets ``num_criteria``, ``num_open``, ``num_gold``, the
+match details, the ``method`` and ``judge_model`` and a ``criteria_hash`` of
+the scored list.  The summary macro-averages each metric over the queries
+where it is defined and the judges did not fail (``num_scored``).
+
+In a run (uncertainty estimator ``monitor`` or ``inform``, dataset with
+``criteria_gold``) the estimator scores each query's criteria in the
+background while the agent runs (:meth:`CriteriaEvaluator.score`) and keeps
+the record in the meta line of ``uncertainty/{qid}.jsonl`` as
+``criteria_eval``; :meth:`CriteriaEvaluator.evaluate_run` reuses it, and the
+rows of ``criteria_eval.jsonl``, while the criteria, the method and the judge
+are unchanged.  The nugget judgments of the queries judged at evaluation are
+cached one by one in ``criteria_eval_judgments.jsonl``.
 """
 
+import hashlib
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from tqdm import tqdm
 
-from ..gold import GoldUnit, LLMEntityMatcher, LLMInfoMatcher, match_entities
+from indexing_corpus_dataset.layout import DATASET_SPECS
+from uncertainty_estimator.types import MULTI_ASPECT, MULTI_SOURCE_KINDS
+
+from ..answer.argue import nugget_covered
+from ..common import mean_or_none, read_jsonl, write_jsonl
+from ..gold import GoldUnit, LLMEntityMatcher, LLMInfoMatcher, NuggetAskMatcher, match_entities
+from ..uncertainty import load_uncertainty_meta
+from .request_coverage import RequestCoverageJudge
 
 logger = logging.getLogger(__name__)
 
-# A gold unit with at most this many support documents counts as rare.
-RARE_MAX_DOCS = 5
+GOLD_MODES = ("entities", "nuggets", "info")
 
-GOLD_MODES = ("entities", "info")
+#: Scoring method of each mode, saved with every record; a record of another
+#: method is judged again.
+METHODS = {"entities": "entity_match", "nuggets": "argue_nugget_ask", "info": "info_match"}
+
+#: Metrics of each mode, macro-averaged in the summary.
+MODE_METRICS = {
+    "entities": ("recall", "precision"),
+    "nuggets": ("nugget_coverage", "nugget_coverage_weighted", "num_unmatched_criteria"),
+    "info": ("recall_lenient", "recall_strict", "precision_lenient", "precision_strict"),
+}
+
+# Auto-ARGUE's nugget weights (``auto_argue.score``); without any, all 1.
+_IMPORTANCE_WEIGHTS = {"vital": 2.0, "okay": 1.0}
+
+#: Per-query criteria scores of a run, under the run directory.
+CRITERIA_EVAL_FILE = "criteria_eval.jsonl"
+#: Cached YES/NO nugget judgments (``nuggets`` mode), under the run directory.
+CRITERIA_JUDGMENTS_FILE = "criteria_eval_judgments.jsonl"
 
 
 def _mean(values: List[float]) -> Optional[float]:
-    return round(sum(values) / len(values), 4) if values else None
+    return mean_or_none(values, 4)
+
+
+def _fmt(value: Optional[float], digits: int = 4) -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def _nugget_weights(importances: List[Optional[str]]) -> List[float]:
+    """Auto-ARGUE's weight of each nugget: vital 2, okay 1; all 1 without
+    importance labels."""
+    weights = [_IMPORTANCE_WEIGHTS.get(imp, 0.0) for imp in importances]
+    return weights if any(weights) else [1.0] * len(importances)
+
+
+def _retry_once(fn: Callable, *args):
+    """``fn(*args)``, called once more when its last return value (the
+    error) is set."""
+    out = fn(*args)
+    return fn(*args) if out[-1] else out
+
+
+def criteria_hash(criteria: List[Dict]) -> str:
+    """Hash of a criteria list (texts and kinds), the key a score is reused by."""
+    payload = [[c.get("text", ""), c.get("kind", "closed")] for c in criteria]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def build_criteria_evaluator(
+    dataset: str,
+    gold: Dict[str, List[GoldUnit]],
+    judge_model: str,
+    max_workers: int = 16,
+    mode: Optional[str] = None,
+    use_llm: bool = True,
+) -> Optional["CriteriaEvaluator"]:
+    """The evaluator of *dataset*'s criteria gold (or of *mode*, e.g.
+    ``"info"`` for a reference list) with *judge_model* as the matchers'
+    LLM; None for a dataset without gold and no *mode*.  The entity matcher
+    only compares names, so it runs without reasoning; the nugget matcher
+    runs as Auto-ARGUE's judge (``gold.nugget_ask``); the information
+    matcher and the request check of a report request reason.  Without
+    *use_llm* only the string passes run."""
+    mode = mode or DATASET_SPECS[dataset].criteria_gold
+    if mode is None:
+        return None
+    judge = None
+    if use_llm:
+        from reasoner_component.factory import create_generator, disable_native_thinking
+
+        judge = create_generator(judge_model, backend="api")
+        if mode == "entities":
+            judge = disable_native_thinking(judge)
+    return CriteriaEvaluator(gold, mode, llm_client=judge, max_workers=max_workers, judge_model=judge_model,
+                             request_coverage=DATASET_SPECS[dataset].query_shape == MULTI_ASPECT)
 
 
 class CriteriaEvaluator:
@@ -52,11 +166,18 @@ class CriteriaEvaluator:
 
     Args:
         gold: ``{query_id: [GoldUnit, ...]}``.
-        mode: ``"entities"`` or ``"info"`` (see the module docstring).
+        mode: ``"entities"``, ``"nuggets"`` or ``"info"`` (see the module
+            docstring).
         llm_client: Object with ``complete(messages, **kwargs) -> str`` for
-            the matchers; None keeps only the string passes (exact names for
-            ``entities``, exact texts for ``info``).
+            the matchers (the nugget matcher builds its own client from
+            *judge_model*); None keeps only the string passes (exact names
+            for ``entities``, exact texts for ``info``; no match for
+            ``nuggets``).
         max_workers: Queries scored in parallel.
+        judge_model: Name of the model behind *llm_client*, saved with every
+            record (None without one).
+        request_coverage: Also check each list against its request
+            (``nuggets`` mode with an *llm_client*; report requests).
     """
 
     def __init__(
@@ -65,21 +186,36 @@ class CriteriaEvaluator:
         mode: str,
         llm_client: Any = None,
         max_workers: int = 16,
+        judge_model: Optional[str] = None,
+        request_coverage: bool = False,
     ) -> None:
         if mode not in GOLD_MODES:
             raise ValueError(f"unknown mode {mode!r}; expected one of {GOLD_MODES}")
         self.gold = gold
         self.mode = mode
-        self._entity_matcher = LLMEntityMatcher(llm_client) if llm_client is not None else None
-        self._info_matcher = LLMInfoMatcher(llm_client)
+        self.method = METHODS[mode]
+        with_llm = llm_client is not None
+        self.judge_model = judge_model if with_llm else None
+        self._entity_matcher = LLMEntityMatcher(llm_client) if mode == "entities" and with_llm else None
+        self._info_matcher = LLMInfoMatcher(llm_client) if mode == "info" else None
+        self._nugget_matcher = (NuggetAskMatcher(judge_model)
+                                if mode == "nuggets" and with_llm and judge_model else None)
+        self._request_judge = (RequestCoverageJudge(llm_client)
+                               if request_coverage and mode == "nuggets" and with_llm else None)
         self._max_workers = max_workers
+
+    def use_judgment_cache(self, path: Union[str, Path]) -> None:
+        """Keep the nugget judgments in *path* (``nuggets`` mode; else no-op)."""
+        if self._nugget_matcher is not None:
+            self._nugget_matcher.use_cache_file(path)
 
     # ------------------------------------------------------------------
     # One query
     # ------------------------------------------------------------------
 
     def _entities(self, units: List[GoldUnit], criteria: List[Dict]) -> Dict[str, Any]:
-        members = [c for c in criteria if c.get("kind", "closed") != "open"]
+        # Members only: not the set criterion (open) nor the rest criterion.
+        members = [c for c in criteria if c.get("kind", "closed") == "closed"]
         names, texts = [u.text for u in units], [c["text"] for c in members]
         matches = {i: (j, "string") for i, j in match_entities(names, texts).items()}
         errors = []
@@ -87,7 +223,8 @@ class CriteriaEvaluator:
         used = {j for j, _ in matches.values()}
         left_t = [j for j in range(len(texts)) if j not in used]
         if self._entity_matcher is not None and left_e and left_t:
-            extra, error = self._entity_matcher.match([names[i] for i in left_e], [texts[j] for j in left_t])
+            extra, error = _retry_once(self._entity_matcher.match,
+                                       [names[i] for i in left_e], [texts[j] for j in left_t])
             if error:
                 errors.append(f"entity_matcher: {error}")
             for a, b in extra.items():
@@ -106,31 +243,62 @@ class CriteriaEvaluator:
 
     def _info(self, query: str, units: List[GoldUnit], criteria: List[Dict]) -> Dict[str, Any]:
         gold, texts = [u.text for u in units], [c["text"] for c in criteria]
-        scores, qualifiers, error = self._info_matcher.match(query, gold, texts)
+        scores, qualifiers, error = _retry_once(self._info_matcher.match, query, gold, texts)
         best_gold = [max(row) if row else 0.0 for row in scores]
         best_crit = [max((scores[i][j] for i in range(len(gold))), default=0.0) for j in range(len(texts))]
 
-        def recall(idx: List[int], level: float) -> Optional[float]:
-            return round(sum(best_gold[i] >= level for i in idx) / len(idx), 4) if idx else None
+        def share(flags: List[bool]) -> Optional[float]:
+            return round(sum(flags) / len(flags), 4) if flags else None
 
-        everything = list(range(len(units)))
-        vital = [i for i, u in enumerate(units) if u.importance == "vital"]
-        rare = [i for i, u in enumerate(units)
-                if u.num_support_docs is not None and u.num_support_docs <= RARE_MAX_DOCS]
         return {
-            "recall_strict": recall(everything, 1.0),
-            "recall_lenient": recall(everything, 0.5),
-            "precision_strict": round(sum(s >= 1.0 for s in best_crit) / len(texts), 4) if texts else None,
-            "precision_lenient": round(sum(s >= 0.5 for s in best_crit) / len(texts), 4) if texts else None,
-            "recall_strict_vital": recall(vital, 1.0),
-            "recall_strict_rare": recall(rare, 1.0),
+            "recall_strict": share([s >= 1.0 for s in best_gold]),
+            "recall_lenient": share([s >= 0.5 for s in best_gold]),
+            "precision_strict": share([s >= 1.0 for s in best_crit]),
+            "precision_lenient": share([s >= 0.5 for s in best_crit]),
             "matches": [
-                {"gold": u.text, "importance": u.importance, "num_support_docs": u.num_support_docs,
-                 "qualifiers": qualifiers[i], "score": best_gold[i],
+                {"gold": u.text, "qualifiers": qualifiers[i], "score": best_gold[i],
                  "criteria": [criteria[j]["id"] for j in range(len(texts)) if scores[i][j] == best_gold[i] > 0]}
                 for i, u in enumerate(units)
             ],
             "errors": [f"info_matcher: {error}"] if error else [],
+        }
+
+    def _nuggets(self, units: List[GoldUnit], criteria: List[Dict]) -> Dict[str, Any]:
+        texts = [c["text"] for c in criteria]
+        matched = [[set() for _ in texts] for _ in units]
+        stats, errors = {"calls": 0, "malformed": 0, "cached": 0}, []
+        if self._nugget_matcher is not None and units and texts:
+            # A second attempt asks only what the first left unjudged (the
+            # matcher caches every judgment).
+            for _ in range(2):
+                try:
+                    matched, stats = self._nugget_matcher.match(units, texts)
+                    errors = []
+                    break
+                except Exception as e:
+                    logger.warning("NuggetAskMatcher: judge failed", exc_info=True)
+                    errors = [f"nugget_matcher: {e}"]
+
+        weights = _nugget_weights([u.importance for u in units])
+        covered = [nugget_covered(set().union(*matched[i]), set(u.answers), u.aggregator)
+                   for i, u in enumerate(units)]
+        return {
+            "nugget_coverage": round(sum(covered) / max(len(units), 1), 4),
+            "nugget_coverage_weighted": round(sum(w for w, c in zip(weights, covered) if c) / max(sum(weights), 1), 4),
+            "nuggets": len(units),
+            "correct_nuggets": sum(covered),
+            "num_unmatched_criteria": sum(not any(matched[i][j] for i in range(len(units)))
+                                          for j in range(len(texts))),
+            "matches": [
+                {"gold": u.text, "importance": u.importance, "aggregator": u.aggregator,
+                 "covered": covered[i], "matched_answers": sorted(set().union(*matched[i])),
+                 "criteria": [criteria[j]["id"] for j in range(len(texts)) if matched[i][j]]}
+                for i, u in enumerate(units)
+            ],
+            "judge_calls": stats["calls"],
+            "judge_cached": stats["cached"],
+            "judge_malformed": stats["malformed"],
+            "errors": errors,
         }
 
     def evaluate_query(self, query_id: str, query: str, criteria: List[Dict]) -> Dict[str, Any]:
@@ -139,13 +307,59 @@ class CriteriaEvaluator:
             "query_id": query_id,
             "num_gold": len(units),
             "num_criteria": len(criteria),
-            "num_open": sum(c.get("kind") == "open" for c in criteria),
+            "num_open": sum(c.get("kind") in MULTI_SOURCE_KINDS for c in criteria),
         }
         if self.mode == "entities":
             record.update(self._entities(units, criteria))
+        elif self.mode == "nuggets":
+            record.update(self._nuggets(units, criteria))
         else:
             record.update(self._info(query, units, criteria))
+        if self._request_judge is not None:
+            checked, error = _retry_once(self._request_judge.check, query, criteria)
+            record["request_coverage"] = checked or None
+            if error:
+                record["errors"].append(f"request_coverage: {error}")
+        record["method"] = self.method
+        record["judge_model"] = self.judge_model
+        record["criteria_hash"] = criteria_hash(criteria)
         return record
+
+    def score(self, query_id: str, query: str, criteria: List[Dict]) -> Optional[Dict[str, Any]]:
+        """:meth:`evaluate_query` for a query with gold units, else None
+        (the estimator's per-query hook)."""
+        if not self.gold.get(query_id):
+            return None
+        return self.evaluate_query(query_id, query, criteria)
+
+    def reusable(self, record: Optional[Dict], criteria: List[Dict]) -> bool:
+        """Whether *record* scored this criteria list with this method and
+        judge, without errors."""
+        return bool(record) and not record.get("errors") \
+            and record.get("criteria_hash") == criteria_hash(criteria) \
+            and record.get("method") == self.method \
+            and record.get("judge_model") == self.judge_model
+
+    def format_record(self, record: Dict[str, Any]) -> str:
+        """One log line for a query's record."""
+        def f(value):
+            return _fmt(value, 2)
+        head = f"criteria eval ({self.mode}, {record['num_criteria']} criteria, {record['num_gold']} gold)"
+        if self.mode == "entities":
+            line = f"{head}: recall {f(record['recall'])}, precision {f(record['precision'])}"
+        elif self.mode == "nuggets":
+            line = (f"{head}: nugget coverage {f(record['nugget_coverage'])}"
+                    f" (weighted {f(record['nugget_coverage_weighted'])})")
+        else:
+            line = (f"{head}: recall lenient {f(record['recall_lenient'])} / strict {f(record['recall_strict'])},"
+                    f" precision lenient {f(record['precision_lenient'])} / strict {f(record['precision_strict'])}")
+        checked = record.get("request_coverage")
+        if checked:
+            line += (f"; request constraints {f(checked['constraint_recall'])},"
+                     f" exclusions {f(checked['exclusion_recall'])}, violations {checked['num_violations']}")
+        if record.get("errors"):
+            line += f" [judge errors: {'; '.join(record['errors'])}]"
+        return line
 
     # ------------------------------------------------------------------
     # All queries
@@ -160,8 +374,7 @@ class CriteriaEvaluator:
         """Score every query that has gold units and a criteria list.
 
         *infos* (``{query_id: criteria_info}``) adds the extraction errors
-        to the summary.  Returns ``{"summary",
-        "per_query"}``.
+        to the summary.  Returns ``{"summary", "per_query"}``.
         """
         qids = [q for q in queries if q in self.gold and q in criteria]
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
@@ -171,21 +384,166 @@ class CriteriaEvaluator:
             ))
         return {"summary": self.summarize(per_query, infos), "per_query": per_query}
 
+    def evaluate_run(self, query_ids, run_dir: Optional[Union[str, Path]],
+                     results: Optional[Dict[str, Dict]] = None) -> Dict[str, Any]:
+        """Score the criteria of a run's queries (*query_ids* with gold units).
+
+        The criteria come from the meta line of ``uncertainty/{qid}.jsonl``
+        (or ``result["uncertainty_meta"]`` without a run directory).  A score
+        is reused from the meta line's ``criteria_eval`` or from
+        ``criteria_eval.jsonl`` when :meth:`reusable`; only the rest are
+        judged.  Returns ``{"summary", "per_query"}``, plus ``num_judged``
+        (the queries judged now); ``{}`` when no query has criteria.
+        """
+        metas = load_uncertainty_meta(run_dir) if run_dir else {
+            q: r["uncertainty_meta"] for q, r in (results or {}).items() if r.get("uncertainty_meta")
+        }
+        qids = [q for q in sorted(query_ids) if q in metas and self.gold.get(q)]
+        if not qids:
+            return {}
+        saved: Dict[str, Dict] = {}
+        if run_dir:
+            saved = {str(r["query_id"]): r for r in read_jsonl(Path(run_dir) / CRITERIA_EVAL_FILE)}
+
+        records: Dict[str, Dict] = {}
+        todo = []
+        for q in qids:
+            criteria = metas[q].get("criteria") or []
+            for cached in (metas[q].get("criteria_eval"), saved.get(q)):
+                if self.reusable(cached, criteria):
+                    records[q] = cached
+                    break
+            else:
+                todo.append(q)
+        if todo:
+            print(f"  Criteria eval: judging {len(todo)} quer{'y' if len(todo) == 1 else 'ies'}"
+                  f" ({len(records)} reused) with {self.judge_model}")
+            if run_dir:
+                self.use_judgment_cache(Path(run_dir) / CRITERIA_JUDGMENTS_FILE)
+            with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+                fresh = list(pool.map(
+                    lambda q: self.evaluate_query(q, metas[q].get("question", ""), metas[q].get("criteria") or []),
+                    todo))
+            records.update(zip(todo, fresh))
+
+        per_query = [records[q] for q in qids]
+        infos = {q: metas[q].get("criteria_info") or {} for q in qids}
+        return {"summary": self.summarize(per_query, infos), "per_query": per_query, "num_judged": len(todo)}
+
+    def save_results(self, metrics: Dict[str, Any], run_dir: Union[str, Path]) -> None:
+        """Write the per-query records of :meth:`evaluate_run` to ``criteria_eval.jsonl``."""
+        if metrics:
+            write_jsonl(Path(run_dir) / CRITERIA_EVAL_FILE, metrics["per_query"])
+
     def summarize(self, per_query: List[Dict], infos: Optional[Dict[str, Dict]] = None) -> Dict[str, Any]:
-        metrics = (
-            ("recall", "precision") if self.mode == "entities" else
-            ("recall_strict", "recall_lenient", "precision_strict", "precision_lenient",
-             "recall_strict_vital", "recall_strict_rare")
-        )
-        summary: Dict[str, Any] = {"mode": self.mode, "num_queries": len(per_query)}
-        for m in metrics:
-            summary[m] = _mean([r[m] for r in per_query if r.get(m) is not None])
+        # A query whose judge failed has partial scores: left out of the means.
+        scored = [r for r in per_query if not r.get("errors")]
+        summary: Dict[str, Any] = {"mode": self.mode, "method": self.method, "judge_model": self.judge_model,
+                                   "num_queries": len(per_query), "num_scored": len(scored)}
+        for m in MODE_METRICS[self.mode]:
+            summary[m] = _mean([r[m] for r in scored if r.get(m) is not None])
+        checked = [r["request_coverage"] for r in scored if r.get("request_coverage")]
+        if checked:
+            for m in ("constraint_recall", "exclusion_recall", "num_constraints", "num_violations"):
+                summary[m] = _mean([c[m] for c in checked if c.get(m) is not None])
         for m in ("num_criteria", "num_open", "num_gold"):
             summary[f"mean_{m}"] = _mean([r[m] for r in per_query])
         summary["num_empty_criteria"] = sum(r["num_criteria"] == 0 for r in per_query)
         summary["num_matcher_errors"] = sum(bool(r["errors"]) for r in per_query)
+        if self.mode == "nuggets":
+            summary["judge_malformed"] = sum(r.get("judge_malformed", 0) for r in per_query)
         if infos:
             summary["num_extraction_errors"] = sum(
                 bool((infos.get(r["query_id"]) or {}).get("errors")) for r in per_query
             )
         return summary
+
+    def summary_lines(self, summary: Dict[str, Any]) -> List[str]:
+        """The terminal lines of the run summary for a :meth:`summarize`
+        result (with ``vs_report`` from :func:`compare_with_report`)."""
+        c = summary
+        lines = [f"Criteria ({c['mode']}, {c['judge_model']}): {c['num_queries']} queries,"
+                 f" {_fmt(c.get('mean_num_criteria'), 1)} criteria vs {_fmt(c.get('mean_num_gold'), 1)} gold"
+                 f" (matcher errors {c.get('num_matcher_errors', 0)})"]
+        if c["mode"] == "entities":
+            lines.append(f"  recall {_fmt(c.get('recall'))} | precision {_fmt(c.get('precision'))}")
+        elif c["mode"] == "nuggets":
+            lines.append(f"  nugget coverage {_fmt(c.get('nugget_coverage'))}"
+                         f" (weighted {_fmt(c.get('nugget_coverage_weighted'))})"
+                         f" | scored {c.get('num_scored')}/{c['num_queries']}")
+            if c.get("constraint_recall") is not None:
+                lines.append(f"  request constraints {_fmt(c.get('constraint_recall'))}"
+                             f" | exclusions {_fmt(c.get('exclusion_recall'))}"
+                             f" | violations/query {_fmt(c.get('num_violations'), 2)}")
+            v = c.get("vs_report")
+            if v:
+                lines.append(f"  vs report ({v['num_queries']} queries): asked & answered {_fmt(v.get('asked_answered'))}"
+                             f" | asked, not answered {_fmt(v.get('asked_not_answered'))}"
+                             f" | answered, not asked {_fmt(v.get('answered_not_asked'))}"
+                             f" | neither {_fmt(v.get('neither'))}")
+                lines.append(f"    report answers {_fmt(v.get('answered_if_asked'))} of the asked nuggets,"
+                             f" {_fmt(v.get('answered_if_not_asked'))} of the others")
+        else:
+            lines.append(f"  recall strict {_fmt(c.get('recall_strict'))} / lenient {_fmt(c.get('recall_lenient'))}"
+                         f" | precision strict {_fmt(c.get('precision_strict'))}"
+                         f" / lenient {_fmt(c.get('precision_lenient'))}")
+        return lines
+
+
+# ----------------------------------------------------------------------
+# Criteria against the report, nugget by nugget
+# ----------------------------------------------------------------------
+
+#: The four cells of :func:`compare_with_report`: (asked by the criteria,
+#: answered by the report).
+COMPARISON_CELLS = {
+    "asked_answered": (True, True),
+    "asked_not_answered": (True, False),
+    "answered_not_asked": (False, True),
+    "neither": (False, False),
+}
+
+
+def compare_with_report(criteria_metrics: Dict[str, Any], report_records: List[Dict]) -> Optional[Dict[str, Any]]:
+    """Cross each nugget's criteria label (``nuggets`` mode: covered by the
+    criteria) with its report label (Auto-ARGUE: answered by the report).
+
+    Uses the queries scored by both, without judge errors.  Per query: the
+    share of nuggets in each cell (``COMPARISON_CELLS``), plain and weighted
+    as ``nugget_coverage`` / ``_weighted``, and ``answered_if_asked`` /
+    ``answered_if_not_asked`` (the report's coverage of the nuggets the
+    criteria asked for / did not ask for; None without such nuggets).
+
+    The rows go into *criteria_metrics* (:meth:`CriteriaEvaluator.evaluate_run`'s
+    result): each per-query record gets its row as ``vs_report`` (None when
+    not compared) and the summary their macro-average as ``vs_report``,
+    which is also returned; None when no query is scored by both.
+    """
+    reports = {str(r["query_id"]): r for r in report_records}
+    rows: Dict[str, Dict[str, Any]] = {}
+    for rec in criteria_metrics["per_query"]:
+        qid = str(rec["query_id"])
+        if rec.get("errors") or "matches" not in rec or qid not in reports:
+            continue
+        answered = set(reports[qid].get("answered_nuggets") or [])
+        nuggets = rec["matches"]
+        weights = _nugget_weights([m.get("importance") for m in nuggets])
+        labels = [(bool(m["covered"]), m["gold"] in answered) for m in nuggets]
+        row: Dict[str, Any] = {"nuggets": len(nuggets)}
+        for cell, key in COMPARISON_CELLS.items():
+            row[cell] = round(sum(lab == key for lab in labels) / max(len(labels), 1), 4)
+            row[f"{cell}_weighted"] = round(
+                sum(w for w, lab in zip(weights, labels) if lab == key) / max(sum(weights), 1), 4)
+        for name, asked in (("answered_if_asked", True), ("answered_if_not_asked", False)):
+            group = [lab[1] for lab in labels if lab[0] == asked]
+            row[name] = round(sum(group) / len(group), 4) if group else None
+        rows[qid] = row
+    for rec in criteria_metrics["per_query"]:
+        rec["vs_report"] = rows.get(str(rec["query_id"]))
+    if not rows:
+        return None
+    keys = [k for k in next(iter(rows.values())) if k != "nuggets"]
+    summary = {"num_queries": len(rows)}
+    summary.update({k: _mean([r[k] for r in rows.values() if r[k] is not None]) for k in keys})
+    criteria_metrics["summary"]["vs_report"] = summary
+    return summary

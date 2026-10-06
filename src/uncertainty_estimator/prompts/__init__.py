@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..types import KINDS, QUERY_SHAPES
 from .user_prompts import (
-    CRITERIA_INIT_USER_TEMPLATE,
+    criteria_init_user,
     CRITERIA_JUDGE_DOC_USER_TEMPLATE,
     CRITERIA_JUDGE_QUERY_USER_TEMPLATE,
     intermediate_answer_instruction,
@@ -33,7 +33,7 @@ def _init_system(shape: str) -> str:
 
 
 # One criteria-extraction prompt per query shape (layout.DATASET_SPECS); the
-# cap on the number of criteria is its input.
+# cap on the number of criteria is its input (``criteria_init_user``).
 CRITERIA_INIT_SYSTEMS = {shape: _init_system(shape) for shape in QUERY_SHAPES}
 CRITERIA_JUDGE_DOC_SYSTEM = _read("criteria_judge_doc_system.txt")
 CRITERIA_JUDGE_QUERY_SYSTEM = _read("criteria_judge_query_system.txt")

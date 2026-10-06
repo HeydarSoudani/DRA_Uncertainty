@@ -13,8 +13,9 @@ iteration's step record::
       <reasoning_signals query_novelty="0.81"/>
     </certainty>
 
-``kind="open"`` marks an open criterion (several parts or answers); a closed
-criterion, the common case, carries no kind.  Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
+``kind="open"`` marks an open criterion (several parts or answers); a closed criterion, the
+common case, carries no kind, nor does an aspect criterion (every criterion
+of a report request is one, so the kind tells the agent nothing).  Only the fields in ``RETRIEVAL_FIELDS`` and ``REASONING_FIELDS``, the
 criteria state and the attempts (``criteria_attempts_after``; left out when
 null) are read, so gold-based signals (new-item precision, new-item
 graded recall, relevant counts) never reach the agent; they stay in ``uncertainty/{qid}.jsonl`` for
@@ -75,7 +76,7 @@ def render_certainty(record: Dict[str, Any], criteria: List[Criterion]) -> Optio
         for i, (c, label, n) in enumerate(zip(criteria, labels, attempts), 1):
             attrs = (
                 f'status="{label}"'
-                + (' kind="open"' if c.kind == OPEN else "")
+                + (f' kind="{c.kind}"' if c.kind == OPEN else "")
                 + (f' attempts="{n}"' if n is not None else "")
             )
             lines.append(f'    <k{i} {attrs}>{escape(c.text, quote=False)}</k{i}>')

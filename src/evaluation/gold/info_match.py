@@ -1,7 +1,8 @@
 """Match gold units of information against criteria with an LLM judge.
 
-A gold unit is a nugget question (NeuCLIR, RAGTIME) or a reference clue
-(BrowseComp-Plus).  The judge is answer-blind: it decides whether a
+A gold unit is one item of a reference criteria list (``--reference`` of
+``python -m evaluation.criteria``, e.g. the BrowseComp-Plus clues extracted
+by an earlier prompt).  The judge is answer-blind: it decides whether a
 criterion *asks for* the unit's information, not whether a text contains its
 answer (that is the generation evaluation's job).  One call per query scores
 every (unit, criterion) pair:

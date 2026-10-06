@@ -54,7 +54,6 @@ class SurfacedDocEvaluator(BaseDocRetrievalEvaluator):
     """
 
     emit_metrics_at_n = False
-    default_header = "RETRIEVAL EVALUATION RESULTS"
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:

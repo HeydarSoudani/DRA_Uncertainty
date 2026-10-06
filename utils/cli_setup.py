@@ -289,6 +289,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     }
 
     pipeline_kwargs["qrels_data_path"] = getattr(args, "qrels_data_path", None)
+    pipeline_kwargs["corpus_path"] = getattr(args, "corpus_path", None)
     pipeline_kwargs["temperature"] = args.llm_temperature
     pipeline_kwargs["max_output_tokens_total"] = args.max_output_tokens_total
     pipeline_kwargs["use_plan"] = getattr(args, "use_plan", False)
@@ -336,6 +337,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_criteria":                  getattr(args, "max_criteria", None),
         "criteria_judge_model":          getattr(args, "criteria_judge_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
+        "judge_model":                   getattr(args, "judge_model", None),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),
         "quiet":                         getattr(args, "quiet", False),
     }

@@ -8,7 +8,6 @@ ranking, scored against the qrels, and written to
 ``retrieval.fusion``).
 """
 
-import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -131,18 +130,8 @@ def run_fusion_eval(
     k_values = kwargs.get("k_values") or list(DEFAULT_K_VALUES)
     fusion_methods: List[str] = kwargs.get("fusion_methods") or ["interleaving"]
     fusion_k = kwargs.get("fusion_k")
-    print(f"\n{'=' * 80}")
-    print("MULTI-FUSION AGGREGATION EVALUATION")
-    print(f"  run_dir : {run_dir}")
-    print(f"  queries : {len(results)}")
-    print(f"  methods : {fusion_methods}")
-    if fusion_k is not None:
-        print(f"  fusion_k: {fusion_k}")
-    print(f"{'=' * 80}")
-
     all_metrics: Dict[str, Any] = {}
     for method in fusion_methods:
-        start = time.time()
         try:
             ranking = build_ranking_with_fusion(
                 results, method,
@@ -160,16 +149,9 @@ def run_fusion_eval(
             metrics["num_queries"] = num_queries
             metrics["avg_docs_per_query"] = len(ranking.results) / num_queries
 
-            saved = ""
             if run_dir:
                 save_ranking_results(ranking, f"{str(run_dir).rstrip('/')}/retrieval/fusion_{method}.trec",
                                      format_type="trec")
-                saved = "  ✓"
-            recall_at_100 = metrics["Recall"].get("Recall@100")
-            ndcg_at_10 = metrics["NDCG"].get("NDCG@10")
-            recall_str = f"  Recall@100={recall_at_100:.4f}" if recall_at_100 is not None else ""
-            ndcg_str = f"  NDCG@10={ndcg_at_10:.4f}" if ndcg_at_10 is not None else ""
-            print(f"  [{method}]{recall_str}{ndcg_str}  ({num_queries} queries, {time.time() - start:.1f}s){saved}")
             all_metrics[method] = metrics
         except Exception as exc:
             print(f"  ✗ [{method}] error: {exc}")

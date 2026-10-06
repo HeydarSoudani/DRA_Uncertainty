@@ -19,6 +19,8 @@ Outputs, in ``--output-dir`` (default
   are extracted (``--overwrite`` starts over).
 * ``eval.jsonl``: the per-query scores and match details.
 * ``summary.json``: the settings and the macro-averaged scores.
+* ``criteria_eval_judgments.jsonl``: the cached YES/NO nugget judgments
+  (report datasets), reused on a rerun.
 """
 
 import argparse
@@ -27,7 +29,7 @@ import logging
 import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 from dotenv import load_dotenv
 from tqdm import tqdm
@@ -37,9 +39,11 @@ from indexing_corpus_dataset.layout import DATA_ROOT, DATASET_SPECS, OUTPUT_ROOT
 from reasoner_component.factory import create_generator, disable_native_thinking
 from uncertainty_estimator.criteria import LLMCriteriaSource
 
-from ..judge import DEFAULT_JUDGE_MODEL
+from ..common import read_jsonl, write_json, write_jsonl
 from ..gold import load_gold_units
-from .evaluator import CriteriaEvaluator
+from ..judge import DEFAULT_JUDGE_MODEL
+from ..uncertainty import load_uncertainty_meta
+from .evaluator import CRITERIA_JUDGMENTS_FILE, build_criteria_evaluator
 
 logger = logging.getLogger(__name__)
 
@@ -75,30 +79,11 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _read_jsonl(path: Path) -> List[Dict]:
-    if not path.exists():
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        return [json.loads(line) for line in f if line.strip()]
-
-
-def _run_criteria(run_dir: Path) -> Dict[str, Dict]:
-    """``{query_id: {"criteria", "criteria_info"}}`` from a run's meta lines."""
-    unc = run_dir / "uncertainty" if (run_dir / "uncertainty").is_dir() else run_dir
-    out = {}
-    for f in sorted(unc.glob("*.jsonl")):
-        with open(f, "r", encoding="utf-8") as fh:
-            meta = json.loads(fh.readline())
-        out[str(meta["query_id"])] = {"criteria": meta.get("criteria") or [],
-                                      "criteria_info": meta.get("criteria_info") or {}}
-    return out
-
-
 def _extract(args, queries: Dict[str, str], path: Path) -> Dict[str, Dict]:
     """Criteria of every query, extracting the ones missing from *path*."""
     if args.overwrite and path.exists():
         path.unlink()
-    done = {str(r["query_id"]): r for r in _read_jsonl(path)}
+    done = {str(r["query_id"]): r for r in read_jsonl(path)}
     todo = [q for q in queries if q not in done]
     if todo:
         system_prompt = Path(args.prompt_file).read_text(encoding="utf-8").strip() if args.prompt_file else None
@@ -160,8 +145,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.run_dir:
-        records = _run_criteria(Path(args.run_dir))
-        records = {q: r for q, r in records.items() if q in queries}
+        records = {q: {"criteria": m.get("criteria") or [], "criteria_info": m.get("criteria_info") or {}}
+                   for q, m in load_uncertainty_meta(args.run_dir).items() if q in queries}
     else:
         records = _extract(args, queries, out_dir / "criteria.jsonl")
 
@@ -176,31 +161,23 @@ def main() -> None:
         counts = [len(r["criteria"]) for r in records.values()]
         summary = {"settings": settings, "num_queries": len(records),
                    "mean_num_criteria": round(sum(counts) / len(counts), 4) if counts else None}
-        with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+        write_json(out_dir / "summary.json", summary)
         print(f"Saved criteria (not scored) to {out_dir}")
         return
 
-    mode = "entities" if spec.criteria_gold == "entities" and args.reference is None else "info"
-    judge = None
-    if not args.no_llm_match:
-        # Name matching needs no reasoning; the information judge does (info_match).
-        judge = create_generator(args.judge_model, backend="api")
-        if mode == "entities":
-            judge = disable_native_thinking(judge)
-    evaluator = CriteriaEvaluator(gold, mode, llm_client=judge, max_workers=args.workers)
+    evaluator = build_criteria_evaluator(
+        args.dataset, gold, args.judge_model, max_workers=args.workers,
+        mode="info" if args.reference is not None else None, use_llm=not args.no_llm_match,
+    )
+    evaluator.use_judgment_cache(out_dir / CRITERIA_JUDGMENTS_FILE)
     result = evaluator.evaluate(
         {q: queries[q] for q in records},
         {q: r["criteria"] for q, r in records.items()},
         infos={q: r.get("criteria_info") or {} for q, r in records.items()},
     )
 
-    with open(out_dir / "eval.jsonl", "w", encoding="utf-8") as f:
-        for rec in result["per_query"]:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    summary = {"settings": settings, **result["summary"]}
-    with open(out_dir / "summary.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+    write_jsonl(out_dir / "eval.jsonl", result["per_query"])
+    write_json(out_dir / "summary.json", {"settings": settings, **result["summary"]})
     print(json.dumps(result["summary"], indent=2))
     print(f"Saved to {out_dir}")
 

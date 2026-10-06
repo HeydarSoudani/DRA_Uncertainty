@@ -3,6 +3,11 @@
 The judge is Qwen3-32B served via OpenRouter (``openrouter/qwen/qwen3-32b``),
 the official BrowseComp-Plus / AgentIR leaderboard judge, hosted instead of run
 on local GPUs.  Requires ``OPENROUTER_API_KEY`` in the environment.
+
+* :func:`make_judge_client` / :func:`complete_within` / :func:`judge_all`:
+  the free-text grader of the answer evaluation.
+* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``answer.argue``) and
+  of the criteria evaluation that mirrors it (``gold.nugget_ask``).
 """
 
 import asyncio
@@ -13,6 +18,7 @@ from typing import Any, Callable, Dict, List, Sequence
 from tqdm import tqdm
 
 from reasoner_component.api import get_litellm_client
+from reasoner_component.factory import disable_native_thinking
 from utils.llm_client import LiteLLMClient
 
 logger = logging.getLogger(__name__)
@@ -39,6 +45,17 @@ def strip_references(text: str) -> str:
     return text.strip()
 
 
+def run_sync(coro):
+    """Run *coro* to completion from synchronous code, also when called from
+    inside a running event loop (then in a thread of its own)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def make_judge_client(judge_model: str) -> LiteLLMClient:
     """The judge client with the BrowseComp-Plus sampling settings."""
     return get_litellm_client(
@@ -55,19 +72,10 @@ def complete_within(client: LiteLLMClient, messages: List[Dict[str, Any]],
                     timeout: float = JUDGE_TIMEOUT, attempts: int = JUDGE_ATTEMPTS) -> str:
     """``client.complete(messages)`` with a wall-clock limit per request; a
     request past *timeout* seconds is abandoned and made again, up to
-    *attempts* requests, then :class:`TimeoutError`.  Called from inside a
-    running event loop, each request runs in a thread of its own."""
-    def request() -> str:
-        return asyncio.run(asyncio.wait_for(client.acomplete(messages), timeout))
-
+    *attempts* requests, then :class:`TimeoutError`."""
     for attempt in range(1, attempts + 1):
         try:
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return request()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(request).result()
+            return run_sync(asyncio.wait_for(client.acomplete(messages), timeout))
         except asyncio.TimeoutError:
             logger.warning(f"Judge request timed out after {timeout:.0f}s (attempt {attempt}/{attempts})")
     raise TimeoutError(f"judge request timed out {attempts} times ({timeout:.0f}s each)")
@@ -103,3 +111,71 @@ def judge_all(
             bar.update(1)
     bar.close()
     return records
+
+
+# ---------------------------------------------------------------------------
+# YES/NO judge (Auto-ARGUE settings)
+# ---------------------------------------------------------------------------
+
+#: Reply tokens: the judge answers YES or NO; a few tokens of slack over
+#: Auto-ARGUE's 10.
+YES_NO_TOKENS = 16
+#: Asks again of a reply without YES/NO.
+YES_NO_RETRIES = 2
+#: Wall-clock seconds before a YES/NO request is abandoned and asked again
+#: (see :data:`JUDGE_TIMEOUT`: the HTTP read timeout alone never trips).
+YES_NO_TIMEOUT = 60
+
+
+def has_yes_no(text: str) -> bool:
+    """Whether a reply says YES or NO."""
+    text = (text or "").upper()
+    return "YES" in text or "NO" in text
+
+
+def is_yes(text: str, default: bool = False) -> bool:
+    """Auto-ARGUE's reading of a reply: YES when it says YES, NO when it says
+    NO, else *default* (the check's default answer)."""
+    text = (text or "").strip().upper()
+    if "YES" in text:
+        return True
+    if "NO" in text:
+        return False
+    return default
+
+
+class YesNoJudge:
+    """A YES/NO judge at Auto-ARGUE's settings: temperature 0, reasoning off
+    (``/no_think`` appended for a Qwen3 judge, since OpenRouter honors
+    ``reasoning.enabled=false`` for some Qwen3 providers only), a reply
+    without YES/NO asked again :data:`YES_NO_RETRIES` times, a request past
+    :data:`YES_NO_TIMEOUT` seconds counted as a reply without YES/NO.
+
+    ``calls`` counts the requests made and ``malformed`` the questions left
+    without YES/NO.
+    """
+
+    def __init__(self, judge_model: str) -> None:
+        self._client = disable_native_thinking(
+            get_litellm_client(model_name=judge_model, temperature=0.0, max_tokens=YES_NO_TOKENS,
+                               timeout=YES_NO_TIMEOUT))
+        self._no_think = " /no_think" if "qwen3" in judge_model.lower() else ""
+        self.calls = 0
+        self.malformed = 0
+
+    async def ask(self, chat: List[Dict[str, str]]) -> str:
+        """The judge's reply to *chat* (``[{role, content}]``), asked again
+        while it has no YES/NO; the last reply when none has."""
+        chat = [dict(m) for m in chat]
+        chat[-1]["content"] += self._no_think
+        for _ in range(YES_NO_RETRIES + 1):
+            try:
+                text = (await asyncio.wait_for(self._client.acomplete(chat), YES_NO_TIMEOUT) or "").strip()
+            except asyncio.TimeoutError:
+                text = ""
+            self.calls += 1
+            if has_yes_no(text):
+                break
+        else:
+            self.malformed += 1
+        return text

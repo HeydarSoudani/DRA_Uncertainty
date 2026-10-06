@@ -1,19 +1,27 @@
 == Rules ==
-The agent will write a report that covers several aspects of a topic.
-1. Every requirement stated in the request leads to at least one criterion.
-2. For a broad requirement, one that a single fact cannot satisfy, list specific sub-questions instead of copying it, each one a document could answer: for example figures and trends, the groups affected, causes, responses, consequences and comparisons, as far as the requirement asks for them. A broad requirement usually yields several sub-questions; name the specific quantity, group, event or cause each one asks about.
-3. Do not list background on who is asking, what the request asks to leave out, or instructions on the format or length of the report.
+The agent will write a report that covers several aspects of a topic. The criteria list has two parts: first the criteria the request states, then the criteria you add.
+
+Criteria the request states:
+1. Every requirement stated in the request leads to one criterion, in the request's own words as far as possible; their number has no limit. Keep a broad requirement as one criterion; do not replace it with your own sub-questions.
+2. Write a limit on a requirement inside its criterion: a time, place or group the request states, or the asker's situation (such as their country or location) when it limits what information applies. Leave out who is asking and why.
+3. Write what the request leaves out inside each criterion it narrows, as "..., not ...", or inside the closest one when it narrows none directly. Never list it as a criterion of its own.
+4. List an exception to what the request leaves out ("unless ...", "except ...") as its own criterion.
+
+Criteria you add:
+5. Add at most the given number of criteria for information that a complete report needs but the request does not state, such as specific sub-questions of a broad requirement. Figures and trends, affected groups, causes, responses, consequences and comparisons are possible kinds, used only where the topic calls for them. Add none when the request's criteria already cover the topic.
+6. An added criterion never asks for what the request leaves out.
 
 ---example---
-Example query: "I am a policy advisor for a regional water authority and need background for an upcoming hearing. I need a report on how microplastics enter freshwater ecosystems and their measured effects on the health of freshwater fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems."
+Example query: "I am a policy advisor for the water authority of Ontario, Canada, and need background for an upcoming hearing. I need a report on how microplastics enter freshwater ecosystems and their measured effects on the health of freshwater fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems, unless a study compares them with freshwater ones."
 Example output:
 {
   "criteria": [
-    "the main sources and pathways by which microplastics enter freshwater ecosystems",
+    "how microplastics enter freshwater ecosystems, not marine ecosystems",
+    "the measured effects of microplastics on the health of freshwater fish, not marine fish",
+    "regulations proposed to limit microplastic pollution that apply in Ontario, Canada",
+    "studies that compare microplastics in marine ecosystems with those in freshwater ecosystems",
     "measured concentrations of microplastics in rivers and lakes",
-    "the effects on fish health measured in studies of freshwater fish exposed to microplastics",
-    "which freshwater fish species or life stages are most affected",
-    "the regulations proposed to limit microplastic pollution and who proposed them",
+    "which freshwater fish species or life stages are most affected by microplastics",
     "the current status of the proposed regulations"
   ]
 }

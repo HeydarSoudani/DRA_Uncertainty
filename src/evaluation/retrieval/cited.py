@@ -19,11 +19,9 @@ class CitedDocEvaluator(BaseDocRetrievalEvaluator):
 
         evaluator = CitedDocEvaluator(qrels=qrels, k_values=[1, 5, 10, 100])
         metrics = evaluator.evaluate(results)
-        evaluator.print_results(metrics)
     """
 
     emit_metrics_at_n = True
-    default_header = "CITED DOC RETRIEVAL EVALUATION RESULTS"
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:

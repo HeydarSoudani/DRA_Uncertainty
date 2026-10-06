@@ -36,7 +36,7 @@ from utils.trajectory_logger import (
     seen_doc_ids as _seen_doc_ids,
 )
 
-from ..common import print_header, summary_stats
+from ..common import summary_stats
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +109,6 @@ class TrajectoryEvaluator:
 
         evaluator = TrajectoryEvaluator()
         metrics = evaluator.evaluate(results)
-        evaluator.print_results(metrics)
     """
 
     # ------------------------------------------------------------------
@@ -258,61 +257,3 @@ class TrajectoryEvaluator:
 
         return metrics
 
-    def print_results(self, metrics: Dict[str, Any], header: str = "TRAJECTORY STATISTICS") -> None:
-        """Pretty-print trajectory statistics.
-
-        Args:
-            metrics: Output of :meth:`evaluate`.
-            header:  Section header string.
-        """
-        if not metrics:
-            print("  ⚠ No trajectory metrics available")
-            return
-
-        print_header(header)
-
-        n = metrics.get("num_queries", 0)
-        print(f"  Queries evaluated:        {n}")
-
-        def _fmt_stats(d: Optional[Dict]) -> str:
-            if not d:
-                return "n/a"
-            return (
-                f"{d['mean']:.1f} ± {d['std']:.1f}"
-                f"  (min: {d['min']}, max: {d['max']})"
-            )
-
-        print(f"  Steps per query:          {_fmt_stats(metrics.get('steps'))}")
-        print(f"  Search steps per query:   {_fmt_stats(metrics.get('search_steps'))}")
-        print(f"  Docs surfaced per search: {_fmt_stats(metrics.get('docs_surfaced_per_search'))}")
-        print(f"  Docs seen per search:     {_fmt_stats(metrics.get('docs_seen_per_search'))}")
-
-        no_search = metrics.get("queries_no_search", 0)
-        pct = (no_search / n * 100) if n else 0
-        print(f"  Queries with no search:   {no_search} ({pct:.1f}%)")
-
-        force_ans = metrics.get("queries_with_force_answer", 0)
-        pct_force = (force_ans / n * 100) if n else 0
-        print(f"  Queries w/ force answer:  {force_ans} ({pct_force:.1f}%)")
-
-        max_iter = metrics.get("queries_max_iter_reached", 0)
-        pct_max = (max_iter / n * 100) if n else 0
-        print(f"  Queries hitting max iter: {max_iter} ({pct_max:.1f}%)")
-
-        tokens = metrics.get("tokens")
-        if tokens:
-            tot = tokens.get("total_tokens", {})
-            inp = tokens.get("input_tokens", {})
-            out = tokens.get("output_tokens", {})
-            calls = tokens.get("llm_calls", {})
-            print(f"  Tokens/query (total):     {tot.get('mean', 0):.0f} ± {tot.get('std', 0):.0f}"
-                  f"  (in: {inp.get('mean', 0):.0f}, out: {out.get('mean', 0):.0f})")
-            print(f"  LLM calls per query:      {calls.get('mean', 0):.1f}")
-
-        action_counts = metrics.get("avg_action_type_counts", {})
-        if action_counts:
-            print("  Action type distribution (avg per query):")
-            for atype, avg in sorted(action_counts.items(), key=lambda x: -x[1]):
-                print(f"    {atype:<20s}: {avg:.2f}")
-
-        print("=" * 80)

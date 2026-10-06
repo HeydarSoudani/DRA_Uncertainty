@@ -57,11 +57,9 @@ class SeenDocEvaluator(BaseDocRetrievalEvaluator):
 
         evaluator = SeenDocEvaluator(qrels=qrels, k_values=[1, 5, 10, 100])
         metrics = evaluator.evaluate(results)
-        evaluator.print_results(metrics)
     """
 
     emit_metrics_at_n = True
-    default_header = "SEEN DOC RETRIEVAL EVALUATION RESULTS"
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:

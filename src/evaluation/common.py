@@ -1,19 +1,21 @@
-"""Helpers shared by the evaluators: result files, statistics, terminal output."""
+"""Helpers shared by the evaluators: result files and statistics."""
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 
 RULE = "=" * 80
 
 
-def print_header(title: str) -> None:
-    """Print the banner that opens one evaluator's terminal section."""
-    print("\n" + RULE)
-    print(title)
-    print(RULE)
+def read_jsonl(path) -> List[Dict[str, Any]]:
+    """The records of a JSONL file (none when it does not exist)."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f if line.strip()]
 
 
 def write_json(path, obj: Any) -> None:
@@ -31,6 +33,14 @@ def write_jsonl(path, records: Iterable[Dict[str, Any]]) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, separators=(",", ":"), default=str) + "\n")
+
+
+def mean_or_none(values: List[float], digits: Optional[int] = None) -> Optional[float]:
+    """Mean of *values*, rounded to *digits* when given; None when empty."""
+    if not values:
+        return None
+    mean = sum(values) / len(values)
+    return round(mean, digits) if digits is not None else mean
 
 
 def summary_stats(values: List[float]) -> Dict[str, float]:

@@ -37,11 +37,11 @@ def _quote(spans: List[str]) -> str:
 
 
 def format_state_summary(state: CriteriaState) -> str:
-    """Per criterion, its kind and status, the verified spans of its latest
-    evidence passage that has any, and what it still lacks."""
+    """Per criterion, its status, the verified spans of its latest evidence
+    passage that has any, and what it still lacks."""
     blocks = []
     for k, c in enumerate(state.criteria):
-        lines = [f"{c.id} [{c.kind}, {state.statuses[k]}]: {c.text}"]
+        lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
         latest = next((e for e in reversed(state.attached(k)) if e.verified_spans), None)
         if latest is not None:
             lines.append(f"  evidence ({latest.role}): {_quote(latest.verified_spans)}")
@@ -107,6 +107,8 @@ class LLMCoverageJudge:
         max_evidence_per_criterion: Attached evidence passages shown per
             criterion (the most recent).
         max_tokens / temperature: LLM call settings.
+        parse_retries: Extra calls when the output cannot be parsed; each
+            failed attempt is recorded in the step's errors.
     """
 
     def __init__(
@@ -118,10 +120,12 @@ class LLMCoverageJudge:
         max_evidence_per_criterion: int = 4,
         max_tokens: int = 4096,
         temperature: float = 0.0,
+        parse_retries: int = 1,
     ) -> None:
         self._llm = llm_client
         self.model_name = model_name
         self.name = f"llm:{model_name}"
+        self._parse_retries = parse_retries
         self._max_passage_chars = max_passage_chars
         self._head_words = head_words
         self._max_evidence = max_evidence_per_criterion
@@ -192,14 +196,20 @@ class LLMCoverageJudge:
                 query=query, criteria=self._format_state(state), passages=passages,
             )},
         ]
-        try:
-            raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
-        except Exception as e:
-            logger.warning("LLMCoverageJudge: step call failed: %s", e)
-            return None, "", errors + [f"coverage_judge: {e}"]
-        data = parse_json_object(raw)
-        if data is None or not isinstance(data.get("updates"), list):
-            return None, raw, errors + ["coverage_judge: parse: no JSON object with an 'updates' list"]
+        raw, data = "", None
+        for attempt in range(1 + self._parse_retries):
+            try:
+                raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
+            except Exception as e:
+                logger.warning("LLMCoverageJudge: step call failed: %s", e)
+                return None, "", errors + [f"coverage_judge: {e}"]
+            data = parse_json_object(raw)
+            if data is not None and isinstance(data.get("updates"), list):
+                break
+            errors.append(f"coverage_judge: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
+        else:
+            logger.warning("LLMCoverageJudge: step %d dropped, judge output not parseable", step)
+            return None, raw, errors
 
         updates: List[CriterionUpdate] = []
         for item in data["updates"]:

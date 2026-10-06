@@ -5,8 +5,23 @@ from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TA
 CRITERIA_INIT_USER_TEMPLATE = """\
 Query: {query}
 
-List the criteria of this query, at most {max_criteria}. This list will be FIXED for the entire search.\
+{instruction} This list will be FIXED for the entire search.\
 """
+
+# What the cap limits: every criterion, or (a report request) only the
+# criteria the extractor adds to the ones the request states (asked of the
+# model; the code keeps a report request's list whole).
+_CRITERIA_INIT_INSTRUCTIONS = {
+    "multi_aspect": "List the criteria of this query: every criterion the query states, then at most {max_criteria} added criteria.",
+}
+_DEFAULT_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query, at most {max_criteria}."
+
+
+def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
+    """The criteria extractor's user message for a *shape* query."""
+    instruction = _CRITERIA_INIT_INSTRUCTIONS.get(shape, _DEFAULT_CRITERIA_INIT_INSTRUCTION)
+    return CRITERIA_INIT_USER_TEMPLATE.format(
+        query=query, instruction=instruction.format(max_criteria=max_criteria))
 
 CRITERIA_JUDGE_DOC_USER_TEMPLATE = """\
 Query: {query}

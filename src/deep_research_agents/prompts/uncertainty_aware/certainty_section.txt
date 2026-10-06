@@ -13,7 +13,7 @@ After the results of each search, you also receive a <certainty> tag that summar
 
 - `step` is 1 after your first search, then 2, 3, ...
 - <criteria> lists what a correct answer must establish, with the evidence found across all your searches: `covered` (directly established), `partial` (only a clue, indirect evidence, or part of it), `not_covered` (nothing found yet). The criteria are the conditions the answer must satisfy or, when the question asks about every member of a set, the set itself and one criterion per member known before the search ("member: property").
-- `kind="open"` marks a criterion with several parts or answers, for example the complete list of members of a set. It is covered only when passages from several documents together establish all of its parts; the set can include members that are not listed.
+- `kind="open"` marks a criterion with several parts or answers, for example the complete list of members of a set with the property of each. It is covered only when passages from several documents together establish all of its parts; the set can include members that have no criterion of their own.
 - `attempts`: how many of your searches aimed directly at this criterion. A query that restates most of the question aims at none.
 - `doc_novelty` (0 to 1): the fraction of your last search's passages that are new to you.
 - `criteria_delta` (an integer): how much your last search moved the criteria: +1 per step forward (not_covered to partial to covered), -1 per step back (a passage contradicted earlier evidence).

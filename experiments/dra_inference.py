@@ -50,13 +50,13 @@ Output structure:
     ├── uncertainty/
     │   └── {query_id}.jsonl         per-query uncertainty signals: meta line + one line per iteration
     ├── accuracy.jsonl               per-query answer correctness (datasets with answers)
-    ├── report_eval.jsonl            per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
-    ├── report_eval/                 Auto-ARGUE inputs and cached judgments (nuggets/, judgments/)
-    └── summary.json                 grouped run metrics (mirrors the dir layout):
+    ├── report_eval/                 Auto-ARGUE inputs, cached judgments and per-query scores.tsv
+    ├── criteria_eval.jsonl          per-query criteria scores (estimator on, datasets with criteria gold)
+    └── summary.json                 grouped run metrics:
                                        num_queries,
-                                       answer     {accuracy, report},
-                                       retrieval  {fusion, seen, cited},
-                                       trajectory, generation
+                                       retrieval  {seen, cited, fusion},
+                                       generation {correctness | nuggets, stats},
+                                       criteria, trajectory
 """
 
 import argparse
@@ -113,6 +113,7 @@ from utils.io_utils import (
     build_uncertainty_config_name,
     write_run_config,
 )
+from evaluation.gold import load_gold_units
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results, save_query_outputs
 from evaluation.retrieval.fusion import run_fusion_eval
 
@@ -184,6 +185,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
+    # Gold of the criteria eval: only when the estimator extracts criteria
+    # (monitor / inform) and the dataset has criteria gold.
+    _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
+    criteria_gold = None
+    if _estimator_mode != "off" and kwargs.get("llm_criteria") and DATASET_SPECS[dataset].criteria_gold:
+        criteria_gold = load_gold_units(dataset, data_path, file_data_set)
+
     # ==================== Resume: skip already-processed queries ====================
     llm_model = kwargs.pop("llm_model", "claude-sonnet-4-5")
     run_name = None
@@ -244,7 +252,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
                                       dataset=dataset, graded_qrels=graded_qrels,
-                                      data_path=data_path, split=file_data_set)
+                                      data_path=data_path, split=file_data_set,
+                                      criteria_gold=criteria_gold)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
         # into the single summary.json written by evaluate_and_save.
@@ -257,10 +266,10 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         return
 
     # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
-    _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
     if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
         worker_config["graded_qrels"] = graded_qrels
+        worker_config["criteria_gold"] = criteria_gold
 
     # ==================== Build search tool ====================
     from searcher_component.searcher import RetrievalSearchTool
@@ -325,6 +334,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agentic_model=agentic_model,
             dataset=dataset,
             llm_model=llm_model,
+            criteria_gold=criteria_gold,
+            judge_model=kwargs.get("judge_model"),
         )
         if estimator is not None and hasattr(agent, "uncertainty_estimator"):
             agent.uncertainty_estimator = estimator
@@ -332,7 +343,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # ==================== Setup output dirs + evaluators ====================
     evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
                                   dataset=dataset, graded_qrels=graded_qrels,
-                                      data_path=data_path, split=file_data_set)
+                                  data_path=data_path, split=file_data_set,
+                                  criteria_gold=criteria_gold)
 
     trajectory_dir = None
     if output_path:
@@ -595,14 +607,14 @@ def _parse_args():
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--agentic-model", type=str, default="uncertainty_aware", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="ragtime", choices=list(DATASETS), help="Dataset; all use local indices.")
-    parser.add_argument("--subset", type=_none_if_null, default="news", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--subset", type=_none_if_null, default="wiki2", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl and report_eval/, so an unchanged run makes no LLM call.")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; criteria vs the dataset's criteria gold when the estimator is on) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and the criteria scores (uncertainty meta lines, criteria_eval.jsonl), so an unchanged run makes no LLM call.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -808,11 +820,11 @@ if __name__ == "__main__":
 #     ├── uncertainty/
 #     │   └── {query_id}.jsonl  per-query uncertainty signals: meta line + one line per iteration
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
-#     ├── report_eval.jsonl     per-query Auto-ARGUE report scores (NeuCLIR, RAGTIME)
-#     ├── report_eval/          Auto-ARGUE inputs and cached judgments
-#     └── summary.json          grouped: num_queries, answer{accuracy,report},
-#                                        retrieval{fusion,seen,cited},
-#                                        trajectory, generation
+#     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
+#     ├── criteria_eval.jsonl   per-query criteria scores (estimator on, datasets with criteria gold)
+#     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},
+#                                        generation{correctness|nuggets,stats},
+#                                        criteria, trajectory
 #
 # ============================================================================
 # EXAMPLE USAGE

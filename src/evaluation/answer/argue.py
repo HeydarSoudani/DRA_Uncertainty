@@ -34,15 +34,12 @@ The package runs unmodified; this module supplies its inputs and its judge.
   without answers; a request with no nugget left is not scored.
 * Cited document texts: from the corpus (``indexing_corpus_dataset.doc_lookup``).
 * Judge: :data:`evaluation.judge.DEFAULT_JUDGE_MODEL` (Qwen3-32B) instead of
-  the package's Llama-3.3-70B, through our client and its retries, at
-  temperature 0 with the model's reasoning off: the package reads YES/NO from
-  at most 10 tokens, and a reasoning model spends them before answering.
-  OpenRouter's ``reasoning.enabled=false`` is honored by some of its Qwen3
-  providers only, so a Qwen3 judge also gets Qwen3's ``/no_think`` switch at
-  the end of the user message (as the BrowseComp-Plus grader prompt has).  A
-  reply without YES/NO is asked again twice; the package takes the check's
-  default answer for one that still has none (``judge_malformed``); a
-  request past 60 seconds counts as a reply without YES/NO.
+  the package's Llama-3.3-70B, as :class:`evaluation.judge.YesNoJudge`:
+  temperature 0 with the model's reasoning off (the package reads YES/NO
+  from at most 10 tokens, and a reasoning model spends them before
+  answering), a reply without YES/NO asked again twice.  The package takes
+  the check's default answer for one that still has none
+  (``judge_malformed``).
 
 Everything is cached under ``{run_dir}/report_eval/``: the cited documents and
 each report's judgments, keyed by a hash of what was judged, so evaluating an
@@ -54,6 +51,7 @@ scores 0 on every metric; a report whose judging fails is left out, counted in
 
 import asyncio
 import csv
+import functools
 import hashlib
 import importlib
 import json
@@ -70,10 +68,9 @@ import numpy as np
 from tqdm import tqdm
 
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
-from reasoner_component import disable_native_thinking, get_litellm_client
 
-from ..common import print_header, write_jsonl
-from ..judge import DEFAULT_JUDGE_MODEL
+from ..common import mean_or_none
+from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
 from .report_sentences import report_sentences
 
 logger = logging.getLogger(__name__)
@@ -88,13 +85,6 @@ METRICS = (
 #: Per-report counts kept in the per-query records.
 COUNTS = ("sentences", "character_count", "citations", "nuggets", "correct_nuggets")
 
-# The judge answers YES or NO; a few tokens of slack over the package's 10.
-_ANSWER_TOKENS = 16
-# Asks again of a reply without YES/NO.
-_EMPTY_RETRIES = 2
-# Wall-clock seconds before a YES/NO request is abandoned and asked again
-# (see evaluation.judge.JUDGE_TIMEOUT: the HTTP read timeout alone never trips).
-_ANSWER_TIMEOUT = 60
 # Collection name of the cited-document lookup handed to the package.
 _DOC_COLLECTION = "dra_cited_docs"
 _RUN_ID = "run"
@@ -105,6 +95,7 @@ _IMPORTANCE_RANK = {"vital": 2, "okay": 1}
 # The package, imported and patched
 # ---------------------------------------------------------------------------
 
+@functools.cache
 def _import_auto_argue():
     """Import the package without its import-time side effects: ``score.py``
     calls ``logging.basicConfig`` and seeds ``random`` and ``numpy``."""
@@ -128,34 +119,15 @@ class _QuietGather:
         return await asyncio.gather(*coros)
 
 
-class _JudgeChat:
+class _JudgeChat(YesNoJudge):
     """The chat model the package calls (``ainvoke`` of a LangChain chat model),
-    answered by our judge client."""
+    answered by our YES/NO judge."""
 
     _ROLES = {"system": "system", "human": "user", "ai": "assistant"}
 
-    def __init__(self, judge_model: str) -> None:
-        self._client = disable_native_thinking(
-            get_litellm_client(model_name=judge_model, temperature=0.0, max_tokens=_ANSWER_TOKENS,
-                               timeout=_ANSWER_TIMEOUT))
-        self._no_think = " /no_think" if "qwen3" in judge_model.lower() else ""
-        self.calls = 0
-        self.malformed = 0
-
     async def ainvoke(self, messages, **_):
         chat = [{"role": self._ROLES.get(m.type, "user"), "content": m.content} for m in messages]
-        chat[-1]["content"] += self._no_think
-        for _ in range(_EMPTY_RETRIES + 1):
-            try:
-                text = (await asyncio.wait_for(self._client.acomplete(chat), _ANSWER_TIMEOUT) or "").strip()
-            except asyncio.TimeoutError:
-                text = ""
-            self.calls += 1
-            if "YES" in text.upper() or "NO" in text.upper():
-                break
-        else:
-            self.malformed += 1  # the package then takes the check's default answer
-        return SimpleNamespace(content=text)
+        return SimpleNamespace(content=await self.ask(chat))
 
 
 @contextmanager
@@ -183,7 +155,7 @@ def build_nugget_banks(nuggets: Dict[str, List[Dict[str, Any]]],
                        questions: Dict[str, str]) -> Dict[str, Any]:
     """``{query_id: NuggetBank}`` (v3) from the dataset's nugget records, for
     the requests with at least one answer that has supporting documents."""
-    _, _, _ = _import_auto_argue()
+    _import_auto_argue()
     from auto_argue.validation.nugget_data import AggregatorType, Answer, NuggetBank, NuggetQuestion
 
     banks = {}
@@ -219,6 +191,34 @@ def build_nugget_banks(nuggets: Dict[str, List[Dict[str, Any]]],
         if bank.nugget_bank:
             banks[qid] = bank
     return banks
+
+
+def nugget_covered(matched: set, answers: set, aggregator: Optional[str]) -> bool:
+    """Whether the matched answers of a nugget question count it as answered,
+    as the package's ``score`` decides: all gold answers for an AND nugget,
+    at least one (and only gold ones) for an OR nugget."""
+    if (aggregator or "OR") == "AND":
+        return matched == answers
+    return bool(matched) and matched.issubset(answers)
+
+
+def answered_nuggets(judged: Dict[str, Any], bank) -> List[str]:
+    """The nugget questions of *bank* a judged report (``JudgedReport`` as
+    JSON) answers, by the package's ``score`` rule."""
+    matched: Dict[str, set] = {}
+    for sentence in judged.get("sentence_judgments") or []:
+        for judgment in sentence.get("judgments") or []:
+            if judgment.get("judgment_type_id") != "SENTENCE_ANSWERS_QUESTION":
+                continue
+            for nugget in (judgment.get("response") or {}).get("matched_nuggets") or []:
+                matched.setdefault(nugget["question_text"], set()).update(nugget["matched_answer"])
+    out = []
+    for nq in bank.nuggets_as_list() or []:
+        answers = {a.answer for a in (nq.answers or {}).values()}
+        aggregator = getattr(nq.aggregator_type, "value", nq.aggregator_type)
+        if nugget_covered(matched.get(nq.question, set()), answers, aggregator):
+            out.append(nq.question)
+    return out
 
 
 def build_report(query_id: str, generation: str, max_chars: Optional[int]) -> Tuple[Any, int]:
@@ -258,7 +258,7 @@ class ArgueReportEvaluator:
 
         evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path, max_chars=2000)
         metrics = evaluator.evaluate(results, run_dir)
-        evaluator.print_results(metrics)
+        print("\n".join(evaluator.summary_lines(metrics)))
 
     Args:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
@@ -430,24 +430,23 @@ class ArgueReportEvaluator:
                 record[m] = round(scores.get(m, 0.0), 5)
             if qid in empty:
                 record["nuggets"] = len(banks[qid].nugget_bank)
+            # Per nugget question, for the comparison with the criteria evaluation.
+            record["answered_nuggets"] = [] if qid in empty else answered_nuggets(judged[qid], banks[qid])
             per_query.append(record)
-
-        def _mean(metric: str) -> Optional[float]:
-            return round(sum(r[metric] for r in per_query) / len(per_query), 5) if per_query else None
 
         return {
             "num_evaluated": len(per_query),
             "num_without_nuggets": len([q for q in results if q not in banks]),
             "num_empty_reports": len(empty),
             "num_judge_failures": len(failures),
-            "metrics": {m: _mean(m) for m in METRICS},
+            "metrics": {m: mean_or_none([r[m] for r in per_query], 5) for m in METRICS},
             "judge_calls": chat.calls,
             "judge_malformed": chat.malformed,
             "per_query": per_query,
         }
 
     def summary(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """The ``answer.report`` group of ``summary.json``."""
+        """The ``generation.nuggets`` group of ``summary.json``."""
         return {
             "method": "auto_argue",
             **{k: metrics[k] for k in ("num_evaluated", "num_without_nuggets", "num_empty_reports",
@@ -457,28 +456,20 @@ class ArgueReportEvaluator:
             "max_chars": self.max_chars,
         }
 
-    def print_results(self, metrics: Dict[str, Any], header: str = "REPORT EVALUATION (Auto-ARGUE)") -> None:
-        if not metrics:
-            print("  No report metrics available (no request with nuggets)")
-            return
-        print_header(header)
-        print(f"  Judge model:          {self.judge_model}")
-        print(f"  Reports evaluated:    {metrics['num_evaluated']}"
-              f"  (without nuggets: {metrics['num_without_nuggets']},"
-              f" empty: {metrics['num_empty_reports']},"
-              f" judge failures: {metrics['num_judge_failures']})")
-        for m in METRICS:
-            value = metrics["metrics"].get(m)
-            print(f"  {m + ':':<26}{value:.4f}" if value is not None else f"  {m + ':':<26}n/a")
-        if metrics.get("judge_calls"):
-            print(f"  Judge calls:          {metrics['judge_calls']}"
-                  f" ({metrics['judge_malformed']} not YES/NO)")
-        print("=" * 80)
+    def summary_lines(self, metrics: Dict[str, Any]) -> List[str]:
+        """The terminal lines of the run summary for :meth:`evaluate`'s *metrics*."""
+        def f(value: Optional[float]) -> str:
+            return "n/a" if value is None else f"{value:.4f}"
 
-    def save_results(self, metrics: Dict[str, Any], output_path) -> None:
-        """Write ``report_eval.jsonl``: a ``{"record": "meta", ...}`` line with
-        the summary, then one line per request."""
-        if not metrics:
-            return
-        write_jsonl(output_path, [{"record": "meta", **self.summary(metrics)}] + metrics["per_query"])
-        print(f"  Saved report metrics: {output_path}")
+        m = metrics["metrics"]
+        return [
+            f"  Nuggets (Auto-ARGUE, {self.judge_model}): {metrics['num_evaluated']} reports"
+            f" (without nuggets {metrics['num_without_nuggets']},"
+            f" empty {metrics['num_empty_reports']},"
+            f" judge failures {metrics['num_judge_failures']})",
+            f"    coverage {f(m.get('nugget_coverage'))} (weighted {f(m.get('nugget_coverage_weighted'))})"
+            f" | sentence support {f(m.get('sentence_support'))}"
+            f" | F1 {f(m.get('f1'))} (weighted {f(m.get('f1_weighted'))})",
+            f"    citation support {f(m.get('citation_support'))}"
+            f" | citation relevance {f(m.get('citation_relevance'))}",
+        ]

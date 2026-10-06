@@ -5,7 +5,9 @@ The subpackages follow the groups of a run's ``summary.json``:
 answer
     Answer correctness (``AccuracyEvaluator`` by LLM judge,
     ``NumericMatchEvaluator`` by numeric match) and the report evaluation
-    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE).
+    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE); in
+    ``summary.json`` they are ``generation.correctness`` and
+    ``generation.nuggets``.
 retrieval
     Surfaced / seen / cited document evaluators on one base class and metric
     set, the citation helpers, and the surfaced-doc fusion evaluation
@@ -14,14 +16,18 @@ trajectory
     Trajectory statistics (incl. token usage) and the per-query trajectory
     file.
 generation
-    Generation statistics and the per-query generation file.
+    Generation statistics (``generation.stats``) and the per-query
+    generation file.
+criteria
+    The criteria list scored against the dataset's criteria gold
+    (``CriteriaEvaluator``), in a run and offline
+    (``python -m evaluation.criteria``), with its gold units and matchers
+    (``gold``).
 uncertainty
     The per-query uncertainty-signal file.
 
 Beside them: ``runner`` (evaluation of an inference run), ``judge`` (the
-LLM-judge client), ``common`` (file and statistics helpers), and the offline
-criteria evaluation (``criteria``, ``python -m evaluation.criteria``) with its
-gold units and matchers (``gold``).
+LLM-judge client) and ``common`` (file and statistics helpers).
 """
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator

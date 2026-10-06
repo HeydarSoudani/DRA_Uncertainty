@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from ..common import print_header
+from ..common import mean_or_none
 from ..judge import strip_references
 
 
@@ -22,10 +22,6 @@ def _count_citations(text: str) -> int:
     return len(re.findall(r"\[\d+\]", strip_references(text)))
 
 
-def _avg(values: List[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
-
-
 class GenerationEvaluator:
     """Length, word and citation statistics of the generations.
 
@@ -33,7 +29,6 @@ class GenerationEvaluator:
 
         evaluator = GenerationEvaluator()
         metrics = evaluator.evaluate(results)
-        evaluator.print_results(metrics)
     """
 
     def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
@@ -54,25 +49,12 @@ class GenerationEvaluator:
 
         metrics: Dict[str, Any] = {
             "num_queries": len(results),
-            "avg_generation_length": _avg(char_lengths),
-            "avg_generation_words": _avg(word_counts),
+            "avg_generation_length": mean_or_none(char_lengths) or 0.0,
+            "avg_generation_words": mean_or_none(word_counts) or 0.0,
         }
         if citation_counts:
-            metrics["avg_citations"] = _avg(citation_counts)
+            metrics["avg_citations"] = mean_or_none(citation_counts)
         return metrics
-
-    def print_results(self, metrics: Dict[str, Any], header: str = "GENERATION STATISTICS") -> None:
-        """Pretty-print the generation statistics."""
-        if not metrics:
-            print("  ⚠ No generation metrics available")
-            return
-        print_header(header)
-        print(f"  Queries evaluated:      {metrics.get('num_queries', 0)}")
-        print(f"  Avg generation length:  {metrics.get('avg_generation_length', 0):.0f} chars")
-        print(f"  Avg generation words:   {metrics.get('avg_generation_words', 0):.0f} words")
-        if "avg_citations" in metrics:
-            print(f"  Avg citations per doc:  {metrics.get('avg_citations', 0):.1f}")
-        print("=" * 80)
 
     @staticmethod
     def save_item(query_id: str, result: Dict[str, Any], output_dir) -> None:

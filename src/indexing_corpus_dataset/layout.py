@@ -112,8 +112,10 @@ class DatasetSpec:
                              on several aspects of a topic).
         max_criteria:        Cap on the number of criteria the uncertainty
                              estimator derives per query (a budget: a few
-                             clues, every member of a set, or the
-                             sub-questions of a report request).
+                             clues, or every member of a set).  For
+                             ``multi_aspect`` it is the number of criteria the
+                             extractor may add to the request's own, asked in
+                             the prompt; the list is not cut.
         criteria_gold:       Gold the criteria list is scored against
                              (``python -m evaluation.criteria``):
                              ``"entities"`` (the entity set of each query),
@@ -166,7 +168,7 @@ DATASET_SPECS = {
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
     "neuclir": DatasetSpec(
         dataset_year="2024", subset="news", query_key="request", min_relevance_score=1,
-        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=20, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
@@ -174,7 +176,7 @@ DATASET_SPECS = {
     # the report request (background + problem statement).
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
-        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=20, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue",
     ),
 }

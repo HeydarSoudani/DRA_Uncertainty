@@ -4,13 +4,15 @@
     build_evaluators        Instantiate the evaluators of a dataset.
     load_run_results        Read the run's queries back from their saved files.
     evaluate_and_save       Run every evaluator and write ``summary.json``
-                            (grouped: answer / retrieval / trajectory /
-                            generation), plus the terminal log.
+                            (grouped: retrieval / generation / criteria /
+                            trajectory), plus the terminal log.
 
 A run with an output directory is always evaluated from its saved files, at
 the end of the run as with ``--eval-only``, so both write the same
 ``summary.json``.  The LLM-judged evaluators keep their verdicts in the run
-directory (``accuracy.jsonl``, ``report_eval/``) and judge only what changed.
+directory (``accuracy.jsonl``, ``report_eval/``, ``criteria_eval.jsonl``,
+``criteria_eval_judgments.jsonl`` and the ``criteria_eval`` of the
+uncertainty meta lines) and judge only what changed.
 The surfaced-doc fusion metrics come from
 :func:`evaluation.retrieval.fusion.run_fusion_eval`, which the caller runs
 first and passes to :func:`evaluate_and_save`.
@@ -31,6 +33,8 @@ from utils.io_utils import load_result_from_saved_files
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
 from .common import RULE, write_json
+from .judge import DEFAULT_JUDGE_MODEL
+from .criteria import CriteriaEvaluator, build_criteria_evaluator, compare_with_report
 from .generation import GenerationEvaluator
 from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
 from .retrieval.metrics import DEFAULT_K_VALUES
@@ -68,7 +72,8 @@ class Evaluators:
 
     ``accuracy`` is None without ground-truth answers or for a dataset
     without ``answer_eval``; ``report`` is None for a dataset without
-    ``report_eval`` (``layout.DATASET_SPECS``).
+    ``report_eval`` (``layout.DATASET_SPECS``); ``criteria`` is None without
+    criteria gold (estimator off, or a dataset without ``criteria_gold``).
     """
     seen: SeenDocEvaluator
     cited: CitedDocEvaluator
@@ -76,6 +81,7 @@ class Evaluators:
     generation: GenerationEvaluator
     accuracy: Optional[Union[AccuracyEvaluator, NumericMatchEvaluator]] = None
     report: Optional[ArgueReportEvaluator] = None
+    criteria: Optional[CriteriaEvaluator] = None
 
 
 def build_evaluators(
@@ -87,6 +93,7 @@ def build_evaluators(
     graded_qrels: Optional[Dict] = None,
     data_path: Optional[Union[str, Path]] = None,
     split: Optional[str] = None,
+    criteria_gold: Optional[Dict] = None,
 ) -> Evaluators:
     """Instantiate the evaluators of a run.
 
@@ -107,6 +114,9 @@ def build_evaluators(
         data_path:    Dataset directory and *split*: the nuggets of a dataset
                       whose ``report_eval`` is ``"argue"``
                       (:class:`ArgueReportEvaluator`).
+        criteria_gold: ``{query_id: [GoldUnit]}`` the run's criteria are
+                      scored against (:class:`CriteriaEvaluator`, judge
+                      ``judge_model``); None: no criteria eval.
     """
     retrieval_kwargs = dict(
         qrels=qrels,
@@ -134,6 +144,9 @@ def build_evaluators(
             nuggets=load_nuggets(data_path, split), questions=questions or {},
             corpus_path=kwargs["corpus_path"], max_chars=spec.report_chars, **judge_kwargs,
         )
+    if criteria_gold and dataset:
+        evaluators.criteria = build_criteria_evaluator(
+            dataset, criteria_gold, kwargs.get("judge_model") or DEFAULT_JUDGE_MODEL)
     return evaluators
 
 
@@ -154,6 +167,10 @@ def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dic
     return results
 
 
+def _fmt(value: Optional[float], digits: int = 4) -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}"
+
+
 def evaluate_and_save(
     results: Dict[str, Any],
     evaluators: Evaluators,
@@ -162,17 +179,21 @@ def evaluate_and_save(
 ) -> None:
     """Run every evaluator, print the results and write ``summary.json``.
 
-    One grouped ``summary`` dict is the source of both the terminal log and
-    ``summary.json``, so the two never drift.  The schema mirrors the run
-    directory::
+    One grouped ``summary`` dict is the source of ``summary.json``; the
+    terminal log prints its headline numbers in the same order::
 
         {
           "num_queries": N,
-          "answer":     {"accuracy": {...}, "report": {...}},   # when available
-          "retrieval":  {"fusion": {...}, "seen": {...}, "cited": {...}},
+          "retrieval":  {"seen": {...}, "cited": {...}, "fusion": {...}},
+          "generation": {"correctness": {...}   # datasets with answers
+                         | "nuggets": {...},     # report datasets (Auto-ARGUE)
+                         "stats": {...}},
+          "criteria":   {...,                    # estimator on, dataset with criteria gold
+                         "vs_report": {...}},    # report datasets: nugget by nugget vs Auto-ARGUE
           "trajectory": {...},
-          "generation": {...},
         }
+
+    The log shows the seen docs only; cited and fusion are in the file.
 
     Args:
         results:        Unified results dict keyed by query_id.
@@ -197,6 +218,8 @@ def evaluate_and_save(
     seen_metrics = timed("seen", ev.seen.evaluate, results)
     accuracy_metrics = timed("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else {}
     report_metrics = timed("report", ev.report.evaluate, results, run_dir) if ev.report else {}
+    criteria_metrics = (timed("criteria", ev.criteria.evaluate_run, list(results), run_dir, results)
+                        if ev.criteria else {})
 
     # Every evaluator must cover the same queries.
     num_queries = generation_metrics.get("num_queries", 0)
@@ -205,54 +228,88 @@ def evaluate_and_save(
         "cited_doc_retrieval": cited_metrics.get("num_queries", 0) if cited_metrics else num_queries,
         "seen_doc_retrieval": seen_metrics.get("num_queries", 0) if seen_metrics else num_queries,
         "accuracy": accuracy_metrics.get("num_evaluated", 0) if accuracy_metrics else num_queries,
+        "report": (report_metrics["num_evaluated"] + report_metrics["num_without_nuggets"]
+                   + report_metrics["num_judge_failures"]) if report_metrics else num_queries,
     }
     mismatches = {k: v for k, v in counts.items() if v != num_queries}
     if mismatches:
         logger.warning("Evaluator query-count mismatch! Expected %d (from generation). "
                        "Mismatches: %s", num_queries, mismatches)
+    if ev.criteria and criteria_metrics.get("summary", {}).get("num_queries", 0) != num_queries:
+        logger.warning("Criteria eval covers %d of %d queries (the rest have no criteria file or no gold units)",
+                       criteria_metrics.get("summary", {}).get("num_queries", 0), num_queries)
 
     # ── Grouped summary ──────────────────────────────────────────────────
     summary: Dict[str, Any] = {"num_queries": num_queries}
 
-    answer: Dict[str, Any] = {}
+    retrieval = {k: v for k, v in (("seen", seen_metrics), ("cited", cited_metrics),
+                                   ("fusion", fusion_metrics)) if v}
+    if retrieval:
+        summary["retrieval"] = retrieval
+
+    generation: Dict[str, Any] = {}
     if accuracy_metrics:
-        answer["accuracy"] = {k: accuracy_metrics[k] for k in (
+        generation["correctness"] = {k: accuracy_metrics[k] for k in (
             "accuracy", "num_correct", "num_evaluated", "num_judge_errors", "exact_match", "soft_exact_match",
         ) if k in accuracy_metrics}
     if report_metrics:
-        answer["report"] = ev.report.summary(report_metrics)
-    if answer:
-        summary["answer"] = answer
+        generation["nuggets"] = ev.report.summary(report_metrics)
+    generation["stats"] = generation_metrics
+    summary["generation"] = generation
 
-    retrieval = {k: v for k, v in (("fusion", fusion_metrics), ("seen", seen_metrics),
-                                   ("cited", cited_metrics)) if v}
-    if retrieval:
-        summary["retrieval"] = retrieval
+    if criteria_metrics and report_metrics and ev.criteria.mode == "nuggets":
+        compare_with_report(criteria_metrics, report_metrics["per_query"])
+    if criteria_metrics:
+        summary["criteria"] = criteria_metrics["summary"]
     if trajectory_metrics:
         summary["trajectory"] = trajectory_metrics
-    summary["generation"] = generation_metrics
 
-    # ── Terminal log, in summary order (fusion was printed by run_fusion_eval)
-    metrics_at_n = {k: v for k, v in cited_metrics.get("Metrics@N", {}).items() if k != "num_queries"}
-    print(f"\n{RULE}\nEVALUATION SUMMARY\n{RULE}")
-    print(f"  num_queries: {num_queries}")
-    if metrics_at_n:
-        print("  Metrics@N:")
-        print(f"    Recall@N:    {metrics_at_n.get('Recall@N', 0):.4f}")
-        print(f"    Precision@N: {metrics_at_n.get('Precision@N', 0):.4f}")
-        print(f"    F1@N:        {metrics_at_n.get('F1@N', 0):.4f}")
-        if "GradedRecall@N" in metrics_at_n:
-            print(f"    GradedRecall@N: {metrics_at_n['GradedRecall@N']:.4f}")
-        print(f"    avg_N:       {metrics_at_n.get('avg_N', 0):.1f}")
+    # ── Terminal log, in summary order ───────────────────────────────────
+    print(f"\n{RULE}\nEVALUATION SUMMARY  ({num_queries} queries)\n{RULE}")
+
+    at_n = seen_metrics.get("Metrics@N", {})
+    print("Retrieval (seen docs)")
+    if at_n:
+        line = (f"  Recall@N {_fmt(at_n.get('Recall@N'))} | Precision@N {_fmt(at_n.get('Precision@N'))}"
+                f" | F1@N {_fmt(at_n.get('F1@N'))}")
+        if "GradedRecall@N" in at_n:
+            line += f" | GradedRecall@N {_fmt(at_n['GradedRecall@N'])}"
+        print(line + f" | avg N {at_n.get('avg_N', 0):.1f}")
+    else:
+        print("  n/a")
+
+    print("Generation")
+    if accuracy_metrics:
+        print(f"  Correctness: accuracy {_fmt(accuracy_metrics.get('accuracy'))}"
+              f" ({accuracy_metrics.get('num_correct', 0)}/{accuracy_metrics.get('num_evaluated', 0)},"
+              f" judge errors {accuracy_metrics.get('num_judge_errors', 0)})")
+    if report_metrics:
+        print("\n".join(ev.report.summary_lines(report_metrics)))
+    print(f"  Length {generation_metrics.get('avg_generation_length', 0):.0f} chars"
+          f" / {generation_metrics.get('avg_generation_words', 0):.0f} words"
+          f" | citations {generation_metrics.get('avg_citations', 0):.1f}")
+
+    if criteria_metrics:
+        print("\n".join(ev.criteria.summary_lines(criteria_metrics["summary"])))
+
+    if trajectory_metrics:
+        t = trajectory_metrics
+
+        def mean(key: str, block: Optional[Dict] = None) -> float:
+            return ((block or t).get(key) or {}).get("mean", 0.0)
+
+        print("Trajectory")
+        print(f"  steps {mean('steps'):.1f} | searches {mean('search_steps'):.1f}"
+              f" | docs seen/search {mean('docs_seen_per_search'):.1f}"
+              f" | no search {t.get('queries_no_search', 0)}"
+              f" | forced answer {t.get('queries_with_force_answer', 0)}"
+              f" | max iter {t.get('queries_max_iter_reached', 0)}")
+        tokens = t.get("tokens") or {}
+        if tokens.get("num_queries_with_tokens"):
+            print(f"  tokens/query {mean('total_tokens', tokens):.0f}"
+                  f" (in {mean('input_tokens', tokens):.0f}, out {mean('output_tokens', tokens):.0f})"
+                  f" | LLM calls/query {mean('llm_calls', tokens):.1f}")
     print(RULE)
-    if ev.accuracy:
-        ev.accuracy.print_results(accuracy_metrics)
-    if ev.report:
-        ev.report.print_results(report_metrics)
-    ev.cited.print_results(cited_metrics, header="RETRIEVAL EVALUATION RESULTS (CITED DOCS)")
-    ev.seen.print_results(seen_metrics, header="RETRIEVAL EVALUATION RESULTS (SEEN DOCS)")
-    ev.trajectory.print_results(trajectory_metrics)
-    ev.generation.print_results(generation_metrics)
     print("  Evaluation time: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings.items()))
 
     # ── Files ────────────────────────────────────────────────────────────
@@ -261,7 +318,7 @@ def evaluate_and_save(
     run_dir = Path(run_dir)
     if accuracy_metrics:
         ev.accuracy.save_results(accuracy_metrics, run_dir / "accuracy.jsonl")
-    if report_metrics:
-        ev.report.save_results(report_metrics, run_dir / "report_eval.jsonl")
+    if criteria_metrics:
+        ev.criteria.save_results(criteria_metrics, run_dir)
     write_json(run_dir / "summary.json", summary)
     print(f"  ✓ Saved summary: {run_dir}/summary.json")

@@ -23,7 +23,7 @@ import math
 import re
 from typing import Any, Dict, List
 
-from ..common import print_header, write_jsonl
+from ..common import write_jsonl
 from ..judge import strip_references
 
 logger = logging.getLogger(__name__)
@@ -152,7 +152,6 @@ class NumericMatchEvaluator:
 
         evaluator = NumericMatchEvaluator(answers={"q1": "8269", ...})
         metrics = evaluator.evaluate(results)   # {query_id: {"generation": str, ...}}
-        evaluator.print_results(metrics)
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -223,25 +222,6 @@ class NumericMatchEvaluator:
             "num_evaluated": num_evaluated,
             "per_query": per_query,
         }
-
-    def print_results(
-        self,
-        metrics: Dict[str, Any],
-        header: str = "NUMERIC MATCH EVALUATION (exact / soft match)",
-    ) -> None:
-        """Pretty-print the numeric-match metrics."""
-        if not metrics:
-            print("  No numeric-match metrics available (no ground-truth answers)")
-            return
-        print_header(header)
-        print(f"  Queries evaluated:  {metrics.get('num_evaluated', 0)}")
-        print(f"  Exact Match:        {metrics.get('exact_match', 0):.4f}")
-        soft = metrics.get("soft_exact_match", {})
-        if soft:
-            print("  Soft Exact Match (within tolerance):")
-            for pct in sorted(float(p) for p in soft):
-                print(f"    {pct:5.1f}% tolerance: {soft[str(pct)]:.4f}")
-        print("=" * 80)
 
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
         """Write ``accuracy.jsonl``: a ``{"record": "meta", ...}`` line with the

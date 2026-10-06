@@ -1,4 +1,4 @@
-"""Generation statistics (the ``generation`` group of ``summary.json``).
+"""Generation statistics (``generation.stats`` in ``summary.json``).
 
 * :class:`GenerationEvaluator`: length, words and citation markers of the
   generation, and the ``generation/{query_id}.md`` writer.

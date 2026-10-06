@@ -4,38 +4,42 @@ The dataset's ``criteria_gold`` (``layout.DATASET_SPECS``) names the gold:
 
 * ``"entities"`` (TRQA): the entities of the query's set, from the
   intermediate information.  One unit per entity; ``text`` is its name.
-* ``"nuggets"`` (NeuCLIR, RAGTIME): the nugget questions.  Nuggets that share
-  a question (one per answer in the NeuCLIR bank) are one unit; it is
-  ``vital`` when any of them is, and its support documents are pooled.
+* ``"nuggets"`` (NeuCLIR, RAGTIME): the nugget questions of the Auto-ARGUE
+  nugget banks the report evaluation scores (``answer.argue.build_nugget_banks``):
+  nuggets that share a question are one unit, ``vital`` when any of them is,
+  with their gold answers and AND/OR aggregator; answers without documents
+  and questions without answers are dropped, and so is a query left with
+  none.  Both evaluations thus score the same nuggets of the same queries.
 * None (BrowseComp-Plus): no gold; the units are a reference criteria list
   (:func:`load_reference_criteria`), e.g. the clues extracted by an earlier
   prompt.
 """
 
-import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets, load_query_intermediate_info
 from indexing_corpus_dataset.layout import DATASET_SPECS
 
+from ..answer.argue import build_nugget_banks
+from ..common import read_jsonl
+from ..uncertainty import load_uncertainty_meta
+
 
 @dataclass
 class GoldUnit:
     """One gold unit of a query.
 
-    ``importance`` is ``vital`` / ``okay`` for NeuCLIR nuggets, else None;
-    ``num_support_docs`` is None when the gold has no support documents.
+    ``importance`` is ``vital`` / ``okay`` for NeuCLIR nuggets, else None.
+    A nugget question also has its gold ``answers`` and ``aggregator``
+    (``OR``: one answer answers it; ``AND``: all of them).
     """
     id: str
     text: str
     importance: Optional[str] = None
-    num_support_docs: Optional[int] = None
-
-    def to_dict(self) -> Dict:
-        return {"id": self.id, "text": self.text, "importance": self.importance,
-                "num_support_docs": self.num_support_docs}
+    answers: List[str] = field(default_factory=list)
+    aggregator: Optional[str] = None
 
 
 def _entity_units(data_path: Path, split: str) -> Dict[str, List[GoldUnit]]:
@@ -52,24 +56,13 @@ def _entity_units(data_path: Path, split: str) -> Dict[str, List[GoldUnit]]:
 
 def _nugget_units(data_path: Path, split: str) -> Dict[str, List[GoldUnit]]:
     units = {}
-    for qid, nuggets in load_nuggets(data_path, split).items():
-        grouped: Dict[str, Dict] = {}
-        for n in nuggets:
-            question = str(n.get("question", "")).strip()
-            if not question:
-                continue
-            g = grouped.setdefault(question, {"importance": None, "docs": set(), "has_docs": False})
-            if n.get("importance") == "vital" or (n.get("importance") and g["importance"] is None):
-                g["importance"] = n["importance"]
-            if n.get("support_docs"):
-                g["has_docs"] = True
-                g["docs"].update(n["support_docs"])
-        if grouped:
-            units[qid] = [
-                GoldUnit(id=f"n{i + 1}", text=q, importance=g["importance"],
-                         num_support_docs=len(g["docs"]) if g["has_docs"] else None)
-                for i, (q, g) in enumerate(grouped.items())
-            ]
+    for qid, bank in build_nugget_banks(load_nuggets(data_path, split), {}).items():
+        units[qid] = [
+            GoldUnit(id=f"n{i + 1}", text=nq.question, importance=nq.importance,
+                     answers=[a.answer for a in (nq.answers or {}).values()],
+                     aggregator=getattr(nq.aggregator_type, "value", nq.aggregator_type) or "OR")
+            for i, nq in enumerate(bank.nuggets_as_list() or [])
+        ]
     return units
 
 
@@ -78,19 +71,9 @@ def load_reference_criteria(path: Path | str) -> Dict[str, List[Dict]]:
     a ``criteria.jsonl`` written by ``python -m evaluation.criteria`` or a
     run's ``uncertainty/`` directory (the meta line of each file)."""
     path = Path(path)
-    criteria: Dict[str, List[Dict]] = {}
-    files = sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
-    for f in files:
-        with open(f, "r", encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                rec = json.loads(line)
-                if rec.get("record", "meta") == "meta" and isinstance(rec.get("criteria"), list):
-                    criteria[str(rec["query_id"])] = rec["criteria"]
-                if path.is_dir():
-                    break  # one meta line per uncertainty file
-    return criteria
+    records = load_uncertainty_meta(path).values() if path.is_dir() else read_jsonl(path)
+    return {str(r["query_id"]): r["criteria"] for r in records
+            if r.get("record", "meta") == "meta" and isinstance(r.get("criteria"), list)}
 
 
 def load_gold_units(

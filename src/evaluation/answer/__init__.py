@@ -1,4 +1,4 @@
-"""Answer evaluation (the ``answer`` group of ``summary.json``).
+"""Answer evaluation (``generation.correctness`` and ``generation.nuggets`` in ``summary.json``).
 
 * :class:`AccuracyEvaluator`: answer correctness by LLM judge
   (``answer_eval == "llm_judge"``, BrowseComp-Plus).

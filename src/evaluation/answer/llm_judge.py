@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from utils.llm_client import LiteLLMClient
 
-from ..common import print_header, write_jsonl
+from ..common import read_jsonl, write_jsonl
 from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client, strip_references
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,6 @@ class AccuracyEvaluator:
         evaluator = AccuracyEvaluator(answers={"q1": "gold answer", ...},
                                       questions={"q1": "question", ...})
         metrics = evaluator.evaluate(results)   # {query_id: {"generation": str, ...}}
-        evaluator.print_results(metrics)
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -234,16 +233,11 @@ class AccuracyEvaluator:
     def _saved_verdicts(self, run_dir) -> Dict[str, Dict[str, Any]]:
         """The verdicts of a previous evaluation (``accuracy.jsonl``) that
         were judged without error, by query id."""
-        path = Path(run_dir) / "accuracy.jsonl" if run_dir else None
-        if path is None or not path.exists():
+        if not run_dir:
             return {}
-        saved = {}
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                record = json.loads(line)
-                if record.get("record") != "meta" and record.get("key") and not record.get("judge_error"):
-                    saved[record["query_id"]] = record
-        return saved
+        path = Path(run_dir) / "accuracy.jsonl"
+        return {r["query_id"]: r for r in read_jsonl(path)
+                if r.get("record") != "meta" and r.get("key") and not r.get("judge_error")}
 
     def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge every query with a ground-truth answer, reusing the verdicts
@@ -293,25 +287,6 @@ class AccuracyEvaluator:
             "num_judged": len(to_judge),
             "per_query": sorted(per_query, key=lambda r: r["query_id"]),
         }
-
-    def print_results(
-        self,
-        metrics: Dict[str, Any],
-        header: str = "ACCURACY EVALUATION RESULTS (LLM-as-Judge)",
-    ) -> None:
-        """Pretty-print the accuracy metrics."""
-        if not metrics:
-            print("  No accuracy metrics available (no ground-truth answers)")
-            return
-        print_header(header)
-        print(f"  Judge model:        {self.judge_model}")
-        print(f"  Queries evaluated:  {metrics.get('num_evaluated', 0)}")
-        print(f"  Correct:            {metrics.get('num_correct', 0)}")
-        print(f"  Accuracy:           {metrics.get('accuracy', 0):.4f}")
-        print(f"  Judge errors:       {metrics.get('num_judge_errors', 0)}"
-              f"  (judged now: {metrics.get('num_judged', 0)}, reused: "
-              f"{metrics.get('num_evaluated', 0) - metrics.get('num_judged', 0)})")
-        print("=" * 80)
 
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
         """Write ``accuracy.jsonl``: a ``{"record": "meta", ...}`` line with the

@@ -1,20 +1,18 @@
 == Rules ==
 The agent will write a short answer computed over every member of a set, for example a count, a sum, an average, or the earliest or latest value among the members.
-1. The first criterion is always the complete set of members, in the query's words, with the conditions that define the set.
-2. After it, list one criterion per member you can name with confidence, in the form "<member>: <property>", where the property is what the query computes or counts.
-3. When the query counts or selects the members that meet a condition, that condition is the property, not part of the set; the set is what the query ranges over, with the conditions attached to it (for example in a relative clause). For "How many novels by Jules Verne that were published before 1870 were adapted into films?" the set is the novels by Jules Verne that were published before 1870, and each member criterion is "<novel>: adapted into a film".
-4. Never state the value of the property, never decide yourself which members meet the condition, and leave out members you are unsure of.
+1. The first criterion is the complete set of members, in the query's words, with the conditions that define the set, followed by the property of each member, where the property is what the query computes or counts. When the query counts or selects the members that meet a condition, that condition is not part of the set: it is the property.
+2. Then list one criterion per member you are certain belongs to the set under the query's exact definition, as "<member>: <property>". Leave out entities only related to the set (a similar role, a predecessor, a broader group) and members whose membership depends on how the definition is read. These member criteria repeat the property of the first criterion for the members you know; this is the only overlap allowed.
 
 ---example---
-Example query: "What is the earliest year of independence among the countries of Central Asia?"
+Example query: "How many novels by Jules Verne that were published before 1870 were adapted into films?"
 Example output:
 {
   "criteria": [
-    "the complete list of the countries of Central Asia",
-    "Kazakhstan: year of independence",
-    "Kyrgyzstan: year of independence",
-    "Tajikistan: year of independence",
-    "Turkmenistan: year of independence",
-    "Uzbekistan: year of independence"
+    "the complete list of the novels by Jules Verne that were published before 1870, and for each whether it was adapted into a film",
+    "Five Weeks in a Balloon: adapted into a film",
+    "Journey to the Center of the Earth: adapted into a film",
+    "From the Earth to the Moon: adapted into a film",
+    "The Adventures of Captain Hatteras: adapted into a film",
+    "In Search of the Castaways: adapted into a film"
   ]
 }

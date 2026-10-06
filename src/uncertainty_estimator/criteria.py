@@ -10,11 +10,14 @@ documents only (it can move up or down).
   TODO(criteria-file): a source that reads C from a file, keyed by query id.
 - ``CriteriaState``: sigma_t and the evidence attached to each criterion.
 
-Each criterion is closed (one fact) or open (several parts or answers that
-documents establish only together); an open criterion is fully covered only
-once ``OPEN_MIN_SOURCES`` distinct documents support it.  The kind follows
-from the dataset's query shape and the criterion's position (``_kinds``);
-the extractor only lists the criteria.
+Each criterion is closed (one fact), open (several parts or answers that
+documents establish only together) or, in a report request, an aspect of the
+topic; an open or aspect criterion is fully covered only once
+``OPEN_MIN_SOURCES`` distinct documents support it.  The set criterion of
+a set query is open: it asks for every member and its property, so members
+the extractor did not list are covered by it.  The kind follows from the
+dataset's query shape and the criterion's position (``_kinds``); the
+extractor only lists the criteria.
 
 The judges that update the state and score queries against C are in
 ``judges``.
@@ -27,33 +30,55 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.text_utils import parse_json_object
-from .prompts import CRITERIA_INIT_SYSTEMS, CRITERIA_INIT_USER_TEMPLATE
+from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    CLOSED, FULLY_COVERED, MULTI_ASPECT, OPEN, PARTIALLY_COVERED, QUERY_SHAPES, SET, STATUS_VALUE,
-    STATUSES, UNCOVERED,
+    ASPECT, CLOSED, FULLY_COVERED, MULTI_ASPECT, MULTI_SOURCE_KINDS, OPEN, PARTIALLY_COVERED,
+    QUERY_SHAPES, SET, STATUS_VALUE, STATUSES, UNCOVERED,
     Criterion, CriterionUpdate, Evidence,
 )
 
 logger = logging.getLogger(__name__)
 
-# Distinct supporting documents an open criterion needs to be fully covered;
+# Distinct supporting documents an open or aspect criterion needs to be fully covered;
 # with fewer it stays partially covered.
 OPEN_MIN_SOURCES = 3
 
 # One complete string item of the criteria list, for output that is not
 # valid JSON (cut at the token limit, or a stray character between items).
 _ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"\s*(?=[,\]])')
+# One complete object item (``{"text": ...}``), likewise.
+_OBJECT_RE = re.compile(r'\{[^{}]*\}')
 
 
-def _kinds(shape: str, n: int) -> List[str]:
-    """Kind of each of *n* criteria of a *shape* query: every clue of a single
+def _salvage(body: str) -> List[Any]:
+    """The complete items of a malformed or truncated criteria list: its
+    objects when it has any, else its strings."""
+    objects = []
+    for chunk in _OBJECT_RE.findall(body):
+        try:
+            objects.append(json.loads(chunk))
+        except json.JSONDecodeError:
+            continue
+    return objects or [json.loads(f'"{t}"') for t in _ITEM_RE.findall(body)]
+
+
+def _kinds(shape: str, texts: List[str]) -> List[str]:
+    """Kind of each criterion of a *shape* query: every clue of a single
     target is closed; the first criterion of a set query (the complete set)
-    is open and its members are closed; every report criterion is open."""
+    is open and its members are closed; every report criterion is an aspect."""
     if shape == MULTI_ASPECT:
-        return [OPEN] * n
+        return [ASPECT] * len(texts)
     if shape == SET:
-        return [OPEN] + [CLOSED] * (n - 1) if n else []
-    return [CLOSED] * n
+        return [OPEN if k == 0 else CLOSED for k in range(len(texts))]
+    return [CLOSED] * len(texts)
+
+
+def _cap_set(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
+    """A set query's criteria within *cap*: the set criterion, then the
+    members, leaving out the last ones."""
+    if len(items) > cap:
+        info.setdefault("warnings", []).append(f"cap: kept {max(cap - 1, 0)} of {len(items) - 1} members")
+    return items[:cap]
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +109,10 @@ class LLMCriteriaSource(CriteriaSource):
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
-            ``max_criteria`` in layout.DATASET_SPECS).
+            ``max_criteria`` in layout.DATASET_SPECS).  For a multi-aspect
+            query it is the number of criteria the model may add to the
+            request's own, asked in the prompt; the list is kept whole, since
+            a cut could drop a criterion the request states.
         model_name: Saved in the meta line.
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
@@ -120,9 +148,7 @@ class LLMCriteriaSource(CriteriaSource):
         info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
         messages = [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": CRITERIA_INIT_USER_TEMPLATE.format(
-                query=query, max_criteria=self._max_criteria,
-            )},
+            {"role": "user", "content": criteria_init_user(self._shape, query, self._max_criteria)},
         ]
         try:
             raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature)
@@ -135,7 +161,7 @@ class LLMCriteriaSource(CriteriaSource):
         if data is None or not isinstance(data.get("criteria"), list):
             # Keep the complete items of malformed or truncated output.
             body = (raw or "").partition('"criteria"')[2].partition("[")[2]
-            salvaged = [json.loads(f'"{t}"') for t in _ITEM_RE.findall(body)]
+            salvaged = _salvage(body)
             if not salvaged:
                 info["errors"].append("parse: no JSON object with a 'criteria' list")
                 info["raw"] = raw
@@ -143,21 +169,24 @@ class LLMCriteriaSource(CriteriaSource):
             info["warnings"] = [f"parse: invalid JSON, kept {len(salvaged)} complete items"]
             data = {"criteria": salvaged}
 
-        texts: List[str] = []
+        items: List[str] = []
         for item in data["criteria"]:
             if isinstance(item, dict):
                 item = item.get("text") or ""
             item = str(item).strip()
-            if item and item not in texts:
-                texts.append(item)
-        if not texts:
+            if item and item not in items:
+                items.append(item)
+        if not items:
             info["errors"].append("parse: empty criteria list")
             info["raw"] = raw
 
-        texts = texts[:self._max_criteria]
+        if self._shape == SET:
+            items = _cap_set(items, self._max_criteria, info)
+        elif self._shape != MULTI_ASPECT:
+            items = items[:self._max_criteria]
         criteria = [
             Criterion(id=f"c{k + 1}", text=t, kind=kind)
-            for k, (t, kind) in enumerate(zip(texts, _kinds(self._shape, len(texts))))
+            for k, (t, kind) in enumerate(zip(items, _kinds(self._shape, items)))
         ]
         return criteria, info
 
@@ -173,7 +202,7 @@ class CriteriaState:
     updates from the step's novel documents and ``apply`` enforces:
 
     - a raise needs at least one supporting passage;
-    - an open criterion is fully covered only once its supporting passages
+    - an open or aspect criterion is fully covered only once its supporting passages
       come from ``OPEN_MIN_SOURCES`` distinct documents; before that it is
       capped at partially covered;
     - a lowering needs at least one contradicting passage and moves one
@@ -251,11 +280,11 @@ class CriteriaState:
                 record["note"] = "lowered by one level at most"
             self._evidence[k].extend(u.support + u.contradict)
             missing = u.missing
-            if self.criteria[k].kind == OPEN and STATUSES[proposed] == FULLY_COVERED:
+            if self.criteria[k].kind in MULTI_SOURCE_KINDS and STATUSES[proposed] == FULLY_COVERED:
                 sources = self.num_sources(k)
                 if sources < OPEN_MIN_SOURCES:
                     proposed = STATUS_VALUE[PARTIALLY_COVERED]
-                    record["note"] = f"open criterion needs {OPEN_MIN_SOURCES} sources, has {sources}"
+                    record["note"] = f"{self.criteria[k].kind} criterion needs {OPEN_MIN_SOURCES} sources, has {sources}"
                     missing = missing or (
                         f"support from more documents ({sources} of {OPEN_MIN_SOURCES} so far)"
                     )

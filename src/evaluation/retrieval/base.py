@@ -13,7 +13,7 @@ look at:
 
 Subclasses implement a single hook, :meth:`doc_iterations`, returning one
 ranked doc list per retrieval step.  Everything else (fusing those lists into
-a final ranking, TREC evaluation, Metrics@N, pretty-printing, per-query TREC
+a final ranking, TREC evaluation, Metrics@N, per-query TREC
 saving) lives here.  :meth:`doc_iterations` and :meth:`save_item` are
 classmethods, so the per-query files are written without an evaluator.
 """
@@ -26,7 +26,6 @@ from utils.ranking_results import RankingResults, RankingResult
 from utils.text_utils import doc_id as _doc_id
 from searcher_component.fusion import fuse_retrieval_results
 
-from ..common import print_header
 from .metrics import DEFAULT_K_VALUES, evaluate_results, metrics_at_n
 
 logger = logging.getLogger(__name__)
@@ -41,8 +40,6 @@ class BaseDocRetrievalEvaluator:
 
     #: Whether :meth:`evaluate` adds a ``Metrics@N`` block (N = #docs per query).
     emit_metrics_at_n: bool = True
-    #: Default header used by :meth:`print_results`.
-    default_header: str = "RETRIEVAL EVALUATION RESULTS"
 
     def __init__(
         self,
@@ -175,41 +172,6 @@ class BaseDocRetrievalEvaluator:
             metrics["Metrics@N"] = metrics_at_n(self.qrels, ranking_results, self.graded_qrels)
 
         return metrics
-
-    # ------------------------------------------------------------------
-    # Pretty-print
-    # ------------------------------------------------------------------
-
-    def print_results(self, metrics: Dict[str, Any], header: Optional[str] = None) -> None:
-        """Pretty-print retrieval evaluation metrics."""
-        header = header or self.default_header
-        if not metrics:
-            print(f"  No retrieval results available ({self.default_header})")
-            return
-
-        scalar_keys = {"num_queries", "avg_docs_per_query", "Metrics@N"}
-
-        print_header(header)
-        print(f"  Queries evaluated:      {metrics.get('num_queries', 0)}")
-        print(f"  Avg docs per query:     {metrics.get('avg_docs_per_query', 0.0):.1f}")
-
-        metrics_at_n_block = metrics.get("Metrics@N")
-        if metrics_at_n_block:
-            print(f"  Recall@N (mean):        {metrics_at_n_block.get('Recall@N', 0):.4f}  "
-                  f"(avg N={metrics_at_n_block.get('avg_N', 0):.1f})")
-            print(f"  Precision@N (mean):     {metrics_at_n_block.get('Precision@N', 0):.4f}")
-            print(f"  F1@N (mean):            {metrics_at_n_block.get('F1@N', 0):.4f}")
-            if "GradedRecall@N" in metrics_at_n_block:
-                print(f"  GradedRecall@N (mean):  {metrics_at_n_block['GradedRecall@N']:.4f}")
-        print()
-        for metric_name, metric_value in metrics.items():
-            if metric_name in scalar_keys:
-                continue
-            if isinstance(metric_value, dict):
-                key = f"{metric_name}@10"
-                if key in metric_value:
-                    print(f"  {key}: {metric_value[key]:.4f}")
-        print("=" * 80)
 
     # ------------------------------------------------------------------
     # Persistence
