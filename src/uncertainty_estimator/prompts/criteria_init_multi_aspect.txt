@@ -1,15 +1,10 @@
-== Rules ==
-The agent will write a report that covers several aspects of a topic. The criteria list has two parts: first the criteria the request states, then the criteria you add. Every criterion of either part can be read without the request or the other criteria: it names its subject instead of pointing back with words such as "it", "they", "these" or "the above".
+The response to this query is a report that covers several aspects of a topic.
 
-Criteria the request states:
-1. Every requirement stated in the request leads to one criterion, in the request's own words as far as possible; their number has no limit. Keep a broad requirement as one criterion; do not replace it with your own sub-questions.
-2. Write a limit on a requirement inside its criterion: a time, place or group the request states, or the asker's situation (such as their country or location) when it limits what information applies. Leave out who is asking and why.
-3. Write what the request leaves out inside each criterion it narrows, as "..., not ...", or inside the closest one when it narrows none directly. Never list it as a criterion of its own.
-4. List an exception to what the request leaves out ("unless ...", "except ...") as its own criterion.
-
-Criteria you add:
-5. Add at most the given number of criteria for information that a complete report needs but the request does not state, such as specific sub-questions of a broad requirement. Figures and trends, affected groups, causes, responses, consequences and comparisons are possible kinds, used only where the topic calls for them. Add none when the request's criteria already cover the topic.
-6. An added criterion never asks for what the request leaves out.
+---rules---
+4. Every requirement the query states leads to one criterion, in the query's own words as far as possible; their number has no limit. Keep a broad requirement as one criterion; do not replace it with your own sub-questions.
+5. Write a limit on a requirement inside its criterion: a time, place or group the query states, or the asker's situation (such as their country) when it limits what information applies. Leave out who is asking and why.
+6. Write what the query leaves out inside each criterion it narrows, as "..., not ...", never as a criterion of its own. An exception to it ("unless ...", "except ...") is its own criterion.
+7. After the query's criteria, add at most the given number of criteria for information a complete report needs but the query does not state, such as figures and trends, affected groups, causes, responses, consequences or comparisons, where the topic calls for them. An added criterion never asks for what the query leaves out. Add none when the query's criteria already cover the topic.
 
 ---example---
 Example query: "I am a policy advisor for the water authority of Ontario, Canada, and need background for an upcoming hearing. I need a report on how microplastics enter freshwater ecosystems and their measured effects on the health of freshwater fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems, unless a study compares them with freshwater ones."

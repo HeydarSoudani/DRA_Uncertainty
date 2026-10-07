@@ -22,11 +22,13 @@ def _read(name: str) -> str:
 
 
 def _init_system(shape: str) -> str:
-    """The shared core with the rules and example of one query shape
-    (``criteria_init_{shape}.txt``, rules and example split by ``---example---``)."""
-    rules, example = _read(f"criteria_init_{shape}.txt").split("---example---")
+    """The shared core with the context, rules and example of one query shape
+    (``criteria_init_{shape}.txt``, split by ``---rules---`` and ``---example---``)."""
+    context, rest = _read(f"criteria_init_{shape}.txt").split("---rules---")
+    rules, example = rest.split("---example---")
     return (
         _read("criteria_init_system.txt")
+        .replace("{shape_context}", context.strip())
         .replace("{shape_rules}", rules.strip())
         .replace("{example}", example.strip())
     )

@@ -1,8 +1,9 @@
-== Rules ==
-The agent will write a short answer computed over every member of a set, for example a count, a sum, an average, or the earliest or latest value among the members.
-1. The first criterion is the complete set of members, in the query's words, with the conditions that define the set. When the query counts or selects the members that meet a condition, that condition is not part of the set: it is the property.
-2. Then list one criterion per member you are certain belongs to the set under the query's exact definition, as "<member>: <property>", where the property is what the query computes or counts. Leave out entities only related to the set (a similar role, a predecessor, a broader group) and members whose membership depends on how the definition is read.
-3. The last criterion is "any other member: <property>", for the members you did not list. Write it even when you think your list is complete.
+The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members.
+
+---rules---
+4. The first criterion is the complete set of members, in the query's words, with the conditions that define the set. When the query counts or selects the members that meet a condition, that condition is not part of the set: it is the property.
+5. Then list one criterion per member you are certain belongs to the set under the query's exact definition, as "<member>: <property>", where the property is what the query computes or counts. Leave out entities only related to the set (a similar role, a predecessor, a broader group) and members whose membership depends on how the definition is read.
+6. The last criterion is "any other member: <property>", for the members you did not list. Write it even when you think your list is complete.
 
 ---example---
 Example query: "How many novels by Jules Verne that were published before 1870 were adapted into films?"

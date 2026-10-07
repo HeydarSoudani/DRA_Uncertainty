@@ -482,7 +482,7 @@ if __name__ == "__main__":
 #   python analysis/criteria_reachability.py --dataset neuclir --limit 1
 #   python analysis/criteria_reachability.py --dataset neuclir
 #   python analysis/criteria_reachability.py --dataset neuclir --grades 1 3 --limit 1
-#   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --limit 3
+#   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --limit 5
 #   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --workers 32
 #   python analysis/criteria_reachability.py --dataset neuclir --max-criteria 10
 #   python analysis/criteria_reachability.py --dataset neuclir --judge-model openrouter/qwen/qwen3-32b --tag qwen3-32b
