@@ -87,6 +87,7 @@ def build_uncertainty_estimator(
     llm_model: Optional[str] = None,
     criteria_gold=None,
     judge_model: Optional[str] = None,
+    criteria_bank: Optional[str] = None,
 ):
     """Build the uncertainty estimator, or None when *mode* is ``"off"``.
 
@@ -123,6 +124,9 @@ def build_uncertainty_estimator(
             the agent runs, and the score is printed and saved (``criteria_eval``).  None:
             not scored.
         judge_model: LLM of the criteria-eval matchers (``--judge-model``).
+        criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
+            a query's criteria are read from it, and extracted and added
+            only when missing.  None: extracted for every sample.
     """
     if mode == "off":
         return None
@@ -130,7 +134,8 @@ def build_uncertainty_estimator(
         raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from uncertainty_estimator import (
-        LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges, encode_fn_from_retriever,
+        BankedCriteriaSource, LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges,
+        encode_fn_from_retriever,
     )
 
     if max_criteria is None:
@@ -144,7 +149,11 @@ def build_uncertainty_estimator(
             model_name=llm_criteria,
             query_shape=DATASET_SPECS[dataset].query_shape if dataset else "single_target",
         )
-        print(f"Uncertainty estimator: criteria from {llm_criteria}")
+        if criteria_bank:
+            criteria_source = BankedCriteriaSource(criteria_source, criteria_bank)
+            print(f"Uncertainty estimator: criteria from the bank {criteria_bank}, missing ones from {llm_criteria}")
+        else:
+            print(f"Uncertainty estimator: criteria from {llm_criteria}")
     else:
         logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
@@ -542,6 +551,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         llm_model=llm_model,
         criteria_gold=worker_config.get("criteria_gold"),
         judge_model=worker_config.get("judge_model"),
+        criteria_bank=worker_config.get("criteria_bank"),
     )
     if estimator is not None and hasattr(agent, "uncertainty_estimator"):
         agent.uncertainty_estimator = estimator

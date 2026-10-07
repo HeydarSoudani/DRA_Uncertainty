@@ -25,8 +25,8 @@ pip install -e .
 ```
 
 This registers all packages so imports resolve from any working directory.
-Set `DRA_DATA_ROOT` (corpus + indices) and `DRA_OUTPUT_ROOT` (run outputs) to
-control where data is read/written.
+Set `DRA_DATA_ROOT` (corpus + indices), `DRA_OUTPUT_ROOT` (run outputs) and `DRA_CRITERIA_ROOT`
+(criteria banks, default the repo's `data/`) to control where data is read/written.
 
 ## 1. Download datasets
 
@@ -129,10 +129,17 @@ criteria the extractor adds, as one plain list (the limit on added criteria is a
 report list). A report criterion keeps the request's own limits in its
 wording; what the request leaves out is written into the criterion it narrows ("..., not ..."), an exception
 ("unless ...") is its own criterion, and background on the asker is kept only when it limits what information applies
-(country, location, situation). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers), `rest` or `aspect`
+(country, location, situation); every report criterion reads on its own, naming its subject instead of pointing back
+("it", "these"). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers), `rest` or `aspect`
 (one aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion)
 is open, its members closed and its "any other member" criterion rest (added by code when the model leaves it out;
-fully covered only while the set is), all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list. At the end of each search iteration it computes the per-step signals of
+fully covered only while the set is), all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list.
+Criteria bank (`criteria_bank: true`, the default): a query's criteria are read from
+`CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl` and extracted only when missing, then added to it
+(`BankedCriteriaSource`). A line is used only when the query id and text, `llm_criteria`, the query shape,
+`max_criteria` and a hash of the init prompt all match, so a changed prompt or cap extracts again; a failed extraction
+and a salvaged one (the complete items of a truncated reply) are never added. Runs and `analysis/criteria_reachability.py` share the bank, so the analysis scores the criteria the
+runs use. At the end of each search iteration the estimator computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
@@ -371,6 +378,26 @@ Step line (one per search iteration, flat scalars first):
 
 `iteration` is not the retrieval `iter_N`: `iter_N` counts retrieval calls, so an iteration with several queries spans
 several `iter_N`. Join on `docs[].doc_id` when a doc-level link to `retrieval/*.trec` is needed.
+
+### Criteria reachability
+
+`analysis/criteria_reachability.py --dataset {neuclir,ragtime}` asks whether the gold documents are reachable through
+a request's criteria list. Criteria come from the criteria bank (extracted and added when missing), with
+`llm_criteria` and `max_criteria` read from the run config (`--config`, default
+`experiments/configs/dra_inference.yaml`); a request whose extraction failed or was only salvaged is left out. An LLM
+judge (`--judge-model`, default `llm_criteria`, prompts `analysis/prompts/criteria_reachability_{system,user}.txt`)
+reads each whole gold document of `--grades` (default: the top grade) with all criteria, in one call per document. It
+sees the request's topic title (`DatasetSpec.title_key`: NeuCLIR `topic_title`, RAGTIME `title`) instead of the
+request, since the criteria already carry the request's requirements and limits. It labels every criterion: `support` (specific facts, backed by a verbatim span; lowered to `related` when the span is not in
+the document), `related` (on the topic, no specific facts) or `none` (not about it); only `support` counts as reaching.
+Reachability is the share of gold documents that at least one criterion supports (headline); the share at `related` or
+above is secondary; both micro, macro and per grade. Calls per request: one for the
+criteria when missing from the bank, plus one per gold document; a reply that leaves a criterion without a label is
+asked again. Output in the run outputs, in
+`OUTPUT_ROOT/criteria_reachability/{dataset}_{split}/` (`--output` overrides it): `judgments.jsonl` (the judgment cache,
+shared by every `--grades` and `--tag`) and, per `grades-{g}_{judge}[_{tag}]/`, `summary.json` (`settings`, `counts`,
+`metrics`, `stats`) and `per_doc.jsonl` (per request and document: grade, document length, reach, and every
+criterion's label, reason and span).
 
 ## 4. Training
 

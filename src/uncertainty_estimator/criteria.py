@@ -6,8 +6,9 @@ sigma_t(k) in {uncovered, partially_covered, fully_covered}, updated by
 documents only (it can move up or down).
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
-  ``LLMCriteriaSource`` derives the criteria from the query.
-  TODO(criteria-file): a source that reads C from a file, keyed by query id.
+  ``LLMCriteriaSource`` derives the criteria from the query;
+  ``BankedCriteriaSource`` reads them from a bank file and derives (and
+  adds) only the missing ones, so runs and analyses share one list per query.
 - ``CriteriaState``: sigma_t and the evidence attached to each criterion.
 
 Each criterion is closed (one fact), open (several parts or answers that
@@ -23,10 +24,15 @@ The judges that update the state and score queries against C are in
 ``judges``.
 """
 
+import fcntl
+import hashlib
 import json
 import logging
 import re
+import threading
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils.text_utils import parse_json_object
@@ -166,6 +172,19 @@ class LLMCriteriaSource(CriteriaSource):
         self._max_tokens = max_tokens
         self._temperature = temperature
 
+    @property
+    def bank_fields(self) -> Dict[str, Any]:
+        """What, besides the query, decides the criteria: the bank key of
+        ``BankedCriteriaSource``.  ``prompt`` hashes the system prompt and
+        the user message without the query."""
+        prompt = self._system + "\n" + criteria_init_user(self._shape, "", self._max_criteria)
+        return {
+            "model": self.model_name,
+            "query_shape": self._shape,
+            "max_criteria": self._max_criteria,
+            "prompt": hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12],
+        }
+
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
         info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
         messages = [
@@ -189,6 +208,7 @@ class LLMCriteriaSource(CriteriaSource):
                 info["raw"] = raw
                 return [], info
             info["warnings"] = [f"parse: invalid JSON, kept {len(salvaged)} complete items"]
+            info["salvaged"] = True
             data = {"criteria": salvaged}
 
         items: List[str] = []
@@ -211,6 +231,82 @@ class LLMCriteriaSource(CriteriaSource):
             for k, (t, kind) in enumerate(zip(items, _kinds(self._shape, items)))
         ]
         return criteria, info
+
+
+class BankedCriteriaSource(CriteriaSource):
+    """Reads the criteria of a query from a bank file; a query missing from
+    it gets them from *inner*, and they are added to the bank.
+
+    The bank (``layout.criteria_bank_path``) is a JSONL file, one line per
+    query and setting: the query id and text, ``inner.bank_fields`` (model,
+    query shape, cap, prompt hash), the criteria and the extraction info.
+    A line is used only when all of these match, so a changed prompt or cap
+    extracts the criteria again; the last line of a key wins.  A failed
+    extraction (no criteria) and a salvaged one (the complete items of a
+    truncated reply) are never added.  Lines are appended under a file lock,
+    so parallel workers and processes can share the bank.
+
+    *info* is the stored extraction info with ``bank``: ``"hit"`` (read from
+    the bank), ``"added"`` (extracted and added), ``"salvaged"`` (extracted
+    from a truncated reply, used but not added) or ``"failed"`` (extracted,
+    no criteria, not added).
+    """
+
+    name = "bank"
+
+    def __init__(self, inner: LLMCriteriaSource, path: Path | str) -> None:
+        self._inner = inner
+        self.path = Path(path)
+        self.model_name = inner.model_name
+        self._fields = inner.bank_fields
+        self._lock = threading.Lock()
+        self._bank: Dict[str, Dict[str, Any]] = {}
+        if self.path.exists():
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        rec = json.loads(line)
+                        self._bank[rec["key"]] = rec
+
+    def _key(self, query_id: Optional[str], query: str) -> str:
+        fields = {"query_id": query_id, "query": query, **self._fields}
+        return hashlib.sha1(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
+        """The banked criteria of the query, or None; never extracts."""
+        with self._lock:
+            rec = self._bank.get(self._key(query_id, query))
+        return None if rec is None else [Criterion(**c) for c in rec["criteria"]]
+
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+        key = self._key(query_id, query)
+        with self._lock:
+            rec = self._bank.get(key)
+        if rec is not None:
+            return [Criterion(**c) for c in rec["criteria"]], {**rec["info"], "bank": "hit"}
+
+        criteria, info = self._inner.get(query_id, query)
+        if not criteria:
+            return criteria, {**info, "bank": "failed"}
+        if info.get("salvaged"):
+            return criteria, {**info, "bank": "salvaged"}
+        rec = {
+            "key": key, "query_id": query_id, "query": query, **self._fields,
+            "criteria": [c.to_dict() for c in criteria], "info": info,
+            "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        with self._lock:
+            self._bank[key] = rec
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                try:
+                    f.write(line)
+                    f.flush()
+                finally:
+                    fcntl.flock(f, fcntl.LOCK_UN)
+        return criteria, {**info, "bank": "added"}
 
 
 # ---------------------------------------------------------------------------

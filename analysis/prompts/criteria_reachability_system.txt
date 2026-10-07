@@ -1,0 +1,29 @@
+Your task is to decide, for each criterion, whether the document is reachable through it: whether the document gives information for that criterion.
+You will receive the topic of a report request, the request's criteria, and one document. The topic only says what the criteria are about; it is not a criterion, and the document is never judged against it.
+
+== Labels ==
+- "support": The document gives specific facts about the subject the criterion names, such as figures, named cases, findings or measures, within the limits the criterion's wording sets; a mere mention of the topic is not a fact. The document counts as reachable through the criterion.
+- "related": The document is about the criterion's topic but gives no specific facts for it: it only mentions the topic, misses the criterion's subject, or gives facts only outside a limit the criterion's wording sets (a period, place, group, or what a "..., not ..." leaves out). The document does not count as reachable through the criterion.
+- "none": The document is not about the criterion's topic at all. The document does not count as reachable through the criterion.
+
+== Rules ==
+1. Judge each criterion on its own, by its own wording; a document may give information for several criteria or for none.
+2. When unsure between two labels, choose the lower one.
+
+== Output Format ==
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
+- "criteria": A list with one object for every criterion, in order, including the ones labeled "none".
+  - "id": The criterion id (for example "c1").
+  - "reason": One sentence on what the document gives for the criterion, or why it gives nothing.
+  - "span": For "support", the verbatim span, copied from one place in the document and never joined from different places with "..." or any other mark; otherwise "".
+  - "label": "support", "related" or "none".
+
+Example output:
+{
+  "criteria": [
+    {"id": "c1", "reason": "The document says nothing about how microplastics enter rivers.", "span": "", "label": "none"},
+    {"id": "c2", "reason": "The document reports the death rate of perch exposed to microplastics in a lake study.", "span": "mortality rose by 12 percent among perch exposed to the highest concentration", "label": "support"},
+    {"id": "c3", "reason": "The document says limits on microplastic pollution are under discussion but names no proposed regulation.", "span": "", "label": "related"},
+    {"id": "c4", "reason": "The document reports microplastic effects on marine fish only, which the criterion leaves out.", "span": "", "label": "related"}
+  ]
+}

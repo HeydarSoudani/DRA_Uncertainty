@@ -82,7 +82,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT
+from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_bank_path
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import AGENTIC_MODEL_TO_LLM, AGENTIC_MODEL_ALIAS, resolve_temperature
@@ -190,6 +190,9 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     criteria_gold = None
     if _estimator_mode != "off" and kwargs.get("llm_criteria") and DATASET_SPECS[dataset].criteria_gold:
         criteria_gold = load_gold_units(dataset, data_path, file_data_set)
+    # Criteria bank of the split: criteria are read from it, extracted only when missing.
+    criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
+                     if _estimator_mode != "off" and kwargs.get("criteria_bank", True) else None)
 
     # ==================== Resume: skip already-processed queries ====================
     llm_model = kwargs.pop("llm_model", "claude-sonnet-4-5")
@@ -269,6 +272,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         worker_config["qrels"] = qrels
         worker_config["graded_qrels"] = graded_qrels
         worker_config["criteria_gold"] = criteria_gold
+        worker_config["criteria_bank"] = criteria_bank
 
     # ==================== Build search tool ====================
     from searcher_component.searcher import RetrievalSearchTool
@@ -335,6 +339,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             llm_model=llm_model,
             criteria_gold=criteria_gold,
             judge_model=kwargs.get("judge_model"),
+            criteria_bank=criteria_bank,
         )
         if estimator is not None and hasattr(agent, "uncertainty_estimator"):
             agent.uncertainty_estimator = estimator

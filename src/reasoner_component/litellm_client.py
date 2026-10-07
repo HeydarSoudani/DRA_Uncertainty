@@ -31,6 +31,32 @@ logger = logging.getLogger(__name__)
 litellm.suppress_debug_info = True
 
 
+# After every async call LiteLLM queues its success callbacks on one global
+# LoggingWorker, whose background task lives on a single event loop.  We call
+# LiteLLM from many threads, each with its own loop (see
+# _get_or_create_thread_event_loop), so every call from another thread rebinds
+# the worker and drops its task on the previous loop, which asyncio then
+# reports as "Task was destroyed but it is pending!".  We register no LiteLLM
+# callbacks, so the queued handlers have nothing to run: close them instead of
+# queuing them, and only fall back to the worker when a callback is set.
+def _patch_logging_worker() -> None:
+    try:
+        from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
+    except ImportError:
+        return
+    enqueue = GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue
+
+    def enqueue_if_callbacks(async_coroutine):
+        if litellm.callbacks or litellm.success_callback or litellm._async_success_callback:
+            return enqueue(async_coroutine)
+        async_coroutine.close()
+
+    GLOBAL_LOGGING_WORKER.ensure_initialized_and_enqueue = enqueue_if_callbacks
+
+
+_patch_logging_worker()
+
+
 # Prefix of a reply that had no content, only reasoning, returned when the
 # caller asked for ``return_reasoning_fallback``.
 REASONING_FALLBACK_PREFIX = "[reasoning_fallback]"

@@ -68,6 +68,7 @@ FILE_BACKED_DEFAULTS = {
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
     "criteria_judge_model": "",
+    "criteria_bank": True,
     "add_intermediate_answer": True,
     # Evaluation
     "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
@@ -301,6 +302,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
     pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", None)
     pipeline_kwargs["criteria_judge_model"] = getattr(args, "criteria_judge_model", "")
+    pipeline_kwargs["criteria_bank"] = getattr(args, "criteria_bank", True)
     pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
 
     worker_config = {

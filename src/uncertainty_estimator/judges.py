@@ -51,30 +51,35 @@ def format_state_summary(state: CriteriaState) -> str:
     return "\n".join(blocks)
 
 
-def _tokens(text: str) -> List[str]:
-    """Lowercased words with punctuation removed, for span matching."""
-    return [t for t in (re.sub(r"\W+", "", w.lower()) for w in text.split()) if t]
+def _keys(text: str) -> Tuple[str, List[int]]:
+    """*text* lowercased with everything but letters and digits removed, and
+    the position in *text* of each character kept, for span matching."""
+    keys, pos = [], []
+    for i, ch in enumerate(text):
+        for k in ch.lower():
+            if k.isalnum():
+                keys.append(k)
+                pos.append(i)
+    return "".join(keys), pos
 
 
 def span_in_passage(text: str, span: str) -> Optional[str]:
-    """The passage's own words matching *span* (case, whitespace and
-    punctuation ignored), or None when *span* does not occur in *text*."""
-    target = _tokens(span)
+    """The passage's own text matching *span* (case, whitespace and
+    punctuation ignored, so words the passage runs together still match),
+    or None when *span* does not occur in *text*."""
+    target, _ = _keys(span)
     if not target:
         return None
-    words = text.split()
-    keys = [re.sub(r"\W+", "", w.lower()) for w in words]
-    kept = [i for i, k in enumerate(keys) if k]  # skip punctuation-only words
-    n = len(target)
-    for j in range(len(kept) - n + 1):
-        if [keys[i] for i in kept[j:j + n]] == target:
-            return " ".join(words[kept[j]:kept[j + n - 1] + 1])
-    return None
+    keys, pos = _keys(text)
+    j = keys.find(target)
+    if j < 0:
+        return None
+    return text[pos[j]:pos[j + len(target) - 1] + 1]
 
 
 def split_span(span: str) -> List[str]:
     """The pieces of a cited span that joins sentences with an ellipsis."""
-    return [p.strip() for p in re.split(r"\.\.\.|\u2026", span) if _tokens(p)]
+    return [p.strip() for p in re.split(r"\.\.\.|\u2026", span) if _keys(p)[0]]
 
 
 def passage_head(text: str, num_words: int) -> str:

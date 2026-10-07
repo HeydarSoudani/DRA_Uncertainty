@@ -8,7 +8,7 @@ list, plus extra saved information (retrieval gain against qrels, intermediate a
 
 Module layout:
     types      criteria statuses, Criterion, Evidence, CriterionUpdate
-    criteria   CriteriaSource, LLMCriteriaSource, CriteriaState
+    criteria   CriteriaSource, LLMCriteriaSource, BankedCriteriaSource, CriteriaState
     judges     LLMCoverageJudge, LLMQueryScorer, build_criteria_judges
     signals    DocNoveltySignal, QueryNoveltySignal, CriteriaCoverageSignal,
                CriteriaTargetingSignal, RetrievalGainSignal,
@@ -30,6 +30,7 @@ from .types import (
 from .criteria import (
     CriteriaSource,
     LLMCriteriaSource,
+    BankedCriteriaSource,
     CriteriaState,
 )
 from .judges import (
@@ -60,6 +61,7 @@ __all__ = [
     "Evidence",
     "CriteriaSource",
     "LLMCriteriaSource",
+    "BankedCriteriaSource",
     "CriteriaState",
     "LLMCoverageJudge",
     "LLMQueryScorer",

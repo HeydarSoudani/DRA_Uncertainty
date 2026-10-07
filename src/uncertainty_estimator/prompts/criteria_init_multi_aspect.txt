@@ -1,5 +1,5 @@
 == Rules ==
-The agent will write a report that covers several aspects of a topic. The criteria list has two parts: first the criteria the request states, then the criteria you add.
+The agent will write a report that covers several aspects of a topic. The criteria list has two parts: first the criteria the request states, then the criteria you add. Every criterion of either part can be read without the request or the other criteria: it names its subject instead of pointing back with words such as "it", "they", "these" or "the above".
 
 Criteria the request states:
 1. Every requirement stated in the request leads to one criterion, in the request's own words as far as possible; their number has no limit. Keep a broad requirement as one criterion; do not replace it with your own sub-questions.
@@ -22,6 +22,6 @@ Example output:
     "studies that compare microplastics in marine ecosystems with those in freshwater ecosystems",
     "measured concentrations of microplastics in rivers and lakes",
     "which freshwater fish species or life stages are most affected by microplastics",
-    "the current status of the proposed regulations"
+    "the current status of regulations proposed to limit microplastic pollution in Ontario, Canada"
   ]
 }

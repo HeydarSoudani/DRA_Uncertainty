@@ -78,7 +78,13 @@ DATA_ROOT = Path(os.environ.get(
 # The one canonical root of the run outputs; ``DRA_OUTPUT_ROOT`` overrides it
 # like ``DRA_DATA_ROOT`` does for the data.
 OUTPUT_ROOT = Path(os.environ.get(
-    "DRA_OUTPUT_ROOT", "/projects/0/prjs0834/heydars/DRA_training/run_outputs"
+    "DRA_OUTPUT_ROOT", "/home/hsoudani/DRA_Uncertainty/run_outputs"
+))
+
+# Root of the criteria banks, kept in the repo's data folder (not DATA_ROOT,
+# which only holds downloaded inputs); ``DRA_CRITERIA_ROOT`` overrides it.
+CRITERIA_ROOT = Path(os.environ.get(
+    "DRA_CRITERIA_ROOT", "/home/hsoudani/DRA_Uncertainty/data"
 ))
 
 # ===========================================================================
@@ -132,6 +138,9 @@ class DatasetSpec:
         report_eval:         Report evaluator: ``"argue"`` (Auto-ARGUE against
                              the dataset's nuggets, ``evaluation.answer.argue``)
                              or None (reports are not graded).
+        title_key:           Queries-file field with the topic title, shown as
+                             the topic of the criteria (``analysis/
+                             criteria_reachability.py``).  None = no title.
     """
     dataset_year: str | None
     subset: str | None
@@ -147,6 +156,7 @@ class DatasetSpec:
     query_max_length: int
     report_chars: int | None = None
     report_eval: str | None = None
+    title_key: str | None = None
 
 
 DATASET_SPECS = {
@@ -169,7 +179,7 @@ DATASET_SPECS = {
     "neuclir": DatasetSpec(
         dataset_year="2024", subset="news", query_key="request", min_relevance_score=1,
         relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
-        report_chars=2000, report_eval="argue",
+        report_chars=2000, report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
     # 0 irrelevant.  Official points 3/1/0/0, so relevant = >=2.  ``text`` is
@@ -177,7 +187,7 @@ DATASET_SPECS = {
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
-        report_chars=2000, report_eval="argue",
+        report_chars=2000, report_eval="argue", title_key="title",
     ),
 }
 
@@ -254,6 +264,16 @@ def qrels_base(data_path: Path | str, split: str) -> Path:
 def nuggets_base(data_path: Path | str, split: str) -> Path:
     """Return the suffix-less nuggets path, e.g. ``.../nuggets/nuggets_2025``."""
     return Path(data_path) / "nuggets" / f"nuggets_{split}"
+
+
+def criteria_bank_path(dataset: str, split: str) -> Path:
+    """Return the criteria bank of a split, e.g. ``CRITERIA_ROOT/ragtime/criteria_bank/criteria_2025.jsonl``."""
+    return CRITERIA_ROOT / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
+
+
+def criteria_reachability_dir(dataset: str, split: str) -> Path:
+    """Return the criteria-reachability analysis folder of a split, e.g. ``OUTPUT_ROOT/criteria_reachability/ragtime_2025``."""
+    return OUTPUT_ROOT / "criteria_reachability" / f"{dataset}_{split}"
 
 
 def corpus_path(data_path: Path | str, name: str = "corpus") -> Path:
