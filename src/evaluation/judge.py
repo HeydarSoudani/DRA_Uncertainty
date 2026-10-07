@@ -1,4 +1,4 @@
-"""LLM-as-judge plumbing shared by the answer evaluators and the criteria matchers.
+"""LLM-as-judge plumbing shared by the answer evaluators.
 
 The judge is Qwen3-32B served via OpenRouter (``openrouter/qwen/qwen3-32b``),
 the official BrowseComp-Plus / AgentIR leaderboard judge, hosted instead of run
@@ -6,8 +6,7 @@ on local GPUs.  Requires ``OPENROUTER_API_KEY`` in the environment.
 
 * :func:`make_judge_client` / :func:`complete_within` / :func:`judge_all`:
   the free-text grader of the answer evaluation.
-* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``answer.argue``) and
-  of the criteria evaluation that mirrors it (``gold.nugget_ask``).
+* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``answer.argue``).
 """
 
 import asyncio
@@ -131,17 +130,6 @@ def has_yes_no(text: str) -> bool:
     """Whether a reply says YES or NO."""
     text = (text or "").upper()
     return "YES" in text or "NO" in text
-
-
-def is_yes(text: str, default: bool = False) -> bool:
-    """Auto-ARGUE's reading of a reply: YES when it says YES, NO when it says
-    NO, else *default* (the check's default answer)."""
-    text = (text or "").strip().upper()
-    if "YES" in text:
-        return True
-    if "NO" in text:
-        return False
-    return default
 
 
 class YesNoJudge:

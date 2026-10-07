@@ -8,9 +8,9 @@ stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 7::
+Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 8::
 
-    line 1  {"record": "meta", "schema_version": 7, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 8, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
              "criteria_source": "llm", "criteria_judge": "llm:...",
@@ -20,7 +20,6 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 7::
              "criteria_info": {"model": ..., "query_shape": "set", "errors": []},
              "final_criteria_state": ["fully_covered", "uncovered", ...],
              "final_criteria_attempts": [2, 0, ...],
-             "criteria_eval": {"query_id": "q1", "recall_strict": 0.4, ..., "criteria_hash": "..."},
              "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "fully_covered", "missing": "",
                                     "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
                                                   "spans": ["..."], "span_verified": [true]}]}, ...]}
@@ -47,12 +46,10 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 7::
              "intermediate_answer_reasoning": "...", "errors": []}
     ...
 
-``criteria_eval`` is the criteria list scored against the dataset's gold
-(``evaluation.criteria.CriteriaEvaluator``, in the background while the
-agent runs, or at evaluation when that score is missing or stale:
-:func:`update_uncertainty_meta`), null when not scored.  A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
+A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
 or answers; fully covered only with several supporting documents), new in
-schema_version 7.  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
+schema_version 7.  schema_version 8 drops ``criteria_eval`` (the criteria
+are assessed offline, ``analysis/criteria_reachability.py``).  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
 agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
 search still gets its meta line.  The file is written atomically.
@@ -62,12 +59,12 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict
 
 import numpy as np
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def _clean(obj: Any) -> Any:
@@ -119,36 +116,3 @@ def save_uncertainty(query_id: str, question: str, result: Dict[str, Any], outpu
         for step in result.get("uncertainty_steps") or []:
             f.write(_dump({"record": "step", "query_id": query_id, **step}) + "\n")
     os.replace(tmp_path, path)
-
-
-def update_uncertainty_meta(path: Union[str, Path], query_id: str, fields: Dict[str, Any]) -> None:
-    """Set *fields* in the meta line of ``{query_id}.jsonl`` (the step lines
-    are kept as they are); *path* is the run directory or its
-    ``uncertainty/`` directory.  Written atomically, as :func:`save_uncertainty`."""
-    path = Path(path)
-    unc = path / "uncertainty" if (path / "uncertainty").is_dir() else path
-    file = unc / f"{query_id}.jsonl"
-    with open(file, "r", encoding="utf-8") as fh:
-        meta = json.loads(fh.readline())
-        rest = fh.read()
-    meta.update(fields)
-    tmp_path = unc / f".{query_id}.jsonl.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write(_dump(meta) + "\n" + rest)
-    os.replace(tmp_path, file)
-
-
-def load_uncertainty_meta(path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:
-    """The meta line of every ``{query_id}.jsonl`` of a run's ``uncertainty/``
-    directory, keyed by query id; *path* is the run directory or that
-    directory itself."""
-    path = Path(path)
-    unc = path / "uncertainty" if (path / "uncertainty").is_dir() else path
-    out = {}
-    for f in sorted(unc.glob("*.jsonl")):
-        with open(f, "r", encoding="utf-8") as fh:
-            line = fh.readline()
-        if line.strip():
-            meta = json.loads(line)
-            out[str(meta["query_id"])] = meta
-    return out

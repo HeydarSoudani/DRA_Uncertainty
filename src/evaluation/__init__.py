@@ -18,11 +18,9 @@ trajectory
 generation
     Generation statistics (``generation.stats``) and the per-query
     generation file.
-criteria
-    The criteria list scored against the dataset's criteria gold
-    (``CriteriaEvaluator``), in a run and offline
-    (``python -m evaluation.criteria``), with its gold units and matchers
-    (``gold``).
+gold
+    The gold entities of TRQA and the entity matcher, for the entity
+    reachability of the criteria (``analysis/criteria_reachability.py``).
 uncertainty
     The per-query uncertainty-signal file.
 

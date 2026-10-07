@@ -6,11 +6,7 @@ With ``inform=False`` (``monitor``) it never changes the trajectory; with
 sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
-                             the sample) and sigma_0 is all uncovered; with
-                             ``criteria_eval_fn`` C is scored against the
-                             gold in a background thread while the agent
-                             runs (log and meta line only, never the
-                             trajectory)
+                             the sample) and sigma_0 is all uncovered
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
@@ -65,8 +61,7 @@ configured, e.g. ``--add-intermediate-answer false``).
 """
 
 import logging
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from utils.text_utils import doc_id
 
@@ -117,17 +112,6 @@ class UncertaintyEstimator:
             estimator configuration), so a file can be read on its own.
         inform: Render each step's ``<certainty>`` tag for the agent to
             read (``--uncertainty-estimator-mode inform``).
-        criteria_eval_fn: ``(query_id, query, criteria dicts) -> record or
-            None``, scores the new criteria list against the gold
-            (``evaluation.criteria.CriteriaEvaluator.score``) in a
-            background thread, so its judge calls do not delay the agent;
-            :meth:`meta` waits for the record and saves it as
-            ``criteria_eval``, and the agent prints it at the end of the
-            sample (:attr:`criteria_eval_line`).  It is gold-based, so it
-            never reaches the agent.  None: not scored.
-        criteria_eval_format: ``record -> str``, the log line of a record.
-        criteria_eval_skip: Log line printed instead of the score when the
-            criteria are not scored (dataset without criteria gold).
     """
 
     def __init__(
@@ -143,19 +127,8 @@ class UncertaintyEstimator:
         agentic_model: str = "",
         run_info: Optional[Dict[str, Any]] = None,
         inform: bool = False,
-        criteria_eval_fn: Optional[Callable[[Optional[str], str, List[Dict]], Optional[Dict]]] = None,
-        criteria_eval_format: Optional[Callable[[Dict], str]] = None,
-        criteria_eval_skip: Optional[str] = None,
     ) -> None:
         self.inform = inform
-        self._criteria_eval_fn = criteria_eval_fn
-        # One worker: meta() waits for the sample's record before the next
-        # reset(), so at most one score runs at a time.
-        self._criteria_eval_pool = (ThreadPoolExecutor(max_workers=1, thread_name_prefix="criteria-eval")
-                                    if criteria_eval_fn is not None else None)
-        self._criteria_eval_future: Optional[Future] = None
-        self._criteria_eval_format = criteria_eval_format or str
-        self._criteria_eval_skip = criteria_eval_skip
         self._run_info = dict(run_info or {})
         self._criteria_source = criteria_source
         self._encoder_name = encoder_name
@@ -209,35 +182,10 @@ class UncertaintyEstimator:
                 self._criteria_info = {"errors": [f"criteria_source: {e}"]}
             logger.info("UncertaintyEstimator: %d criteria: %s",
                         len(self._criteria), [c.text for c in self._criteria])
-        self._criteria_eval_future = None
-        if self._criteria_eval_fn is not None and self._criteria_source is not None:
-            self._criteria_eval_future = self._criteria_eval_pool.submit(
-                self._criteria_eval_fn, query_id, query, [c.to_dict() for c in self._criteria])
         if self._coverage is not None:
             self._coverage.reset(query, self._criteria)
         if self._targeting is not None:
             self._targeting.reset(query, self._criteria)
-
-    def _criteria_eval(self) -> Optional[Dict[str, Any]]:
-        """The current sample's criteria score, waiting for it if it is still
-        running; None when not scored or when scoring failed."""
-        if self._criteria_eval_future is None:
-            return None
-        try:
-            return self._criteria_eval_future.result()
-        except Exception:
-            logger.warning("UncertaintyEstimator: criteria eval failed", exc_info=True)
-            self._criteria_eval_future = None
-            return None
-
-    @property
-    def criteria_eval_line(self) -> Optional[str]:
-        """The current sample's criteria score as one log line (the skip
-        line when not scored); the agent prints it at the end of the sample."""
-        record = self._criteria_eval()
-        if record is None:
-            return self._criteria_eval_skip
-        return self._criteria_eval_format(record)
 
     def meta(self) -> Dict[str, Any]:
         """Per-sample information for the meta line of the saved file."""
@@ -257,7 +205,6 @@ class UncertaintyEstimator:
             "final_criteria_state": self._coverage.statuses() if self._tracks_state else None,
             "final_criteria_attempts": self._targeting.attempts if self._tracks_targeting else None,
             "criteria_evidence": self._coverage.state.evidence() if self._tracks_state else None,
-            "criteria_eval": self._criteria_eval(),
         }
 
     def close(self) -> None:
@@ -267,10 +214,6 @@ class UncertaintyEstimator:
         self._coverage = None
         self._targeting = None
         self._intermediate_answer = None
-        self._criteria_eval_fn = None
-        if self._criteria_eval_pool is not None:
-            self._criteria_eval_pool.shutdown(wait=False, cancel_futures=True)
-            self._criteria_eval_pool = None
 
     # ------------------------------------------------------------------
     # Per-step observation

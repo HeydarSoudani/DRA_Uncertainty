@@ -103,11 +103,10 @@ python experiments/dra_inference.py --dataset browsecomp_plus --eval-only --num-
 ```
 
 A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
-`summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`,
-the `criteria_eval` of the uncertainty meta lines and `criteria_eval_judgments.jsonl`) and
+`summary.json`. The judge verdicts are kept in the run directory (`accuracy.jsonl`, `report_eval/`) and
 reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU. The terminal log prints one
 EVALUATION SUMMARY block in the order of `summary.json`: retrieval (seen docs), generation (correctness or nuggets, and
-length), criteria, trajectory, then the time of each evaluation stage. Cited-doc and fusion metrics and the full @k
+length), trajectory, then the time of each evaluation stage. Cited-doc and fusion metrics and the full @k
 tables are only in `summary.json`. `_eval_results_cache*.pkl.gz` files left by older code are no longer
 read and can be deleted.
 
@@ -133,13 +132,14 @@ wording; what the request leaves out is written into the criterion it narrows ("
 ("it", "these"). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers), `rest` or `aspect`
 (one aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion)
 is open, its members closed and its "any other member" criterion rest (added by code when the model leaves it out;
-fully covered only while the set is), all report criteria are aspects. Entity recall and precision count the member criteria only. The coverage judge's prompt defines only the kinds present in the list.
+fully covered only while the set is), all report criteria are aspects. Entity reachability counts the member criteria only. The coverage judge's prompt defines only the kinds present in the list.
 Criteria bank (`criteria_bank: true`, the default): a query's criteria are read from
 `CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl` and extracted only when missing, then added to it
 (`BankedCriteriaSource`). A line is used only when the query id and text, `llm_criteria`, the query shape,
-`max_criteria` and a hash of the init prompt all match, so a changed prompt or cap extracts again; a failed extraction
-and a salvaged one (the complete items of a truncated reply) are never added. Runs and `analysis/criteria_reachability.py` share the bank, so the analysis scores the criteria the
-runs use. At the end of each search iteration the estimator computes the per-step signals of
+`max_criteria` and a hash of the init prompt all match, so a changed prompt or cap extracts again; a truncated reply is asked once more and fails when truncated again, and
+a failed extraction is never added, so every criteria list a run uses is banked. A query extracted by two processes at
+once keeps the line banked first. Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the criteria the
+runs use; the criteria are never scored against gold during a run. At the end of each search iteration the estimator computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
@@ -194,7 +194,7 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
 </certainty>
 ```
 
-`kind="open"` marks an open criterion; closed criteria carry no kind. Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
+`kind="open"` marks an open criterion and `kind="rest"` the rest criterion of a set query; closed and aspect criteria carry no kind. Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
 `new_item_graded_recall`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
@@ -210,50 +210,6 @@ The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jso
 `uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
 follows the flag like every other agent; in `inform` mode its system prompt also explains the tag, and in `monitor` and
 `off` modes the prompt never mentions it.
-
-#### Criteria evaluation
-
-In a run with the estimator on (`monitor` or `inform`) on a dataset with `criteria_gold`, each query's criteria are
-scored against it with the judge `judge_model`, in a background thread while the agent runs, so the judge calls do
-not delay the agent. The score is printed when the query ends
-(`[Agent] criteria eval (nuggets, 9 criteria, 15 gold): nugget coverage ... `) and saved as `criteria_eval` in the meta
-line of `uncertainty/{qid}.jsonl`; it never reaches the agent. The run's evaluation reuses it (or recomputes it when
-the criteria or the judge changed, writing the new score back into the meta line) and writes the `criteria` group
-of `summary.json`, laid out as the report's: `method`, `judge_model`, the counts (`num_evaluated`,
-`num_empty_criteria`, `num_judge_failures`), `metrics` and `stats` (list sizes and diagnostics).
-The nugget judgments made at evaluation are cached one by one (`criteria_eval_judgments.jsonl`, keyed by judge,
-prompt, criterion, question and answer), so a changed criteria list costs only its new criteria.
-
-`python -m evaluation.criteria` scores the criteria list without an agent run (`src/evaluation/criteria/`, gold and
-matchers in `src/evaluation/gold/`). It derives the criteria of a split with `LLMCriteriaSource` (or reads them from a
-run with `--run-dir`) and compares them with the dataset's `criteria_gold` (`layout.DATASET_SPECS`):
-
-- `entities` (TRQA): closed criteria are matched to the query's gold entities by name (normalized string match, then an
-  LLM for aliases); `recall` over the entities, `precision` over the closed criteria.
-- `nuggets` (NeuCLIR, RAGTIME): scored the way Auto-ARGUE scores the reports, so the two evaluations compare nugget
-  by nugget. Both use the same nuggets and requests (the Auto-ARGUE nugget banks: questions grouped, answers without
-  documents and questions without answers dropped), the same judge and settings (Qwen3-32B, temperature 0, reasoning
-  off, YES/NO asked again twice, then NO), and the same covered rule. For every (criterion, nugget question, gold
-  answer) the judge says whether the criterion asks for that question-answer pair (`src/evaluation/gold/nugget_ask.py`).
-  A nugget is covered when the matched answers meet its aggregator (one for OR, all for AND).
-  Metrics: `nugget_coverage`, `nugget_coverage_weighted` (vital 2, okay 1, as Auto-ARGUE); `avg_unmatched_criteria`
-  (criteria that ask for no nugget answer) is a diagnostic in `stats`. The request check scores the criteria
-  against the request itself: an LLM lists the request's constraints (requirement, limit, exclusion, exception,
-  background) and the criteria that carry each, then the criteria that ask for what the request leaves out
-  (`constraint_recall`, `exclusion_recall`, `violations_per_query`). In a run's evaluation, each nugget's criteria
-  label is crossed with Auto-ARGUE's answered label: `answered_if_asked` / `answered_if_not_asked` in
-  `criteria.metrics` are the report's coverage of the nuggets the criteria asked for / did not ask for.
-- No gold (BrowseComp-Plus): extraction only, or scored against a reference criteria list (`--reference`): an LLM
-  lists each reference unit's qualifiers and scores every (unit, criterion) pair 1, 0.5 or 0; `recall_strict` /
-  `recall_lenient`, `precision_strict` / `precision_lenient`.
-
-```bash
-python -m evaluation.criteria --dataset trqa --subset wiki2 --sample 100
-python -m evaluation.criteria --dataset neuclir --prompt-file other_prompt.txt --tag other
-```
-
-`--prompt-file` replaces the criteria-extraction prompt, for comparisons. Outputs (`criteria.jsonl`, reused on a rerun;
-`eval.jsonl`; `summary.json`; `criteria_eval_judgments.jsonl`, the cached nugget judgments) go to `{DRA_OUTPUT_ROOT}/criteria_eval/{dataset}_{split}/{tag}/`.
 
 #### Report evaluation (Auto-ARGUE)
 
@@ -292,7 +248,7 @@ src/evaluation/
 ├── trajectory/      TrajectoryEvaluator (statistics), save_trajectory
 ├── generation/      GenerationEvaluator (length, words, citations, generation/{qid}.md)
 ├── uncertainty/     save_uncertainty (uncertainty/{qid}.jsonl schema)
-├── criteria/, gold/ CriteriaEvaluator (in a run and offline: python -m evaluation.criteria), gold units, matchers
+├── gold/            TRQA gold entities and the entity matcher (criteria reachability)
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
 └── common.py        file, statistics and terminal helpers
 ```
@@ -312,8 +268,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 ├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
 ├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
-├── criteria_eval_judgments.jsonl   cached YES/NO nugget judgments of the criteria eval (report datasets)
-└── summary.json                    grouped metrics (retrieval / generation / criteria / trajectory)
+└── summary.json                    grouped metrics (retrieval / generation / trajectory)
 ```
 
 `summary.json`:
@@ -324,9 +279,6 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
   "retrieval":  {"seen": {...}, "cited": {...}, "fusion": {...}},
   "generation": {"correctness": {...}  (datasets with answers) | "nuggets": {...}  (Auto-ARGUE),
                  "stats": {avg_generation_length, avg_generation_words, avg_citations}},
-  "criteria":   {method, judge_model, num_evaluated, num_empty_criteria, num_judge_failures,
-                 "metrics": {coverage (or recall / precision) scores, request check, answered_if_asked (report datasets)},
-                 "stats": {avg_num_criteria, avg_num_gold, ...}},
   "trajectory": {...}
 }
 ```
@@ -343,7 +295,7 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 6 |
+| `schema_version` | 8 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
 | `criteria_source`, `criteria_judge`, `query_scorer`, `encoder` | components in use (null when off) |
@@ -353,7 +305,6 @@ Meta line (one per query):
 | `criteria` | `[{id, text, kind}]` |
 | `criteria_info` | criteria LLM `model`, `query_shape`, `errors` |
 | `final_criteria_attempts` | last attempts, one per criterion |
-| `criteria_eval` | the criteria scored against the gold during the run (`CriteriaEvaluator` record; null when not scored) |
 | `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
 Step line (one per search iteration, flat scalars first):
@@ -381,23 +332,43 @@ several `iter_N`. Join on `docs[].doc_id` when a doc-level link to `retrieval/*.
 
 ### Criteria reachability
 
-`analysis/criteria_reachability.py --dataset {neuclir,ragtime}` asks whether the gold documents are reachable through
-a request's criteria list. Criteria come from the criteria bank (extracted and added when missing), with
-`llm_criteria` and `max_criteria` read from the run config (`--config`, default
-`experiments/configs/dra_inference.yaml`); a request whose extraction failed or was only salvaged is left out. An LLM
-judge (`--judge-model`, default `llm_criteria`, prompts `analysis/prompts/criteria_reachability_{system,user}.txt`)
-reads each whole gold document of `--grades` (default: the top grade) with all criteria, in one call per document. It
-sees the request's topic title (`DatasetSpec.title_key`: NeuCLIR `topic_title`, RAGTIME `title`) instead of the
-request, since the criteria already carry the request's requirements and limits. It labels every criterion: `support` (specific facts, backed by a verbatim span; lowered to `related` when the span is not in
-the document), `related` (on the topic, no specific facts) or `none` (not about it); only `support` counts as reaching.
-Reachability is the share of gold documents that at least one criterion supports (headline); the share at `related` or
-above is secondary; both micro, macro and per grade. Calls per request: one for the
-criteria when missing from the bank, plus one per gold document; a reply that leaves a criterion without a label is
-asked again. Output in the run outputs, in
-`OUTPUT_ROOT/criteria_reachability/{dataset}_{split}/` (`--output` overrides it): `judgments.jsonl` (the judgment cache,
-shared by every `--grades` and `--tag`) and, per `grades-{g}_{judge}[_{tag}]/`, `summary.json` (`settings`, `counts`,
-`metrics`, `stats`) and `per_doc.jsonl` (per request and document: grade, document length, reach, and every
-criterion's label, reason and span).
+`analysis/criteria_reachability.py` assesses the init component: is the gold reachable through a request's criteria
+list? It is the only place the criteria are judged against gold; runs only read and fill the bank. Criteria come from
+the criteria bank (extracted and added when missing), with `llm_criteria` and `max_criteria` read from the run config
+(`--config`, default `experiments/configs/dra_inference.yaml`); a request whose extraction failed
+is left out. The dataset's `reachability` (`layout.DATASET_SPECS`) picks the gold:
+
+- `documents` (NeuCLIR, RAGTIME): an LLM judge (`--judge-model`, default `llm_criteria`, prompts
+  `analysis/prompts/criteria_reachability_{system,user}.txt`) reads each whole gold document of `--grades` (default:
+  the top grade) with all criteria, in one call per document. It sees the request's topic title
+  (`DatasetSpec.title_key`: NeuCLIR `topic_title`, RAGTIME `title`) instead of the request, since the criteria already
+  carry the request's requirements and limits. It labels every criterion: `support` (specific facts, backed by a
+  verbatim span; lowered to `related` when the span is not in the document), `related` (on the topic, no specific
+  facts) or `none` (not about it); only `support` counts as reaching. Reachability is the share of gold documents that
+  at least one criterion supports (headline); the share at `related` or above is secondary; both micro, macro and per
+  grade. A reply that leaves a criterion without a label is asked again.
+- `entities` (TRQA): the gold is the entity set of each query (`queries_{split}_intermediate_info.jsonl`). A gold
+  entity is reachable when a member criterion names it: normalized string match, then one LLM call per request for
+  the entities and member criteria left (aliases, spellings, transliterations; `src/evaluation/gold/entity_match.py`).
+  The set and rest criteria are left out, since they cover every member by construction. Reachability is the share of
+  reachable gold entities (headline, micro and macro); `member_precision`, the share of member criteria that name a
+  gold entity, is secondary.
+- None (BrowseComp-Plus): the criteria are the clues the question states, reachable by construction, so the run only
+  fills the criteria bank (no judge call, no output).
+
+Requests are those a run uses; `--limit N` does the first N not done yet, so repeated runs go through the split N at a
+time. Output in the run outputs, in `OUTPUT_ROOT/criteria_reachability/{dataset}_{split}/` (`--output` overrides it):
+`judgments.jsonl` (the judgment cache, shared by every `--grades` and `--tag`) and, per run folder, `summary.json`
+(`settings`, `counts`, `metrics`, `stats`) with `per_doc.jsonl` in `grades-{g}_{judge}[_{tag}]/` (per request and
+document: grade, document length, reach, and every criterion's label, reason and span) or `per_query.jsonl` in
+`entities_{judge}[_{tag}]/` (per request: every gold entity with the member criterion that names it, and the member
+criteria that name none).
+
+```bash
+python analysis/criteria_reachability.py --dataset ragtime --grades 2 3
+python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test
+python analysis/criteria_reachability.py --dataset browsecomp_plus   # criteria bank only
+```
 
 ## 4. Training
 

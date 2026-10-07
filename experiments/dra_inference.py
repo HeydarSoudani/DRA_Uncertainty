@@ -55,7 +55,7 @@ Output structure:
                                        num_queries,
                                        retrieval  {seen, cited, fusion},
                                        generation {correctness | nuggets, stats},
-                                       criteria, trajectory
+                                       trajectory
 """
 
 import argparse
@@ -112,7 +112,6 @@ from utils.io_utils import (
     build_uncertainty_config_name,
     write_run_config,
 )
-from evaluation.gold import load_gold_units
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results, save_query_outputs
 from evaluation.retrieval.fusion import run_fusion_eval
 
@@ -184,12 +183,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
-    # Gold of the criteria eval: only when the estimator extracts criteria
-    # (monitor / inform) and the dataset has criteria gold.
     _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
-    criteria_gold = None
-    if _estimator_mode != "off" and kwargs.get("llm_criteria") and DATASET_SPECS[dataset].criteria_gold:
-        criteria_gold = load_gold_units(dataset, data_path, file_data_set)
     # Criteria bank of the split: criteria are read from it, extracted only when missing.
     criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
                      if _estimator_mode != "off" and kwargs.get("criteria_bank", True) else None)
@@ -254,8 +248,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
                                       dataset=dataset, graded_qrels=graded_qrels,
-                                      data_path=data_path, split=file_data_set,
-                                      criteria_gold=criteria_gold)
+                                      data_path=data_path, split=file_data_set)
 
         # Fusion runs first so its per-method surfaced-doc metrics can be folded
         # into the single summary.json written by evaluate_and_save.
@@ -271,7 +264,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
         worker_config["graded_qrels"] = graded_qrels
-        worker_config["criteria_gold"] = criteria_gold
         worker_config["criteria_bank"] = criteria_bank
 
     # ==================== Build search tool ====================
@@ -337,8 +329,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agentic_model=agentic_model,
             dataset=dataset,
             llm_model=llm_model,
-            criteria_gold=criteria_gold,
-            judge_model=kwargs.get("judge_model"),
             criteria_bank=criteria_bank,
         )
         if estimator is not None and hasattr(agent, "uncertainty_estimator"):
@@ -347,8 +337,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # ==================== Setup output dirs + evaluators ====================
     evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
                                   dataset=dataset, graded_qrels=graded_qrels,
-                                  data_path=data_path, split=file_data_set,
-                                  criteria_gold=criteria_gold)
+                                  data_path=data_path, split=file_data_set)
 
     trajectory_dir = None
     if output_path:
@@ -618,7 +607,7 @@ def _parse_args():
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; criteria vs the dataset's criteria gold when the estimator is on) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and the criteria scores (uncertainty meta lines), so an unchanged run makes no LLM call.")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl and report_eval/, so an unchanged run makes no LLM call.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -827,7 +816,7 @@ if __name__ == "__main__":
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
 #     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},
 #                                        generation{correctness|nuggets,stats},
-#                                        criteria, trajectory
+#                                        trajectory
 #
 # ============================================================================
 # EXAMPLE USAGE

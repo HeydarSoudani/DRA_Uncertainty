@@ -215,10 +215,6 @@ class AgentVerboseMixin:
             result["uncertainty_steps"] = list(estimator.steps)
         except Exception:
             logger.warning("Uncertainty estimator meta failed", exc_info=True)
-        # The criteria score, computed in the background while the agent ran.
-        line = getattr(estimator, "criteria_eval_line", None)
-        if line:
-            self._print(line)
 
 
 def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -146,8 +146,6 @@ class LLMCriteriaSource(CriteriaSource):
         temperature: LLM temperature.
         query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
             (the dataset's ``query_shape`` in layout.DATASET_SPECS).
-        system_prompt: Replaces the criteria-extraction system prompt (for
-            offline prompt comparisons, ``python -m evaluation.criteria``).
     """
 
     name = "llm"
@@ -160,12 +158,11 @@ class LLMCriteriaSource(CriteriaSource):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         query_shape: str = "single_target",
-        system_prompt: Optional[str] = None,
     ) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
         self._shape = query_shape
-        self._system = system_prompt or CRITERIA_INIT_SYSTEMS[query_shape]
+        self._system = CRITERIA_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
         self.model_name = model_name
         self._max_criteria = max_criteria
@@ -241,15 +238,16 @@ class BankedCriteriaSource(CriteriaSource):
     query and setting: the query id and text, ``inner.bank_fields`` (model,
     query shape, cap, prompt hash), the criteria and the extraction info.
     A line is used only when all of these match, so a changed prompt or cap
-    extracts the criteria again; the last line of a key wins.  A failed
-    extraction (no criteria) and a salvaged one (the complete items of a
-    truncated reply) are never added.  Lines are appended under a file lock,
-    so parallel workers and processes can share the bank.
+    extracts the criteria again.  A salvaged extraction (the complete items
+    of a truncated reply) is asked once more and fails when salvaged again,
+    so every criteria list used is banked; a failed extraction (no criteria)
+    is never added.  Lines are appended under a file lock, after the file is
+    read again: when another worker or process added the query meanwhile,
+    its line is used and none is added, so one query has one banked list.
 
     *info* is the stored extraction info with ``bank``: ``"hit"`` (read from
-    the bank), ``"added"`` (extracted and added), ``"salvaged"`` (extracted
-    from a truncated reply, used but not added) or ``"failed"`` (extracted,
-    no criteria, not added).
+    the bank), ``"added"`` (extracted and added) or ``"failed"`` (no
+    criteria, not added).
     """
 
     name = "bank"
@@ -285,27 +283,41 @@ class BankedCriteriaSource(CriteriaSource):
         if rec is not None:
             return [Criterion(**c) for c in rec["criteria"]], {**rec["info"], "bank": "hit"}
 
-        criteria, info = self._inner.get(query_id, query)
+        # A salvaged reply is asked once more; salvaged again, the extraction fails.
+        for _ in range(2):
+            criteria, info = self._inner.get(query_id, query)
+            if not info.get("salvaged"):
+                break
+        else:
+            info = {**info, "errors": info.get("errors", []) + ["parse: truncated reply twice, not banked"]}
+            criteria = []
         if not criteria:
             return criteria, {**info, "bank": "failed"}
-        if info.get("salvaged"):
-            return criteria, {**info, "bank": "salvaged"}
         rec = {
             "key": key, "query_id": query_id, "query": query, **self._fields,
             "criteria": [c.to_dict() for c in criteria], "info": info,
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
-        line = json.dumps(rec, ensure_ascii=False) + "\n"
         with self._lock:
-            self._bank[key] = rec
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as f:
+            with open(self.path, "a+", encoding="utf-8") as f:
                 fcntl.flock(f, fcntl.LOCK_EX)
                 try:
-                    f.write(line)
-                    f.flush()
+                    # Lines another worker or process added since the bank was read.
+                    f.seek(0)
+                    for line in f:
+                        if line.strip():
+                            other = json.loads(line)
+                            self._bank[other["key"]] = other
+                    banked = self._bank.get(key)
+                    if banked is None:
+                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                        f.flush()
+                        self._bank[key] = rec
                 finally:
                     fcntl.flock(f, fcntl.LOCK_UN)
+        if banked is not None:
+            return [Criterion(**c) for c in banked["criteria"]], {**banked["info"], "bank": "hit"}
         return criteria, {**info, "bank": "added"}
 
 

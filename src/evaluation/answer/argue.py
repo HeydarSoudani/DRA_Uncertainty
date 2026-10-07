@@ -193,34 +193,6 @@ def build_nugget_banks(nuggets: Dict[str, List[Dict[str, Any]]],
     return banks
 
 
-def nugget_covered(matched: set, answers: set, aggregator: Optional[str]) -> bool:
-    """Whether the matched answers of a nugget question count it as answered,
-    as the package's ``score`` decides: all gold answers for an AND nugget,
-    at least one (and only gold ones) for an OR nugget."""
-    if (aggregator or "OR") == "AND":
-        return matched == answers
-    return bool(matched) and matched.issubset(answers)
-
-
-def answered_nuggets(judged: Dict[str, Any], bank) -> List[str]:
-    """The nugget questions of *bank* a judged report (``JudgedReport`` as
-    JSON) answers, by the package's ``score`` rule."""
-    matched: Dict[str, set] = {}
-    for sentence in judged.get("sentence_judgments") or []:
-        for judgment in sentence.get("judgments") or []:
-            if judgment.get("judgment_type_id") != "SENTENCE_ANSWERS_QUESTION":
-                continue
-            for nugget in (judgment.get("response") or {}).get("matched_nuggets") or []:
-                matched.setdefault(nugget["question_text"], set()).update(nugget["matched_answer"])
-    out = []
-    for nq in bank.nuggets_as_list() or []:
-        answers = {a.answer for a in (nq.answers or {}).values()}
-        aggregator = getattr(nq.aggregator_type, "value", nq.aggregator_type)
-        if nugget_covered(matched.get(nq.question, set()), answers, aggregator):
-            out.append(nq.question)
-    return out
-
-
 def build_report(query_id: str, generation: str, max_chars: Optional[int]) -> Tuple[Any, int]:
     """``(Report, unmapped_markers)``: the report as Auto-ARGUE reads it."""
     _, _, utils = _import_auto_argue()
@@ -430,8 +402,6 @@ class ArgueReportEvaluator:
                 record[m] = round(scores.get(m, 0.0), 5)
             if qid in empty:
                 record["nuggets"] = len(banks[qid].nugget_bank)
-            # Per nugget question, for the comparison with the criteria evaluation.
-            record["answered_nuggets"] = [] if qid in empty else answered_nuggets(judged[qid], banks[qid])
             per_query.append(record)
 
         return {

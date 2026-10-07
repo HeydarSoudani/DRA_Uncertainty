@@ -14,6 +14,7 @@ Two passes:
    unmatched, for aliases, other spellings and transliterations.
 """
 
+import hashlib
 import logging
 import re
 import unicodedata
@@ -77,6 +78,9 @@ Entities:
 
 Texts:
 {texts}"""
+
+# Part of a cached match's key: a changed prompt matches again.
+ENTITY_MATCH_PROMPT_HASH = hashlib.sha1((ENTITY_MATCH_SYSTEM + ENTITY_MATCH_USER_TEMPLATE).encode()).hexdigest()[:12]
 
 
 class LLMEntityMatcher:

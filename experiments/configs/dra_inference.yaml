@@ -61,7 +61,7 @@ max_passage_chars: 4000         # Chars of one retrieved passage shown to the ag
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the uncertainty-aware agent, reasoning off
 max_criteria: null                  # Cap on the number of criteria per query (null = the dataset's default in layout.DATASET_SPECS)
 criteria_judge_model: ""            # LLM of the stateful coverage judge (criteria_delta) and the query scorer (criteria attempts); "" = llm_criteria
-criteria_bank: true                 # Read each query's criteria from DATA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl; extract and add only the missing ones
+criteria_bank: true                 # Read each query's criteria from CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl (shared with analysis/criteria_reachability.py); extract and add only the missing ones
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────

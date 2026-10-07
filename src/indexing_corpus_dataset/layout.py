@@ -122,11 +122,12 @@ class DatasetSpec:
                              ``multi_aspect`` it is the number of criteria the
                              extractor may add to the request's own, asked in
                              the prompt; the list is not cut.
-        criteria_gold:       Gold the criteria list is scored against
-                             (``python -m evaluation.criteria``):
-                             ``"entities"`` (the entity set of each query),
-                             ``"nuggets"`` (the nugget questions), or None
-                             (a reference criteria list must be given).
+        reachability:        Gold the criteria reachability is measured
+                             against (``analysis/criteria_reachability.py``):
+                             ``"documents"`` (the gold documents),
+                             ``"entities"`` (the entity set of each query), or
+                             None (the criteria are the query's own clues,
+                             reachable by construction; criteria bank only).
         answer_eval:         Answer-correctness evaluator: ``"numeric_match"``,
                              ``"llm_judge"``, or None (retrieval-only evaluation).
         doc_max_length:      Max tokens per passage at index build, for
@@ -150,7 +151,7 @@ class DatasetSpec:
     task: str
     query_shape: str
     max_criteria: int
-    criteria_gold: str | None
+    reachability: str | None
     answer_eval: str | None
     doc_max_length: int
     query_max_length: int
@@ -163,14 +164,14 @@ DATASET_SPECS = {
     # TRQA passages are short; answers are numeric.
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, criteria_gold="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
     # Long web pages and long multi-clue questions; grades: gold=2, evidence=1.
     # Both are evidence (the owners' qrel_evidence) for the binary metrics; the
     # owners define no gains, so gold (contains the answer) gets gain 2 by choice.
     "browsecomp_plus": DatasetSpec(
         dataset_year=None, subset="test", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=8, criteria_gold=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
+        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
     # valuable 1); relevant = >=1 as in the track's R@1000.  Only the 59
@@ -178,7 +179,7 @@ DATASET_SPECS = {
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
     "neuclir": DatasetSpec(
         dataset_year="2024", subset="news", query_key="request", min_relevance_score=1,
-        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
@@ -186,7 +187,7 @@ DATASET_SPECS = {
     # the report request (background + problem statement).
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
-        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, criteria_gold="nuggets", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="title",
     ),
 }

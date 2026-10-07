@@ -85,8 +85,6 @@ def build_uncertainty_estimator(
     agentic_model: Optional[str] = None,
     dataset: Optional[str] = None,
     llm_model: Optional[str] = None,
-    criteria_gold=None,
-    judge_model: Optional[str] = None,
     criteria_bank: Optional[str] = None,
 ):
     """Build the uncertainty estimator, or None when *mode* is ``"off"``.
@@ -118,12 +116,6 @@ def build_uncertainty_estimator(
         dataset: Dataset name; intermediate answers only for ``task == "qa"``.
         llm_model: The agent's LLM; saved with the other run settings in
             every meta line.
-        criteria_gold: ``{query_id: [GoldUnit]}`` of the dataset's
-            ``criteria_gold`` (``evaluation.gold.load_gold_units``): each
-            query's criteria are scored against it in the background while
-            the agent runs, and the score is printed and saved (``criteria_eval``).  None:
-            not scored.
-        judge_model: LLM of the criteria-eval matchers (``--judge-model``).
         criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
             a query's criteria are read from it, and extracted and added
             only when missing.  None: extracted for every sample.
@@ -184,20 +176,6 @@ def build_uncertainty_estimator(
         )
         print(f"Uncertainty estimator: criteria judge {coverage_judge.name}, query scorer {query_scorer.name}")
 
-    criteria_evaluator = None
-    if criteria_source is not None and criteria_gold:
-        from evaluation.criteria import build_criteria_evaluator
-        from evaluation.judge import DEFAULT_JUDGE_MODEL
-        # Same judge as the end-of-run criteria eval (evaluation.runner).
-        judge_model = judge_model or DEFAULT_JUDGE_MODEL
-        criteria_evaluator = build_criteria_evaluator(dataset, criteria_gold, judge_model)
-        if criteria_evaluator is not None:
-            print(f"Uncertainty estimator: criteria eval ({criteria_evaluator.mode}) with {judge_model}")
-    criteria_eval_skip = None
-    if criteria_source is not None and criteria_evaluator is None:
-        criteria_eval_skip = f"Criteria eval: skipped ({dataset} has no criteria gold)"
-        print(f"Uncertainty estimator: {criteria_eval_skip}")
-
     return UncertaintyEstimator(
         criteria_source=criteria_source,
         coverage_judge=coverage_judge,
@@ -220,9 +198,6 @@ def build_uncertainty_estimator(
             "mode": mode,
         },
         inform=mode == "inform",
-        criteria_eval_fn=criteria_evaluator.score if criteria_evaluator else None,
-        criteria_eval_format=criteria_evaluator.format_record if criteria_evaluator else None,
-        criteria_eval_skip=criteria_eval_skip,
     )
 
 
@@ -551,8 +526,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         agentic_model=agentic_model,
         dataset=dataset,
         llm_model=llm_model,
-        criteria_gold=worker_config.get("criteria_gold"),
-        judge_model=worker_config.get("judge_model"),
         criteria_bank=worker_config.get("criteria_bank"),
     )
     if estimator is not None and hasattr(agent, "uncertainty_estimator"):
