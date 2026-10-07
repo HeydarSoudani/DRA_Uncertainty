@@ -25,7 +25,6 @@ CLOSED = "closed"
 OPEN = "open"
 REST = "rest"
 ASPECT = "aspect"
-KINDS = (CLOSED, OPEN, REST, ASPECT)
 # Kinds that documents establish only together (``OPEN_MIN_SOURCES``).
 MULTI_SOURCE_KINDS = (OPEN, ASPECT)
 

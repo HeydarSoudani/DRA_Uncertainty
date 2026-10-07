@@ -2,6 +2,8 @@
 
 from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TAG_FORMAT
 
+from ..types import MULTI_ASPECT
+
 CRITERIA_INIT_USER_TEMPLATE = """\
 Query: {query}
 
@@ -12,7 +14,7 @@ Query: {query}
 # criteria the extractor adds to the ones the request states (asked of the
 # model; the code keeps a report request's list whole).
 _CRITERIA_INIT_INSTRUCTIONS = {
-    "multi_aspect": "List the criteria of this query: every criterion the query states, then at most {max_criteria} added criteria.",
+    MULTI_ASPECT: "List the criteria of this query: every criterion the query states, then at most {max_criteria} added criteria.",
 }
 _DEFAULT_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query, at most {max_criteria}."
 
@@ -23,7 +25,7 @@ def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
     return CRITERIA_INIT_USER_TEMPLATE.format(
         query=query, instruction=instruction.format(max_criteria=max_criteria))
 
-CRITERIA_JUDGE_DOC_USER_TEMPLATE = """\
+CRITERIA_UPDATE_DOC_USER_TEMPLATE = """\
 Query: {query}
 
 Criteria, with their current status and attached evidence:
@@ -32,10 +34,10 @@ Criteria, with their current status and attached evidence:
 New passages:
 {passages}
 
-Update the criteria given the attached evidence and the new passages.\
+Update the status of the criteria given the attached evidence and the new passages.\
 """
 
-CRITERIA_JUDGE_QUERY_USER_TEMPLATE = """\
+CRITERIA_MATCH_QUERY_USER_TEMPLATE = """\
 Query: {query}
 
 Criteria, with their current status and what the search has found so far:
@@ -44,7 +46,7 @@ Criteria, with their current status and what the search has found so far:
 Search queries:
 {subqueries}
 
-Judge how strongly each search query targets each criterion.\
+Score how strongly each search query targets each criterion.\
 """
 
 

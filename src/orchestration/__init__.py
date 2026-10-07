@@ -141,13 +141,14 @@ def build_uncertainty_estimator(
     if max_criteria is None:
         max_criteria = DATASET_SPECS[dataset].max_criteria if dataset else 8
 
+    query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
     criteria_source = None
     if llm_criteria:
         criteria_source = LLMCriteriaSource(
             llm_client=disable_native_thinking(create_generator(llm_criteria, backend="api")),
             max_criteria=max_criteria,
             model_name=llm_criteria,
-            query_shape=DATASET_SPECS[dataset].query_shape if dataset else "single_target",
+            query_shape=query_shape,
         )
         if criteria_bank:
             criteria_source = BankedCriteriaSource(criteria_source, criteria_bank)
@@ -179,6 +180,7 @@ def build_uncertainty_estimator(
         coverage_model = criteria_judge_model or llm_criteria
         coverage_judge, query_scorer = build_criteria_judges(
             disable_native_thinking(create_generator(coverage_model, backend="api")), model=coverage_model,
+            query_shape=query_shape,
         )
         print(f"Uncertainty estimator: criteria judge {coverage_judge.name}, query scorer {query_scorer.name}")
 
@@ -211,7 +213,7 @@ def build_uncertainty_estimator(
             "llm_model": llm_model,
             "dataset": dataset,
             "task": DATASET_SPECS[dataset].task if dataset else None,
-            "query_shape": DATASET_SPECS[dataset].query_shape if dataset else None,
+            "query_shape": query_shape if dataset else None,
             "llm_criteria": llm_criteria or None,
             "max_criteria": max_criteria,
             "add_intermediate_answer": add_intermediate_answer,

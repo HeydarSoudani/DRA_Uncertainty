@@ -1,0 +1,15 @@
+The response to this query is a report that covers several aspects of a topic.
+
+---rules---
+5. A criterion is fully covered when the evidence gives specific facts (such as figures, named cases, findings or measures) for every part its wording names, including each limit; partially covered when the evidence touches it only in general terms, or leaves a named part or limit without specific facts.
+6. A criterion may name what the query leaves out ("..., not ..."). A passage only about the left-out part does not support the criterion.
+
+---example---
+Example criteria: "c2: the measured effects of microplastics on the health of freshwater fish, not marine fish", "c3: regulations proposed to limit microplastic pollution that apply in Ontario, Canada"
+Example output:
+{
+  "updates": [
+    {"id": "c2", "status": "fully_covered", "support": [{"passage": 1, "spans": ["Rainbow trout exposed to polystyrene microplastics for 28 days showed reduced growth and liver damage."]}, {"passage": 3, "spans": ["zebrafish larvae fed microplastics had a 30% higher mortality rate"]}], "contradict": [], "reason": "Passages 1 and 3 give measured effects on the health of two freshwater fish species.", "missing": ""},
+    {"id": "c3", "status": "partially_covered", "support": [{"passage": 2, "spans": ["Canada banned microbeads in toiletries in 2018."]}], "contradict": [], "reason": "Passage 2 gives a federal measure that applies in Ontario but no proposed regulation.", "missing": "regulations proposed to limit microplastic pollution in Ontario"}
+  ]
+}

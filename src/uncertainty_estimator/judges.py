@@ -22,12 +22,12 @@ from utils.text_utils import doc_id as _doc_id, doc_text, parse_json_object
 
 from .criteria import CriteriaState
 from .prompts import (
-    CRITERIA_JUDGE_DOC_USER_TEMPLATE,
-    CRITERIA_JUDGE_QUERY_SYSTEM,
-    CRITERIA_JUDGE_QUERY_USER_TEMPLATE,
-    coverage_judge_system,
+    CRITERIA_MATCH_QUERY_SYSTEM,
+    CRITERIA_MATCH_QUERY_USER_TEMPLATE,
+    CRITERIA_UPDATE_DOC_SYSTEMS,
+    CRITERIA_UPDATE_DOC_USER_TEMPLATE,
 )
-from .types import CriterionUpdate, Evidence
+from .types import QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +95,10 @@ def passage_head(text: str, num_words: int) -> str:
 class LLMCoverageJudge:
     """Stateful LLM judge: one call per step updates the criteria state.
 
-    The prompt shows each criterion with its kind, its status and its last
-    ``max_evidence_per_criterion`` evidence passages (each as the cited
-    spans that occur verbatim and the first ``head_words`` words of the
-    passage; a passage attached to several criteria is shown under each) and,
+    The prompt (one per query shape) shows each criterion with its status
+    and its last ``max_evidence_per_criterion`` evidence passages (each as
+    the cited spans that occur verbatim and the first ``head_words`` words of
+    the passage; a passage attached to several criteria is shown under each) and,
     when partially covered, what it still lacks; then the step's novel
     passages (``max_passage_chars`` each).  The judge lists only the criteria
     a new passage, alone or with the attached evidence, supports or
@@ -107,6 +107,9 @@ class LLMCoverageJudge:
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         model_name: Saved in the meta line.
+        query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
+            (the dataset's ``query_shape`` in layout.DATASET_SPECS); picks
+            the prompt.
         max_passage_chars: Text of one new passage shown to the judge.
         head_words: Words shown from the start of an attached passage.
         max_evidence_per_criterion: Attached evidence passages shown per
@@ -120,6 +123,7 @@ class LLMCoverageJudge:
         self,
         llm_client: Any,
         model_name: Optional[str] = None,
+        query_shape: str = SINGLE_TARGET,
         max_passage_chars: int = 3000,
         head_words: int = 100,
         max_evidence_per_criterion: int = 4,
@@ -127,9 +131,12 @@ class LLMCoverageJudge:
         temperature: float = 0.0,
         parse_retries: int = 1,
     ) -> None:
+        if query_shape not in QUERY_SHAPES:
+            raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
         self._llm = llm_client
         self.model_name = model_name
         self.name = f"llm:{model_name}"
+        self._system = CRITERIA_UPDATE_DOC_SYSTEMS[query_shape]
         self._parse_retries = parse_retries
         self._max_passage_chars = max_passage_chars
         self._head_words = head_words
@@ -140,7 +147,7 @@ class LLMCoverageJudge:
     def _format_state(self, state: CriteriaState) -> str:
         blocks = []
         for k, c in enumerate(state.criteria):
-            lines = [f"{c.id} [{c.kind}, {state.statuses[k]}]: {c.text}"]
+            lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
             attached = state.attached(k, self._max_evidence)
             if not attached:
                 lines.append("  evidence: none")
@@ -196,8 +203,8 @@ class LLMCoverageJudge:
             f"[{i + 1}] {doc_text(doc, max_length=self._max_passage_chars)}" for i, doc in enumerate(kept)
         )
         messages = [
-            {"role": "system", "content": coverage_judge_system({c.kind for c in state.criteria})},
-            {"role": "user", "content": CRITERIA_JUDGE_DOC_USER_TEMPLATE.format(
+            {"role": "system", "content": self._system},
+            {"role": "user", "content": CRITERIA_UPDATE_DOC_USER_TEMPLATE.format(
                 query=query, criteria=self._format_state(state), passages=passages,
             )},
         ]
@@ -259,8 +266,8 @@ class LLMQueryScorer:
         criteria state is done by the caller."""
         criteria = state.criteria
         messages = [
-            {"role": "system", "content": CRITERIA_JUDGE_QUERY_SYSTEM},
-            {"role": "user", "content": CRITERIA_JUDGE_QUERY_USER_TEMPLATE.format(
+            {"role": "system", "content": CRITERIA_MATCH_QUERY_SYSTEM},
+            {"role": "user", "content": CRITERIA_MATCH_QUERY_USER_TEMPLATE.format(
                 query=query,
                 criteria=format_state_summary(state),
                 subqueries="\n".join(f"{j + 1}. {q}" for j, q in enumerate(subqueries)),
@@ -300,9 +307,13 @@ class LLMQueryScorer:
 # ---------------------------------------------------------------------------
 
 def build_criteria_judges(
-    llm_client: Any, model: str = "",
+    llm_client: Any, model: str = "", query_shape: str = SINGLE_TARGET,
 ) -> Tuple[LLMCoverageJudge, LLMQueryScorer]:
-    """Build ``(coverage_judge, query_scorer)`` on one LLM client (named *model*)."""
+    """Build ``(coverage_judge, query_scorer)`` on one LLM client (named
+    *model*) for the queries of one shape."""
     if llm_client is None:
         raise ValueError("the criteria judges need an LLM client")
-    return LLMCoverageJudge(llm_client, model_name=model), LLMQueryScorer(llm_client, model_name=model)
+    return (
+        LLMCoverageJudge(llm_client, model_name=model, query_shape=query_shape),
+        LLMQueryScorer(llm_client, model_name=model),
+    )

@@ -15,8 +15,8 @@ Example output:
     "the measured effects of microplastics on the health of freshwater fish, not marine fish",
     "regulations proposed to limit microplastic pollution that apply in Ontario, Canada",
     "studies that compare microplastics in marine ecosystems with those in freshwater ecosystems",
-    "measured concentrations of microplastics in rivers and lakes",
-    "which freshwater fish species or life stages are most affected by microplastics",
-    "the current status of regulations proposed to limit microplastic pollution in Ontario, Canada"
+    "measured concentrations of microplastics in freshwater ecosystems",
+    "methods that remove microplastics from wastewater before it reaches freshwater ecosystems",
+    "the health effects on people of eating freshwater fish that contain microplastics"
   ]
 }

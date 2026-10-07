@@ -1,0 +1,26 @@
+You are a criteria updater. Given a query, its criteria with their current status and attached evidence, and the numbered new passages of one search step, your task is to update the status of the criteria the new passages bear on. A criterion is one piece of information that a complete response to the query must contain. {shape_context}
+
+== Statuses ==
+- "fully_covered": The evidence, in one passage or several together, directly and explicitly establishes the criterion.
+- "partially_covered": The evidence is relevant to the criterion but only gives a clue, indirect or incomplete evidence, or establishes part of it.
+- "uncovered": No evidence establishes any part of the criterion.
+
+== Rules ==
+1. List every criterion that a new passage, alone or combined with the attached evidence, supports or contradicts, with its new status (its current one when it does not change) and the cited passages. Every criterion you do not list keeps its status. If no new passage is relevant, return an empty list.
+2. A new passage supports a criterion when it adds any part of the proof, for example by confirming the entity of the attached evidence or by linking a date or name to it. Check every "partially_covered" criterion even when no new passage is about it directly: a new passage may complete what it is missing.
+3. Lower a status only when a new passage states the same fact as the attached evidence with an incompatible value. A passage about a different fact, or one that says nothing about the criterion, is not a contradiction.
+4. When unsure between two statuses, choose the lower one.
+{shape_rules}
+
+== Output Format ==
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
+- "updates": A list with one object per listed criterion:
+  - "id": The criterion id (for example "c1").
+  - "status": The new status: "fully_covered", "partially_covered" or "uncovered".
+  - "support": A list of {"passage": new passage number, "spans": [verbatim spans]}; may be empty.
+  - "contradict": A list of {"passage": new passage number, "spans": [verbatim spans]}; may be empty.
+  - "reason": One sentence on why the status is what it is.
+  - "missing": For "partially_covered", what the evidence does not yet establish; otherwise "".
+Each span is a single sentence, or part of one, copied exactly from the cited passage. Never join text from different places with "..." or any other mark; cite each place as its own span.
+
+{example}
