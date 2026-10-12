@@ -101,11 +101,12 @@ class DatasetSpec:
         subset:              Subset / collection.  None = not used.
         query_key:           Queries-file field used as the query text.
         min_relevance_score: Lowest qrel grade counted as relevant by the
-                             binary metrics (Recall@N, new_item_precision).
+                             binary metrics (Recall@N, new_item_precision,
+                             recall_so_far), the gold of the trajectory.
                              Queries with no qrel at this grade are not run.
-        relevance_gains:     Official gain of each qrel grade, for the graded
-                             metrics (GradedRecall@N, new_item_graded_recall,
-                             NDCG);
+        relevance_gains:     Official gain of each qrel grade, for the
+                             end-of-run metrics over every official level
+                             (GradedRecall@N, NDCG);
                              a grade not listed has gain 0.  Independent of
                              ``min_relevance_score``.
         task:                ``"qa"`` (short answer) or ``"report"`` (a report
@@ -174,19 +175,24 @@ DATASET_SPECS = {
         relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
-    # valuable 1); relevant = >=1 as in the track's R@1000.  Only the 59
-    # report-generation topics carry ``request``.
+    # valuable 1).  The trajectory gold is >=3 (the criteria coverage tracks
+    # the very valuable docs); every official level (1 and 3) counts in the
+    # end-of-run GradedRecall@N.
+    # Only the 59 report-generation topics carry ``request``; 49 have a
+    # grade-3 doc.
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
     "neuclir": DatasetSpec(
-        dataset_year="2024", subset="news", query_key="request", min_relevance_score=1,
+        dataset_year="2024", subset="news", query_key="request", min_relevance_score=3,
         relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
-    # 0 irrelevant.  Official points 3/1/0/0, so relevant = >=2.  ``text`` is
+    # 0 irrelevant.  Official points 3/1/0/0, so grades 2 and 3 count in
+    # the end-of-run GradedRecall@N; the trajectory gold is >=3, as for
+    # NeuCLIR (24 of the 30 judged requests have a grade-3 doc).  ``text`` is
     # the report request (background + problem statement).
     "ragtime": DatasetSpec(
-        dataset_year="2025", subset=None, query_key="text", min_relevance_score=2,
+        dataset_year="2025", subset=None, query_key="text", min_relevance_score=3,
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="title",
     ),

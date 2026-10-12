@@ -242,10 +242,10 @@ def metrics_at_n(
 
     With ``graded_qrels`` (``{query_id: {doc_id: gain}}``, official gains) it
     also reports GradedRecall@N: summed gain of the retrieved docs / summed
-    gain of all the query's docs, averaged over the queries that have a
-    positive gain (``num_queries_graded``; the same queries as Recall@N
-    unless ``min_relevance_score`` admits a grade with gain 0).  It equals
-    Recall@N when every relevant doc has the same gain.
+    gain of all the query's docs, every official level counted whatever
+    ``min_relevance_score``, averaged over the queries that have a positive
+    gain (``num_queries_graded``).  It equals Recall@N when every relevant
+    doc has the same gain.
 
     Returns ``{}`` when no query can be evaluated.
     """

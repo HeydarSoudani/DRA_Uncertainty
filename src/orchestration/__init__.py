@@ -76,7 +76,6 @@ def build_uncertainty_estimator(
     mode: str,
     retriever=None,
     qrels=None,
-    graded_qrels=None,
     llm_criteria: Optional[str] = None,
     max_criteria: Optional[int] = None,
     criteria_judge_model: str = "",
@@ -96,9 +95,8 @@ def build_uncertainty_estimator(
             (observe and inject a ``<certainty>`` tag into the trajectory).
         retriever: Retriever whose encoder gives the novelty embeddings
             (dense retrievers only; others leave nu^q null).
-        qrels: Thresholded relevance judgements, for new-item precision.
-        graded_qrels: ``{query_id: {doc_id: gain}}`` (official gains), for
-            the new-item graded recall.
+        qrels: Thresholded relevance judgements, for the new-item precision
+            and the recall so far.
         llm_criteria: Model that extracts each query's criteria.  Without
             it the criteria-based signals are null.
         max_criteria: Cap on the number of criteria per query (for a report
@@ -183,7 +181,6 @@ def build_uncertainty_estimator(
         encode_fn=encode_fn,
         encoder_name=encoder_name,
         qrels=qrels or {},
-        graded_qrels=graded_qrels or {},
         intermediate_answer_fn=intermediate_answer_fn,
         agentic_model=agentic_model or "",
         run_info={
@@ -517,7 +514,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         mode=worker_config.get("uncertainty_estimator_mode", "off"),
         retriever=retriever,
         qrels=worker_config.get("qrels"),
-        graded_qrels=worker_config.get("graded_qrels"),
         llm_criteria=worker_config.get("llm_criteria"),
         max_criteria=worker_config.get("max_criteria"),
         criteria_judge_model=worker_config.get("criteria_judge_model", ""),

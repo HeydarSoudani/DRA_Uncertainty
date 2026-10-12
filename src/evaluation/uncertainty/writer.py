@@ -8,14 +8,14 @@ stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 8::
+Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 9::
 
-    line 1  {"record": "meta", "schema_version": 8, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 9, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
              "criteria_source": "llm", "criteria_judge": "llm:...",
              "query_scorer": "llm:...", "encoder": "...",
-             "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6, "total_gain": 9,
+             "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "set", "errors": []},
              "final_criteria_state": ["fully_covered", "uncovered", ...],
@@ -30,8 +30,6 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 8::
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
-             "new_item_graded_recall": 0.3333, "new_gain": 3, "total_gain": 9,
-             "graded_recall_so_far": 0.3333, "gain_seen": 3,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "subqueries": ["..."],
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
@@ -49,7 +47,9 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 8::
 A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
 or answers; fully covered only with several supporting documents), new in
 schema_version 7.  schema_version 8 drops ``criteria_eval`` (the criteria
-are assessed offline, ``analysis/criteria_reachability.py``).  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
+are assessed offline, ``analysis/criteria_reachability.py``).
+schema_version 9 drops the graded gold (``new_item_graded_recall``,
+``new_gain``, ``total_gain``, ``graded_recall_so_far``, ``gain_seen``).  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
 agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
 search still gets its meta line.  The file is written atomically.
@@ -64,7 +64,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def _clean(obj: Any) -> Any:

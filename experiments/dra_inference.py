@@ -173,7 +173,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         # qrels live in a separate directory; reload and re-filter against them.
         qrels = load_qrels(qrels_data_path, file_data_set, min_relevance_score=min_rel_score)
         queries = {qid: q for qid, q in queries.items() if qid in qrels}
-    # Graded metrics use every grade with the official gains, not the threshold.
+    # GradedRecall@N and NDCG use every official level with its gain, not the threshold.
     graded_qrels = to_graded_qrels(
         load_qrels(qrels_data_path, file_data_set), DATASET_SPECS[dataset].relevance_gains,
     )
@@ -263,7 +263,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
     if worker_config is not None and _estimator_mode != "off":
         worker_config["qrels"] = qrels
-        worker_config["graded_qrels"] = graded_qrels
         worker_config["criteria_bank"] = criteria_bank
 
     # ==================== Build search tool ====================
@@ -320,7 +319,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             mode=_estimator_mode,
             retriever=_retriever,
             qrels=qrels,
-            graded_qrels=graded_qrels,
             llm_criteria=kwargs.get("llm_criteria"),
             max_criteria=kwargs.get("max_criteria"),
             criteria_judge_model=kwargs.get("criteria_judge_model", ""),

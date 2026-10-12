@@ -28,8 +28,6 @@ first, nested detail last::
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
-    new_item_graded_recall, new_gain, total_gain,
-    graded_recall_so_far, gain_seen,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
     criteria_state_before, criteria_state_after,
@@ -101,9 +99,7 @@ class UncertaintyEstimator:
             (``encode_fn_from_retriever``).  None: nu^q is null.
         encoder_name: Saved in the meta line.
         qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
-            binary new-item precision.
-        graded_qrels: ``{query_id: {doc_id: gain}}`` with the official
-            gains, for the new-item graded recall.
+            new-item precision and the recall so far.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
             asked every step, its answers are saved (extra, not in x_t).
             None disables the intermediate answer.
@@ -122,7 +118,6 @@ class UncertaintyEstimator:
         encode_fn: Optional[EncodeFn] = None,
         encoder_name: Optional[str] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
-        graded_qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         intermediate_answer_fn: Optional[AnswerFn] = None,
         agentic_model: str = "",
         run_info: Optional[Dict[str, Any]] = None,
@@ -135,7 +130,7 @@ class UncertaintyEstimator:
 
         self._doc_novelty = DocNoveltySignal()
         self._query_novelty = QueryNoveltySignal(encode_fn)
-        self._retrieval_gain = RetrievalGainSignal(qrels, graded_qrels)
+        self._retrieval_gain = RetrievalGainSignal(qrels)
         self._coverage = CriteriaCoverageSignal(coverage_judge) if coverage_judge is not None else None
         self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
@@ -199,7 +194,6 @@ class UncertaintyEstimator:
             "num_iterations": len(self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
             "num_relevant": self._retrieval_gain.num_relevant,
-            "total_gain": self._retrieval_gain.total_gain,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
             "final_criteria_state": self._coverage.statuses() if self._tracks_state else None,
