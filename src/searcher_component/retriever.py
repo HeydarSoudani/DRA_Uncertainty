@@ -580,12 +580,16 @@ class BM25Retriever(BaseRetriever):
         else:
             return results
 
+# Must match index_builder.SPLADE_WEIGHT_SCALE (the document-side quantization).
+SPLADE_WEIGHT_SCALE = 100
+
+
 class _SPLADEQueryEncoderForImpact:
     """Query encoder for LuceneImpactSearcher: encode(query) -> Dict[str, int].
 
-    Weights are raw ``log(1 + ReLU(logits))`` values truncated to int, matching
-    the float weights written by ``index_builder._process_splade_batch`` (Pyserini
-    truncates floats to ints when building the impact index).
+    Weights are ``log(1 + ReLU(logits))`` values scaled by ``SPLADE_WEIGHT_SCALE``
+    and rounded to int, the same quantization as the document weights written by
+    ``index_builder._process_splade_batch``.
     """
 
     def __init__(self, model_path: str, device, max_length: int = 256, use_fp16: bool = False):
@@ -621,11 +625,9 @@ class _SPLADEQueryEncoderForImpact:
             return {}
         tokens = self.tokenizer.convert_ids_to_tokens(non_zero_indices.cpu().tolist())
         weights = logits[0][non_zero_indices].cpu().tolist()
-        # Truncate to int — same scale as index builder (Pyserini truncates floats
-        # to ints when building the impact index, so we do the same here).
         out = {}
         for token, w in zip(tokens, weights):
-            q = int(w)
+            q = round(w * SPLADE_WEIGHT_SCALE)
             if q >= 1:
                 out[token] = q
         return out

@@ -727,9 +727,9 @@ if __name__ == "__main__":
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
-#   python analysis/criteria_reachability.py --dataset neuclir --grades 1 3 --limit 3
-#   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --limit 7
-#   python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --limit 3  
+#   python analysis/criteria_reachability.py --dataset neuclir --grades 1 3 --limit 5
+#   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --limit 5
+#   python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --limit 20  
 #   python analysis/criteria_reachability.py --dataset browsecomp_plus --limit 3
 # 
 #   python analysis/criteria_reachability.py --dataset ragtime --grades 2 3 --workers 32

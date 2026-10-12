@@ -4,7 +4,7 @@
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=64
 #SBATCH --partition=gpu_h100
-#SBATCH --time=24:00:00
+#SBATCH --time=06:00:00
 #SBATCH --mem=480GB
 #SBATCH --output=script_logging/slurm_%A.out
 # Sizing (H100, qwen3_emb_4b, 4 GPUs; --time is ~1.5x wall):
@@ -13,6 +13,16 @@
 #   trqa             5.9M   512         32     ~131        ~3.3 h  05:00:00  ~120GB
 #   ragtime          4.0M   1024        32     ~55         ~6 h    10:00:00  ~85GB
 #   neuclir          10.0M  1024        32     ~55-61      ~14 h   24:00:00  ~206GB
+# Other retrievers on trqa (5.9M docs, 4 GPUs; docs/s/GPU estimated from a 20K-doc
+# H100 benchmark, scaled by the qwen3 benchmark-to-run ratio):
+#   retriever        max_length  batch  docs/s/GPU  wall      --time
+#   bge              512         512    ~1050       ~0.7 h    01:30:00
+#   contriever       512         512    ~1700       ~0.5 h    01:00:00
+#   spladepp         256         512    ~1300 (*)   ~3.5 h    06:00:00
+#   (*) spladepp encodes in one process (DataParallel) and serialises each doc's
+#   vector on CPU, so encoding is CPU-bound (~1 h). The Lucene impact index then
+#   takes ~2.5 h (~650 docs/s): weights are quantized x100, each term is indexed
+#   as many times as its weight, and more input files or threads do not help.
 
 # torch / faiss / vllm live in the project venv on the Python/3.13.5 module
 # stack. scripts/_activate.sh loads the modules, activates the venv, and exports the
@@ -22,8 +32,8 @@
 source scripts/_activate.sh
 mkdir -p script_logging
 
-RETRIEVER=qwen3_emb_4b        # bm25 | spladepp | bge | qwen3_emb_4b
-DATASET=neuclir               # trqa | neuclir | browsecomp_plus | ragtime
+RETRIEVER=spladepp            # bm25 | spladepp | bge | qwen3_emb_4b
+DATASET=trqa                  # trqa | neuclir | browsecomp_plus | ragtime
 
 case "$RETRIEVER" in
     bm25)              ARGS=() ;;

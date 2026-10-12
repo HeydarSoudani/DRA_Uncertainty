@@ -57,6 +57,11 @@ MODEL2PATH = {
     "qwen3_emb_8b": "Qwen/Qwen3-Embedding-8B",
 }
 
+# SPLADE impact weights are stored as ints (Pyserini truncates floats when building
+# the impact index), so weights are scaled and rounded first, as in Pyserini's
+# prebuilt SPLADE indexes. Must match retriever._SPLADEQueryEncoderForImpact.
+SPLADE_WEIGHT_SCALE = 100
+
 # Canonical dataset root + path derivation (single source of truth in layout.py).
 from indexing_corpus_dataset.layout import (
     DATASETS,
@@ -608,17 +613,19 @@ class Index_Builder:
         relu_log = relu_log * inputs['attention_mask'].unsqueeze(-1).expand_as(relu_log)
         logits = torch.max(relu_log, dim=1)[0]
 
-        for doc_id, doc_logits in zip(batch_ids, logits):
-            non_zero = torch.nonzero(doc_logits > 0, as_tuple=True)[0]
+        quantized = torch.round(logits.float() * SPLADE_WEIGHT_SCALE).int()
+
+        for doc_id, doc_weights in zip(batch_ids, quantized):
+            non_zero = torch.nonzero(doc_weights > 0, as_tuple=True)[0]
             if len(non_zero) > 0:
                 tokens = tokenizer.convert_ids_to_tokens(non_zero.cpu().tolist())
-                weights = doc_logits[non_zero].cpu().tolist()
-                vector = {t: float(w) for t, w in zip(tokens, weights)}
+                weights = doc_weights[non_zero].cpu().tolist()
+                vector = dict(zip(tokens, weights))
             else:
                 vector = {}
             output_file.write(json.dumps({'id': doc_id, 'contents': '', 'vector': vector}) + '\n')
 
-        del inputs, outputs, logits
+        del inputs, outputs, logits, quantized
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         elif torch.backends.mps.is_available():
@@ -691,8 +698,9 @@ class Index_Builder:
         print(f"Corpus: {self.corpus_size:,} documents")
         print(f"{'='*50}\n")
 
-        # Use a sub-directory under save_dir (fast storage) for shard files
-        shard_dir = os.path.join(self.save_dir, '_encoding_shards')
+        # Use a sub-directory under save_dir (fast storage) for shard files, one per
+        # corpus + retriever so concurrent builds into the same save_dir do not collide
+        shard_dir = os.path.join(self.save_dir, f'_encoding_shards_{self.corpus_stem}_{self.retriever}')
         os.makedirs(shard_dir, exist_ok=True)
         shard_paths = [os.path.join(shard_dir, f'shard_{i}.memmap') for i in range(self.gpu_num)]
 

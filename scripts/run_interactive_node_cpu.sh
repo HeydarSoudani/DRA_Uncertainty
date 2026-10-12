@@ -48,7 +48,7 @@ fi
 set -euo pipefail
 
 PARTITION="${PARTITION:-staging}"
-TIME="${TIME:-1:00:00}"
+TIME="${TIME:-2:00:00}"
 CPUS="${CPUS:-4}"
 MEM="${MEM:-180GB}"
 
