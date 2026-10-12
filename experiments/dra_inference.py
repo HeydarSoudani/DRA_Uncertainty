@@ -597,7 +597,7 @@ def _parse_args():
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
-    parser.add_argument("--dataset", type=str, default="ragtime", choices=list(DATASETS), help="Dataset; all use local indices.")
+    parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
@@ -822,4 +822,4 @@ if __name__ == "__main__":
 #   CUDA_VISIBLE_DEVICES=5,6 python experiments/dra_inference.py --dataset browsecomp_plus --limit 1
 #   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/dra_inference.py --dataset neuclir --limit 1
 #   python experiments/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
-#   python experiments/dra_inference.py --limit 2
+#   python experiments/dra_inference.py --limit 3

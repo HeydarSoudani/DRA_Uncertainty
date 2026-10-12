@@ -28,14 +28,17 @@ def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
 CRITERIA_UPDATE_DOC_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current status and attached evidence:
+Criteria, with their current state:
 {criteria}
 
 New passages:
 {passages}
 
-Update the status of the criteria given the attached evidence and the new passages.\
+Decide which criteria each new passage supports or contradicts, if any.\
 """
+
+# One new passage of the coverage judge's user message.
+CRITERIA_UPDATE_DOC_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
 
 CRITERIA_MATCH_QUERY_USER_TEMPLATE = """\
 Query: {query}

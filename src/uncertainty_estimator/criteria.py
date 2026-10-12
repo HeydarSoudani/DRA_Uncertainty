@@ -13,8 +13,10 @@ documents only (it can move up or down).
 
 Each criterion is closed (one fact), open (several parts or answers that
 documents establish only together) or, in a report request, an aspect of the
-topic; an open or aspect criterion is fully covered only once
-``OPEN_MIN_SOURCES`` distinct documents support it.  A set query ends
+topic; an open criterion is fully covered only once ``OPEN_MIN_SOURCES``
+distinct documents support it, and an aspect criterion's status is its count
+of supporting documents (partially covered from one, fully covered from
+``OPEN_MIN_SOURCES``).  A set query ends
 with a rest criterion, "any other member: <property>", for the members the
 extractor did not list; it is fully covered only once the set criterion is.
 The kind follows from the dataset's query shape and the criterion's position
@@ -38,15 +40,15 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    ASPECT, CLOSED, FULLY_COVERED, MULTI_ASPECT, MULTI_SOURCE_KINDS, OPEN, PARTIALLY_COVERED,
+    ASPECT, CLOSED, FULLY_COVERED, MULTI_ASPECT, OPEN, PARTIALLY_COVERED,
     QUERY_SHAPES, REST, SET, STATUS_VALUE, STATUSES, UNCOVERED,
     Criterion, CriterionUpdate, Evidence,
 )
 
 logger = logging.getLogger(__name__)
 
-# Distinct supporting documents an open or aspect criterion needs to be fully covered;
-# with fewer it stays partially covered.
+# Distinct supporting documents an open or aspect criterion needs to be fully
+# covered; with fewer (and at least one) it is partially covered.
 OPEN_MIN_SOURCES = 3
 
 # One complete string item of the criteria list, for output that is not
@@ -331,28 +333,38 @@ class CriteriaState:
     sigma_0 is all uncovered.  Each step, the coverage judge proposes
     updates from the step's novel documents and ``apply`` enforces:
 
+    - a cited passage counts only with at least one span that occurs in it
+      verbatim (``Evidence.verified_spans``); the others are dropped;
+    - an aspect criterion does not use the proposed status (it is only
+      recorded) nor contradictions: its supporting passages are attached and
+      its status follows from its distinct supporting documents (none:
+      uncovered; fewer than ``OPEN_MIN_SOURCES``: partially covered; else
+      fully covered), so it is never lowered;
     - a raise needs at least one supporting passage;
-    - an open or aspect criterion is fully covered only once its supporting passages
+    - an open criterion is fully covered only once its supporting passages
       come from ``OPEN_MIN_SOURCES`` distinct documents; before that it is
       capped at partially covered;
     - a rest criterion is fully covered only while the set criterion (the
       open one) is; before that it is capped at partially covered (its
-      update is applied after the step's other updates);
+      update is applied after the step's other updates), and it is raised
+      to fully covered in the step the set criterion becomes fully covered;
     - a lowering needs at least one contradicting passage and moves one
       level at most per step;
     - an update that keeps the status only attaches its evidence.
 
     The cited passages are attached to the criterion (role ``support`` or
-    ``contradict``) and shown to the judge in later steps, with what a
-    partially covered criterion still lacks (``missing``).
+    ``contradict``); the judge sees them in later steps (an aspect
+    criterion only as their count).
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
         self.statuses: List[str] = [UNCOVERED] * len(self.criteria)
         self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
-        self.missing: List[str] = [""] * len(self.criteria)
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
+        # Rest criteria the judge proposed fully covered while the set was
+        # not yet complete; raised once it is.
+        self._rest_held: Set[int] = set()
 
     def snapshot(self) -> List[str]:
         return list(self.statuses)
@@ -366,9 +378,11 @@ class CriteriaState:
         """Apply the judge's updates of one step.
 
         Returns one record per update: ``{id, from, to, proposed, support,
-        contradict, reason, missing, applied, note}``; ``applied`` is False for an
-        update that was rejected (``note`` says why).  Only the first update
-        of a criterion is used.
+        contradict, reason, applied, note}``; ``applied`` is False for an
+        update that was rejected (``note`` says why).  ``support`` and
+        ``contradict`` are the passages as cited, with ``span_verified``;
+        only the ones with a verified span are attached.  Only the first
+        update of a criterion is used.
         """
         records: List[Dict[str, Any]] = []
         done: Set[int] = set()
@@ -385,7 +399,6 @@ class CriteriaState:
                 "support": [e.to_dict() for e in u.support],
                 "contradict": [e.to_dict() for e in u.contradict],
                 "reason": u.reason,
-                "missing": u.missing,
                 "applied": False,
                 "note": "",
             }
@@ -396,54 +409,92 @@ class CriteriaState:
             if k in done:
                 record["note"] = "duplicate update"
                 continue
+            support = [e for e in u.support if e.verified_spans]
+            contradict = [e for e in u.contradict if e.verified_spans]
+            unverified = len(u.support) + len(u.contradict) - len(support) - len(contradict)
+            notes = [f"{unverified} cited passages without a verified span dropped"] if unverified else []
+
+            if self.criteria[k].kind == ASPECT:
+                done.add(k)
+                if contradict:
+                    notes.append("contradiction ignored for an aspect criterion")
+                if not support:
+                    record["note"] = "; ".join(notes + ["no supporting passage"])
+                    continue
+                self._evidence[k].extend(support)
+                sources = self.num_sources(k)
+                self.statuses[k] = FULLY_COVERED if sources >= OPEN_MIN_SOURCES else PARTIALLY_COVERED
+                record.update(to=self.statuses[k], applied=True, note="; ".join(notes))
+                continue
+
             if u.status not in STATUSES:
-                record["note"] = "unknown status"
+                record["note"] = "; ".join(notes + ["unknown status"])
                 continue
             done.add(k)
 
             current, proposed = STATUS_VALUE[self.statuses[k]], STATUS_VALUE[u.status]
-            if proposed > current and not u.support:
-                record["note"] = "raise without supporting passage"
+            if proposed > current and not support:
+                record["note"] = "; ".join(notes + ["raise without supporting passage"])
                 continue
-            if proposed < current and not u.contradict:
-                record["note"] = "lowering without contradicting passage"
+            if proposed < current and not contradict:
+                record["note"] = "; ".join(notes + ["lowering without contradicting passage"])
                 continue
-            if proposed == current and not (u.support or u.contradict):
-                record["note"] = "no cited passage"
+            if proposed == current and not (support or contradict):
+                record["note"] = "; ".join(notes + ["no cited passage"])
                 continue
             if proposed < current - 1:
                 proposed = current - 1
-                record["note"] = "lowered by one level at most"
-            self._evidence[k].extend(u.support + u.contradict)
-            missing = u.missing
-            if self.criteria[k].kind in MULTI_SOURCE_KINDS and STATUSES[proposed] == FULLY_COVERED:
+                notes.append("lowered by one level at most")
+            self._evidence[k].extend(support + contradict)
+            if self.criteria[k].kind == OPEN and STATUSES[proposed] == FULLY_COVERED:
                 sources = self.num_sources(k)
                 if sources < OPEN_MIN_SOURCES:
                     proposed = STATUS_VALUE[PARTIALLY_COVERED]
-                    record["note"] = f"{self.criteria[k].kind} criterion needs {OPEN_MIN_SOURCES} sources, has {sources}"
-                    missing = missing or (
-                        f"support from more documents ({sources} of {OPEN_MIN_SOURCES} so far)"
-                    )
+                    notes.append(f"open criterion needs {OPEN_MIN_SOURCES} sources, has {sources}")
             if self.criteria[k].kind == REST and STATUSES[proposed] == FULLY_COVERED:
                 set_ks = [i for i, c in enumerate(self.criteria) if c.kind == OPEN]
                 if any(self.statuses[i] != FULLY_COVERED for i in set_ks):
                     proposed = STATUS_VALUE[PARTIALLY_COVERED]
-                    record["note"] = "rest criterion needs the complete set first"
-                    missing = missing or "the complete list of members"
+                    notes.append("rest criterion needs the complete set first")
+                    self._rest_held.add(k)
+            if self.criteria[k].kind == REST and "rest criterion needs the complete set first" not in notes:
+                self._rest_held.discard(k)
             self.statuses[k] = STATUSES[proposed]
-            self.missing[k] = missing if self.statuses[k] == PARTIALLY_COVERED else ""
             record["to"] = self.statuses[k]
             record["applied"] = True
+            record["note"] = "; ".join(notes)
+        records.extend(self._release_rest())
         return records
+
+    def _release_rest(self) -> List[Dict[str, Any]]:
+        """Raise the held rest criteria to fully covered once every set
+        criterion is; one record per raised criterion."""
+        set_ks = [i for i, c in enumerate(self.criteria) if c.kind == OPEN]
+        if not self._rest_held or any(self.statuses[i] != FULLY_COVERED for i in set_ks):
+            return []
+        records = []
+        for k in sorted(self._rest_held):
+            records.append({
+                "id": self.criteria[k].id, "from": self.statuses[k], "to": FULLY_COVERED,
+                "proposed": FULLY_COVERED, "support": [], "contradict": [], "reason": "",
+                "applied": True, "note": "rest criterion raised: the set is complete",
+            })
+            self.statuses[k] = FULLY_COVERED
+        self._rest_held.clear()
+        return records
+
+    def sources(self) -> List[int]:
+        """Per criterion, its distinct supporting documents."""
+        return [self.num_sources(k) for k in range(len(self.criteria))]
 
     def num_sources(self, k: int) -> int:
         """Distinct documents among the supporting evidence of criterion *k*."""
         return len({e.doc_id for e in self._evidence[k] if e.role == "support"})
 
     def evidence(self) -> List[Dict[str, Any]]:
-        """Per criterion, its kind, status, what it still lacks and its
-        attached evidence (without text)."""
+        """Per criterion, its kind, status and its attached evidence (without
+        text)."""
         return [
-            {"id": c.id, "kind": c.kind, "status": st, "missing": m, "evidence": [e.to_dict() for e in ev]}
-            for c, st, m, ev in zip(self.criteria, self.statuses, self.missing, self._evidence)
+            {"id": c.id, "kind": c.kind, "status": st, "evidence": [e.to_dict() for e in ev]}
+            for c, st, ev in zip(self.criteria, self.statuses, self._evidence)
         ]

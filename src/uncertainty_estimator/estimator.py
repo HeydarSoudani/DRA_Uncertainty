@@ -30,7 +30,7 @@ first, nested detail last::
     recall_so_far, num_relevant_seen, num_relevant,
     intermediate_answers, intermediate_answer_status,
     subqueries[], queries[], docs[],
-    criteria_state_before, criteria_state_after,
+    criteria_state_before, criteria_state_after, criteria_sources_after,
     criteria_targeted, criteria_attempts_after, criteria_updates[],
     criteria_judge_output, intermediate_answer_reasoning, errors[],
     certainty_tag                                  # inform only; null when empty
@@ -47,8 +47,10 @@ step targeted directly (score 1); ``criteria_attempts_after`` is, per
 criterion, the number of steps that targeted it so far.  When the targeting
 scorer fails, ``criteria_targeted`` is null and the attempts are unchanged;
 both are null when it is not configured.
+``criteria_sources_after`` is, per criterion, its distinct supporting
+documents so far (null without a criteria state).
 ``criteria_updates`` has one ``{id, from, to, proposed, support[],
-contradict[], reason, missing, applied, note}`` per update the coverage judge
+contradict[], reason, applied, note}`` per update the coverage judge
 proposed (``CriteriaState.apply``); ``criteria_judge_output`` is the
 judge's raw reply (null when it was not called).
 ``intermediate_answers`` is null when not configured or failed and ``[]``
@@ -323,6 +325,7 @@ class UncertaintyEstimator:
             "docs": per_doc,
             "criteria_state_before": state_before,
             "criteria_state_after": state_after,
+            "criteria_sources_after": self._coverage.state.sources() if tracks_state else None,
             "criteria_targeted": criteria_targeted,
             "criteria_attempts_after": attempts_after,
             "criteria_updates": updates,

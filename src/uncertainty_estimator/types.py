@@ -19,14 +19,12 @@ STATUSES = tuple(STATUS_VALUE)
 # establish only together (``CriteriaState`` needs several sources for it);
 # the rest criterion of a set query ("any other member: <property>") stands
 # for the members the extractor did not list; an aspect criterion is one
-# aspect of a report topic, which has no complete list of parts, so it is
-# fully covered once specific facts establish every part its wording names.
+# aspect of a report topic, which has no complete list of parts, so its
+# status is its count of supporting documents (``OPEN_MIN_SOURCES``).
 CLOSED = "closed"
 OPEN = "open"
 REST = "rest"
 ASPECT = "aspect"
-# Kinds that documents establish only together (``OPEN_MIN_SOURCES``).
-MULTI_SOURCE_KINDS = (OPEN, ASPECT)
 
 # Query shapes (layout.DATASET_SPECS): one entity or value described by clues,
 # a value computed over every member of a set, or a report on several aspects
@@ -56,8 +54,8 @@ class Evidence:
     ``role`` is ``support`` or ``contradict``.  ``spans`` are the sentences
     the judge cited from the passage; ``span_verified[i]`` says whether
     ``spans[i]`` occurs verbatim in the passage, and then ``spans[i]`` is the
-    passage's own words, else the judge's text.  ``text`` is the start of
-    the passage.  Later prompts show the verified spans and the text.
+    passage's own words, else the judge's text.  ``text`` is the title
+    line of the passage.  Later prompts show the verified spans and the title.
     """
     doc_id: str
     step: int
@@ -85,12 +83,10 @@ class CriterionUpdate:
     """One criterion update proposed by the coverage judge for one step.
 
     ``status`` is the proposed sigma_t(k); ``support`` and ``contradict`` are
-    the new passages cited for it; ``missing`` is what a partially covered
-    criterion still lacks.
+    the new passages cited for it.
     """
     id: str
     status: str
     support: List[Evidence] = field(default_factory=list)
     contradict: List[Evidence] = field(default_factory=list)
     reason: str = ""
-    missing: str = ""
