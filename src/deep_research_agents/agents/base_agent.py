@@ -136,6 +136,8 @@ class AgentVerboseMixin:
         estimator = getattr(self, "uncertainty_estimator", None)
         if estimator is None:
             return None
+        # Same turn number as the stage the agent last reported.
+        self._notify_estimator_stage("uncertainty", getattr(self, "_progress_iter", 0) or iter_num)
         tag = None
         started = time.monotonic()
         meter = self._token_meter() if hasattr(self, "_token_meter") else None
@@ -198,9 +200,11 @@ class AgentVerboseMixin:
 
     def _reset_uncertainty_estimator(self, query_id: Optional[str], query_text: str) -> None:
         self._uncertainty_seconds = 0.0
+        self._progress_iter = 0
         estimator = getattr(self, "uncertainty_estimator", None)
         if estimator is None:
             return
+        self._notify_estimator_stage("criteria", 0)
         try:
             estimator.reset(query_id=query_id, query=query_text)
         except Exception:
@@ -654,6 +658,17 @@ class BasicAgent(AgentVerboseMixin):
 
     def _notify_progress(self, stage: str, iteration: int) -> None:
         """Report current iteration and stage to the progress bar callback."""
+        self._progress_iter = iteration
+        cb = getattr(self, "_status_callback", None)
+        if cb is not None:
+            cb(stage, iteration)
+
+    def _notify_estimator_stage(self, stage: str, iteration: int) -> None:
+        """Report an uncertainty estimator stage to the progress bar.
+
+        Calls the callback directly: agents override ``_notify_progress`` to
+        count their own steps (WebWeaver), and estimator stages are not steps.
+        """
         cb = getattr(self, "_status_callback", None)
         if cb is not None:
             cb(stage, iteration)

@@ -63,6 +63,7 @@ import warnings
 import logging
 import time
 import os
+import sys
 import concurrent.futures
 import multiprocessing
 import threading
@@ -353,11 +354,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         # when queries vary in difficulty.
         chunks = [query_items[i::num_gpus] for i in range(num_gpus)]
 
-        # The live bars redraw on every per-iteration progress event.  That is
-        # what you want on a TTY and useless in an sbatch .out file, where each
-        # redraw is appended verbatim (~1 MB per run).  Under --quiet the bars
-        # are disabled and replaced by one line per finished query.
-        quiet = bool(worker_config.get("quiet", False))
+        # The live bars redraw in place on every progress event.  That is what
+        # you want on a terminal (with or without --quiet) and useless in an
+        # sbatch .out file, where each redraw is appended verbatim (~1 MB per
+        # run).  Off a terminal the bars are disabled and replaced by one line
+        # per finished query.
+        live_bars = sys.stdout.isatty()
+        worker_config = {**worker_config, "live_bars": live_bars}
 
         print(f"\nParallel mode: {num_gpus} workers")
         for i, chunk in enumerate(chunks):
@@ -374,13 +377,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                     " {n}/{total} [{elapsed}<{remaining}] {postfix}"
                 ),
                 dynamic_ncols=True,
-                disable=quiet,
+                disable=not live_bars,
             )
             for i in range(num_gpus)
         ]
-        if not quiet:
-            for i, bar in enumerate(bars):
-                bar.set_postfix_str("(—, —/—, starting)", refresh=True)
+        if live_bars:
+            for bar in bars:
+                bar.set_postfix_str("(—, init)", refresh=True)
 
         mp_ctx = multiprocessing.get_context("spawn")
         _manager = mp_ctx.Manager()
@@ -398,9 +401,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                     if done_count >= num_gpus:
                         break
                     continue
+                if item[0] == "log":
+                    # A worker's init line, held back so it does not break the bars.
+                    tqdm.write(item[1])
+                    continue
                 w_id, qid, idx, total, stage, iter_info = item
                 bar = bars[w_id]
-                if quiet:
+                if not live_bars:
                     # Only per-query completions are worth a line; the
                     # "processing"/"update" ticks are the high-frequency ones.
                     if stage not in ("processing", "update"):
@@ -411,15 +418,18 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                         )
                     continue
                 if stage == "processing":
-                    bar.set_postfix_str(f"({qid}, —/—, starting)", refresh=True)
+                    bar.set_postfix_str(f"({qid}, starting)", refresh=True)
                 elif stage == "update":
                     stage_name, iteration, max_iter_val = iter_info
-                    bar.set_postfix_str(
-                        f"({qid}, {iteration}/{max_iter_val}, {stage_name})", refresh=True
-                    )
+                    if stage_name == "criteria":
+                        bar.set_postfix_str(f"({qid}, criteria)", refresh=True)
+                    else:
+                        bar.set_postfix_str(
+                            f"({qid}, turn {iteration}/{max_iter_val}, {stage_name})", refresh=True
+                        )
                 else:
                     bar.n = idx
-                    iter_str = iter_info if iter_info else "—/—"
+                    iter_str = f"turns {iter_info}" if iter_info else "turns —"
                     bar.set_postfix_str(f"({qid}, {iter_str}, {stage})", refresh=True)
                     bar.refresh()
 
@@ -822,4 +832,4 @@ if __name__ == "__main__":
 #   CUDA_VISIBLE_DEVICES=5,6 python experiments/dra_inference.py --dataset browsecomp_plus --limit 1
 #   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/dra_inference.py --dataset neuclir --limit 1
 #   python experiments/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
-#   python experiments/dra_inference.py --limit 3
+#   python experiments/dra_inference.py --num-gpus 4 --quiet --limit 9

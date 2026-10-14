@@ -450,7 +450,7 @@ class UncertaintyAwareAgent(BasicAgent):
         searches = 0
 
         for t in range(self.max_iteration):
-            self._notify_progress("turn", t)
+            self._notify_progress("think", t + 1)
             transcript = render_transcript(question, blocks, task=self.task)
             turn, attempts, error = self._generate_turn(self._messages(system, transcript), t, generation_temp)
             if turn is None:
@@ -489,6 +489,7 @@ class UncertaintyAwareAgent(BasicAgent):
                 break
 
             if turn.action == ACTION_ANSWER:
+                self._notify_progress("answer", t + 1)
                 prediction = turn.action_text
                 end = END_ANSWERED
                 self._vprint(t, "answer", prediction)
@@ -501,7 +502,7 @@ class UncertaintyAwareAgent(BasicAgent):
 
             # -- search, then (inform mode) the <certainty> tag that closes this iteration --
             query = turn.action_text
-            self._notify_progress("search", t)
+            self._notify_progress("search", t + 1)
             self._vprint(t, "search", query)
             docs = self.retrieve_documents(query, original_query=question, reasoning=turn.think)
             shown = unique_docs(docs)[:self.seen_top_k]

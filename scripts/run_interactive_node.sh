@@ -43,11 +43,11 @@ set -euo pipefail
 
 PARTITION="${1:-h100}"
 TIME="${TIME:-0:30:00}"
-GPUS="${GPUS:-1}"
+GPUS="${GPUS:-3}"
 
 case "$PARTITION" in
     a100|gpu_a100) PART=gpu_a100; CPUS_PER_GPU=18; MEM_PER_GPU=120 ;;
-    h100|gpu_h100) PART=gpu_h100; CPUS_PER_GPU=16; MEM_PER_GPU=180 ;;
+    h100|gpu_h100) PART=gpu_h100; CPUS_PER_GPU=16; MEM_PER_GPU=80 ;;
     *)
         echo "ERROR: unknown partition '$PARTITION' (expected 'a100' or 'h100')" >&2
         exit 1 ;;

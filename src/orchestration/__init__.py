@@ -14,6 +14,7 @@ must stay at module level to be picklable by multiprocessing.spawn.
 """
 
 import contextlib
+import io
 import logging
 import os
 import sys
@@ -535,17 +536,29 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     """Worker process: pin to one GPU, rebuild the agent, process queries, save files."""
     _lock_ctx = init_lock if init_lock is not None else contextlib.nullcontext()
 
+    # With live progress bars in the parent, this process's init prints would
+    # land between the bars' in-place redraws and scramble them.  Hold them
+    # back; on failure they go to stderr, otherwise worker 0 forwards the
+    # estimator config lines (the same in every worker) to be printed once.
+    live_bars = bool(worker_config.get("live_bars", False))
+    init_out = io.StringIO()
     try:
-        with _lock_ctx:
+        with _lock_ctx, (contextlib.redirect_stdout(init_out) if live_bars else contextlib.nullcontext()):
             agent, search_tool, verbose = _init_worker(
                 worker_id, worker_config,
             )
     except Exception as exc:
-        print(f"[Worker {worker_id}] INIT FAILED: {exc}", flush=True)
+        if live_bars:
+            sys.stderr.write(init_out.getvalue())
+        print(f"[Worker {worker_id}] INIT FAILED: {exc}", file=sys.stderr if live_bars else sys.stdout, flush=True)
         traceback.print_exc()
         if progress_queue is not None:
             progress_queue.put(None)
         return {}
+    if live_bars and worker_id == 0 and progress_queue is not None:
+        for line in init_out.getvalue().splitlines():
+            if line.startswith("Uncertainty estimator:"):
+                progress_queue.put(("log", line))
 
     from evaluation.runner import QUERY_OUTPUT_DIRS, save_query_outputs
 
