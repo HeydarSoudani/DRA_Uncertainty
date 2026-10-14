@@ -76,7 +76,7 @@ python src/indexing_corpus_dataset/index_builder_test.py \
 ## 3. Inference
 
 Run via the wrapper script (edit `DATASET` / `RETRIEVER` / `AGENT` /
-`UNCERTAINTY_ESTIMATOR` at the top):
+`BELIEF_MODE` at the top):
 
 ```bash
 sbatch scripts/run_dra_inference.sh
@@ -89,7 +89,7 @@ python experiments/dra_inference.py \
     --dataset browsecomp_plus \
     --retriever qwen3_emb_4b \
     --agentic-model glm \
-    --uncertainty-estimator-mode monitor \
+    --belief-mode monitor \
     --num-gpus 0
 ```
 
@@ -113,10 +113,13 @@ read and can be deleted.
 Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
 `experiments/configs/dra_inference.yaml`.
 
-### Uncertainty estimator
+### Belief model
 
-`--uncertainty-estimator-mode monitor` plugs a passive monitor (`src/uncertainty_estimator/`) into any agent; `off` (the
-default) disables it. It never changes the trajectory. At the start of each sample it derives a fixed list of
+`--belief-mode monitor` plugs a passive belief model (`src/belief_model/`) into any agent; `off` (the
+default) disables it. It never changes the trajectory. The belief model follows Agent-BRACE (Singh et al., 2026,
+arXiv:2605.11436), adapted to search: the environment is the retriever, the observation is the documents of a search
+iteration, and the belief state gives each criterion of the query one of the seven words of estimative probability of
+ICD 203. At the start of each sample it derives a fixed list of
 criteria from the query (`llm_criteria`, at most `max_criteria`, null = the dataset's default in `layout.DATASET_SPECS`;
 for a report request it is the number of criteria the extractor may add, asked in the prompt).
 The dataset's `query_shape` (`layout.DATASET_SPECS`) picks the prompt, a shared core plus one block per shape, and the
@@ -131,72 +134,85 @@ wording; what the request leaves out is written into the criterion it narrows ("
 (country, location, situation); every report criterion reads on its own, naming its subject instead of pointing back
 ("it", "these"). Criteria are distinct: none asks for what another one asks for. Each criterion is `closed` (one fact), `open` (several parts or answers), `rest` or `aspect`
 (one aspect of a report topic), set by code from the shape: all clues are closed, the set (always the first criterion)
-is open, its members closed and its "any other member" criterion rest (added by code when the model leaves it out;
-fully covered only while the set is), all report criteria are aspects. Entity reachability counts the member criteria only. The coverage judge's prompt defines only the kinds present in the list.
+is open, its members closed and its "any other member" criterion rest (added by code when the model leaves it out),
+all report criteria are aspects. Entity reachability counts the member criteria only.
 Criteria bank (`criteria_bank: true`, the default): a query's criteria are read from
 `CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl` and extracted only when missing, then added to it
 (`BankedCriteriaSource`). A line is used only when the query id and text, `llm_criteria`, the query shape,
 `max_criteria` and a hash of the init prompt all match, so a changed prompt or cap extracts again; a truncated reply is asked once more and fails when truncated again, and
 a failed extraction is never added, so every criteria list a run uses is banked. A query extracted by two processes at
 once keeps the line banked first. Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the criteria the
-runs use; the criteria are never scored against gold during a run. At the end of each search iteration the estimator computes the per-step signals of
+runs use; the criteria are never scored against gold during a run. At the end of each search iteration the belief model computes the per-step signals of
 the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Section "Instantiation"):
 
 | field | report | meaning |
 |---|---|---|
 | `doc_novelty` | ν^D | fraction of the iteration's docs whose id was not seen in an earlier iteration (0, 0.2, ..., 1 for 5 docs) |
-| `criteria_delta` | Δ^D | change of the criteria state (uncovered 0, partially covered 1, fully covered 2) caused by the novel docs; negative when a contradiction lowered it |
+| `belief_delta` | Δ^D | change of the belief state over the WEP levels (almost no chance 0 ... almost certain 6), summed over the criteria; negative when the belief fell |
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
-| `criteria_attempts_after` | a | per criterion, the number of iterations whose queries directly targeted it (a state, like the criteria state) |
+| `criteria_attempts_after` | a | per criterion, the number of iterations whose queries directly targeted it (a state, like the belief state) |
 
 Extra saved information: `new_item_precision` and `recall_so_far` (against the qrels at the dataset's `min_relevance_score`;
 NeuCLIR and RAGTIME use grade 3, the very valuable docs, while the end-of-run `GradedRecall@N`
 counts every official level with its gain) and per-step intermediate answers (BrowseComp-Plus and
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
-prompt in `src/uncertainty_estimator/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
-`query_novelty` is null. The criteria signals use LLM judges (`src/uncertainty_estimator/judges.py`,
-model `criteria_judge_model`, default `llm_criteria`):
+prompt in `src/belief_model/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
+`query_novelty` is null. The criteria signals use LLM judges (`src/belief_model/judges.py`,
+model `belief_judge_model`, default `llm_criteria`):
 
-- `criteria_delta`: a stateful coverage judge. One call per iteration sees each criterion with its current status,
-  its attached evidence (the last 4 passages, each shown as the spans the judge cited that occur verbatim in the
-  passage and the first 100 words of the passage; a passage attached to several criteria is shown under each) and,
-  when partially covered, what it is still `missing`; plus the iteration's novel passages. It does not see the search
-  queries. It lists the criteria a new passage supports or contradicts, alone or combined with the attached evidence
-  (partially covered criteria and criteria that refer to each other are re-checked every iteration), with one or
-  more single-sentence verbatim spans per cited passage. Each span is checked on its own (a span joined with "..." is
-  split first); a span that is not verbatim is not shown, but the citation still counts (`span_verified` is saved per
-  span). `CriteriaState.apply` enforces the rules: a raise needs a
-  supporting passage, a lowering needs a contradicting passage and moves one level at most per iteration, and an
-  update that keeps the status only attaches its evidence. An open criterion is fully covered only once its support
-  comes from 3 distinct documents (`OPEN_MIN_SOURCES`); before that it is capped at partially covered, with the
-  missing sources as its `missing`. Several partial passages can together make a criterion
-  fully covered, and a contradiction lowers it, so `criteria_delta` is negative when coverage was lost.
+- Belief state and `belief_delta`: the belief updater (Agent-BRACE's b_t = f(query, b_{t-1}, o_t)). b_0 labels
+  every criterion "almost no chance". One call per iteration sees each criterion with its current label and its
+  attached evidence (the last 4 passages, each shown as the spans the updater cited that occur verbatim in the passage
+  and the passage's title line), plus every passage of the iteration, also ones seen before. It sees neither the search
+  queries nor the signals. It rewrites the whole belief: for every criterion, the passages that support or contradict
+  it, with one or more verbatim spans each, and its new label, one of the seven ICD 203 words of estimative
+  probability, lowest first:
+
+  | label | the passages found so far ... |
+  |---|---|
+  | almost no chance | do not relate to it, or contradict it |
+  | very unlikely | mention the criterion's subject only in passing |
+  | unlikely | give facts on the criterion's subject, but outside the limits its wording sets |
+  | roughly even chance | relate to it but leave it open, or disagree on it |
+  | likely | give it only in part, only indirectly, or only by combining passages |
+  | very likely | give it in whole and directly in one passage, and none contradicts it |
+  | almost certain | give the information in whole, directly, in several passages that agree |
+
+  The label rates how likely it is that the passages found so far give the information the criterion asks for. The
+  levels follow ICD 203; their evidence descriptions draw on GRADE's certainty factors (directness, consistency,
+  completeness). A shape block refines what support means (for a report criterion, one or two supporting documents
+  give it in part and three or more in whole). The guidance lives in the prompt only: `BeliefState.update` takes every
+  label as written, so a label may stay, rise or fall by any number of levels. A criterion the updater leaves out,
+  or gives no WEP label, keeps its label. Each span is checked on its own (a span joined with "..." is split first);
+  only cited passages with a verified span are attached, once per criterion and role. This guards the evidence, never
+  the label. Each label's band midpoint (`WEP_PROBABILITY`: 0.03, 0.125, 0.325, 0.5, 0.675, 0.875, 0.97) is used in
+  the analysis only.
 - `criteria_attempts_after`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
-  each criterion's status, the verified spans of its latest evidence passage and what is `missing`, so a query naming
+  each criterion's label and the verified spans of its latest evidence passage, so a query naming
   an entity the evidence already linked to a criterion counts as targeting it; a query that restates most of the user
   query scores at most 0.5. One query may target several criteria. A criterion that some query of the iteration
   scores 1 on is `criteria_targeted` and its attempt count grows by 1 (once per iteration, however many queries target
-  it; 0.5 never counts; covered criteria are counted too). When the call fails the attempts are unchanged.
+  it; 0.5 never counts; whatever its label). When the call fails the attempts are unchanged.
 
 #### Inform mode
 
-`--uncertainty-estimator-mode inform` computes the same signals and also shows them to the agent: right after each
-iteration's search results, one `<certainty>` tag is appended to the trajectory (`src/uncertainty_estimator/certainty.py`):
+`--belief-mode inform` computes the same signals and also shows them to the agent: right after each
+iteration's search results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model/belief_state.py`):
 
 ```xml
-<certainty step="3">
+<belief_state step="3">
   <criteria>
-    <k1 status="covered" attempts="1">born in the 1960s</k1>
-    <k2 status="partial" attempts="2">won a regional award</k2>
-    <k3 status="not_covered" attempts="0">the films they directed</k3>
+    <k1 label="very likely" attempts="1">born in the 1960s</k1>
+    <k2 label="roughly even chance" attempts="2">won a regional award</k2>
+    <k3 label="almost no chance" attempts="0">the films they directed</k3>
   </criteria>
-  <signals doc_novelty="0.40" criteria_delta="+1" query_novelty="0.81"/>
-</certainty>
+  <signals doc_novelty="0.40" belief_delta="+2" query_novelty="0.81"/>
+</belief_state>
 ```
 
-The tag is descriptive only: each criterion's status and attempts, then the step's three signals; gold-based fields (`new_item_precision`,
-`recall_so_far`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
+The tag is descriptive only: each criterion's label and attempts, then the step's three signals; gold-based fields (`new_item_precision`,
+`recall_so_far`, relevant counts) stay in `belief/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
 | agents | place |
@@ -207,10 +223,10 @@ The system prompts are unchanged. Where the tag goes:
 | webweaver | appended to the planner's search observation |
 | cpm_report | appended to the current information of the next plan / write prompt |
 
-The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl` and as `certainty_tag` in
-`uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
+The tag is also saved as `belief_state` on the search step in `trajectory/{qid}.jsonl` and as `belief_state_tag` in
+`belief/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `belief_aware`
 follows the flag like every other agent; in `inform` mode its system prompt also introduces the tag (one section,
-`certainty_section.txt`, the same for every task, with no advice on how to use it), and in `monitor` and
+`belief_section.txt`, the same for every task, with no advice on how to use it), and in `monitor` and
 `off` modes the prompt never mentions it.
 
 #### Report evaluation (Auto-ARGUE)
@@ -249,7 +265,7 @@ src/evaluation/
 ├── retrieval/       surfaced / seen / cited evaluators, citations, TREC metrics, fusion evaluation
 ├── trajectory/      TrajectoryEvaluator (statistics), save_trajectory
 ├── generation/      GenerationEvaluator (length, words, citations, generation/{qid}.md)
-├── uncertainty/     save_uncertainty (uncertainty/{qid}.jsonl schema)
+├── belief/          save_belief (belief/{qid}.jsonl schema)
 ├── gold/            TRQA gold entities and the entity matcher (criteria reachability)
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
 └── common.py        file, statistics and terminal helpers
@@ -258,8 +274,8 @@ src/evaluation/
 ### Output format
 
 ```
-$DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
-├── run_config.json                 full agent/searcher/uncertainty-estimator settings
+$DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
+├── run_config.json                 full agent/searcher/belief-model settings
 ├── retrieval/
 │   ├── surfaced/{qid}.trec         raw retriever output (all iterations, col 6 = iter_N)
 │   ├── seen/{qid}.trec             docs shown to the LLM
@@ -267,7 +283,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 │   └── fusion_{method}.trec        deduped fusion ranking (aggregate over all queries)
 ├── generation/{qid}.md             per-query report (markdown)
 ├── trajectory/{qid}.jsonl          meta line + one line per step
-├── uncertainty/{qid}.jsonl         meta line (criteria, config) + one line per search iteration (signals)
+├── belief/{qid}.jsonl              meta line (criteria, config) + one line per search iteration (belief, signals)
 ├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
 └── summary.json                    grouped metrics (retrieval / generation / trajectory)
@@ -285,9 +301,9 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 }
 ```
 
-With the estimator on, `{uncertainty_config}` is `ue-{mode}` (e.g. `ue-monitor`, `ue-inform`).
+With the belief model on, `{belief_config}` is `belief-{mode}` (e.g. `belief-monitor`, `belief-inform`).
 
-#### `uncertainty/{query_id}.jsonl`
+#### `belief/{query_id}.jsonl`
 
 Every line has `record` (`meta` or `step`) and `query_id`; join correctness from `accuracy.jsonl` on `query_id`. A
 signal that could not be computed is null, never 0; floats are finite and rounded to 4 decimals. The file is written
@@ -297,16 +313,16 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 9 |
+| `schema_version` | 12 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
-| `criteria_source`, `criteria_judge`, `query_scorer`, `encoder` | components in use (null when off) |
+| `criteria_source`, `belief_updater`, `query_scorer`, `encoder` | components in use (null when off) |
 | `num_criteria`, `num_iterations`, `num_unique_docs` | per-query counts |
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `criteria` | `[{id, text, kind}]` |
 | `criteria_info` | criteria LLM `model`, `query_shape`, `errors` |
 | `final_criteria_attempts` | last attempts, one per criterion |
-| `final_criteria_state`, `criteria_evidence` | last criteria state; per criterion, its status, what it is still `missing` (partially covered only) and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
+| `final_belief`, `criteria_evidence` | last belief state (one WEP label per criterion); per criterion, its `label` and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
 Step line (one per search iteration, flat scalars first):
 
@@ -315,16 +331,17 @@ Step line (one per search iteration, flat scalars first):
 | `iteration` | 1, 2, ... for every agent |
 | `agent_iteration` | the agent's own counter (base and meaning differ per agent) |
 | `num_subqueries`, `num_docs`, `num_new_docs` | step counts (unique doc ids) |
-| `doc_novelty`, `criteria_delta`, `query_novelty` | x_t, see the table above |
+| `doc_novelty`, `belief_delta`, `query_novelty` | x_t, see the table above |
 | `new_item_precision` | newly seen relevant docs / the step's docs (0, 0.2, ..., 1 for 5 docs) |
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
 | `recall_so_far`, `num_relevant_seen`, `num_relevant` | relevant docs seen up to and including this step / all the query's relevant docs |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
 | `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
-| `criteria_state_before`, `criteria_state_after` | one status per criterion, in `criteria` order |
+| `belief_before`, `belief_after` | the belief state: one WEP label per criterion, in `criteria` order |
+| `criteria_sources_after` | distinct supporting documents per criterion so far |
 | `criteria_targeted`, `criteria_attempts_after` | ids targeted directly this iteration (null when the scorer failed); attempts per criterion, in `criteria` order |
-| `criteria_updates` | `[{id, from, to, proposed, support, contradict, reason, missing, applied, note}]`, one per update the coverage judge proposed; `applied` is false for a rejected one (`note` says why) |
-| `criteria_judge_output` | the coverage judge's raw reply (null when it was not called) |
+| `criteria_updates` | `[{id, from, to, written, support, contradict, reason, note}]`, one per criterion (then one per unknown or repeated id); `written` is the label as the updater wrote it, `note` says why a label was kept or a citation dropped |
+| `belief_updater_output` | the belief updater's raw reply (null when it was not called) |
 | `intermediate_answer_reasoning`, `errors` | free text, reasons for nulls |
 
 `iteration` is not the retrieval `iter_N`: `iter_N` counts retrieval calls, so an iteration with several queries spans

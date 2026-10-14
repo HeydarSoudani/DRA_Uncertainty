@@ -1,32 +1,32 @@
-"""Per-query uncertainty file ``uncertainty/{query_id}.jsonl``.
+"""Per-query belief file ``belief/{query_id}.jsonl``.
 
-Saves what ``UncertaintyEstimator`` records into one JSONL file per query
-under ``uncertainty/``: a ``meta`` line, then one ``step`` line per search
+Saves what ``BeliefModel`` records into one JSONL file per query
+under ``belief/``: a ``meta`` line, then one ``step`` line per search
 iteration.  The files are the input of the offline analysis and of the
 scoring model g_phi.  Every line carries ``query_id``; correctness labels
 stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 10::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 12::
 
-    line 1  {"record": "meta", "schema_version": 10, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 12, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
-             "criteria_source": "llm", "criteria_judge": "llm:...",
+             "criteria_source": "llm", "belief_updater": "llm:...",
              "query_scorer": "llm:...", "encoder": "...",
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "set", "errors": []},
-             "final_criteria_state": ["fully_covered", "uncovered", ...],
+             "final_belief": ["very likely", "almost no chance", ...],
              "final_criteria_attempts": [2, 0, ...],
-             "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "fully_covered",
+             "criteria_evidence": [{"id": "c1", "kind": "closed", "label": "very likely",
                                     "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
                                                   "spans": ["..."], "span_verified": [true]}]}, ...]}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
-             "doc_novelty": 1.0, "criteria_delta": 3, "query_novelty": 1.0,
+             "doc_novelty": 1.0, "belief_delta": 5, "query_novelty": 1.0,
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
@@ -35,26 +35,37 @@ Per-query JSONL schema (``uncertainty/{query_id}.jsonl``), schema_version 10::
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [1.0, 0.5, ...]}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
-             "criteria_state_before": ["uncovered", ...], "criteria_state_after": ["fully_covered", ...],
-             "criteria_sources_after": [3, 0, ...],
+             "belief_before": ["almost no chance", ...], "belief_after": ["very likely", ...],
+             "criteria_sources_after": [1, 0, ...],
              "criteria_targeted": ["c1"], "criteria_attempts_after": [1, 0, ...],
-             "criteria_updates": [{"id": "c1", "from": "uncovered", "to": "fully_covered",
-                                   "proposed": "fully_covered", "support": [{"doc_id": "d1", ...}],
-                                   "contradict": [], "reason": "...", "applied": true, "note": ""}, ...],
-             "criteria_judge_output": "...",
+             "criteria_updates": [{"id": "c1", "from": "almost no chance", "to": "very likely",
+                                   "written": "very likely", "support": [{"doc_id": "d1", ...}],
+                                   "contradict": [], "reason": "...", "note": ""}, ...],
+             "belief_updater_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
     ...
 
-A criterion's ``kind`` is ``closed`` (one fact) or ``open`` (several parts
-or answers; fully covered only with several supporting documents), new in
-schema_version 7.  schema_version 8 drops ``criteria_eval`` (the criteria
+A criterion's ``kind`` is ``closed`` (one fact), ``open`` (several parts
+or answers), ``rest`` (the members of a set the extractor did not list) or
+``aspect`` (one aspect of a report topic), new in schema_version 7; it is
+saved only, the belief updater does not use it.  schema_version 8 drops ``criteria_eval`` (the criteria
 are assessed offline, ``analysis/criteria_reachability.py``).
 schema_version 9 drops the graded gold (``new_item_graded_recall``,
 ``new_gain``, ``total_gain``, ``graded_recall_so_far``, ``gain_seen``).
 schema_version 10 adds ``criteria_sources_after`` (distinct supporting
-documents per criterion); an aspect criterion's status follows from it, and
-only cited passages with a verified span are attached.  ``iteration`` counts from 1 for every agent; ``agent_iteration`` is the
-agent's own counter.  A signal that could not be computed is null, never 0,
+documents per criterion); only cited passages with a verified span are
+attached.  schema_version 11 is the belief model: the criteria state is one
+ICD 203 WEP label per criterion (``belief_model.types.WEP_LABELS``),
+rewritten every step by the belief updater from every document of the step
+(``belief_delta`` sums the label moves over levels 0 to 6),
+``criteria_updates`` has one record per criterion with the label as
+``written``, ``criteria_judge`` and ``criteria_judge_output`` become
+``belief_updater`` and ``belief_updater_output``, and ``criteria_evidence``
+gives each criterion's ``label``.  schema_version 12 renames
+``criteria_state_before`` / ``criteria_state_after`` / ``final_criteria_state``
+to ``belief_before`` / ``belief_after`` / ``final_belief`` and
+``criteria_delta`` to ``belief_delta``.  ``iteration`` counts from 1 for
+every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
 search still gets its meta line.  The file is written atomically.
 """
@@ -68,7 +79,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 
 
 def _clean(obj: Any) -> Any:
@@ -94,15 +105,15 @@ def _dump(obj: Dict[str, Any]) -> str:
     return json.dumps(_clean(obj), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
-def save_uncertainty(query_id: str, question: str, result: Dict[str, Any], output_dir) -> None:
+def save_belief(query_id: str, question: str, result: Dict[str, Any], output_dir) -> None:
     """Write ``{output_dir}/{query_id}.jsonl`` from the result dict.
 
-    Reads ``uncertainty_meta`` and ``uncertainty_steps`` (attached by
-    ``_attach_uncertainty_stats`` in the agent mixin); does nothing when the
-    estimator was off.  Writes to a temporary file first, so an interrupted
+    Reads ``belief_meta`` and ``belief_steps`` (attached by
+    ``_attach_belief_stats`` in the agent mixin); does nothing when the
+    belief model was off.  Writes to a temporary file first, so an interrupted
     write never leaves a truncated file.
     """
-    meta = result.get("uncertainty_meta")
+    meta = result.get("belief_meta")
     if meta is None:
         return
 
@@ -117,6 +128,6 @@ def save_uncertainty(query_id: str, question: str, result: Dict[str, Any], outpu
     tmp_path = out_dir / f".{query_id}.jsonl.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(_dump(header) + "\n")
-        for step in result.get("uncertainty_steps") or []:
+        for step in result.get("belief_steps") or []:
             f.write(_dump({"record": "step", "query_id": query_id, **step}) + "\n")
     os.replace(tmp_path, path)

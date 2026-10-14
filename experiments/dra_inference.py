@@ -15,7 +15,7 @@ Supported agents via --agentic-model (the LLM is selected automatically per agen
     oss_120b        GPT-OSS-120B reasoning agent                   → gpt-oss-120b (vLLM)
     tongyi          Tongyi-DeepResearch ReAct agent                → Alibaba-NLP/Tongyi-DeepResearch-30B-A3B (vLLM)
     cpm_explore     AgentCPM-Explore deep search agent             → openbmb/AgentCPM-Explore (vLLM)
-    uncertainty_aware  Uncertainty-aware search agent (reads <certainty> in inform mode) → qwen/qwen3.6-27b (OpenRouter API)
+    belief_aware  Belief-aware search agent (reads <belief_state> in inform mode) → qwen/qwen3.6-27b (OpenRouter API)
 
 Agentic workflows:
     ReAct-style (react, selfask, searcho1, research, searchr1, stepsearch, drtulu, glm, oss_20b, oss_120b, tongyi, cpm_explore):
@@ -31,9 +31,9 @@ Agentic workflows:
 
 
 Output structure:
-    run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
-    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor/
-    ├── run_config.json              full agent/searcher/uncertainty-estimator settings
+    run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
+    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/belief-monitor/
+    ├── run_config.json              full agent/searcher/belief-model settings
     ├── retrieval/
     │   ├── surfaced/
     │   │   └── {query_id}.trec      per-query surfaced-doc TREC (all iters, col 6 = iter_N; raw retriever output)
@@ -47,8 +47,8 @@ Output structure:
     ├── trajectory/
     │   ├── {query_id}.jsonl         per-query trajectory: one line per step + a trailing meta line
     │   └── {query_id}.md            same trajectory, human-readable, written live (one block per step)
-    ├── uncertainty/
-    │   └── {query_id}.jsonl         per-query uncertainty signals: meta line + one line per iteration
+    ├── belief/
+    │   └── {query_id}.jsonl         per-query belief-model signals: meta line + one line per iteration
     ├── accuracy.jsonl               per-query answer correctness (datasets with answers)
     ├── report_eval/                 Auto-ARGUE inputs, cached judgments and per-query scores.tsv
     └── summary.json                 grouped run metrics:
@@ -110,7 +110,7 @@ from utils.io_utils import (
     setup_output_dirs,
     build_dataset_dir_name,
     build_run_name_for_pipeline,
-    build_uncertainty_config_name,
+    build_belief_config_name,
     write_run_config,
 )
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results, save_query_outputs
@@ -184,10 +184,10 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
-    _estimator_mode = kwargs.get("uncertainty_estimator_mode", "off")
+    _belief_mode = kwargs.get("belief_mode", "off")
     # Criteria bank of the split: criteria are read from it, extracted only when missing.
     criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
-                     if _estimator_mode != "off" and kwargs.get("criteria_bank", True) else None)
+                     if _belief_mode != "off" and kwargs.get("criteria_bank", True) else None)
 
     # ==================== Resume: skip already-processed queries ====================
     llm_model = kwargs.pop("llm_model", "claude-sonnet-4-5")
@@ -199,16 +199,16 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         run_name = build_run_name_for_pipeline(agentic_model=agentic_model, llm_model=llm_model, **kwargs)
         retriever_label = kwargs.get("retriever_name", "e5")
         dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, retriever_label)
-        uncertainty_config_name = build_uncertainty_config_name(**kwargs)
+        belief_config_name = build_belief_config_name(**kwargs)
 
-        run_dir = str(Path(output_path) / dataset_dir / run_name / uncertainty_config_name)
+        run_dir = str(Path(output_path) / dataset_dir / run_name / belief_config_name)
 
         print(f"\n{'=' * 80}")
         print(f"[OUTPUT] Loading/saving results from: {run_dir}")
         print(f"{'=' * 80}")
 
         processed = get_processed_queries(
-            run_dir, require_uncertainty=kwargs.get("uncertainty_estimator_mode", "off") != "off",
+            run_dir, require_belief=kwargs.get("belief_mode", "off") != "off",
         )
         if processed:
             print(f"Found {len(processed)} already processed queries — skipping them")
@@ -261,8 +261,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
         return
 
-    # ==================== Inject qrels into worker_config for the multi-GPU estimator ==
-    if worker_config is not None and _estimator_mode != "off":
+    # ==================== Inject qrels into worker_config for the multi-GPU belief model ======
+    if worker_config is not None and _belief_mode != "off":
         worker_config["qrels"] = qrels
         worker_config["criteria_bank"] = criteria_bank
 
@@ -284,15 +284,15 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             seen_top_k=kwargs.get("seen_top_k", 5),
         )
 
-    # ==================== Instantiate Agent + Uncertainty estimator ====================
-    # In multi-GPU mode neither the agent nor the estimator is built in the main
+    # ==================== Instantiate Agent + Belief model ====================
+    # In multi-GPU mode neither the agent nor the belief model is built in the main
     # process; each worker spawns its own instances on its assigned GPU (see
     # orchestration._init_worker).  Building them here would create unused LLM
     # clients that are immediately torn down.
-    from orchestration import build_agent, build_uncertainty_estimator
+    from orchestration import build_agent, build_belief_model
 
     agent = None
-    estimator = None
+    belief_model = None
     if num_gpus <= 1 and queries:
         agent = build_agent(
             agentic_model=agentic_model,
@@ -314,24 +314,24 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             max_passage_chars=kwargs.get("max_passage_chars", 4000),
         )
 
-        # Build the estimator AFTER the agent so it can take the agent's
+        # Build the belief model AFTER the agent so it can take the agent's
         # intermediate-answer hook.
-        estimator = build_uncertainty_estimator(
-            mode=_estimator_mode,
+        belief_model = build_belief_model(
+            mode=_belief_mode,
             retriever=_retriever,
             qrels=qrels,
             llm_criteria=kwargs.get("llm_criteria"),
             max_criteria=kwargs.get("max_criteria"),
-            criteria_judge_model=kwargs.get("criteria_judge_model", ""),
+            belief_judge_model=kwargs.get("belief_judge_model", ""),
             add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
-            agent=agent if hasattr(agent, "uncertainty_estimator") else None,
+            agent=agent if hasattr(agent, "belief_model") else None,
             agentic_model=agentic_model,
             dataset=dataset,
             llm_model=llm_model,
             criteria_bank=criteria_bank,
         )
-        if estimator is not None and hasattr(agent, "uncertainty_estimator"):
-            agent.uncertainty_estimator = estimator
+        if belief_model is not None and hasattr(agent, "belief_model"):
+            agent.belief_model = belief_model
 
     # ==================== Setup output dirs + evaluators ====================
     evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
@@ -519,16 +519,16 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # collect them before we reclaim the GPUs.
     #
     # Reference chains that keep the encoder model alive:
-    #   1. the estimator: its answer hook (bound method → agent → retriever.encoder),
-    #      the encode closures of the novelty signals and the query scorer,
-    #      and the NLI judge model
+    #   1. the belief model: its answer hook (bound method → agent → retriever.encoder),
+    #      the encode closures of the novelty signals, the belief updater and
+    #      the query scorer
     #   2. agent.search_tool.retriever → retriever.encoder
     #   3. agent.retriever → retriever.encoder
     #   4. kwargs["retriever"] → retriever.encoder
 
-    # 1) Sever closure/bound-method/model refs inside the estimator
-    if estimator is not None:
-        estimator.close()
+    # 1) Sever closure/bound-method/model refs inside the belief model
+    if belief_model is not None:
+        belief_model.close()
 
     # 2) Move the encoder model off GPU *before* dropping references.
     #    Accelerate's device_map hooks can prevent gc from freeing GPU
@@ -546,7 +546,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     del _enc
 
     # 3) Drop all local + kwargs references
-    del agent, search_tool, _retriever, estimator
+    del agent, search_tool, _retriever, belief_model
     kwargs.pop("retriever", None)
     kwargs.pop("post_retrieval_reranker", None)
     kwargs.pop("post_fusion_reranker", None)
@@ -599,18 +599,18 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description="Run deep research agents pipeline (unified)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        allow_abbrev=False,  # only full flag names, e.g. --uncertainty-estimator-mode
+        allow_abbrev=False,  # only full flag names, e.g. --belief-mode
     )
 
     # ── File-backed config ─────────────────────────────────────────────────
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. uncertainty_aware = SearchR1-style agent that reads the <certainty> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Uncertainty estimator mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the per-step uncertainty signals (doc/query novelty, criteria change, criteria attempts, new-item recall, intermediate answers) to uncertainty/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <certainty> tag (criteria states, retrieval signals doc_novelty/criteria_delta, attempts per criterion, reasoning signal query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (one WEP label per criterion) and the per-step signals (doc_novelty, belief_delta, query_novelty, criteria attempts, new-item precision, recall so far, intermediate answers) to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its WEP label and attempts, then doc_novelty, belief_delta, query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
@@ -802,9 +802,9 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{uncertainty_config}/
-#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/ue-monitor/
-#     ├── run_config.json          full agent/searcher/uncertainty-estimator settings
+#   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
+#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/belief-monitor/
+#     ├── run_config.json          full agent/searcher/belief-model settings
 #     ├── retrieval/
 #     │   ├── surfaced/
 #     │   │   └── {query_id}.trec   per-query surfaced-doc TREC (raw retriever output, col 6 = iter_N)
@@ -818,8 +818,8 @@ if __name__ == "__main__":
 #     ├── trajectory/
 #     │   ├── {query_id}.jsonl  per-query trajectory: one line per step + a trailing meta line
 #     │   └── {query_id}.md     same trajectory, human-readable, written live
-#     ├── uncertainty/
-#     │   └── {query_id}.jsonl  per-query uncertainty signals: meta line + one line per iteration
+#     ├── belief/
+#     │   └── {query_id}.jsonl  per-query belief-model signals: meta line + one line per iteration
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
 #     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},

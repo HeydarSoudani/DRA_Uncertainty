@@ -1,7 +1,7 @@
 """Process reward — DESIGNABLE, stubbed.
 
 Per-search-turn credit.  The plan is to
-wrap the finalized ``uncertainty_estimator.signals`` (READ-ONLY) — DocNovelty,
+wrap the finalized ``belief_model.signals`` (READ-ONLY) — DocNovelty,
 QueryNovelty, RetrievalGain (needs qrels), the criteria signals — and pair information-gain with a
 redundancy penalty (StepSearch-style) to resist novelty-farming.
 
@@ -22,12 +22,12 @@ logger = logging.getLogger(__name__)
 
 
 class ProcessReward(ProcessComponent):
-    """Wraps uncertainty-estimator signals into per-turn credit. TODO(reward-process)."""
+    """Wraps belief-model signals into per-turn credit. TODO(reward-process)."""
 
     def __init__(self, cfg: RewardConfig) -> None:
         self.cfg = cfg
         # TODO(reward-process): lazily construct the requested signals, e.g.
-        #   from uncertainty_estimator.signals import DocNoveltySignal, RetrievalGainSignal
+        #   from belief_model.signals import DocNoveltySignal, RetrievalGainSignal
         #   self._novelty = DocNoveltySignal(); self._gain = RetrievalGainSignal(qrels=...)
         # NOTE: RetrievalGain needs qrels at RL time -> thread prompt.qrels through.
 

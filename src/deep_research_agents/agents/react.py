@@ -88,7 +88,7 @@ class ReActAgent(BasicAgent):
 
         return self.current_step_template.format(
             think=think, action_text=action_text, observation=observation,
-        ) + self._certainty_suffix(step) + "\n"
+        ) + self._belief_state_suffix(step) + "\n"
 
     # ------------------------------------------------------------------
     # Observation dispatch
@@ -97,7 +97,7 @@ class ReActAgent(BasicAgent):
     def get_observation(self, action_type: str, action_entity: str) -> tuple:
         """Execute an action and return its observation.
 
-        The uncertainty estimator is called by the main loop, not here.
+        The belief model is called by the main loop, not here.
 
         Returns:
             (docs, obs, done)
@@ -154,7 +154,7 @@ class ReActAgent(BasicAgent):
                         think=entry["thought"],
                         action_text=action_text,
                         observation=entry["observation"],
-                    ) + self._certainty_suffix(entry)
+                    ) + self._belief_state_suffix(entry)
                 )
 
         return "\n".join(parts)
@@ -261,7 +261,7 @@ class ReActAgent(BasicAgent):
                 break
 
             # Extract thought from <think> tags
-            output_text = self._strip_certainty(output_text)
+            output_text = self._strip_belief_state(output_text)
             think_content = self.get_think(output_text)
             if think_content:
                 thought = think_content.replace("\n", " ").strip()
@@ -376,8 +376,8 @@ class ReActAgent(BasicAgent):
                     if tag:
                         # Shown after this step's observation, in both the
                         # linear prompt and the plan-mode history context.
-                        history_entry["certainty"] = tag
-                        reasoning_path[-1]["certainty"] = tag
+                        history_entry["belief_state"] = tag
+                        reasoning_path[-1]["belief_state"] = tag
 
                 # Hard-coded: update plan after each search observation
                 if self.use_plan:
@@ -415,7 +415,7 @@ class ReActAgent(BasicAgent):
                     think=thought,
                     action_text=action_text,
                     observation=obs,
-                ) + self._certainty_suffix(history_entry)
+                ) + self._belief_state_suffix(history_entry)
                 input_prompt += current_step_text + "\n"
 
         # ---- force Finish if the loop ended without one ----

@@ -25,8 +25,8 @@ def save_trajectory(query_id: str, question: str, result: Dict[str, Any], output
     line, so the meta line may come last.
 
     Not stored here, since it lives in its own file: the surfaced ranking
-    (``retrieval/surfaced/{qid}.trec``), the uncertainty signals
-    (``uncertainty/{qid}.jsonl``) and the cited docs
+    (``retrieval/surfaced/{qid}.trec``), the belief-model signals
+    (``belief/{qid}.jsonl``) and the cited docs
     (``retrieval/cited/{qid}.trec``).
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,21 @@
+The response to this query is a short answer: the one entity or value that the query describes by conditions or clues. Every criterion is one condition or clue on the answer.
+
+---labels---
+For this query:
+- A passage supports a criterion when it states a fact that shows the condition holds for the answer, or links the answer to a name, date or fact the condition needs.
+- A label rates the condition for the entity the evidence identifies as the answer.
+
+---example---
+Example belief:
+c1 [very likely]: the lighthouse that was built before 1900
+  - support (step 1): "Skerry Point Lighthouse was first lit in 1872." (Skerry Point Lighthouse - Wikipedia)
+c2 [almost no chance]: the lighthouse whose light was automated in the 1980s
+c3 [almost no chance]: the lighthouse whose first keeper later became a painter
+Example output:
+{
+  "belief": [
+    {"id": "c1", "support": [], "contradict": [{"passage": 3, "spans": ["Skerry Point Lighthouse was first lit in 1906."]}], "reason": "Passage 3 gives a year after 1900 for the same first lighting that the evidence dates to 1872.", "label": "roughly even chance"},
+    {"id": "c2", "support": [{"passage": 1, "spans": ["The light at Skerry Point was automated in 1987"]}], "contradict": [], "reason": "Passage 1 states that the light of the lighthouse was automated in 1987.", "label": "very likely"},
+    {"id": "c3", "support": [{"passage": 2, "spans": ["Its first keeper, Thomas Gunn, served until 1881."]}], "contradict": [], "reason": "Passage 2 gives the clue only in part: it names the first keeper but not the keeper's later career.", "label": "likely"}
+  ]
+}

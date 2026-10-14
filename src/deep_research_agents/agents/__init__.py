@@ -14,7 +14,7 @@ from .drtulu_agent import DrTulu_Agent
 from .glm_agent import GLM_Agent
 from .oss_agent import OSS_Agent
 from .tongyi_agent import TongyiDR_Agent
-from .uncertainty_aware_agent import UncertaintyAwareAgent
+from .belief_aware_agent import BeliefAwareAgent
 # Registry constants
 REASONING_AGENTS = frozenset({
     "react",
@@ -30,7 +30,7 @@ REASONING_AGENTS = frozenset({
     "tongyi",
     "cpm_explore",
     "cpm_report",
-    "uncertainty_aware",
+    "belief_aware",
 })
 CPM_REPORT_AGENTS  = frozenset()  # kept for backward-compat; now part of REASONING_AGENTS
 AGENTCPM_EXPLORE_AGENTS = frozenset({"cpm_explore"})  # kept for vLLM spec resolution
@@ -50,7 +50,7 @@ AGENT_MAP = {
     "tongyi": TongyiDR_Agent,
     "cpm_explore": CPMExplore,
     "cpm_report": CPMReport,
-    "uncertainty_aware": UncertaintyAwareAgent,
+    "belief_aware": BeliefAwareAgent,
 }
 
 __all__ = [
@@ -68,7 +68,7 @@ __all__ = [
     "GLM_Agent",
     "OSS_Agent",
     "TongyiDR_Agent",
-    "UncertaintyAwareAgent",
+    "BeliefAwareAgent",
     "REASONING_AGENTS",
     "CPMExplore",
     "CPM_REPORT_AGENTS",

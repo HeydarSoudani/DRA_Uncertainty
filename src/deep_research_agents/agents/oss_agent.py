@@ -299,7 +299,7 @@ class OSS_Agent(BasicAgent):
                     _iter_subqueries, _iter_seen_docs, iteration, query,
                     trajectory=new_messages,
                 )
-                self._append_certainty(new_messages, tag, reasoning_path[-1])
+                self._append_belief_state(new_messages, tag, reasoning_path[-1])
 
             messages = new_messages
             _last_completed_iter = iteration

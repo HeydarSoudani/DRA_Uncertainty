@@ -21,8 +21,8 @@ generation
 gold
     The gold entities of TRQA and the entity matcher, for the entity
     reachability of the criteria (``analysis/criteria_reachability.py``).
-uncertainty
-    The per-query uncertainty-signal file.
+belief
+    The per-query belief file.
 
 Beside them: ``runner`` (evaluation of an inference run), ``judge`` (the
 LLM-judge client) and ``common`` (file and statistics helpers).

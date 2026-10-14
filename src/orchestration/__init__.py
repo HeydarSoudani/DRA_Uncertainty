@@ -1,7 +1,7 @@
-"""Pipeline orchestration: retriever/uncertainty-estimator factories and multi-GPU workers.
+"""Pipeline orchestration: retriever/belief-model factories and multi-GPU workers.
 
 This is the wiring layer that assembles heavy component packages
-(``uncertainty_estimator``, ``searcher_component``, ``deep_research_agents``,
+(``belief_model``, ``searcher_component``, ``deep_research_agents``,
 ``evaluation``) into a runnable agent. It is consumed by the ``run_pipeline``
 entry point in ``experiments/dra_inference.py``.
 
@@ -66,20 +66,20 @@ def setup_retriever_from_args(args):
 
 
 # ===========================================================================
-# Uncertainty estimator factory
+# Belief model factory
 # ===========================================================================
 
 # Agents that write a long report rather than a short answer.
 NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
 
 
-def build_uncertainty_estimator(
+def build_belief_model(
     mode: str,
     retriever=None,
     qrels=None,
     llm_criteria: Optional[str] = None,
     max_criteria: Optional[int] = None,
-    criteria_judge_model: str = "",
+    belief_judge_model: str = "",
     add_intermediate_answer: bool = True,
     agent=None,
     agentic_model: Optional[str] = None,
@@ -87,13 +87,13 @@ def build_uncertainty_estimator(
     llm_model: Optional[str] = None,
     criteria_bank: Optional[str] = None,
 ):
-    """Build the uncertainty estimator, or None when *mode* is ``"off"``.
+    """Build the belief model, or None when *mode* is ``"off"``.
 
     Shared by the main process (run_pipeline) and spawned GPU workers.
 
     Args:
         mode: ``"off"``, ``"monitor"`` (observe only) or ``"inform"``
-            (observe and inject a ``<certainty>`` tag into the trajectory).
+            (observe and inject a ``<belief_state>`` tag into the trajectory).
         retriever: Retriever whose encoder gives the novelty embeddings
             (dense retrievers only; others leave nu^q null).
         qrels: Thresholded relevance judgements, for the new-item precision
@@ -104,8 +104,9 @@ def build_uncertainty_estimator(
             request, the number the extractor may add, asked in the prompt);
             None = the
             dataset's ``max_criteria`` (layout.DATASET_SPECS).
-        criteria_judge_model: LLM behind criteria_delta (stateful coverage
-            judge) and the criteria attempts (targeting scorer); "" = *llm_criteria*.
+        belief_judge_model: LLM behind the belief state and belief_delta
+            (belief updater) and the criteria attempts (targeting scorer);
+            "" = *llm_criteria*.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
@@ -122,10 +123,10 @@ def build_uncertainty_estimator(
     if mode == "off":
         return None
     if mode not in ("monitor", "inform"):
-        raise ValueError(f"unknown uncertainty estimator mode {mode!r}; expected 'off', 'monitor' or 'inform'")
+        raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
-    from uncertainty_estimator import (
-        BankedCriteriaSource, LLMCriteriaSource, UncertaintyEstimator, build_criteria_judges,
+    from belief_model import (
+        BankedCriteriaSource, LLMCriteriaSource, BeliefModel, build_belief_judges,
         encode_fn_from_retriever,
     )
 
@@ -143,9 +144,9 @@ def build_uncertainty_estimator(
         )
         if criteria_bank:
             criteria_source = BankedCriteriaSource(criteria_source, criteria_bank)
-            print(f"Uncertainty estimator: criteria from the bank {criteria_bank}, missing ones from {llm_criteria}")
+            print(f"Belief model: criteria from the bank {criteria_bank}, missing ones from {llm_criteria}")
         else:
-            print(f"Uncertainty estimator: criteria from {llm_criteria}")
+            print(f"Belief model: criteria from {llm_criteria}")
     else:
         logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
@@ -155,7 +156,7 @@ def build_uncertainty_estimator(
 
     intermediate_answer_fn = None
     if not add_intermediate_answer:
-        print("Uncertainty estimator: intermediate answers disabled (--add-intermediate-answer false)")
+        print("Belief model: intermediate answers disabled (--add-intermediate-answer false)")
     elif (
         agent is not None
         and agentic_model not in NO_INTERMEDIATE_ANSWER_AGENTS
@@ -164,20 +165,20 @@ def build_uncertainty_estimator(
         and hasattr(agent, "answer_from_trajectory")
     ):
         intermediate_answer_fn = agent.answer_from_trajectory
-        print(f"Uncertainty estimator: intermediate answers via {agentic_model}.answer_from_trajectory")
+        print(f"Belief model: intermediate answers via {agentic_model}.answer_from_trajectory")
 
-    coverage_judge, query_scorer = None, None
+    belief_updater, query_scorer = None, None
     if criteria_source is not None:
-        coverage_model = criteria_judge_model or llm_criteria
-        coverage_judge, query_scorer = build_criteria_judges(
-            disable_native_thinking(create_generator(coverage_model, backend="api")), model=coverage_model,
+        judge_model = belief_judge_model or llm_criteria
+        belief_updater, query_scorer = build_belief_judges(
+            disable_native_thinking(create_generator(judge_model, backend="api")), model=judge_model,
             query_shape=query_shape,
         )
-        print(f"Uncertainty estimator: criteria judge {coverage_judge.name}, query scorer {query_scorer.name}")
+        print(f"Belief model: belief updater {belief_updater.name}, query scorer {query_scorer.name}")
 
-    return UncertaintyEstimator(
+    return BeliefModel(
         criteria_source=criteria_source,
-        coverage_judge=coverage_judge,
+        belief_updater=belief_updater,
         query_scorer=query_scorer,
         encode_fn=encode_fn,
         encoder_name=encoder_name,
@@ -279,7 +280,7 @@ def build_agent(
         _reasoning_extra["hard_mode"] = hard_mode
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["model_name"] = llm_model
-    elif agentic_model == "uncertainty_aware":
+    elif agentic_model == "belief_aware":
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["max_retries"] = max_retries
         # Report datasets get the report prompts (task from the dataset).
@@ -511,22 +512,22 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_passage_chars=worker_config.get("max_passage_chars", 4000),
     )
 
-    estimator = build_uncertainty_estimator(
-        mode=worker_config.get("uncertainty_estimator_mode", "off"),
+    belief_model = build_belief_model(
+        mode=worker_config.get("belief_mode", "off"),
         retriever=retriever,
         qrels=worker_config.get("qrels"),
         llm_criteria=worker_config.get("llm_criteria"),
         max_criteria=worker_config.get("max_criteria"),
-        criteria_judge_model=worker_config.get("criteria_judge_model", ""),
+        belief_judge_model=worker_config.get("belief_judge_model", ""),
         add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
-        agent=agent if hasattr(agent, "uncertainty_estimator") else None,
+        agent=agent if hasattr(agent, "belief_model") else None,
         agentic_model=agentic_model,
         dataset=dataset,
         llm_model=llm_model,
         criteria_bank=worker_config.get("criteria_bank"),
     )
-    if estimator is not None and hasattr(agent, "uncertainty_estimator"):
-        agent.uncertainty_estimator = estimator
+    if belief_model is not None and hasattr(agent, "belief_model"):
+        agent.belief_model = belief_model
 
     print(f"[Worker {worker_id}] Initialisation complete", flush=True)
     return agent, search_tool, verbose
@@ -539,7 +540,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     # With live progress bars in the parent, this process's init prints would
     # land between the bars' in-place redraws and scramble them.  Hold them
     # back; on failure they go to stderr, otherwise worker 0 forwards the
-    # estimator config lines (the same in every worker) to be printed once.
+    # belief model config lines (the same in every worker) to be printed once.
     live_bars = bool(worker_config.get("live_bars", False))
     init_out = io.StringIO()
     try:
@@ -557,7 +558,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         return {}
     if live_bars and worker_id == 0 and progress_queue is not None:
         for line in init_out.getvalue().splitlines():
-            if line.startswith("Uncertainty estimator:"):
+            if line.startswith("Belief model:"):
                 progress_queue.put(("log", line))
 
     from evaluation.runner import QUERY_OUTPUT_DIRS, save_query_outputs
@@ -626,10 +627,10 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             print(f"  [Worker {worker_id}] ✓ Saved: {query_id}", flush=True)
 
     agent.cleanup()
-    # As run_pipeline does: drop the estimator's model and callback references.
-    estimator = getattr(agent, "uncertainty_estimator", None)
-    if estimator is not None:
-        estimator.close()
+    # As run_pipeline does: drop the belief model's model and callback references.
+    belief_model = getattr(agent, "belief_model", None)
+    if belief_model is not None:
+        belief_model.close()
     if verbose:
         print(
             f"[Worker {worker_id}] Completed {len(results)}/{len(query_items)} queries",

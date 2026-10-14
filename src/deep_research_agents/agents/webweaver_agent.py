@@ -175,8 +175,8 @@ class WebWeaver_Agent(BasicAgent):
 
         self._status_callback = status_callback
         self._search_iter     = 0
-        # Reset the uncertainty estimator (creates the query's criteria, loads its qrels)
-        self._reset_uncertainty_estimator(query_id, query_text)
+        # Reset the belief model (creates the query's criteria, loads its qrels)
+        self._reset_belief_model(query_id, query_text)
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
         if _meter is not None:
@@ -194,8 +194,8 @@ class WebWeaver_Agent(BasicAgent):
                 "trajectory": reasoning_path,
                 "citation_to_doc_id": citation_to_doc_id,
             }
-            # Attach uncertainty signals when available
-            self._attach_uncertainty_stats(result)
+            # Attach belief-model signals when available
+            self._attach_belief_stats(result)
 
             # Attach per-query token usage when a meter is available.
             token_usage = self._token_usage_delta(_tok_start)
@@ -507,7 +507,7 @@ class WebWeaver_Agent(BasicAgent):
         # ── search_fn: bridges planner's tool calls → pipeline retriever ─────
         def search_fn(queries: List[str], goal: str, thought: str = "") -> Tuple[Dict[str, Dict], Optional[str]]:
             """Run one planner search action; returns its memory-bank entries
-            and, in inform mode, the <certainty> tag for the observation."""
+            and, in inform mode, the <belief_state> tag for the observation."""
             nonlocal search_iter
             search_iter += 1
             new_entries: Dict[str, Dict] = {}
@@ -571,7 +571,7 @@ class WebWeaver_Agent(BasicAgent):
                     trajectory=[],
                 )
                 if tag:
-                    reasoning_path[-1]["certainty"] = tag
+                    reasoning_path[-1]["belief_state"] = tag
                 return new_entries, tag
 
             return new_entries, None

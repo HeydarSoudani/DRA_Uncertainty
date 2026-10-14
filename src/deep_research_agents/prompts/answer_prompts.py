@@ -8,11 +8,11 @@
 - Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...)
   and AGENT_ANSWER_FORMATS, the format each agent answers in.
 - AnswerCandidateOutput dataclass + extraction helpers, shared by the final
-  answer evaluation and the uncertainty estimator's intermediate answers.
+  answer evaluation and the belief model's intermediate answers.
 
 The forced answer is a user message; the agent keeps its own system prompt.
 
-The intermediate-answer instruction lives in ``uncertainty_estimator.prompts.user_prompts``.
+The intermediate-answer instruction lives in ``belief_model.prompts.user_prompts``.
 """
 
 import json
@@ -62,8 +62,8 @@ TAG_FORMAT = (
     "<answer>your answer</answer>"
 )
 
-# The uncertainty-aware agent's reasoning tag is <reasoning>, not <think> (see
-# agents.uncertainty_aware_agent).
+# The belief-aware agent's reasoning tag is <reasoning>, not <think> (see
+# agents.belief_aware_agent).
 REASONING_TAG_FORMAT = (
     "Provide your answer in the following format:\n"
     "<reasoning>your final reasoning</reasoning>\n"
@@ -120,7 +120,7 @@ AGENT_ANSWER_FORMATS = {
     "cpm_explore": CPM_EXPLORE_FORMAT,
     "tongyi":      TAG_FORMAT,
     "webweaver":   WEBWEAVER_FORMAT,
-    "uncertainty_aware": REASONING_TAG_FORMAT,
+    "belief_aware": REASONING_TAG_FORMAT,
 }
 
 
@@ -173,7 +173,7 @@ _AGENT_TO_PATTERNS = {
     "cpm_explore": ["answer_tag"],
     "tongyi":      ["answer_tag"],
     "webweaver":   ["answer_tag"],
-    "uncertainty_aware": ["answer_tag"],
+    "belief_aware": ["answer_tag"],
 }
 
 _ALL_PATTERN_NAMES = ["answer_tag", "finish_action", "exact_answer", "boxed", "so_final"]

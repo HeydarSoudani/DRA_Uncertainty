@@ -91,7 +91,7 @@ def disable_native_thinking(generator) -> BaseGenerator:
     """Switch *generator*'s own reasoning off for every call; returns it.
 
     For models that must answer in plain text within a token budget
-    (criteria extraction, LLM criteria judge, the uncertainty-aware policy):
+    (criteria extraction, belief updater, the belief-aware policy):
     with reasoning on, a thinking model can spend the whole budget before
     writing the answer.
     """

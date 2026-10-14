@@ -1,15 +1,16 @@
-"""LLM judges behind the criteria-based signals of the uncertainty estimator.
+"""LLM judges of the belief model.
 
-- ``LLMCoverageJudge``: stateful coverage judge, used for Delta^D.  One
-  call per step sees the criteria state plus the step's novel passages and
-  lists the criteria each passage supports or contradicts, with a proposed
-  status; ``CriteriaState.apply`` enforces the rules and sets the status of
-  an aspect criterion from its count of supporting documents.
+- ``LLMBeliefUpdater``: the belief update b_t = f(query, b_{t-1}, o_t),
+  Agent-BRACE style.  One call per step sees the current belief (each
+  criterion's WEP label and evidence) plus every passage of the step, and
+  rewrites the belief: per criterion, the passages that support or
+  contradict it and its new label.  ``BeliefState.update`` takes the labels
+  as written.
 - ``LLMQueryScorer``: one call per step scores how strongly each query
   targets each criterion (0, 0.5 or 1), given a short summary of the
-  criteria state; used for the targeting state a.
+  belief; used for the targeting state a.
 
-``build_criteria_judges`` builds both on one LLM client.
+``build_belief_judges`` builds both on one LLM client.
 """
 
 import json
@@ -21,15 +22,15 @@ import numpy as np
 
 from utils.text_utils import doc_id as _doc_id, doc_text, parse_json_object
 
-from .criteria import OPEN_MIN_SOURCES, CriteriaState
+from .criteria import BeliefState
 from .prompts import (
-    CRITERIA_MATCH_QUERY_SYSTEM,
-    CRITERIA_MATCH_QUERY_USER_TEMPLATE,
-    CRITERIA_UPDATE_DOC_PASSAGE_TEMPLATE,
-    CRITERIA_UPDATE_DOC_SYSTEMS,
-    CRITERIA_UPDATE_DOC_USER_TEMPLATE,
+    BELIEF_UPDATE_PASSAGE_TEMPLATE,
+    BELIEF_UPDATE_SYSTEMS,
+    BELIEF_UPDATE_USER_TEMPLATE,
+    QUERY_TARGETING_SYSTEM,
+    QUERY_TARGETING_USER_TEMPLATE,
 )
-from .types import ASPECT, MULTI_ASPECT, OPEN, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence
+from .types import MULTI_ASPECT, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence, parse_label
 
 logger = logging.getLogger(__name__)
 
@@ -38,20 +39,12 @@ def _quote(spans: List[str]) -> str:
     return " | ".join(f'"{s}"' for s in spans)
 
 
-def _status(state: CriteriaState, k: int) -> str:
-    """Status of criterion *k*; for a criterion that needs several documents
-    (aspect, open), with its count of supporting documents."""
-    if state.criteria[k].kind in (ASPECT, OPEN):
-        return f"{state.statuses[k]}, {state.num_sources(k)} of {OPEN_MIN_SOURCES} documents"
-    return state.statuses[k]
-
-
-def format_state_summary(state: CriteriaState) -> str:
-    """Per criterion, its status and the verified spans of its latest
+def format_state_summary(state: BeliefState) -> str:
+    """Per criterion, its label and the verified spans of its latest
     evidence passage that has any."""
     blocks = []
     for k, c in enumerate(state.criteria):
-        lines = [f"{c.id} [{_status(state, k)}]: {c.text}"]
+        lines = [f"{c.id} [{state.labels[k]}]: {c.text}"]
         latest = next((e for e in reversed(state.attached(k)) if e.verified_spans), None)
         if latest is not None:
             lines.append(f"  evidence ({latest.role}): {_quote(latest.verified_spans)}")
@@ -98,18 +91,16 @@ def passage_title(text: str, max_chars: int = 120) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Coverage judge (Delta^D)
+# Belief updater (b_t, Delta^D)
 # ---------------------------------------------------------------------------
 
-def _parse_updates(raw: str) -> Optional[List[Any]]:
-    """The judge's list of updates, or None when *raw* has none.  Besides
-    ``{"updates": [...]}``, an empty object or a bare list (the updates
-    without their key, often ``[]`` when nothing changed) is accepted."""
+def _parse_belief(raw: str) -> Optional[List[Any]]:
+    """The updater's list of criteria, or None when *raw* has none.  Besides
+    ``{"belief": [...]}``, a bare list (the criteria without their key) is
+    accepted."""
     data = parse_json_object(raw)
     if data is not None:
-        if isinstance(data.get("updates"), list):
-            return data["updates"]
-        return [] if not data else None
+        return data["belief"] if isinstance(data.get("belief"), list) else None
     text = raw.strip()
     fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
     if fence:
@@ -121,18 +112,16 @@ def _parse_updates(raw: str) -> Optional[List[Any]]:
     return items if isinstance(items, list) else None
 
 
-class LLMCoverageJudge:
-    """Stateful LLM judge: one call per step updates the criteria state.
+class LLMBeliefUpdater:
+    """Stateful LLM belief updater: one call per step rewrites the belief.
 
-    The prompt (one per query shape) shows each criterion with its status.
-    An aspect criterion (a report request) shows only its count of
-    supporting documents, since a passage supports it on its own; any other
-    criterion shows its last ``max_evidence_per_criterion`` evidence
-    passages (each as its verified spans and its title line); an open
-    criterion also shows its count of supporting documents.  Then come the step's novel
-    passages (``max_passage_chars`` each).  The judge lists only the criteria
-    a new passage supports or contradicts.  It does not see the agent's
-    search queries.
+    The prompt (one per query shape) shows each criterion with its label and
+    its last ``max_evidence_per_criterion`` evidence passages (each as its
+    verified spans and its title line), then every passage of the step
+    (``max_passage_chars`` each), also the ones seen in earlier steps.  The
+    updater gives every criterion its label, with the step's passages that
+    support or contradict it.  It sees neither the agent's search queries
+    nor the signals.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
@@ -140,11 +129,12 @@ class LLMCoverageJudge:
         query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
             (the dataset's ``query_shape`` in layout.DATASET_SPECS); picks
             the prompt.
-        max_passage_chars: Text of one new passage shown to the judge; None
+        max_passage_chars: Text of one passage shown to the updater; None
             shows the whole passage.
         max_evidence_per_criterion: Attached evidence passages shown per
             criterion (the most recent).
-        max_tokens / temperature: LLM call settings.
+        max_tokens / temperature: LLM call settings.  The reply has one
+            entry per criterion, so it grows with the criteria list.
         parse_retries: Extra calls when the output cannot be parsed; each
             failed attempt is recorded in the step's errors.
     """
@@ -156,7 +146,7 @@ class LLMCoverageJudge:
         query_shape: str = SINGLE_TARGET,
         max_passage_chars: Optional[int] = 3000,
         max_evidence_per_criterion: int = 4,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
         temperature: float = 0.0,
         parse_retries: int = 1,
     ) -> None:
@@ -165,29 +155,29 @@ class LLMCoverageJudge:
         self._llm = llm_client
         self.model_name = model_name
         self.name = f"llm:{model_name}"
-        self._system = CRITERIA_UPDATE_DOC_SYSTEMS[query_shape]
+        self._system = BELIEF_UPDATE_SYSTEMS[query_shape]
         self._parse_retries = parse_retries
         self._max_passage_chars = max_passage_chars
         self._max_evidence = max_evidence_per_criterion
         self._max_tokens = max_tokens
         self._temperature = temperature
 
-    def _format_state(self, state: CriteriaState) -> str:
+    def _format_belief(self, state: BeliefState) -> str:
         lines = []
         for k, c in enumerate(state.criteria):
-            lines.append(f"{c.id} [{_status(state, k)}]: {c.text}")
-            if c.kind == ASPECT:
-                continue
+            lines.append(f"{c.id} [{state.labels[k]}]: {c.text}")
             for e in state.attached(k, self._max_evidence):
-                title = f" ({e.text})" if e.text else ""
+                title = f" ({e.title})" if e.title else ""
                 lines.append(f"  - {e.role} (step {e.step}): {_quote(e.verified_spans)}{title}")
+            hidden = len(state.attached(k)) - self._max_evidence
+            if hidden > 0:
+                lines.append(f"  - and {hidden} earlier evidence passages")
         return "\n".join(lines)
 
     def _evidence(self, items: Any, docs: List[Dict[str, Any]], step: int, role: str) -> List[Evidence]:
         """One Evidence per cited passage; the spans of a passage cited twice
-        are merged.  Each span (``spans``, or the older single ``span``) is
-        checked on its own, and a span joined with an ellipsis is split
-        first."""
+        are merged.  Each span is checked on its own, and a span joined with
+        an ellipsis is split first."""
         out: Dict[str, Evidence] = {}
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
@@ -198,12 +188,12 @@ class LLMCoverageJudge:
                 continue
             if not 0 <= i < len(docs):
                 continue
-            cited = item.get("spans", item.get("span", []))
+            cited = item.get("spans", [])
             cited = cited if isinstance(cited, list) else [cited]
             text = doc_text(docs[i], max_length=None)
             ev = out.setdefault(_doc_id(docs[i]), Evidence(
                 doc_id=_doc_id(docs[i]), step=step, role=role, spans=[], span_verified=[],
-                text=passage_title(text),
+                title=passage_title(text),
             ))
             for piece in (p for c in cited for p in split_span(str(c))):
                 matched = span_in_passage(text, piece)
@@ -213,24 +203,25 @@ class LLMCoverageJudge:
                     ev.span_verified.append(matched is not None)
         return list(out.values())
 
-    def judge(
-        self, query: str, state: CriteriaState, docs: List[Dict[str, Any]], step: int,
-    ) -> Tuple[Optional[List[CriterionUpdate]], str, List[str]]:
+    def update(
+        self, query: str, state: BeliefState, docs: List[Dict[str, Any]], step: int,
+    ) -> Tuple[Optional[List[CriterionUpdate]], Optional[str], List[str]]:
         """Return ``(updates, raw, errors)``; *updates* is None when the call
-        or its parsing failed.  Documents without text are left out."""
+        or its parsing failed, *raw* is None when the updater was not called
+        (no document with text).  Documents without text are left out."""
         has_text = [bool(doc_text(doc, max_length=None)) for doc in docs]
         kept = [doc for doc, ok in zip(docs, has_text) if ok]
-        errors = [f"coverage_judge: empty text for doc {_doc_id(d)}" for d, ok in zip(docs, has_text) if not ok]
+        errors = [f"belief_updater: empty text for doc {_doc_id(d)}" for d, ok in zip(docs, has_text) if not ok]
         if not kept:
-            return [], "", errors
+            return [], None, errors
         passages = "\n\n".join(
-            CRITERIA_UPDATE_DOC_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
+            BELIEF_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
             for i, doc in enumerate(kept)
         )
         messages = [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": CRITERIA_UPDATE_DOC_USER_TEMPLATE.format(
-                query=query, criteria=self._format_state(state), passages=passages,
+            {"role": "user", "content": BELIEF_UPDATE_USER_TEMPLATE.format(
+                query=query, belief=self._format_belief(state), passages=passages,
             )},
         ]
         raw, data = "", None
@@ -238,14 +229,14 @@ class LLMCoverageJudge:
             try:
                 raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
             except Exception as e:
-                logger.warning("LLMCoverageJudge: step call failed: %s", e)
-                return None, "", errors + [f"coverage_judge: {e}"]
-            data = _parse_updates(raw)
+                logger.warning("LLMBeliefUpdater: step call failed: %s", e)
+                return None, "", errors + [f"belief_updater: {e}"]
+            data = _parse_belief(raw)
             if data is not None:
                 break
-            errors.append(f"coverage_judge: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
+            errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with a 'belief' list")
         else:
-            logger.warning("LLMCoverageJudge: step %d dropped, judge output not parseable", step)
+            logger.warning("LLMBeliefUpdater: step %d dropped, updater output not parseable", step)
             return None, raw, errors
 
         updates: List[CriterionUpdate] = []
@@ -254,7 +245,7 @@ class LLMCoverageJudge:
                 continue
             updates.append(CriterionUpdate(
                 id=str(item.get("id", "")).strip(),
-                status=str(item.get("status", "")).strip().lower(),
+                label=parse_label(item.get("label")),
                 support=self._evidence(item.get("support"), kept, step, "support"),
                 contradict=self._evidence(item.get("contradict"), kept, step, "contradict"),
                 reason=str(item.get("reason", "")),
@@ -268,9 +259,9 @@ class LLMCoverageJudge:
 
 class LLMQueryScorer:
     """LLM as judge: one call per step scores every (query, criterion) pair
-    as 0, 0.5 or 1.  The prompt shows the criteria state (status, latest
-    verified evidence, what is missing), so a query naming an entity the
-    evidence already linked to a criterion counts as targeting it."""
+    as 0, 0.5 or 1.  The prompt shows the belief (label, latest verified
+    evidence), so a query naming an entity the evidence already linked to a
+    criterion counts as targeting it."""
 
     def __init__(
         self,
@@ -284,14 +275,13 @@ class LLMQueryScorer:
         self._max_tokens = max_tokens
         self._temperature = temperature
 
-    def score(self, query: str, subqueries: List[str], state: CriteriaState) -> List[List[float]]:
+    def score(self, query: str, subqueries: List[str], state: BeliefState) -> List[List[float]]:
         """Return ``scores[j][k]`` in [0, 1] for ``subqueries[j]`` and the
-        k-th criterion of *state*; raises on failure.  Masking by the
-        criteria state is done by the caller."""
+        k-th criterion of *state*; raises on failure."""
         criteria = state.criteria
         messages = [
-            {"role": "system", "content": CRITERIA_MATCH_QUERY_SYSTEM},
-            {"role": "user", "content": CRITERIA_MATCH_QUERY_USER_TEMPLATE.format(
+            {"role": "system", "content": QUERY_TARGETING_SYSTEM},
+            {"role": "user", "content": QUERY_TARGETING_USER_TEMPLATE.format(
                 query=query,
                 criteria=format_state_summary(state),
                 subqueries="\n".join(f"{j + 1}. {q}" for j, q in enumerate(subqueries)),
@@ -330,10 +320,10 @@ class LLMQueryScorer:
 # Factory
 # ---------------------------------------------------------------------------
 
-def build_criteria_judges(
+def build_belief_judges(
     llm_client: Any, model: str = "", query_shape: str = SINGLE_TARGET,
-) -> Tuple[LLMCoverageJudge, LLMQueryScorer]:
-    """Build ``(coverage_judge, query_scorer)`` on one LLM client (named
+) -> Tuple[LLMBeliefUpdater, LLMQueryScorer]:
+    """Build ``(belief_updater, query_scorer)`` on one LLM client (named
     *model*) for the queries of one shape.  A report document is shown
     whole, as in the criteria reachability analysis; a short-answer document
     (often a long web page) is cut."""
@@ -341,6 +331,6 @@ def build_criteria_judges(
         raise ValueError("the criteria judges need an LLM client")
     max_passage_chars = None if query_shape == MULTI_ASPECT else 3000
     return (
-        LLMCoverageJudge(llm_client, model_name=model, query_shape=query_shape, max_passage_chars=max_passage_chars),
+        LLMBeliefUpdater(llm_client, model_name=model, query_shape=query_shape, max_passage_chars=max_passage_chars),
         LLMQueryScorer(llm_client, model_name=model),
     )

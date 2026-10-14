@@ -105,7 +105,7 @@ class SelfAsk_Agent(BasicAgent):
             # The initial retrieval's tag opens the running text, right after
             # the prompt; it stays there for the whole run.
             text = f"{tag}\n"
-            reasoning_path[-1]['certainty'] = tag
+            reasoning_path[-1]['belief_state'] = tag
             messages[-1]['content'] += text
 
         output_text = ""
@@ -128,7 +128,7 @@ class SelfAsk_Agent(BasicAgent):
                     return reasoning_path, answer, iter_num
                 break
 
-            output_text = self._strip_certainty(output_text)
+            output_text = self._strip_belief_state(output_text)
             if "So the final answer is:" in output_text:
                 self._notify_progress("answer", iter_num)
                 pred = self.extract_final_answer(output_text)
@@ -195,7 +195,7 @@ class SelfAsk_Agent(BasicAgent):
                 if tag:
                     # Between the follow-up and the intermediate-answer prefill.
                     step_text += f"{tag}\n"
-                    reasoning_path[-1]['certainty'] = tag
+                    reasoning_path[-1]['belief_state'] = tag
             text += step_text + prefill
             messages[-1]['content'] = prompt_head + text
 

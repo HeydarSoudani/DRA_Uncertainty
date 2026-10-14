@@ -1,0 +1,21 @@
+The response to this query is a report that covers several aspects of a topic.
+
+---labels---
+For this query:
+- A passage supports a criterion when it gives specific facts about the subject the criterion names, such as figures, named cases, findings or measures, within the limits the criterion's wording sets: a period, place, group, or what a "..., not ..." leaves out. A mere mention of the topic, or facts only outside such a limit, is not support.
+- A criterion has no complete list of facts: the information is given in part while one or two documents support it, and in whole once three or more do.
+
+---example---
+Example belief:
+c1 [almost no chance]: the sources of microplastics in Canadian rivers
+c2 [likely]: the measured effects of microplastics on the health of freshwater fish, not marine fish
+  - support (step 1): "carp from Ontario streams showed gut inflammation linked to the microplastics they had ingested" (Microplastics found in most Ontario carp)
+c3 [almost no chance]: regulations proposed to limit microplastic pollution that apply in Ontario, Canada
+Example output:
+{
+  "belief": [
+    {"id": "c1", "support": [], "contradict": [], "reason": "No passage relates to the sources of microplastics in Canadian rivers.", "label": "almost no chance"},
+    {"id": "c2", "support": [{"passage": 1, "spans": ["Rainbow trout exposed to polystyrene microplastics for 28 days showed reduced growth and liver damage."]}, {"passage": 3, "spans": ["zebrafish larvae fed microplastics had a 30% higher mortality rate"]}], "contradict": [], "reason": "Three documents now give measured effects of microplastics on freshwater fish and agree.", "label": "almost certain"},
+    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 gives a microbead ban already in force, outside the proposed regulations the criterion asks for.", "label": "unlikely"}
+  ]
+}

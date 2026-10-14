@@ -36,14 +36,14 @@ from .generation import GenerationEvaluator
 from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
 from .retrieval.metrics import DEFAULT_K_VALUES
 from .trajectory import TrajectoryEvaluator, save_trajectory
-from .uncertainty import save_uncertainty
+from .belief import save_belief
 
 logger = logging.getLogger(__name__)
 
 #: Per-query output directories under the run directory.
 QUERY_OUTPUT_DIRS = (
     "retrieval/surfaced", "retrieval/seen", "retrieval/cited",
-    "generation", "trajectory", "uncertainty",
+    "generation", "trajectory", "belief",
 )
 
 
@@ -51,8 +51,8 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
     """Write every per-query file of *result* under *run_dir*.
 
     ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
-    ``trajectory/{qid}.jsonl`` and ``uncertainty/{qid}.jsonl`` (the last only
-    when the uncertainty estimator ran).
+    ``trajectory/{qid}.jsonl`` and ``belief/{qid}.jsonl`` (the last only
+    when the belief model ran).
     """
     run_dir = Path(run_dir)
     SurfacedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "surfaced")
@@ -60,7 +60,7 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
     CitedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "cited")
     GenerationEvaluator.save_item(query_id, result, run_dir / "generation")
     save_trajectory(query_id, question, result, run_dir / "trajectory")
-    save_uncertainty(query_id, question, result, run_dir / "uncertainty")
+    save_belief(query_id, question, result, run_dir / "belief")
 
 
 @dataclass

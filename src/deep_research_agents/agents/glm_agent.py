@@ -441,7 +441,7 @@ class GLM_Agent(BasicAgent):
                     _iter_subqueries, _iter_seen_docs, iteration, query,
                     trajectory=messages,
                 )
-                self._append_certainty(messages, tag, reasoning_path[-1])
+                self._append_belief_state(messages, tag, reasoning_path[-1])
 
             iteration += 1
 

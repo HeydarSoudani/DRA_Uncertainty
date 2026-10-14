@@ -64,10 +64,10 @@ FILE_BACKED_DEFAULTS = {
     "max_extend_steps": 5,
     "hard_mode": True,
     "max_passage_chars": 4000,
-    # Uncertainty estimator (the rest; --uncertainty-estimator-mode is CLI)
+    # Belief model (the rest; --belief-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
-    "criteria_judge_model": "",
+    "belief_judge_model": "",
     "criteria_bank": True,
     "add_intermediate_answer": True,
     # Evaluation
@@ -298,10 +298,10 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_chars"] = args.max_passage_chars
 
-    pipeline_kwargs["uncertainty_estimator_mode"] = getattr(args, "uncertainty_estimator_mode", "off")
+    pipeline_kwargs["belief_mode"] = getattr(args, "belief_mode", "off")
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
     pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", None)
-    pipeline_kwargs["criteria_judge_model"] = getattr(args, "criteria_judge_model", "")
+    pipeline_kwargs["belief_judge_model"] = getattr(args, "belief_judge_model", "")
     pipeline_kwargs["criteria_bank"] = getattr(args, "criteria_bank", True)
     pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
 
@@ -334,10 +334,10 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "post_fusion_reranker_input":   args.post_fusion_reranker_input,
         "max_output_tokens_total":       getattr(args, "max_output_tokens_total", 40000),
         "use_plan":                      getattr(args, "use_plan", False),
-        "uncertainty_estimator_mode":    getattr(args, "uncertainty_estimator_mode", "off"),
+        "belief_mode":    getattr(args, "belief_mode", "off"),
         "llm_criteria":                  getattr(args, "llm_criteria", None),
         "max_criteria":                  getattr(args, "max_criteria", None),
-        "criteria_judge_model":          getattr(args, "criteria_judge_model", ""),
+        "belief_judge_model":          getattr(args, "belief_judge_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
         "judge_model":                   getattr(args, "judge_model", None),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),

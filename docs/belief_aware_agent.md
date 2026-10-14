@@ -1,35 +1,35 @@
-# Uncertainty-Aware Agent
+# Belief-Aware Agent
 
-`--agentic-model uncertainty_aware` is a SearchR1-style search agent that, after every retrieval, reads the
-`<certainty>` tag of the shared uncertainty estimator in `inform` mode. The tag is computed by code, never written by
-the policy, and is exactly the one every other agent reads under `--uncertainty-estimator-mode inform` (criteria
-status and attempts per criterion, then the signals `doc_novelty`, `criteria_delta`, `query_novelty`; no gold-based
+`--agentic-model belief_aware` is a SearchR1-style search agent that, after every retrieval, reads the
+`<belief_state>` tag of the shared belief model in `inform` mode. The tag is computed by code, never written by
+the policy, and is exactly the one every other agent reads under `--belief-mode inform` (WEP
+label and attempts per criterion, then the signals `doc_novelty`, `belief_delta`, `query_novelty`; no gold-based
 signal). What sets this agent apart is only its system prompt, which introduces the tag: one section
-(`certainty_section.txt`) shared by the `qa` and `report` tasks, describing the fields only, with no advice on how
+(`belief_section.txt`) shared by the `qa` and `report` tasks, describing the fields only, with no advice on how
 to use them.
 
-`--uncertainty-estimator-mode` applies as for every other agent:
+`--belief-mode` applies as for every other agent:
 
 | Mode | Trajectory | System prompt | Run directory |
 |---|---|---|---|
-| `inform` | `<certainty>` after each `<information>` | includes `certainty_section.txt` | `ue-inform` |
-| `monitor` | no tag (signals still saved to `uncertainty/{qid}.jsonl`) | never mentions the tag | `ue-monitor` |
-| `off` | no tag, no estimator (plain SearchR1-style agent) | never mentions the tag | `ue-off` |
+| `inform` | `<belief_state>` after each `<information>` | includes `belief_section.txt` | `belief-inform` |
+| `monitor` | no tag (belief and signals still saved to `belief/{qid}.jsonl`) | never mentions the tag | `belief-monitor` |
+| `off` | no tag, no belief model (plain SearchR1-style agent) | never mentions the tag | `belief-off` |
 
-Criteria extraction, the criteria judge, the signals, the per-step intermediate answers and
-`uncertainty/{qid}.jsonl` all come from the estimator settings (`llm_criteria`, `max_criteria`,
-`criteria_judge_model`).
+Criteria extraction, the belief updater, the signals, the per-step intermediate answers and
+`belief/{qid}.jsonl` all come from the belief model settings (`llm_criteria`, `max_criteria`,
+`belief_judge_model`).
 
-Code: `src/deep_research_agents/agents/uncertainty_aware_agent.py` (loop, turn parsing, passage labels). Prompts:
-`src/deep_research_agents/prompts/uncertainty_aware/` (`system.txt`, `certainty_section.txt`, `user.txt`,
-`format_error.txt`). The tag layout is in `src/uncertainty_estimator/certainty.py`.
+Code: `src/deep_research_agents/agents/belief_aware_agent.py` (loop, turn parsing, passage labels). Prompts:
+`src/deep_research_agents/prompts/belief_aware/` (`system.txt`, `belief_section.txt`, `user.txt`,
+`format_error.txt`). The tag layout is in `src/belief_model/belief_state.py`.
 
 ## Loop
 
 ```
 iteration t  policy:     <reasoning> <search>q</search>
              code:       retrieve ─▶ <information> [d1]…
-             estimator:  observe the iteration ─▶ <certainty step="t">   (inform only)
+             belief model:  observe the iteration ─▶ <belief_state step="t">   (inform only)
 end          policy:     <reasoning> <answer>…</answer>
 forced       (max_iteration runs out first) one more call asks for <reasoning> <answer>
 ```
@@ -38,7 +38,7 @@ The run is one growing transcript in a single user message.
 
 ## What the policy sees
 
-In `inform` mode (in `monitor` and `off` modes the `<certainty>` blocks are absent):
+In `inform` mode (in `monitor` and `off` modes the `<belief_state>` blocks are absent):
 
 ```
 Question: …
@@ -49,14 +49,14 @@ Question: …
 [d1] Title
 text…
 </information>
-<certainty step="1">
+<belief_state step="1">
   <criteria>
-    <k1 status="covered" attempts="1">the plant whose conservation status is 'endangered'</k1>
-    <k2 status="partial" attempts="2">the plant that is the only representative of its genus in the country</k2>
-    <k3 status="not_covered" attempts="0">the plant one of whose local names roughly translates to 'devil's basket'</k3>
+    <k1 label="very likely" attempts="1">the plant whose conservation status is 'endangered'</k1>
+    <k2 label="roughly even chance" attempts="2">the plant that is the only representative of its genus in the country</k2>
+    <k3 label="almost no chance" attempts="0">the plant one of whose local names roughly translates to 'devil's basket'</k3>
   </criteria>
-  <signals doc_novelty="0.40" criteria_delta="+1" query_novelty="0.81"/>
-</certainty>
+  <signals doc_novelty="0.40" belief_delta="+2" query_novelty="0.81"/>
+</belief_state>
 <reasoning>…</reasoning>
 …
 ```
@@ -64,10 +64,10 @@ text…
 - Passage labels `d1, d2, …` are stable within a run: the same `doc_id` keeps its label. A search shows
   its first `seen_top_k` distinct documents; a repeated id or a document without an id is not shown.
 - The tag's `step` counts searches from 1. A null signal is left out of the tag.
-- If the estimator fails on an iteration, no tag is appended and the run continues (counted in
-  `ua_outcome.missing_certainty`, which is null outside `inform` mode).
+- If the belief model fails on an iteration, no tag is appended and the run continues (counted in
+  `ba_outcome.missing_belief_state`, which is null outside `inform` mode).
 - The policy writes only `<reasoning>` + one `<search>` or `<answer>`. A turn with no action is re-asked up to
-  `max_retries` times, then the run ends as `format_failure`. A `<certainty>`/`<information>` written by
+  `max_retries` times, then the run ends as `format_failure`. A `<belief_state>`/`<information>` written by
   the policy is dropped (warning). Reasoning written without tags before the action is kept as the
   turn's think (warning).
 
@@ -88,9 +88,9 @@ The tag is `<reasoning>` rather than Search-R1's `<think>` because `<think>` is 
 reasoning tag: with native thinking off, the chat template pre-fills an empty `<think></think>`, and the
 model then skips reasoning altogether instead of opening `<think>` again.
 
-The intermediate answer (asked by the estimator after each search) is appended to the transcript's user
+The intermediate answer (asked by the belief model after each search) is appended to the transcript's user
 message, uses the `<reasoning>` + `<answer>` format, and stops at `</answer>` or at a `<search>` the model
-starts instead (then the intermediate answer is None). Its prompt is `INTERMEDIATE_ANSWER_INSTRUCTION` in `src/uncertainty_estimator/prompts/user_prompts.py`.
+starts instead (then the intermediate answer is None). Its prompt is `INTERMEDIATE_ANSWER_INSTRUCTION` in `src/belief_model/prompts/user_prompts.py`.
 
 The forced answer works the same way: its instruction plus the `<reasoning>` + `<answer>` format is
 appended to the transcript's user message, and one call is made, with no re-ask. It is asked in two cases:
@@ -100,7 +100,7 @@ appended to the transcript's user message, and one call is made, with no re-ask.
 | `max_iteration` runs out | `MAX_TURNS_ANSWER_INSTRUCTION` | full; windowed if it does not fit | `max_iter_force` | `max_turns` |
 | a policy turn exceeds the context window | `FINAL_ANSWER_INSTRUCTION` | windowed | `context_limit` | `context_limit` |
 
-The windowed transcript keeps every turn and `<certainty>` tag but only the passages of the last 3
+The windowed transcript keeps every turn and `<belief_state>` tag but only the passages of the last 3
 searches; older `<information>` blocks read `(earlier search results omitted)`. Both step types are in the
 trajectory evaluator's force-answer set, as for the other agents.
 
@@ -108,15 +108,15 @@ trajectory evaluator's force-answer set, as for the other agents.
 
 The result (and the trajectory meta line, via `AGENT_META_KEYS`) carries:
 
-- `ua_records`: one per policy turn: `turn`, `action`, `action_text`, `valid`, `errors`, `warnings`,
-  `format_retries`, `native_reasoning_chars`; for searches also `search` (index), `labels` and the `certainty` tag.
-- `ua_doc_labels`: `dN → doc_id`.
-- `ua_outcome`: `end` (`answered` / `forced_answer` / `max_turns` / `context_limit` / `format_failure` /
+- `ba_records`: one per policy turn: `turn`, `action`, `action_text`, `valid`, `errors`, `warnings`,
+  `format_retries`, `native_reasoning_chars`; for searches also `search` (index), `labels` and the `belief_state` tag.
+- `ba_doc_labels`: `dN → doc_id`.
+- `ba_outcome`: `end` (`answered` / `forced_answer` / `max_turns` / `context_limit` / `format_failure` /
   `llm_error`), `forced_by` (`max_turns` / `context_limit` when a forced answer was asked, else null), `answer`,
-  `num_turns`, `num_searches`, `format_retries`, `missing_certainty`, `config` (`max_iteration`, `max_retries`,
+  `num_turns`, `num_searches`, `format_retries`, `missing_belief_state`, `config` (`max_iteration`, `max_retries`,
   `max_passage_chars`).
 
-The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl`, and the full step record in
-`uncertainty/{qid}.jsonl`. A run that does not answer ends on a trajectory step whose `action_type` is its end
+The tag is also saved as `belief_state` on the search step in `trajectory/{qid}.jsonl`, and the full step record in
+`belief/{qid}.jsonl`. A run that does not answer ends on a trajectory step whose `action_type` is its end
 (`max_iter_force` or `context_limit` with `errors`, `format_failure` or `llm_error`, the last with the error message). The run is scored by the shared
 evaluators.

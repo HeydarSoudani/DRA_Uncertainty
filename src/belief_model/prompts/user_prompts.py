@@ -1,4 +1,4 @@
-"""User prompts of the uncertainty estimator (the system prompts are the .txt files next to this module)."""
+"""User prompts of the belief model (the system prompts are the .txt files next to this module)."""
 
 from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TAG_FORMAT
 
@@ -25,25 +25,25 @@ def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
     return CRITERIA_INIT_USER_TEMPLATE.format(
         query=query, instruction=instruction.format(max_criteria=max_criteria))
 
-CRITERIA_UPDATE_DOC_USER_TEMPLATE = """\
+BELIEF_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current state:
-{criteria}
+Current belief:
+{belief}
 
-New passages:
+Passages of this step:
 {passages}
 
-Decide which criteria each new passage supports or contradicts, if any.\
+Update the belief: give every criterion its new label, with the passages of this step that support or contradict it, if any.\
 """
 
-# One new passage of the coverage judge's user message.
-CRITERIA_UPDATE_DOC_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
+# One passage of the belief updater's user message.
+BELIEF_UPDATE_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
 
-CRITERIA_MATCH_QUERY_USER_TEMPLATE = """\
+QUERY_TARGETING_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current status and what the search has found so far:
+Criteria, with their current label and what the search has found so far:
 {criteria}
 
 Search queries:

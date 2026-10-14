@@ -173,7 +173,7 @@ class CPMReport(BasicAgent):
             "extend_time": 0,
             "extend_result": "",
             "retrieved_info": "",
-            "certainty": "",  # inform mode: tag of the last search, shown after retrieved_info
+            "belief_state": "",  # inform mode: tag of the last search, shown after retrieved_info
             "parsed": True,
             "retry_count": 0,
             "citation_registry": {},
@@ -274,7 +274,7 @@ class CPMReport(BasicAgent):
                 elif current_state == "search":
                     # If search fails, try to continue anyway with empty results
                     state["retrieved_info"] = ""
-                    state["certainty"] = ""
+                    state["belief_state"] = ""
                     state["retry_count"] = 0  # Reset retry count
                     # Transition based on cursor
                     if cursor == "outline":
@@ -466,9 +466,9 @@ class CPMReport(BasicAgent):
             seen_docs=seen_docs,
             trajectory=state["trajectory"],
         )
-        state["certainty"] = tag or ""
+        state["belief_state"] = tag or ""
         if tag:
-            state["trajectory"][-1]["certainty"] = tag
+            state["trajectory"][-1]["belief_state"] = tag
 
         return state
 
@@ -1204,8 +1204,8 @@ class CPMReport(BasicAgent):
     @staticmethod
     def _current_information(state: Dict[str, Any]) -> str:
         """The prompt's current information: the last search's passages, then
-        its <certainty> tag in inform mode."""
-        tag = state.get("certainty")
+        its <belief_state> tag in inform mode."""
+        tag = state.get("belief_state")
         return f"{state['retrieved_info']}\n{tag}" if tag else state["retrieved_info"]
 
     def _extract_doc_ids_from_cited_text(self, text: str, state: Dict[str, Any], limit: int = 20) -> tuple[int, list[str]]:
@@ -1500,8 +1500,8 @@ class CPMReport(BasicAgent):
             traj_state = entry.get("state", "")
 
             if traj_state == "search":
-                if entry.get("certainty"):
-                    rp_entry["certainty"] = entry["certainty"]
+                if entry.get("belief_state"):
+                    rp_entry["belief_state"] = entry["belief_state"]
                 keywords = entry.get("input", {}).get("keywords", [])
                 rp_entry["search_query"] = "; ".join(keywords) if keywords else ""
                 all_docs = entry.get("all_docs", [])

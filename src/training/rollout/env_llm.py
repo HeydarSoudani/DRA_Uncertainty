@@ -3,7 +3,7 @@
 Used where training needs a model that is NOT the policy being trained: an
 environment's auxiliary model (e.g. a frozen judge), or a
 teacher generating SFT trajectories.  Both must behave as in inference, so the
-call mirrors ``UncertaintyAwareAgent._call``: the same generator factory, the same
+call mirrors ``BeliefAwareAgent._call``: the same generator factory, the same
 ``complete`` kwargs, and the same switch that turns the model's own reasoning
 mode off.
 """

@@ -194,9 +194,9 @@ class TongyiDR_Agent(BasicAgent):
 
             iteration = 1
             while iteration <= self.max_iteration:
-                # Wall-clock timeout (AgentIR: 150 min); the uncertainty
-                # estimator's time is excluded so it never shortens a run.
-                if time.time() - start_time - getattr(self, "_uncertainty_seconds", 0.0) > 150 * 60:
+                # Wall-clock timeout (AgentIR: 150 min); the
+                # belief model's time is excluded so it never shortens a run.
+                if time.time() - start_time - getattr(self, "_belief_seconds", 0.0) > 150 * 60:
                     self._print("Time limit reached (150 min)")
                     reasoning_path.append({
                         "action_type": "answer",
@@ -401,7 +401,7 @@ class TongyiDR_Agent(BasicAgent):
                             all_subqueries, all_seen_docs, iteration, query,
                             trajectory=messages,
                         )
-                        self._append_certainty(messages, tag, reasoning_path[-1])
+                        self._append_belief_state(messages, tag, reasoning_path[-1])
 
                     iteration += 1
 

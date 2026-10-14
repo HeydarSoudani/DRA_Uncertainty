@@ -383,7 +383,7 @@ class DrTulu_Agent(BasicAgent):
                 seen_docs=seen_docs,
                 trajectory=messages,
             )
-            self._append_certainty(messages, tag, reasoning_path[-1])
+            self._append_belief_state(messages, tag, reasoning_path[-1])
 
         # ── Force final answer if budget exhausted on a search step ─────────
         # When max_iteration is reached and the last step was a search (not an answer),

@@ -1,0 +1,21 @@
+After the results of each search, you receive a <belief_state> tag that tracks your search so far. The system writes it; you never write it.
+
+<belief_state step="2">
+  <criteria>
+    <k1 label="very likely" attempts="1">the lighthouse that was built before 1900</k1>
+    <k2 label="roughly even chance" attempts="2">the lighthouse whose first keeper later became a painter</k2>
+    <k3 label="almost no chance" attempts="0">the lighthouse whose light was automated in the 1980s</k3>
+  </criteria>
+  <signals doc_novelty="0.40" belief_delta="+2" query_novelty="0.81"/>
+</belief_state>
+
+- `step`: the number of searches so far.
+- <criteria>: the pieces of information a complete response must contain.
+- `label`: how likely it is that the passages found so far give the criterion's information, from lowest to highest: `almost no chance`, `very unlikely`, `unlikely`, `roughly even chance`, `likely`, `very likely`, `almost certain`.
+- `attempts`: how many of your searches aimed directly at the criterion.
+- `doc_novelty` (0 to 1): the share of your last search's passages that are new to you.
+- `belief_delta`: how much your last search changed the labels: +1 per level up, -1 per level down.
+- `query_novelty` (0 to 1): how different your last query is from your earlier ones.
+- A field is left out when it could not be computed.
+
+If the passages disagree with the tag, trust the passages.

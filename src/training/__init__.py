@@ -3,7 +3,7 @@
 This package holds the *training* pipeline plumbing.  It is a sibling of the
 finalized *inference* pipeline (``experiments/dra_inference.py`` +
 ``deep_research_agents`` / ``searcher_component`` / ``reasoner_component`` /
-``uncertainty_estimator``) and consumes those components **read-only** — nothing
+``belief_model``) and consumes those components **read-only** — nothing
 here mutates the inference code path.
 
 Design stance:

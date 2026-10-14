@@ -1,4 +1,4 @@
-"""Correlation of the uncertainty-estimator signals with the step gold.
+"""Correlation of the belief-model signals with the step gold.
 
 The gold of a step is its new-item precision, the fraction of the step's
 documents that are relevant and not seen in an earlier step of the same
@@ -20,20 +20,21 @@ from a bootstrap over queries (steps of one trajectory are not independent);
 the resamples are shared by all signals, so differences between them are
 paired.
 
-Signals (step record fields of ``uncertainty/{query_id}.jsonl``):
+Signals (step record fields of ``belief/{query_id}.jsonl``):
 
 - ``doc_novelty``           nu^D
-- ``criteria_delta``        Delta^D
+- ``belief_delta``        Delta^D
 - ``query_novelty``         nu^q
 
 Steps with a null gold (no qrels for the query, no documents) are dropped;
 per signal, steps where the signal is null are dropped and counted.
 
-Final criteria state.  The criteria coverage at the end of the run is also
-read as an uncertainty estimate of the whole query: the normalized coverage
-is ``sum(STATUS_VALUE) / (2 * |C|)`` over the last step's
-``criteria_state_after`` (0 every criterion uncovered, 1 every criterion
-fully covered), the sum of the run's ``criteria_delta`` over its maximum.
+Final belief state.  The belief at the end of the run is also read as an
+uncertainty estimate of the whole query: the final belief is the mean, over
+the criteria, of the midpoint of the ICD 203 probability band of each
+criterion's WEP label (``belief_model.types.WEP_PROBABILITY``) in the last
+step's ``belief_after`` (0.03 every criterion "almost no chance",
+0.97 every criterion "almost certain").
 Per query it is compared with:
 
 - correctness (binary; ``correct`` of the LLM judge or ``exact_match`` of
@@ -42,17 +43,17 @@ Per query it is compared with:
 - Recall@N over the seen documents (the last step's ``recall_so_far``, the
   evaluator's per-query Recall@N): Kendall's tau-b.
 
-CIs from a bootstrap over queries.  Queries without a criteria state, a
+CIs from a bootstrap over queries.  Queries without a belief state, a
 correctness label (judge errors) or a recall are dropped and counted.  Only
-schema_version >= 10 files are read (the criteria semantics changed up to
-10).  The default mode is ``monitor``: in ``inform`` mode the agent reads
+schema_version >= 12 files are read (the belief model's WEP labels start
+at 11, the ``belief_*`` field names at 12).  The default mode is ``monitor``: in ``inform`` mode the agent reads
 the signals, which changes the trajectory.
 
 The run is selected with the same arguments as ``experiments/dra_inference.py``
 (``--config``, ``--agentic-model``, ``--dataset``, ``--subset``, ``--retriever``,
-``--uncertainty-estimator-mode`` and any YAML key as ``--flag`` override), and
+``--belief-mode`` and any YAML key as ``--flag`` override), and
 its directory is built the same way:
-``{output}/{dataset}_{split}[_{query_key}]_{retriever}/{run_name}/{ue_config}/``.
+``{output}/{dataset}_{split}[_{query_key}]_{retriever}/{run_name}/{belief_config}/``.
 
 Output in ``<run_dir>/analysis/signal_correlation/``:
 
@@ -62,16 +63,16 @@ Output in ``<run_dir>/analysis/signal_correlation/``:
   title.  The axes are fixed (see ``SIGNALS``) so runs compare directly.
 - ``summary.csv``: per signal, the counts and the AUROC and tau-b with their
   CIs.
-- ``final_state.png``: the normalized coverage of correct (green) and
+- ``final_state.png``: the final belief of correct (green) and
   incorrect (red) queries with the AUROC (left, only with correctness), and
-  coverage against Recall@N with the tau-b (right).
+  the final belief against Recall@N with the tau-b (right).
 - ``final_state_summary.csv``: per target (correctness, Recall@N), the counts
   and the measure with its CI.
 
 Usage::
 
     python analysis/signal_correlation.py --dataset browsecomp_plus --subset test \\
-        --agentic-model uncertainty_aware --uncertainty-estimator-mode monitor
+        --agentic-model belief_aware --belief-mode monitor
 """
 
 import argparse
@@ -107,16 +108,16 @@ from utils.cli_setup import (
     parse_cli_overrides,
     resolve_dataset_defaults,
 )
-from uncertainty_estimator.types import STATUS_VALUE
+from belief_model.types import WEP_PROBABILITY
 from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
-from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_uncertainty_config_name
+from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
 logger = logging.getLogger(__name__)
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(_REPO_ROOT / "experiments" / "configs" / "dra_inference.yaml")
 
-MIN_SCHEMA_VERSION = 10
+MIN_SCHEMA_VERSION = 12
 OUT_SUBDIR = Path("analysis") / "signal_correlation"
 NUM_CONTINUOUS_BINS = 20
 GOLD_KEY = "new_item_precision"
@@ -126,12 +127,12 @@ GOLD_KEY = "new_item_precision"
 # ``NUM_CONTINUOUS_BINS`` equal-width bins over the range.
 SIGNALS = [
     {"key": "doc_novelty", "name": "Doc novelty (nu^D)", "discrete": False, "range": (0.0, 1.0)},
-    {"key": "criteria_delta", "name": "Criteria coverage change (Delta^D)", "discrete": True, "range": (-3, 5)},
+    {"key": "belief_delta", "name": "Belief change (Delta^D)", "discrete": True, "range": (-6, 12)},
     {"key": "query_novelty", "name": "Query novelty (nu^q)", "discrete": False, "range": (0.0, 1.0)},
 ]
 
 # The final-state score, one value per query.
-COVERAGE = {"key": "coverage", "name": "Final criteria coverage", "discrete": False, "range": (0.0, 1.0)}
+BELIEF = {"key": "belief", "name": "Final belief", "discrete": False, "range": (0.0, 1.0)}
 # Per-query correctness field of ``accuracy.jsonl``, by answer evaluator.
 CORRECTNESS_KEYS = ("correct", "exact_match")
 
@@ -149,12 +150,12 @@ SURFACE = "#fcfcfb"
 # Loading
 # ---------------------------------------------------------------------------
 
-def read_uncertainty(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
-    """``(query_id, step records)`` per uncertainty file of the run with
+def read_belief(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """``(query_id, step records)`` per belief file of the run with
     schema_version >= ``MIN_SCHEMA_VERSION`` and the given *mode*."""
     samples: List[Tuple[str, List[Dict[str, Any]]]] = []
     skipped_schema, skipped_mode = 0, 0
-    for path in sorted((run_dir / "uncertainty").glob("*.jsonl")):
+    for path in sorted((run_dir / "belief").glob("*.jsonl")):
         with open(path) as f:
             lines = [json.loads(line) for line in f if line.strip()]
         if not lines or lines[0].get("record") != "meta":
@@ -191,11 +192,12 @@ def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["query_id", "productive", GOLD_KEY] + [s["key"] for s in SIGNALS])
 
 
-def _normalized_coverage(statuses: Optional[List[str]]) -> Optional[float]:
-    """``sum(STATUS_VALUE) / (2 * |C|)`` of a criteria state; None without one."""
-    if not statuses:
+def _final_belief(labels: Optional[List[str]]) -> Optional[float]:
+    """Mean band midpoint (``WEP_PROBABILITY``) of a belief state's labels;
+    None without one."""
+    if not labels:
         return None
-    return sum(STATUS_VALUE[s] for s in statuses) / (max(STATUS_VALUE.values()) * len(statuses))
+    return sum(WEP_PROBABILITY[label] for label in labels) / len(labels)
 
 
 def load_correctness(run_dir: Path) -> Dict[str, Optional[int]]:
@@ -217,18 +219,18 @@ def load_correctness(run_dir: Path) -> Dict[str, Optional[int]]:
 
 
 def load_queries(samples: List[Tuple[str, List[Dict[str, Any]]]], correctness: Dict[str, Optional[int]]) -> pd.DataFrame:
-    """One row per query: the normalized coverage and Recall@N of the last
+    """One row per query: the final belief and Recall@N of the last
     step, and the correctness (None when unknown)."""
     rows: List[Dict[str, Any]] = []
     for query_id, steps in samples:
         last = steps[-1] if steps else {}
         rows.append({
             "query_id": query_id,
-            "coverage": _normalized_coverage(last.get("criteria_state_after")),
+            "belief": _final_belief(last.get("belief_after")),
             "recall": last.get("recall_so_far"),
             "correct": correctness.get(query_id),
         })
-    return pd.DataFrame(rows, columns=["query_id", "coverage", "recall", "correct"])
+    return pd.DataFrame(rows, columns=["query_id", "belief", "recall", "correct"])
 
 
 # ---------------------------------------------------------------------------
@@ -406,31 +408,31 @@ def _finish(fig, run_label: str, path: Path, pos_label: Optional[str], neg_label
 
 
 def _recall_panel(ax, df: pd.DataFrame, res: Dict[str, Any]) -> None:
-    """Normalized coverage against Recall@N, one point per query, colored by
+    """Final belief against Recall@N, one point per query, colored by
     correctness when known; tau-b in the title."""
     _style(ax)
     ax.grid(axis="x", color=GRID, linewidth=0.8)
-    ax.set_title(_title("Final criteria coverage vs Recall@N", res), fontsize=9, color=TEXT_PRIMARY, loc="left")
+    ax.set_title(_title("Final belief vs Recall@N", res), fontsize=9, color=TEXT_PRIMARY, loc="left")
     ax.set_xlim(-0.03, 1.03)
     ax.set_ylim(-0.03, 1.03)
     if df.empty:
         ax.text(0.5, 0.5, "no queries", transform=ax.transAxes, ha="center", color=TEXT_SECONDARY)
     colors = [TEXT_SECONDARY if pd.isna(c) else COLOR_POS if c else COLOR_NEG for c in df["correct"]]
-    ax.scatter(df["coverage"], df["recall"], s=22, c=colors, alpha=0.6, edgecolors="none")
-    ax.set_xlabel(f"{COVERAGE['name']} value", fontsize=9, color=TEXT_SECONDARY)
+    ax.scatter(df["belief"], df["recall"], s=22, c=colors, alpha=0.6, edgecolors="none")
+    ax.set_xlabel(f"{BELIEF['name']} value", fontsize=9, color=TEXT_SECONDARY)
     ax.set_ylabel("Recall@N", fontsize=9, color=TEXT_SECONDARY)
 
 
 def plot_final_state(
     data: Dict[str, Dict[str, Any]], run_label: str, out_dir: Path,
 ) -> None:
-    """Coverage by correctness (when the run has it) and against Recall@N."""
+    """Final belief by correctness (when the run has it) and against Recall@N."""
     keys = [k for k in ("correct", "recall") if k in data]
     fig, axes = plt.subplots(1, len(keys), figsize=(5.5 * len(keys), 4.8), facecolor=SURFACE)
     for ax, key in zip(np.atleast_1d(axes), keys):
         if key == "correct":
-            _distribution_panel(ax, data[key]["df"], COVERAGE, data[key]["res"], label="correct",
-                                unit="queries", title=f"{COVERAGE['name']} vs correctness")
+            _distribution_panel(ax, data[key]["df"], BELIEF, data[key]["res"], label="correct",
+                                unit="queries", title=f"{BELIEF['name']} vs correctness")
         else:
             _recall_panel(ax, data[key]["df"], data[key]["res"])
     labels = (None, None)
@@ -504,11 +506,11 @@ def analyze_final_state(
     samples: List[Tuple[str, List[Dict[str, Any]]]], correctness: Dict[str, Optional[int]],
     run_label: str, out_dir: Path, n_bootstrap: int, seed: int,
 ) -> None:
-    """Normalized final coverage against correctness (AUROC) and Recall@N
+    """Final belief against correctness (AUROC) and Recall@N
     (tau-b): ``final_state.png``, ``final_state_summary.csv``."""
     queries_df = load_queries(samples, correctness)
-    n_null_coverage = int(queries_df["coverage"].isna().sum())
-    queries_df = queries_df[queries_df["coverage"].notna()]
+    n_null_belief = int(queries_df["belief"].isna().sum())
+    queries_df = queries_df[queries_df["belief"].notna()]
     # (target column, measure); correctness only when the run has it.
     targets = ([("correct", "auroc")] if correctness else []) + [("recall", "tau")]
 
@@ -521,16 +523,16 @@ def analyze_final_state(
             df = df.astype({"correct": int})
         queries = df["query_id"].unique()
         picks = np.random.default_rng(seed).integers(len(queries), size=(n_bootstrap, len(queries)))
-        res = evaluate(df, "coverage", queries, picks,
+        res = evaluate(df, "belief", queries, picks,
                        binary=target if measure == "auroc" else None, graded=target if measure == "tau" else None)
         data[target] = {"df": df, "res": res}
         row = {
             "target": "correctness" if target == "correct" else "Recall@N",
             "n_queries": len(df),
             "mean_target": _round(float(df[target].mean())) if len(df) else None,
-            "mean_coverage": _round(float(df["coverage"].mean())) if len(df) else None,
+            "mean_belief": _round(float(df["belief"].mean())) if len(df) else None,
             "n_null_target": n_null,
-            "n_null_coverage": n_null_coverage,
+            "n_null_belief": n_null_belief,
             "measure": measure,
         }
         cols = _measure_columns(res, (measure,))
@@ -540,14 +542,14 @@ def analyze_final_state(
     plot_final_state(data, run_label, out_dir)
     summary = pd.DataFrame(summary_rows)
     summary.to_csv(out_dir / "final_state_summary.csv", index=False)
-    print(f"\n-- final criteria coverage ({n_null_coverage} queries without a criteria state dropped)")
+    print(f"\n-- final belief ({n_null_belief} queries without a belief state dropped)")
     print(summary[["target", "n_queries", "mean_target", "measure", "value", "ci_low", "ci_high"]].to_string(index=False))
 
 
 def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> None:
-    samples = read_uncertainty(run_dir, mode)
+    samples = read_belief(run_dir, mode)
     if not samples:
-        logger.warning("%s: no uncertainty file to analyze, skipped", run_dir)
+        logger.warning("%s: no belief file to analyze, skipped", run_dir)
         return
     run_label = "/".join(run_dir.resolve().parts[-3:])
     out_dir = run_dir / OUT_SUBDIR
@@ -577,7 +579,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset of the run.")
     parser.add_argument("--subset", type=lambda v: None if v == "null" else v, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever of the run.")
-    parser.add_argument("--uncertainty-estimator-mode", type=str, default="monitor", choices=["monitor", "inform"], help="Uncertainty estimator mode of the run. 'monitor' (default): the signals never changed the trajectory. 'inform': the agent read them.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["monitor", "inform"], help="Belief model mode of the run. 'monitor' (default): the signals never changed the trajectory. 'inform': the agent read them.")
 
     # ── Analysis ───────────────────────────────────────────────────────────
     parser.add_argument("--n-bootstrap", type=int, default=1000, help="Query-level bootstrap resamples for the AUROC and tau-b CIs.")
@@ -610,20 +612,20 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
         agentic_model=args.agentic_model, llm_model=args.llm_model, use_plan=args.use_plan,
     )
     dataset_dir = build_dataset_dir_name(args.dataset, file_data_set, args.query_key, args.retriever)
-    ue_config = build_uncertainty_config_name(
-        uncertainty_estimator_mode=args.uncertainty_estimator_mode,
+    belief_config = build_belief_config_name(
+        belief_mode=args.belief_mode,
         ensure_novel_seen_docs=args.ensure_novel_seen_docs,
     )
-    return Path(args.output) / dataset_dir / run_name / ue_config
+    return Path(args.output) / dataset_dir / run_name / belief_config
 
 
 def main() -> None:
     args = _parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     run_dir = resolve_run_dir(args)
-    if not (run_dir / "uncertainty").is_dir():
-        raise SystemExit(f"error: no uncertainty/ folder in {run_dir}")
-    analyze_run(run_dir, args.uncertainty_estimator_mode, args.n_bootstrap, args.seed)
+    if not (run_dir / "belief").is_dir():
+        raise SystemExit(f"error: no belief/ folder in {run_dir}")
+    analyze_run(run_dir, args.belief_mode, args.n_bootstrap, args.seed)
 
 
 if __name__ == "__main__":

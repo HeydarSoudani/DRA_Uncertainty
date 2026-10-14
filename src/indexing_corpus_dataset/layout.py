@@ -117,8 +117,8 @@ class DatasetSpec:
                              entity or value), ``"set"`` (a value over every
                              member of a set) or ``"multi_aspect"`` (a report
                              on several aspects of a topic).
-        max_criteria:        Cap on the number of criteria the uncertainty
-                             estimator derives per query (a budget: a few
+        max_criteria:        Cap on the number of criteria the belief
+                             model derives per query (a budget: a few
                              clues, or every member of a set).  For
                              ``multi_aspect`` it is the number of criteria the
                              extractor may add to the request's own, asked in
@@ -175,7 +175,7 @@ DATASET_SPECS = {
         relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
-    # valuable 1).  The trajectory gold is >=3 (the criteria coverage tracks
+    # valuable 1).  The trajectory gold is >=3 (the belief state tracks
     # the very valuable docs); every official level (1 and 3) counts in the
     # end-of-run GradedRecall@N.
     # Only the 59 report-generation topics carry ``request``; 49 have a

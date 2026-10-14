@@ -1,11 +1,11 @@
-"""Per-step signals of the uncertainty estimator.
+"""Per-step signals of the belief model.
 
 Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t):
 
 - ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
   not seen in an earlier step.
-- ``CriteriaCoverageSignal`` Delta^D: change of the criteria state caused
-  by the step's novel documents; negative when coverage was lost.
+- ``BeliefUpdateSignal`` b_t and Delta^D: the belief update of the step
+  and the change of the WEP levels it makes; negative when the belief fell.
 - ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
   queries of earlier steps.
 - ``CriteriaTargetingSignal`` a: per criterion, the number of steps whose
@@ -31,10 +31,10 @@ import numpy as np
 from deep_research_agents.prompts.answer_prompts import extract_answer_candidates, extract_bare_answer
 from reasoner_component import REASONING_FALLBACK_PREFIX
 from utils.text_utils import doc_id as _doc_id
-from .criteria import CriteriaState
-from .judges import LLMCoverageJudge, LLMQueryScorer
+from .criteria import BeliefState
+from .judges import LLMBeliefUpdater, LLMQueryScorer
 from .prompts import intermediate_answer_instruction
-from .types import STATUS_VALUE, Criterion
+from .types import WEP_LEVEL, Criterion
 
 logger = logging.getLogger(__name__)
 
@@ -171,63 +171,65 @@ class QueryNoveltySignal:
 
 
 # ---------------------------------------------------------------------------
-# Delta^D: criteria coverage
+# b_t and Delta^D: belief update
 # ---------------------------------------------------------------------------
 
-class CriteriaCoverageSignal:
-    """Change of the criteria state caused by the step's novel documents.
+class BeliefUpdateSignal:
+    """Belief update of each step and the change it makes.
 
-    Delta^D = sum_k (sigma_t(k) - sigma_{t-1}(k)) with uncovered = 0,
-    partially = 1, fully covered = 2.  The stateful judge sees the current
-    state with its attached evidence and the step's novel documents, so
-    sigma can go up (new or combined evidence) or down (a contradiction);
-    Delta^D is negative when coverage was lost.  With no novel document
-    Delta^D is 0 and the judge is not called; when the judge fails the
-    state is unchanged and Delta^D is null.
+    The stateful updater sees the current belief with its attached evidence
+    and every document of the step, and rewrites the belief; a label can go
+    up (new or combined evidence) or down (a contradiction) by any number of
+    levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the WEP
+    levels (``types.WEP_LEVEL``, 0 to 6); it is negative when the belief
+    fell.  With no document the updater is not called and Delta^D is 0;
+    when the updater fails the belief is unchanged and Delta^D is null.
     """
 
-    def __init__(self, judge: LLMCoverageJudge) -> None:
-        self.judge = judge
+    def __init__(self, updater: LLMBeliefUpdater) -> None:
+        self.updater = updater
         self._query = ""
-        self._state: Optional[CriteriaState] = None
+        self._state: Optional[BeliefState] = None
 
     @property
     def active(self) -> bool:
         return self._state is not None
 
     @property
-    def state(self) -> Optional[CriteriaState]:
+    def state(self) -> Optional[BeliefState]:
         return self._state
 
-    def statuses(self) -> Optional[List[str]]:
-        return self._state.snapshot() if self._state is not None else None
+    def labels(self) -> Optional[List[str]]:
+        return list(self._state.labels) if self._state is not None else None
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
-        self._state = CriteriaState(criteria) if criteria else None
+        self._state = BeliefState(criteria) if criteria else None
 
     def score(
-        self, new_docs: List[Dict[str, Any]], step: int,
+        self, docs: List[Dict[str, Any]], step: int,
     ) -> Tuple[Optional[int], List[Dict[str, Any]], Optional[str], List[str]]:
         """Return ``(delta, updates, raw, errors)``; *updates* has one record
-        per update the judge proposed (``CriteriaState.apply``), *raw* is the
-        judge's reply (None when it was not called)."""
+        per criterion (``BeliefState.update``), *raw* is the updater's reply
+        (None when it was not called)."""
         if self._state is None:
             return None, [], None, []
-        if not new_docs:
+        if not docs:
             return 0, [], None, []
-        before = self._state.snapshot()
-        updates, raw, errors = self.judge.judge(self._query, self._state, new_docs, step)
+        before = list(self._state.labels)
+        updates, raw, errors = self.updater.update(self._query, self._state, docs, step)
         if updates is None:
             return None, [], raw, errors
-        records = self._state.apply(updates)
-        after = self._state.snapshot()
-        delta = sum(STATUS_VALUE[a] - STATUS_VALUE[b] for b, a in zip(before, after))
+        if raw is None:
+            return 0, [], None, errors
+        records = self._state.update(updates)
+        after = list(self._state.labels)
+        delta = sum(WEP_LEVEL[a] - WEP_LEVEL[b] for b, a in zip(before, after))
         return delta, records, raw, errors
 
 
 # ---------------------------------------------------------------------------
-# a^q: criteria targeting state
+# a: criteria targeting state
 # ---------------------------------------------------------------------------
 
 class CriteriaTargetingSignal:
@@ -237,7 +239,7 @@ class CriteriaTargetingSignal:
     query may target several criteria.  A criterion is targeted in a step
     when at least one of the step's queries scores 1 on it (0.5 never
     counts), and its attempt count a_t(k) then grows by 1, once per step
-    however many queries target it.  Covered criteria are counted too.
+    however many queries target it, whatever its label.
     """
 
     def __init__(self, scorer: LLMQueryScorer) -> None:
@@ -256,10 +258,10 @@ class CriteriaTargetingSignal:
         self._attempts = [0] * len(self._criteria)
 
     def score(
-        self, subqueries: List[str], state: Optional[CriteriaState],
+        self, subqueries: List[str], state: Optional[BeliefState],
     ) -> Tuple[Optional[List[str]], List[Dict[str, Any]]]:
         """Return ``(targeted_ids, per_query)``; per query ``target_scores``
-        (one per criterion).  *state* is sigma_{t-1}, shown to the scorer.
+        (one per criterion).  *state* is b_{t-1}, shown to the scorer.
         ``targeted_ids`` is None, and the attempts are unchanged, without
         queries, criteria or state."""
         if not subqueries or not self._criteria or state is None:

@@ -128,8 +128,8 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
             line["seen_docs"] = seen
         if step.get("tokens") is not None:
             line["tokens"] = step["tokens"]
-        if step.get("certainty"):
-            line["certainty"] = step["certainty"]
+        if step.get("belief_state"):
+            line["belief_state"] = step["belief_state"]
         return line
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
@@ -182,7 +182,7 @@ _RENDERED_KEYS = frozenset({
     "think", "search_query", "query", "generation", "prediction", "conclusion",
     "observation", "docs", "all_docs", "component_doc_ids", "seen_docs",
     "action_type", "action", "phase", "iteration", "sub_iter", "tokens",
-    "output", "input", "certainty",
+    "output", "input", "belief_state",
 })
 
 
@@ -273,9 +273,9 @@ def render_step_md(
     if observation:
         parts.append(f"**Observation**\n\n{str(observation).strip()}")
 
-    certainty = step.get("certainty")
-    if certainty:
-        parts.append(f"**Certainty** (injected)\n\n{_fence(certainty, 'xml')}")
+    belief_state = step.get("belief_state")
+    if belief_state:
+        parts.append(f"**Belief state** (injected)\n\n{_fence(belief_state, 'xml')}")
 
     for key, heading_text in (("prediction", "Prediction"),
                               ("conclusion", "Conclusion"),
@@ -313,7 +313,7 @@ class TrajectoryLogger:
 
     Typical use, from ``run_single``::
 
-        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="UncertaintyAware")
+        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="BeliefAware")
         logger.start()
         try:
             ...                      # agent calls log_step()/log_block()

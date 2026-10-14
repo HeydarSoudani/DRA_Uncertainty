@@ -40,7 +40,7 @@ def setup_output_dirs(
     return result
 
 
-def get_processed_queries(run_dir: Union[str, Path], require_uncertainty: bool = False) -> set:
+def get_processed_queries(run_dir: Union[str, Path], require_belief: bool = False) -> set:
     """Return query IDs that already have a saved retrieval TREC file.
 
     Enables resuming an interrupted pipeline run by skipping previously
@@ -49,8 +49,8 @@ def get_processed_queries(run_dir: Union[str, Path], require_uncertainty: bool =
     Args:
         run_dir: Root directory of the current run.
             Results are expected under ``{run_dir}/retrieval/surfaced/*.trec``.
-        require_uncertainty: Also require ``{run_dir}/uncertainty/{qid}.jsonl``
-            (set when the uncertainty estimator is on), so a query whose run
+        require_belief: Also require ``{run_dir}/belief/{qid}.jsonl``
+            (set when the belief model is on), so a query whose run
             stopped between the two writes is run again.
 
     Returns:
@@ -62,9 +62,9 @@ def get_processed_queries(run_dir: Union[str, Path], require_uncertainty: bool =
         return set()
     try:
         processed = {f.stem for f in retrieval_dir.glob("*.trec")}
-        if require_uncertainty:
-            uncertainty_dir = Path(run_dir) / "uncertainty"
-            processed &= {f.stem for f in uncertainty_dir.glob("*.jsonl")}
+        if require_belief:
+            belief_dir = Path(run_dir) / "belief"
+            processed &= {f.stem for f in belief_dir.glob("*.jsonl")}
         return processed
     except Exception as e:
         print(f"Warning: could not read existing results from {retrieval_dir}: {e}")
@@ -150,8 +150,8 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
     # One line per trajectory step plus a ``{"record": "meta", ...}`` line (last
     # in files written online, first in older runs; position is irrelevant
     # here).  The full surfaced ranking is not stored here (it lives in
-    # retrieval/surfaced/*.trec, reconstructed in step 5b); uncertainty signals
-    # are under uncertainty/{qid}.jsonl and are not reloaded (analysed offline).
+    # retrieval/surfaced/*.trec, reconstructed in step 5b); belief-model signals
+    # are under belief/{qid}.jsonl and are not reloaded (analysed offline).
     try:
         content = _read_text("trajectory", f"{query_id}.jsonl")
         meta: dict = {}
@@ -283,16 +283,16 @@ def build_run_name_for_pipeline(agentic_model: str, llm_model: str, **kwargs) ->
     return f"{name}_{backend}_{model_display_name(llm_model)}"
 
 
-def build_uncertainty_config_name(**kwargs) -> str:
-    """Build the uncertainty-estimator directory name (the run's varying knob).
+def build_belief_config_name(**kwargs) -> str:
+    """Build the belief-model directory name (the run's varying knob).
 
     Searcher/retrieval settings are fixed and recorded in run_config.json
-    rather than the path.  Only the estimator mode is surfaced here.
+    rather than the path.  Only the belief model mode is surfaced here.
 
-    Examples: ``ue-off``, ``ue-monitor``, ``ue-inform_novel``.
+    Examples: ``belief-off``, ``belief-monitor``, ``belief-inform_novel``.
     """
-    mode = kwargs.get("uncertainty_estimator_mode", "off")
-    name = f"ue-{mode}"
+    mode = kwargs.get("belief_mode", "off")
+    name = f"belief-{mode}"
     if kwargs.get("ensure_novel_seen_docs", False):
         name += "_novel"
     return name
@@ -303,7 +303,7 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
     """Persist the full run configuration to ``run_dir/run_config.json``.
 
     Captures the fixed searcher/retrieval settings that used to live in the
-    folder name, plus agent/model/uncertainty-estimator metadata, so nothing is lost when
+    folder name, plus agent/model/belief-model metadata, so nothing is lost when
     the path is simplified.
     """
     from utils.config import resolve_agent_backend, model_display_name
@@ -332,11 +332,11 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "post_fusion_reranker_input": kwargs.get("post_fusion_reranker_input", "original_query"),
             "ensure_novel_seen_docs": kwargs.get("ensure_novel_seen_docs", False),
         },
-        "uncertainty_estimator": {
-            "mode": kwargs.get("uncertainty_estimator_mode", "off"),
+        "belief_model": {
+            "mode": kwargs.get("belief_mode", "off"),
             "llm_criteria": kwargs.get("llm_criteria"),
             "max_criteria": kwargs.get("max_criteria"),
-            "criteria_judge_model": kwargs.get("criteria_judge_model", ""),
+            "belief_judge_model": kwargs.get("belief_judge_model", ""),
             "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
         },
     }

@@ -1,25 +1,25 @@
-"""UncertaintyAwareAgent: a SearchR1-style search agent that reads a <certainty> tag.
+"""BeliefAwareAgent: a SearchR1-style search agent that reads a <belief_state> tag.
 
 Loop, per query::
 
     iteration t  policy writes <reasoning> <search>; code retrieves and shows
-                 <information>; the shared uncertainty estimator observes the
-                 iteration and code appends its <certainty step="t"> tag
+                 <information>; the shared belief model observes the
+                 iteration and code appends its <belief_state step="t"> tag
     end          policy writes <reasoning> <answer>; when ``max_iteration``
                  runs out first, or the transcript no longer fits the context
                  window, one more call asks for the answer (the forced answer)
 
 The policy never writes the tag.  Everything behind it (criteria, signals,
-intermediate answers, ``uncertainty/{qid}.jsonl``) is the shared
-:class:`uncertainty_estimator.UncertaintyEstimator`, exactly as for any agent;
-see ``uncertainty_estimator.certainty`` for the tag layout.  The
-``--uncertainty-estimator-mode`` flag applies as for the other agents:
+intermediate answers, ``belief/{qid}.jsonl``) is the shared
+:class:`belief_model.BeliefModel`, exactly as for any agent;
+see ``belief_model.belief_state`` for the tag layout.  The
+``--belief-mode`` flag applies as for the other agents:
 
     inform   the tag is appended after each search, and the system prompt
              explains it
     monitor  the signals are computed and saved, but the trajectory carries no
              tag and the system prompt never mentions it
-    off      no estimator; the agent is a plain SearchR1-style agent
+    off      no belief model; the agent is a plain SearchR1-style agent
 
 The run is one growing transcript in the user message, as in the SearchR1
 family.  ``run_single`` and retrieval come from :class:`BasicAgent`, the
@@ -54,7 +54,7 @@ from deep_research_agents.prompts.answer_prompts import (
     REPORT_REASONING_TAG_FORMAT,
     force_answer_prompt,
 )
-from deep_research_agents.prompts.uncertainty_aware import (
+from deep_research_agents.prompts.belief_aware import (
     render_format_error,
     render_system,
     render_user,
@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 #
 #     errors    format failures, answered by a re-ask: no action, empty action.
 #     warnings  repaired and logged: no <reasoning>, reasoning written without
-#               tags (wrapped), a <certainty> or <information> written
+#               tags (wrapped), a <belief_state> or <information> written
 #               by the policy (dropped).
 #
 # Anything after the first closing action tag is cut before parsing (see
@@ -89,7 +89,7 @@ REASONING_TAG = "reasoning"
 _THINK_RE = re.compile(r"<(reasoning|think)>(.*?)</\1>", re.DOTALL)
 _STRAY_THINK_RE = re.compile(r"</?(?:reasoning|think)>")
 _ACTION_RE = re.compile(r"<(search|answer)>(.*?)</\1>", re.DOTALL)
-_INJECTED_RE = re.compile(r"<(certainty|information)\b[^>]*>.*?</\1>", re.DOTALL)
+_INJECTED_RE = re.compile(r"<(belief_state|information)\b[^>]*>.*?</\1>", re.DOTALL)
 
 # Characters of a think shown in the verbose [think] line.
 _THINK_PREVIEW_CHARS = 150
@@ -140,7 +140,7 @@ def parse_turn(text: str) -> Turn:
     text = truncate_after_action(text)
 
     if _INJECTED_RE.search(text):
-        warnings.append("the turn contains <certainty> or <information>; dropped")
+        warnings.append("the turn contains <belief_state> or <information>; dropped")
         text = _INJECTED_RE.sub("", text)
 
     am = _ACTION_RE.search(text)
@@ -231,7 +231,7 @@ def render_information(docs: List[Dict[str, Any]], labels: List[str], max_chars:
 
 # ── Transcript ────────────────────────────────────────────────────────────────
 # The transcript is the question followed by one block per search iteration:
-# the turn, its <information> and (inform mode) its <certainty> tag.  When it
+# the turn, its <information> and (inform mode) its <belief_state> tag.  When it
 # no longer fits the context window, the forced answer reads a windowed copy
 # in which only the last ``_KEEP_LAST_RESULTS`` iterations keep their passages.
 
@@ -243,7 +243,7 @@ _OMITTED_INFORMATION = "<information>\n(earlier search results omitted)\n</infor
 class SearchBlock:
     turn: str
     information: str
-    certainty: Optional[str] = None
+    belief_state: Optional[str] = None
 
 
 def render_transcript(question: str, blocks: List[SearchBlock],
@@ -254,8 +254,8 @@ def render_transcript(question: str, blocks: List[SearchBlock],
     for i, block in enumerate(blocks):
         information = block.information if i >= first_kept else _OMITTED_INFORMATION
         parts.append(f"\n\n{block.turn}\n{information}\n")
-        if block.certainty:
-            parts.append(f"{block.certainty}\n")
+        if block.belief_state:
+            parts.append(f"{block.belief_state}\n")
     return "".join(parts)
 
 
@@ -278,9 +278,9 @@ FORCED_TURN_PROMPTS = {
 ACTION_MAX_ITER_FORCE = "max_iter_force"
 ACTION_CONTEXT_LIMIT = "context_limit"
 
-# How a run ends (``ua_outcome.end``).  "answered" is the normal end and
+# How a run ends (``ba_outcome.end``).  "answered" is the normal end and
 # "forced_answer" an answer asked for once the turn cap or the context window
-# is reached (``ua_outcome.forced_by``).  The others are failures and are
+# is reached (``ba_outcome.forced_by``).  The others are failures and are
 # deliberately not in the trajectory evaluator's terminal set, so they count as
 # runs that never finished; "max_turns" and "context_limit" are the two forced
 # answers that gave no <answer>.
@@ -292,8 +292,8 @@ END_FORMAT = "format_failure"
 END_ERROR = "llm_error"
 
 
-class UncertaintyAwareAgent(BasicAgent):
-    AGENT_NAME = "UncertaintyAware"
+class BeliefAwareAgent(BasicAgent):
+    AGENT_NAME = "BeliefAware"
 
     def __init__(self, llm_client, retriever: Optional[Any] = None, max_iteration: int = 100,
                  seen_top_k: int = 5, verbose: bool = True, max_passage_chars: int = 4000,
@@ -366,7 +366,7 @@ class UncertaintyAwareAgent(BasicAgent):
             try:
                 raw = self._call(messages + extra, temperature, stop=STOP_SEQUENCES)
             except Exception as exc:
-                logger.warning("UncertaintyAware turn %d: LLM call failed: %s", t, exc)
+                logger.warning("BeliefAware turn %d: LLM call failed: %s", t, exc)
                 self._log_block(f"LLM call failed: {exc}", title=f"Turn {t}: error")
                 return None, attempt, exc
             turn = parse_turn(raw)
@@ -411,7 +411,7 @@ class UncertaintyAwareAgent(BasicAgent):
                                  temperature, stop=ANSWER_STOP_SEQUENCES)
             except Exception as exc:
                 error = str(exc)
-                logger.warning("UncertaintyAware forced answer: LLM call failed: %s", exc)
+                logger.warning("BeliefAware forced answer: LLM call failed: %s", exc)
                 self._log_block(f"LLM call failed: {exc}", title="Forced answer: error")
                 if is_context_window_error(exc):
                     continue
@@ -437,7 +437,7 @@ class UncertaintyAwareAgent(BasicAgent):
     def inference(self, question: str, generation_temp: float = 0.6) -> tuple:
         self._extras = {}
 
-        # Read per query: the estimator is attached after the agent is built.
+        # Read per query: the belief model is attached after the agent is built.
         informs = self._informs
         system = render_system(inform=informs, task=self.task, report_chars=self.report_chars)
         registry = DocRegistry()
@@ -500,7 +500,7 @@ class UncertaintyAwareAgent(BasicAgent):
                 })
                 break
 
-            # -- search, then (inform mode) the <certainty> tag that closes this iteration --
+            # -- search, then (inform mode) the <belief_state> tag that closes this iteration --
             query = turn.action_text
             self._notify_progress("search", t + 1)
             self._vprint(t, "search", query)
@@ -524,10 +524,10 @@ class UncertaintyAwareAgent(BasicAgent):
                 trajectory=self._messages(system, render_transcript(question, blocks, task=self.task)),
             )
             if tag:
-                block.certainty = tag
-                step["certainty"] = tag
+                block.belief_state = tag
+                step["belief_state"] = tag
             self._record_step(reasoning_path, step)
-            rec.update({"search": searches, "labels": labels, "certainty": tag})
+            rec.update({"search": searches, "labels": labels, "belief_state": tag})
             searches += 1
 
         forced_by = end if end in (END_MAX_TURNS, END_CONTEXT_LIMIT) else None
@@ -546,19 +546,19 @@ class UncertaintyAwareAgent(BasicAgent):
 
         self._extras = {
             "citation_to_doc_id": citation_to_doc_id,
-            "ua_records": records,
-            "ua_doc_labels": dict(registry.doc_of),
-            "ua_outcome": {
+            "ba_records": records,
+            "ba_doc_labels": dict(registry.doc_of),
+            "ba_outcome": {
                 "end": end,
                 "forced_by": forced_by,
                 "answer": prediction or None,
                 "num_turns": turns,
                 "num_searches": searches,
                 "format_retries": sum(r.get("format_retries", 0) for r in records),
-                # Inform mode only: searches without a tag (the estimator
+                # Inform mode only: searches without a tag (the belief model
                 # failed or had nothing to show).  None in monitor/off mode.
-                "missing_certainty": sum(1 for r in records
-                                         if r.get("action") == ACTION_SEARCH and not r.get("certainty"))
+                "missing_belief_state": sum(1 for r in records
+                                         if r.get("action") == ACTION_SEARCH and not r.get("belief_state"))
                                      if informs else None,
                 "config": {
                     "task": self.task,

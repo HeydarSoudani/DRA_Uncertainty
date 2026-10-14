@@ -60,21 +60,21 @@ AGENTIC_MODEL_TO_LLM: Dict[str, str] = {
     # line is pointed back at the HF slug, which is all it takes to return the
     # agent to local vLLM.
     "webweaver":   "openrouter/qwen/qwen3.6-35b-a3b",
-    # The uncertainty-aware agent runs on an open-weight backbone served by OpenRouter,
+    # The belief-aware agent runs on an open-weight backbone served by OpenRouter,
     # with the model's own reasoning mode switched off.  The ``openrouter/``
     # prefix selects the API generator; the bare slug is ALSO listed in
     # openrouter_registry.yaml, and the two must agree.
-    "uncertainty_aware": "openrouter/qwen/qwen3.6-27b",
+    "belief_aware": "openrouter/qwen/qwen3.6-27b",
 }
 
 # Result keys carried in the trajectory meta line: they are persisted nowhere
-# else (WebWeaver's memory bank / query outputs, the uncertainty-aware agent's
+# else (WebWeaver's memory bank / query outputs, the belief-aware agent's
 # per-turn records, every agent's token usage and citation numbering), so
 # dropping them there loses them for good.  The evaluation reads the run back
 # from its files, so a key an evaluator reads must be here or in its own file.
 AGENT_META_KEYS: Tuple[str, ...] = (
     "memory_bank", "query_outputs",
-    "ua_records", "ua_doc_labels", "ua_outcome",
+    "ba_records", "ba_doc_labels", "ba_outcome",
     "token_usage", "citation_to_doc_id",
 )
 
@@ -104,7 +104,7 @@ AGENT_TEMPERATURE: Dict[str, float] = {
     "tongyi":      0.6,
     # Same backbone; its reasoning mode is off, but sampling keeps the policy
     # from repeating one turn verbatim.  Criteria extraction uses 0.0.
-    "uncertainty_aware": 0.6,
+    "belief_aware": 0.6,
 }
 
 

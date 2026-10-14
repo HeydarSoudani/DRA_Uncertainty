@@ -17,14 +17,14 @@ from deep_research_agents.prompts.answer_prompts import (
 from utils.text_utils import passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
 from utils.config import InferenceConfig
-from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_uncertainty  # noqa: F401
+from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_belief  # noqa: F401
 from utils.text_utils import get_think as _get_think, get_query as _get_query, get_answer as _get_answer  # noqa: E501
 
 logger = logging.getLogger(__name__)
 
 
 class AgentVerboseMixin:
-    """Mixin providing verbose logging and uncertainty-estimator helpers."""
+    """Mixin providing verbose logging and belief-model helpers."""
 
     @property
     def _display_name(self) -> str:
@@ -46,9 +46,9 @@ class AgentVerboseMixin:
         if self._is_verbose:
             verbose_print_search_results(iter_num, docs, agent_name=self._display_name, sub_iter=sub_iter)
 
-    def _vprint_uncertainty(self, iter_num: int, record: dict) -> None:
+    def _vprint_belief(self, iter_num: int, record: dict) -> None:
         if self._is_verbose:
-            verbose_print_uncertainty(iter_num, record, agent_name=self._display_name)
+            verbose_print_belief(iter_num, record, agent_name=self._display_name)
 
     # -- Online trajectory logging --
 
@@ -113,71 +113,71 @@ class AgentVerboseMixin:
         seen_docs: Optional[List[Dict[str, Any]]] = None,
         trajectory: Any = None,
     ) -> Optional[str]:
-        """Pass one finished search iteration to the uncertainty estimator.
+        """Pass one finished search iteration to the belief model.
 
         Called once per iteration, after all its searches, with the
         iteration's queries, the documents the agent was shown and its
         conversation so far (*trajectory*, for the intermediate answer).
         *seen_docs*, when given, are printed in verbose mode.
 
-        Returns the iteration's ``<certainty>`` tag in ``inform`` mode, which
+        Returns the iteration's ``<belief_state>`` tag in ``inform`` mode, which
         the agent appends to its context right after the iteration's search
-        results (``_append_certainty``); None otherwise, and whenever the
-        estimator failed, so the agent then goes on without a tag.
+        results (``_append_belief_state``); None otherwise, and whenever the
+        belief model failed, so the agent then goes on without a tag.
 
-        The estimator is isolated from the agent run: its errors are logged,
+        The belief model is isolated from the agent run: its errors are logged,
         never raised; the tokens its intermediate answer spends on the
         agent's client are removed from the agent's token meter; its wall
-        time is added to ``self._uncertainty_seconds`` so time limits can
+        time is added to ``self._belief_seconds`` so time limits can
         exclude it.
         """
         if seen_docs is not None:
             self._vprint_docs(iter_num, seen_docs)
-        estimator = getattr(self, "uncertainty_estimator", None)
-        if estimator is None:
+        belief_model = getattr(self, "belief_model", None)
+        if belief_model is None:
             return None
         # Same turn number as the stage the agent last reported.
-        self._notify_estimator_stage("uncertainty", getattr(self, "_progress_iter", 0) or iter_num)
+        self._notify_belief_stage("belief", getattr(self, "_progress_iter", 0) or iter_num)
         tag = None
         started = time.monotonic()
         meter = self._token_meter() if hasattr(self, "_token_meter") else None
         saved = (meter.input_tokens, meter.output_tokens, meter.num_calls) if meter is not None else None
         try:
-            record = estimator.observe(
+            record = belief_model.observe(
                 subqueries=[subqueries] if isinstance(subqueries, str) else list(subqueries),
                 docs=docs,
                 iter_num=iter_num,
                 original_query=original_query or "",
                 trajectory=trajectory,
             )
-            self._vprint_uncertainty(iter_num, record)
-            tag = record.get("certainty_tag")
+            self._vprint_belief(iter_num, record)
+            tag = record.get("belief_state_tag")
         except Exception:
-            logger.warning("Uncertainty estimator failed at iteration %s; the agent run continues",
+            logger.warning("Belief model failed at iteration %s; the agent run continues",
                            iter_num, exc_info=True)
         finally:
             if saved is not None:
                 meter.input_tokens, meter.output_tokens, meter.num_calls = saved
-            self._uncertainty_seconds = getattr(self, "_uncertainty_seconds", 0.0) + time.monotonic() - started
+            self._belief_seconds = getattr(self, "_belief_seconds", 0.0) + time.monotonic() - started
         return tag
 
-    # -- inform mode: the <certainty> tag --
+    # -- inform mode: the <belief_state> tag --
 
     @property
     def _informs(self) -> bool:
-        estimator = getattr(self, "uncertainty_estimator", None)
-        return bool(getattr(estimator, "inform", False))
+        belief_model = getattr(self, "belief_model", None)
+        return bool(getattr(belief_model, "inform", False))
 
-    def _strip_certainty(self, text: str) -> str:
-        """Drop <certainty> tags the model wrote itself (inform mode only)."""
+    def _strip_belief_state(self, text: str) -> str:
+        """Drop <belief_state> tags the model wrote itself (inform mode only)."""
         if not self._informs:
             return text
-        from uncertainty_estimator.certainty import strip_certainty
-        return strip_certainty(text)
+        from belief_model.belief_state import strip_belief_state
+        return strip_belief_state(text)
 
     @staticmethod
-    def _append_certainty(messages: List[Any], tag: Optional[str],
-                          step: Optional[Dict[str, Any]] = None) -> None:
+    def _append_belief_state(messages: List[Any], tag: Optional[str],
+                             step: Optional[Dict[str, Any]] = None) -> None:
         """Append *tag* to the last message (the iteration's last tool or
         search-result message) and record it on *step*.
 
@@ -190,35 +190,35 @@ class AgentVerboseMixin:
         key = "output" if "output" in msg else "content"
         msg[key] = f"{msg.get(key) or ''}\n{tag}"
         if step is not None:
-            step["certainty"] = tag
+            step["belief_state"] = tag
 
     @staticmethod
-    def _certainty_suffix(step: Dict[str, Any]) -> str:
+    def _belief_state_suffix(step: Dict[str, Any]) -> str:
         """The step's tag as prompt text, for rebuilding a prompt from steps."""
-        tag = step.get("certainty")
+        tag = step.get("belief_state")
         return f"{tag}\n" if tag else ""
 
-    def _reset_uncertainty_estimator(self, query_id: Optional[str], query_text: str) -> None:
-        self._uncertainty_seconds = 0.0
+    def _reset_belief_model(self, query_id: Optional[str], query_text: str) -> None:
+        self._belief_seconds = 0.0
         self._progress_iter = 0
-        estimator = getattr(self, "uncertainty_estimator", None)
-        if estimator is None:
+        belief_model = getattr(self, "belief_model", None)
+        if belief_model is None:
             return
-        self._notify_estimator_stage("criteria", 0)
+        self._notify_belief_stage("criteria", 0)
         try:
-            estimator.reset(query_id=query_id, query=query_text)
+            belief_model.reset(query_id=query_id, query=query_text)
         except Exception:
-            logger.warning("Uncertainty estimator reset failed for %s", query_id, exc_info=True)
+            logger.warning("Belief model reset failed for %s", query_id, exc_info=True)
 
-    def _attach_uncertainty_stats(self, result: dict) -> None:
-        estimator = getattr(self, "uncertainty_estimator", None)
-        if estimator is None:
+    def _attach_belief_stats(self, result: dict) -> None:
+        belief_model = getattr(self, "belief_model", None)
+        if belief_model is None:
             return
         try:
-            result["uncertainty_meta"] = estimator.meta()
-            result["uncertainty_steps"] = list(estimator.steps)
+            result["belief_meta"] = belief_model.meta()
+            result["belief_steps"] = list(belief_model.steps)
         except Exception:
-            logger.warning("Uncertainty estimator meta failed", exc_info=True)
+            logger.warning("Belief model meta failed", exc_info=True)
 
 
 def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -250,7 +250,7 @@ def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 class BasicAgent(AgentVerboseMixin):
     """Base class for retrieval agents."""
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, uncertainty_estimator=None):
+    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, belief_model=None):
         """Initialize BasicAgent.
 
         Args:
@@ -263,14 +263,14 @@ class BasicAgent(AgentVerboseMixin):
             search_tool: Optional RetrievalSearchTool instance. When provided,
                 retrieve_documents() delegates to it (supporting fusion and
                 reranking). Falls back to raw retriever if not set.
-            uncertainty_estimator: Optional UncertaintyEstimator. When
-                provided, _observe_step() records the uncertainty signals of
+            belief_model: Optional BeliefModel. When
+                provided, _observe_step() records the belief-model signals of
                 each search iteration; the trajectory is never changed.
         """
         self.generator = llm_client
         self.retriever = retriever
         self.search_tool = search_tool
-        self.uncertainty_estimator = uncertainty_estimator
+        self.belief_model = belief_model
         self.max_iteration = max_iteration
         self.seen_top_k = seen_top_k
         # Set per query by run_single(); see _record_step().
@@ -616,7 +616,7 @@ class BasicAgent(AgentVerboseMixin):
             return None
 
     # ------------------------------------------------------------------
-    # Intermediate answer (asked by the uncertainty estimator every turn)
+    # Intermediate answer (asked by the belief model every turn)
     # ------------------------------------------------------------------
 
     def answer_from_trajectory(
@@ -663,11 +663,11 @@ class BasicAgent(AgentVerboseMixin):
         if cb is not None:
             cb(stage, iteration)
 
-    def _notify_estimator_stage(self, stage: str, iteration: int) -> None:
-        """Report an uncertainty estimator stage to the progress bar.
+    def _notify_belief_stage(self, stage: str, iteration: int) -> None:
+        """Report a belief model stage to the progress bar.
 
         Calls the callback directly: agents override ``_notify_progress`` to
-        count their own steps (WebWeaver), and estimator stages are not steps.
+        count their own steps (WebWeaver), and belief model stages are not steps.
         """
         cb = getattr(self, "_status_callback", None)
         if cb is not None:
@@ -733,8 +733,8 @@ class BasicAgent(AgentVerboseMixin):
         self._begin_trajectory_log(trajectory_logger)
         _error: Optional[BaseException] = None
         _result: Optional[Dict[str, Any]] = None
-        # Reset the uncertainty estimator (creates the query's criteria, loads its qrels)
-        self._reset_uncertainty_estimator(query_id, query_text)
+        # Reset the belief model (creates the query's criteria, loads its qrels)
+        self._reset_belief_model(query_id, query_text)
         # Snapshot token usage so we can report per-query totals.
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
@@ -762,8 +762,8 @@ class BasicAgent(AgentVerboseMixin):
             if num_iterations is not None:
                 result["num_iterations"] = num_iterations
 
-            # Attach uncertainty signals when available
-            self._attach_uncertainty_stats(result)
+            # Attach belief-model signals when available
+            self._attach_belief_stats(result)
             result.update(self._result_extras())
 
             # Attach per-query token usage when a meter is available.
@@ -861,7 +861,7 @@ class BasicAgent(AgentVerboseMixin):
         else:
             search_results = passages2string(docs[:seen_top_k])
 
-        return f"\n\n{output_text}<information>{search_results}</information>\n\n{self._certainty_suffix(step)}"
+        return f"\n\n{output_text}<information>{search_results}</information>\n\n{self._belief_state_suffix(step)}"
 
     def _rebuild_windowed_prompt(
         self,
@@ -1078,7 +1078,7 @@ class TagReasoningAgent(BasicAgent):
                 reasoning_path.append({'think': one_step_think, 'prediction': prediction, 'tokens': self._step_tokens()})
                 break
 
-            output_text = self._strip_certainty(output_text)
+            output_text = self._strip_belief_state(output_text)
             tmp_query = self.get_query(output_text)
             think_text = self.get_think(output_text)
             self._vprint(iter_num, "think", think_text or "(no think)")
@@ -1117,7 +1117,7 @@ class TagReasoningAgent(BasicAgent):
                 )
                 if tag:
                     input_prompt += f"{tag}\n"
-                    reasoning_path[-1]['certainty'] = tag
+                    reasoning_path[-1]['belief_state'] = tag
                     messages = self._build_messages(input_prompt)
 
         prediction = reasoning_path[-1].get('prediction') if reasoning_path else None
