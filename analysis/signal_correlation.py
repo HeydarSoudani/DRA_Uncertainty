@@ -27,7 +27,23 @@ Signals (step record fields of ``uncertainty/{query_id}.jsonl``):
 - ``query_novelty``         nu^q
 
 Steps with a null gold (no qrels for the query, no documents) are dropped;
-per signal, steps where the signal is null are dropped and counted.  Only
+per signal, steps where the signal is null are dropped and counted.
+
+Final criteria state.  The criteria coverage at the end of the run is also
+read as an uncertainty estimate of the whole query: the normalized coverage
+is ``sum(STATUS_VALUE) / (2 * |C|)`` over the last step's
+``criteria_state_after`` (0 every criterion uncovered, 1 every criterion
+fully covered), the sum of the run's ``criteria_delta`` over its maximum.
+Per query it is compared with:
+
+- correctness (binary; ``correct`` of the LLM judge or ``exact_match`` of
+  the numeric match in ``accuracy.jsonl``): AUROC.  Report datasets have no
+  correctness, so this part is skipped for them.
+- Recall@N over the seen documents (the last step's ``recall_so_far``, the
+  evaluator's per-query Recall@N): Kendall's tau-b.
+
+CIs from a bootstrap over queries.  Queries without a criteria state, a
+correctness label (judge errors) or a recall are dropped and counted.  Only
 schema_version >= 10 files are read (the criteria semantics changed up to
 10).  The default mode is ``monitor``: in ``inform`` mode the agent reads
 the signals, which changes the trajectory.
@@ -46,6 +62,11 @@ Output in ``<run_dir>/analysis/signal_correlation/``:
   title.  The axes are fixed (see ``SIGNALS``) so runs compare directly.
 - ``summary.csv``: per signal, the counts and the AUROC and tau-b with their
   CIs.
+- ``final_state.png``: the normalized coverage of correct (green) and
+  incorrect (red) queries with the AUROC (left, only with correctness), and
+  coverage against Recall@N with the tau-b (right).
+- ``final_state_summary.csv``: per target (correctness, Recall@N), the counts
+  and the measure with its CI.
 
 Usage::
 
@@ -86,6 +107,7 @@ from utils.cli_setup import (
     parse_cli_overrides,
     resolve_dataset_defaults,
 )
+from uncertainty_estimator.types import STATUS_VALUE
 from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_uncertainty_config_name
 
@@ -108,6 +130,11 @@ SIGNALS = [
     {"key": "query_novelty", "name": "Query novelty (nu^q)", "discrete": False, "range": (0.0, 1.0)},
 ]
 
+# The final-state score, one value per query.
+COVERAGE = {"key": "coverage", "name": "Final criteria coverage", "discrete": False, "range": (0.0, 1.0)}
+# Per-query correctness field of ``accuracy.jsonl``, by answer evaluator.
+CORRECTNESS_KEYS = ("correct", "exact_match")
+
 # Green for productive, red for unproductive steps; the two overlap, so each
 # class also keeps a solid outline.  Text and grid in neutral ink.
 COLOR_POS = "#1f9d55"
@@ -122,9 +149,10 @@ SURFACE = "#fcfcfb"
 # Loading
 # ---------------------------------------------------------------------------
 
-def load_steps(run_dir: Path, mode: str) -> pd.DataFrame:
-    """One row per step of the run's uncertainty files, with both golds."""
-    rows: List[Dict[str, Any]] = []
+def read_uncertainty(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
+    """``(query_id, step records)`` per uncertainty file of the run with
+    schema_version >= ``MIN_SCHEMA_VERSION`` and the given *mode*."""
+    samples: List[Tuple[str, List[Dict[str, Any]]]] = []
     skipped_schema, skipped_mode = 0, 0
     for path in sorted((run_dir / "uncertainty").glob("*.jsonl")):
         with open(path) as f:
@@ -139,22 +167,68 @@ def load_steps(run_dir: Path, mode: str) -> pd.DataFrame:
         if meta.get("mode") != mode:
             skipped_mode += 1
             continue
-        for step in lines[1:]:
-            if step.get("record") != "step":
-                continue
+        samples.append((str(meta["query_id"]), [s for s in lines[1:] if s.get("record") == "step"]))
+    if skipped_schema:
+        logger.warning("%s: %d files with schema_version < %d skipped", run_dir, skipped_schema, MIN_SCHEMA_VERSION)
+    if skipped_mode:
+        logger.warning("%s: %d files with mode other than %s skipped", run_dir, skipped_mode, mode)
+    return samples
+
+
+def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
+    """One row per step, with both golds."""
+    rows: List[Dict[str, Any]] = []
+    for query_id, steps in samples:
+        for step in steps:
             num_new_relevant = step.get("num_new_relevant")
             row = {
-                "query_id": str(meta["query_id"]),
+                "query_id": query_id,
                 "productive": None if num_new_relevant is None else int(num_new_relevant > 0),
                 GOLD_KEY: step.get(GOLD_KEY),
             }
             row.update({s["key"]: step.get(s["key"]) for s in SIGNALS})
             rows.append(row)
-    if skipped_schema:
-        logger.warning("%s: %d files with schema_version < %d skipped", run_dir, skipped_schema, MIN_SCHEMA_VERSION)
-    if skipped_mode:
-        logger.warning("%s: %d files with mode other than %s skipped", run_dir, skipped_mode, mode)
     return pd.DataFrame(rows, columns=["query_id", "productive", GOLD_KEY] + [s["key"] for s in SIGNALS])
+
+
+def _normalized_coverage(statuses: Optional[List[str]]) -> Optional[float]:
+    """``sum(STATUS_VALUE) / (2 * |C|)`` of a criteria state; None without one."""
+    if not statuses:
+        return None
+    return sum(STATUS_VALUE[s] for s in statuses) / (max(STATUS_VALUE.values()) * len(statuses))
+
+
+def load_correctness(run_dir: Path) -> Dict[str, Optional[int]]:
+    """Per query, 1 correct / 0 incorrect from ``accuracy.jsonl`` (None on a
+    judge error); empty when the run has no answer evaluation."""
+    path = run_dir / "accuracy.jsonl"
+    if not path.is_file():
+        return {}
+    correctness: Dict[str, Optional[int]] = {}
+    with open(path) as f:
+        for line in f:
+            record = json.loads(line) if line.strip() else {}
+            if "query_id" not in record:
+                continue
+            value = next((record[k] for k in CORRECTNESS_KEYS if record.get(k) is not None), None)
+            ok = value is not None and not record.get("judge_error")
+            correctness[str(record["query_id"])] = int(bool(value)) if ok else None
+    return correctness
+
+
+def load_queries(samples: List[Tuple[str, List[Dict[str, Any]]]], correctness: Dict[str, Optional[int]]) -> pd.DataFrame:
+    """One row per query: the normalized coverage and Recall@N of the last
+    step, and the correctness (None when unknown)."""
+    rows: List[Dict[str, Any]] = []
+    for query_id, steps in samples:
+        last = steps[-1] if steps else {}
+        rows.append({
+            "query_id": query_id,
+            "coverage": _normalized_coverage(last.get("criteria_state_after")),
+            "recall": last.get("recall_so_far"),
+            "correct": correctness.get(query_id),
+        })
+    return pd.DataFrame(rows, columns=["query_id", "coverage", "recall", "correct"])
 
 
 # ---------------------------------------------------------------------------
@@ -193,17 +267,25 @@ def _ci(values: np.ndarray, point: float) -> Tuple[Optional[float], Optional[flo
     return float(low), float(high)
 
 
-def evaluate(df: pd.DataFrame, key: str, queries: np.ndarray, picks: np.ndarray) -> Dict[str, Any]:
-    """AUROC (for ``df.productive``) and tau-b (for ``df.new_item_precision``)
-    of ``df[key]`` with 95% CIs.
+def evaluate(
+    df: pd.DataFrame, key: str, queries: np.ndarray, picks: np.ndarray,
+    binary: Optional[str] = None, graded: Optional[str] = None,
+) -> Dict[str, Any]:
+    """AUROC (for the 0/1 column *binary*) and tau-b (for the column
+    *graded*) of ``df[key]`` with 95% CIs; a measure whose column is None is
+    left out.
 
     Each row of *picks* is one resample: indices into *queries*, drawn with
-    replacement, whose steps are all kept.
+    replacement, whose rows are all kept.
     """
-    y = df["productive"].to_numpy(int)
-    g = df[GOLD_KEY].to_numpy(float)
     s = df[key].to_numpy(float)
-    measures = {"auroc": lambda idx: _auroc(y[idx], s[idx]), "tau": lambda idx: _tau(s[idx], g[idx])}
+    measures = {}
+    if binary is not None:
+        y = df[binary].to_numpy(int)
+        measures["auroc"] = lambda idx: _auroc(y[idx], s[idx])
+    if graded is not None:
+        g = df[graded].to_numpy(float)
+        measures["tau"] = lambda idx: _tau(s[idx], g[idx])
 
     rows = df.groupby("query_id").indices
     empty = np.empty(0, dtype=int)
@@ -258,23 +340,31 @@ def _signal_axis(values: np.ndarray, signal: Dict[str, Any]):
     return (edges[:-1] + edges[1:]) / 2, None, edges[1] - edges[0], index
 
 
-def _distribution_panel(ax, df: pd.DataFrame, signal: Dict[str, Any], res: Dict[str, Any]) -> None:
-    """Productive and unproductive steps per signal value, each class
-    normalized to its own number of steps; AUROC and tau-b in the title."""
+def _title(name: str, res: Dict[str, Any]) -> str:
+    """*name* over the measures *res* holds."""
+    labels = {"auroc": "AUROC", "tau": "tau-b"}
+    return f"{name}\n" + "  |  ".join(_headline(labels[m], res[m], res[f"{m}_ci"]) for m in labels if m in res)
+
+
+def _distribution_panel(
+    ax, df: pd.DataFrame, signal: Dict[str, Any], res: Dict[str, Any],
+    label: str = "productive", unit: str = "steps", title: Optional[str] = None,
+) -> None:
+    """Positive and negative rows of the 0/1 column *label* per signal value,
+    each class normalized to its own number of rows; the measures under
+    *title* (default the signal name)."""
     _style(ax)
-    ax.set_title(f"{signal['name']}\n{_headline('AUROC', res['auroc'], res['auroc_ci'])}  |  "
-                 f"{_headline('tau-b', res['tau'], res['tau_ci'])}",
-                 fontsize=9, color=TEXT_PRIMARY, loc="left")
+    ax.set_title(_title(title or signal["name"], res), fontsize=9, color=TEXT_PRIMARY, loc="left")
     lo, hi = signal["range"]
     pad = 0.5 if signal["discrete"] else 0.0
     ax.set_xlim(lo - pad, hi + pad)
     ax.set_ylim(0.0, 1.0)
     if df.empty:
-        ax.text(0.5, 0.5, "no steps", transform=ax.transAxes, ha="center", color=TEXT_SECONDARY)
+        ax.text(0.5, 0.5, f"no {unit}", transform=ax.transAxes, ha="center", color=TEXT_SECONDARY)
         return
 
     positions, tick_labels, width, index = _signal_axis(df[signal["key"]].to_numpy(float), signal)
-    y = df["productive"].to_numpy(int)
+    y = df[label].to_numpy(int)
     frac_pos = np.bincount(index[y == 1], minlength=len(positions)) / max(int(y.sum()), 1)
     frac_neg = np.bincount(index[y == 0], minlength=len(positions)) / max(int((y == 0).sum()), 1)
     bar = width * 0.9
@@ -285,7 +375,7 @@ def _distribution_panel(ax, df: pd.DataFrame, signal: Dict[str, Any], res: Dict[
         ax.set_xticks(positions)
         ax.set_xticklabels(tick_labels)
     ax.set_xlabel(f"{signal['name']} value", fontsize=9, color=TEXT_SECONDARY)
-    ax.set_ylabel("fraction of steps in class", fontsize=9, color=TEXT_SECONDARY)
+    ax.set_ylabel(f"fraction of {unit} in class", fontsize=9, color=TEXT_SECONDARY)
 
 
 def plot_distributions(
@@ -297,16 +387,57 @@ def plot_distributions(
     # The class counts are the same in every panel (the steps with a gold);
     # a panel's own count can be lower only by its null signal values.
     n_pos, n_neg = int(steps["productive"].sum()), int((steps["productive"] == 0).sum())
-    handles = [Patch(facecolor=color, alpha=0.45, edgecolor=color, label=label)
-               for color, label in ((COLOR_POS, f"productive (n={n_pos})"),
-                                    (COLOR_NEG, f"unproductive (n={n_neg})"))]
-    legend = fig.legend(handles=handles, loc="upper right", ncol=2, frameon=False, fontsize=9)
-    for text in legend.get_texts():
-        text.set_color(TEXT_PRIMARY)
+    _finish(fig, run_label, out_dir / "distributions.png",
+            f"productive (n={n_pos})", f"unproductive (n={n_neg})")
+
+
+def _finish(fig, run_label: str, path: Path, pos_label: Optional[str], neg_label: Optional[str]) -> None:
+    """Class legend (left out without labels), run title, save."""
+    if pos_label is not None:
+        handles = [Patch(facecolor=color, alpha=0.45, edgecolor=color, label=label)
+                   for color, label in ((COLOR_POS, pos_label), (COLOR_NEG, neg_label))]
+        legend = fig.legend(handles=handles, loc="upper right", ncol=2, frameon=False, fontsize=9)
+        for text in legend.get_texts():
+            text.set_color(TEXT_PRIMARY)
     fig.suptitle(run_label, fontsize=10, color=TEXT_PRIMARY, x=0.01, ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    fig.savefig(out_dir / "distributions.png", dpi=200, facecolor=SURFACE)
+    fig.savefig(path, dpi=200, facecolor=SURFACE)
     plt.close(fig)
+
+
+def _recall_panel(ax, df: pd.DataFrame, res: Dict[str, Any]) -> None:
+    """Normalized coverage against Recall@N, one point per query, colored by
+    correctness when known; tau-b in the title."""
+    _style(ax)
+    ax.grid(axis="x", color=GRID, linewidth=0.8)
+    ax.set_title(_title("Final criteria coverage vs Recall@N", res), fontsize=9, color=TEXT_PRIMARY, loc="left")
+    ax.set_xlim(-0.03, 1.03)
+    ax.set_ylim(-0.03, 1.03)
+    if df.empty:
+        ax.text(0.5, 0.5, "no queries", transform=ax.transAxes, ha="center", color=TEXT_SECONDARY)
+    colors = [TEXT_SECONDARY if pd.isna(c) else COLOR_POS if c else COLOR_NEG for c in df["correct"]]
+    ax.scatter(df["coverage"], df["recall"], s=22, c=colors, alpha=0.6, edgecolors="none")
+    ax.set_xlabel(f"{COVERAGE['name']} value", fontsize=9, color=TEXT_SECONDARY)
+    ax.set_ylabel("Recall@N", fontsize=9, color=TEXT_SECONDARY)
+
+
+def plot_final_state(
+    data: Dict[str, Dict[str, Any]], run_label: str, out_dir: Path,
+) -> None:
+    """Coverage by correctness (when the run has it) and against Recall@N."""
+    keys = [k for k in ("correct", "recall") if k in data]
+    fig, axes = plt.subplots(1, len(keys), figsize=(5.5 * len(keys), 4.8), facecolor=SURFACE)
+    for ax, key in zip(np.atleast_1d(axes), keys):
+        if key == "correct":
+            _distribution_panel(ax, data[key]["df"], COVERAGE, data[key]["res"], label="correct",
+                                unit="queries", title=f"{COVERAGE['name']} vs correctness")
+        else:
+            _recall_panel(ax, data[key]["df"], data[key]["res"])
+    labels = (None, None)
+    if "correct" in data:
+        correct = data["correct"]["df"]["correct"]
+        labels = (f"correct (n={int(correct.sum())})", f"incorrect (n={int((correct == 0).sum())})")
+    _finish(fig, run_label, out_dir / "final_state.png", *labels)
 
 
 # ---------------------------------------------------------------------------
@@ -317,18 +448,27 @@ def _round(value: Optional[float]) -> Optional[float]:
     return round(value, 4) if value is not None else None
 
 
-def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> Optional[pd.DataFrame]:
-    steps = load_steps(run_dir, mode)
+def _measure_columns(res: Dict[str, Any], names: Tuple[str, ...]) -> Dict[str, Optional[float]]:
+    row: Dict[str, Optional[float]] = {}
+    for name in names:
+        row[name] = _round(res[name])
+        row[f"{name}_ci_low"] = _round(res[f"{name}_ci"][0])
+        row[f"{name}_ci_high"] = _round(res[f"{name}_ci"][1])
+    return row
+
+
+def analyze_steps(
+    samples: List[Tuple[str, List[Dict[str, Any]]]], run_label: str, out_dir: Path, n_bootstrap: int, seed: int,
+) -> None:
+    """Per-step signals against the step gold: ``distributions.png``, ``summary.csv``."""
+    steps = load_steps(samples)
     has_gold = steps["productive"].notna() & steps[GOLD_KEY].notna()
     n_null_gold = int((~has_gold).sum())
     steps = steps[has_gold].astype({"productive": int})
     if steps.empty:
-        logger.warning("%s: no step with a gold label, skipped", run_dir)
-        return None
+        logger.warning("%s: no step with a gold label, step analysis skipped", run_label)
+        return
 
-    run_label = "/".join(run_dir.resolve().parts[-3:])
-    out_dir = run_dir / OUT_SUBDIR
-    out_dir.mkdir(parents=True, exist_ok=True)
     # One set of query resamples, shared by all signals.
     queries = steps["query_id"].unique()
     picks = np.random.default_rng(seed).integers(len(queries), size=(n_bootstrap, len(queries)))
@@ -339,7 +479,7 @@ def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> Option
         key = signal["key"]
         n_null = int(steps[key].isna().sum())
         df = steps[steps[key].notna()].reset_index(drop=True)
-        res = evaluate(df, key, queries, picks)
+        res = evaluate(df, key, queries, picks, binary="productive", graded=GOLD_KEY)
         data[key] = {"df": df, "res": res}
         row = {
             "signal": key,
@@ -349,10 +489,7 @@ def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> Option
             "mean_gold": _round(float(df[GOLD_KEY].mean())) if len(df) else None,
             "n_null_signal": n_null,
         }
-        for name in ("auroc", "tau"):
-            row[name] = _round(res[name])
-            row[f"{name}_ci_low"] = _round(res[f"{name}_ci"][0])
-            row[f"{name}_ci_high"] = _round(res[f"{name}_ci"][1])
+        row.update(_measure_columns(res, ("auroc", "tau")))
         summary_rows.append(row)
 
     plot_distributions(steps, data, run_label, out_dir)
@@ -361,8 +498,63 @@ def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> Option
     print(f"\n== {run_label}  ({steps['query_id'].nunique()} queries, {len(steps)} steps, "
           f"{n_null_gold} steps without gold dropped)")
     print(summary[["signal", "n_steps", "n_productive", "auroc", "tau"]].to_string(index=False))
+
+
+def analyze_final_state(
+    samples: List[Tuple[str, List[Dict[str, Any]]]], correctness: Dict[str, Optional[int]],
+    run_label: str, out_dir: Path, n_bootstrap: int, seed: int,
+) -> None:
+    """Normalized final coverage against correctness (AUROC) and Recall@N
+    (tau-b): ``final_state.png``, ``final_state_summary.csv``."""
+    queries_df = load_queries(samples, correctness)
+    n_null_coverage = int(queries_df["coverage"].isna().sum())
+    queries_df = queries_df[queries_df["coverage"].notna()]
+    # (target column, measure); correctness only when the run has it.
+    targets = ([("correct", "auroc")] if correctness else []) + [("recall", "tau")]
+
+    summary_rows: List[Dict[str, Any]] = []
+    data: Dict[str, Dict[str, Any]] = {}
+    for target, measure in targets:
+        n_null = int(queries_df[target].isna().sum())
+        df = queries_df[queries_df[target].notna()].reset_index(drop=True)
+        if target == "correct":
+            df = df.astype({"correct": int})
+        queries = df["query_id"].unique()
+        picks = np.random.default_rng(seed).integers(len(queries), size=(n_bootstrap, len(queries)))
+        res = evaluate(df, "coverage", queries, picks,
+                       binary=target if measure == "auroc" else None, graded=target if measure == "tau" else None)
+        data[target] = {"df": df, "res": res}
+        row = {
+            "target": "correctness" if target == "correct" else "Recall@N",
+            "n_queries": len(df),
+            "mean_target": _round(float(df[target].mean())) if len(df) else None,
+            "mean_coverage": _round(float(df["coverage"].mean())) if len(df) else None,
+            "n_null_target": n_null,
+            "n_null_coverage": n_null_coverage,
+            "measure": measure,
+        }
+        cols = _measure_columns(res, (measure,))
+        row.update({"value": cols[measure], "ci_low": cols[f"{measure}_ci_low"], "ci_high": cols[f"{measure}_ci_high"]})
+        summary_rows.append(row)
+
+    plot_final_state(data, run_label, out_dir)
+    summary = pd.DataFrame(summary_rows)
+    summary.to_csv(out_dir / "final_state_summary.csv", index=False)
+    print(f"\n-- final criteria coverage ({n_null_coverage} queries without a criteria state dropped)")
+    print(summary[["target", "n_queries", "mean_target", "measure", "value", "ci_low", "ci_high"]].to_string(index=False))
+
+
+def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> None:
+    samples = read_uncertainty(run_dir, mode)
+    if not samples:
+        logger.warning("%s: no uncertainty file to analyze, skipped", run_dir)
+        return
+    run_label = "/".join(run_dir.resolve().parts[-3:])
+    out_dir = run_dir / OUT_SUBDIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    analyze_steps(samples, run_label, out_dir, n_bootstrap, seed)
+    analyze_final_state(samples, load_correctness(run_dir), run_label, out_dir, n_bootstrap, seed)
     print(f"-> {out_dir}")
-    return summary
 
 
 def _parse_args() -> argparse.Namespace:
