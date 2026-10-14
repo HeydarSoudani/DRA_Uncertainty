@@ -10,8 +10,8 @@ from pathlib import Path
 from ..types import QUERY_SHAPES
 from .user_prompts import (
     criteria_init_user,
-    BELIEF_UPDATE_PASSAGE_TEMPLATE,
-    BELIEF_UPDATE_USER_TEMPLATE,
+    CRITERIA_UPDATE_PASSAGE_TEMPLATE,
+    CRITERIA_UPDATE_USER_TEMPLATE,
     QUERY_TARGETING_USER_TEMPLATE,
     intermediate_answer_instruction,
 )
@@ -45,9 +45,9 @@ def _compose(stage: str, shape: str) -> str:
     return re.sub(r"^\{shape_\w+\}\n", "", text, flags=re.MULTILINE)
 
 
-# One criteria-extraction prompt and one belief-update prompt per query
+# One criteria-extraction prompt and one criteria-update prompt per query
 # shape (layout.DATASET_SPECS); the cap on the number of criteria is the
 # extractor's input (``criteria_init_user``).
 CRITERIA_INIT_SYSTEMS = {shape: _compose("criteria_init", shape) for shape in QUERY_SHAPES}
-BELIEF_UPDATE_SYSTEMS = {shape: _compose("belief_update", shape) for shape in QUERY_SHAPES}
+CRITERIA_UPDATE_SYSTEMS = {shape: _compose("criteria_update", shape) for shape in QUERY_SHAPES}
 QUERY_TARGETING_SYSTEM = _read("query_targeting_system.txt")

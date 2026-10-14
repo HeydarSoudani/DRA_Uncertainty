@@ -236,12 +236,12 @@ def verbose_print_belief(
     agent_name: str = "",
 ) -> None:
     """Print the belief model's record for one search iteration, one
-    row per signal family: belief (belief state, belief delta, doc
+    row per signal family: belief (belief state, criteria delta, doc
     novelty), queries (criteria attempts, targeted criteria, query novelty),
     gold (new-item precision, recall so far, intermediate answer), then any errors.
 
-    ``labels`` is one WEP level per criterion (0 = almost no chance to
-    6 = almost certain) in criterion order, index-aligned with
+    ``status`` is one status level per criterion (0 = doubtful,
+    1 = unknown, ..., 6 = confirmed) in criterion order, index-aligned with
     ``criteria_attempts``."""
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[Iter {iter_num}] [belief]: "
@@ -253,7 +253,7 @@ def verbose_print_belief(
     state = record.get("belief_after")
     attempts = record.get("criteria_attempts_after")
     targeted = record.get("criteria_targeted")
-    from belief_model.types import WEP_LEVEL as levels
+    from belief_model.types import STATUS_LEVEL as levels
     # Pad both lists to one column width so criterion i lines up across rows.
     width = max((len(str(n)) for n in attempts or []), default=1)
 
@@ -263,8 +263,8 @@ def verbose_print_belief(
         return "[" + ", ".join(f"{x:>{width}}" for x in items) + "]"
 
     belief = (
-        f"labels=           {_list(state and [levels.get(s, '?') for s in state])} | "
-        f"belief_delta={_fmt(record.get('belief_delta'), '+d')} | "
+        f"status=           {_list(state and [levels.get(s, '?') for s in state])} | "
+        f"criteria_delta={_fmt(record.get('criteria_delta'), '+d')} | "
         f"doc_novelty={_fmt(record.get('doc_novelty'))} "
         f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids)"
     )

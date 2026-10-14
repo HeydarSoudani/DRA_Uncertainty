@@ -2,8 +2,8 @@
 
 `--agentic-model belief_aware` is a SearchR1-style search agent that, after every retrieval, reads the
 `<belief_state>` tag of the shared belief model in `inform` mode. The tag is computed by code, never written by
-the policy, and is exactly the one every other agent reads under `--belief-mode inform` (WEP
-label and attempts per criterion, then the signals `doc_novelty`, `belief_delta`, `query_novelty`; no gold-based
+the policy, and is exactly the one every other agent reads under `--belief-mode inform` (belief
+status and attempts per criterion, then the signals `doc_novelty`, `criteria_delta`, `query_novelty`; no gold-based
 signal). What sets this agent apart is only its system prompt, which introduces the tag: one section
 (`belief_section.txt`) shared by the `qa` and `report` tasks, describing the fields only, with no advice on how
 to use them.
@@ -51,11 +51,11 @@ text…
 </information>
 <belief_state step="1">
   <criteria>
-    <k1 label="very likely" attempts="1">the plant whose conservation status is 'endangered'</k1>
-    <k2 label="roughly even chance" attempts="2">the plant that is the only representative of its genus in the country</k2>
-    <k3 label="almost no chance" attempts="0">the plant one of whose local names roughly translates to 'devil's basket'</k3>
+    <k1 status="almost certain" attempts="1">the plant whose conservation status is 'endangered'</k1>
+    <k2 status="possible" attempts="2">the plant that is the only representative of its genus in the country</k2>
+    <k3 status="unknown" attempts="0">the plant one of whose local names roughly translates to 'devil's basket'</k3>
   </criteria>
-  <signals doc_novelty="0.40" belief_delta="+2" query_novelty="0.81"/>
+  <signals doc_novelty="0.40" criteria_delta="+2" query_novelty="0.81"/>
 </belief_state>
 <reasoning>…</reasoning>
 …

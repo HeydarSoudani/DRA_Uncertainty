@@ -6,8 +6,8 @@ With ``inform=False`` (``monitor``) it never changes the trajectory; with
 sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
-                             the sample) and b_0 labels every criterion
-                             "almost no chance"
+                             the sample) and b_0 gives every criterion
+                             the status "unknown"
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
@@ -16,7 +16,8 @@ Order inside ``observe`` (the targeting scorer sees b_{t-1}; the documents
 then move the belief to b_t):
 
     a (targeting) -> nu^q -> nu^D -> b_t and Delta^D (the belief updater
-    rewrites the belief from every document of the step) -> retrieval gain
+    updates the belief from the documents it has not judged in earlier
+    steps) -> retrieval gain
     -> intermediate answer
 
 Step record, one per iteration (saved as one line of
@@ -25,7 +26,7 @@ first, nested detail last::
 
     iteration, agent_iteration,
     num_subqueries, num_docs, num_new_docs,
-    doc_novelty, belief_delta, query_novelty          # x_t, with criteria_attempts_after
+    doc_novelty, criteria_delta, query_novelty          # x_t, with criteria_attempts_after
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
@@ -42,9 +43,9 @@ meaning differ per agent.
 
 A signal that could not be computed is null, never 0; the reason is in
 ``errors`` (or a component is not configured: no encoder, no criteria,
-no qrels).  ``belief_delta`` is negative when the belief fell.
-``belief_before`` / ``belief_after`` hold one WEP label per
-criterion (``types.WEP_LABELS``), in ``criteria`` order.
+no qrels).  ``criteria_delta`` is negative when the belief fell.
+``belief_before`` / ``belief_after`` hold one belief status per
+criterion (``types.BELIEF_STATUSES``), in ``criteria`` order.
 ``criteria_targeted`` lists the ids of the criteria that a query of the
 step targeted directly (score 1); ``criteria_attempts_after`` is, per
 criterion, the number of steps that targeted it so far.  When the targeting
@@ -215,7 +216,7 @@ class BeliefModel:
             "num_relevant": self._retrieval_gain.num_relevant,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
-            "final_belief": self._belief.labels() if self._tracks_state else None,
+            "final_belief": self._belief.statuses() if self._tracks_state else None,
             "final_criteria_attempts": self._targeting.attempts if self._tracks_targeting else None,
             "criteria_evidence": self._belief.state.evidence() if self._tracks_state else None,
         }
@@ -256,7 +257,7 @@ class BeliefModel:
         errors: List[str] = []
 
         tracks_state = self._tracks_state
-        state_before = self._belief.labels() if tracks_state else None
+        state_before = self._belief.statuses() if tracks_state else None
 
         # --- a: targeting state (the scorer sees b_{t-1}) -----------------------
         criteria_targeted, attempts_after, per_target = None, None, []
@@ -287,18 +288,18 @@ class BeliefModel:
             errors.append(f"doc_novelty: {e}")
         new_ids = [d["doc_id"] for d in per_doc if not d["seen_before"]]
 
-        # --- b_t and Delta^D (every document of the step) -----------------------
-        belief_delta, updates, updater_output, state_after = None, None, None, state_before
+        # --- b_t and Delta^D (the documents not judged in earlier steps) --------
+        criteria_delta, updates, updater_output, state_after = None, None, None, state_before
         if tracks_state:
             try:
-                belief_delta, updates, updater_output, updater_errors = self._belief.score(
+                criteria_delta, updates, updater_output, updater_errors = self._belief.score(
                     _unique(docs), self._step,
                 )
                 errors.extend(f"belief_update: {e}" for e in updater_errors)
             except Exception as e:
                 logger.warning("BeliefModel: belief update failed", exc_info=True)
                 errors.append(f"belief_update: {e}")
-            state_after = self._belief.labels()
+            state_after = self._belief.statuses()
 
         # --- Retrieval gain (extra) ---------------------------------------------
         try:
@@ -329,7 +330,7 @@ class BeliefModel:
             "num_docs": len(per_doc),
             "num_new_docs": len(new_ids),
             "doc_novelty": _round(doc_novelty),
-            "belief_delta": belief_delta,
+            "criteria_delta": criteria_delta,
             "query_novelty": _round(query_novelty),
             **gain,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,

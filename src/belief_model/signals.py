@@ -5,7 +5,7 @@ Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t):
 - ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
   not seen in an earlier step.
 - ``BeliefUpdateSignal`` b_t and Delta^D: the belief update of the step
-  and the change of the WEP levels it makes; negative when the belief fell.
+  and the change of the status levels it makes; negative when the belief fell.
 - ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
   queries of earlier steps.
 - ``CriteriaTargetingSignal`` a: per criterion, the number of steps whose
@@ -34,7 +34,7 @@ from utils.text_utils import doc_id as _doc_id
 from .criteria import BeliefState
 from .judges import LLMBeliefUpdater, LLMQueryScorer
 from .prompts import intermediate_answer_instruction
-from .types import WEP_LEVEL, Criterion
+from .types import STATUS_LEVEL, Criterion
 
 logger = logging.getLogger(__name__)
 
@@ -178,18 +178,22 @@ class BeliefUpdateSignal:
     """Belief update of each step and the change it makes.
 
     The stateful updater sees the current belief with its attached evidence
-    and every document of the step, and rewrites the belief; a label can go
+    and the documents of the step it has not judged in an earlier step, and
+    updates the criteria they support, contradict or relate to; a status can go
     up (new or combined evidence) or down (a contradiction) by any number of
-    levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the WEP
-    levels (``types.WEP_LEVEL``, 0 to 6); it is negative when the belief
-    fell.  With no document the updater is not called and Delta^D is 0;
-    when the updater fails the belief is unchanged and Delta^D is null.
+    levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the status
+    levels (``types.STATUS_LEVEL``, 0 to 6); it is negative when the belief
+    fell.  With no unjudged document the updater is not called and Delta^D
+    is 0; when the updater fails the belief is unchanged, Delta^D is null
+    and the step's documents stay unjudged, so a later step that retrieves
+    them shows them again.
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
         self.updater = updater
         self._query = ""
         self._state: Optional[BeliefState] = None
+        self._judged: Set[str] = set()
 
     @property
     def active(self) -> bool:
@@ -199,32 +203,36 @@ class BeliefUpdateSignal:
     def state(self) -> Optional[BeliefState]:
         return self._state
 
-    def labels(self) -> Optional[List[str]]:
-        return list(self._state.labels) if self._state is not None else None
+    def statuses(self) -> Optional[List[str]]:
+        return list(self._state.statuses) if self._state is not None else None
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._state = BeliefState(criteria) if criteria else None
+        self._judged.clear()
 
     def score(
         self, docs: List[Dict[str, Any]], step: int,
     ) -> Tuple[Optional[int], List[Dict[str, Any]], Optional[str], List[str]]:
-        """Return ``(delta, updates, raw, errors)``; *updates* has one record
-        per criterion (``BeliefState.update``), *raw* is the updater's reply
-        (None when it was not called)."""
+        """Return ``(delta, updates, raw, errors)`` for the step's unique
+        *docs*; *updates* has one record per criterion
+        (``BeliefState.update``), *raw* is the updater's reply (None when it
+        was not called).  Documents without an id are shown every step."""
         if self._state is None:
             return None, [], None, []
+        docs = [d for d in docs if _doc_id(d) not in self._judged]
         if not docs:
             return 0, [], None, []
-        before = list(self._state.labels)
+        before = list(self._state.statuses)
         updates, raw, errors = self.updater.update(self._query, self._state, docs, step)
         if updates is None:
             return None, [], raw, errors
+        self._judged.update(i for i in map(_doc_id, docs) if i)
         if raw is None:
             return 0, [], None, errors
         records = self._state.update(updates)
-        after = list(self._state.labels)
-        delta = sum(WEP_LEVEL[a] - WEP_LEVEL[b] for b, a in zip(before, after))
+        after = list(self._state.statuses)
+        delta = sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after))
         return delta, records, raw, errors
 
 
@@ -239,7 +247,7 @@ class CriteriaTargetingSignal:
     query may target several criteria.  A criterion is targeted in a step
     when at least one of the step's queries scores 1 on it (0.5 never
     counts), and its attempt count a_t(k) then grows by 1, once per step
-    however many queries target it, whatever its label.
+    however many queries target it, whatever its status.
     """
 
     def __init__(self, scorer: LLMQueryScorer) -> None:

@@ -1,0 +1,42 @@
+The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members.
+
+---status---
+For this query:
+- A passage supports a criterion when it establishes a member of the set, or whether a member has the property.
+- The last criterion, "any other member: <property>", is for the members without a criterion of their own.
+
+---example---
+Example query: How many lakes that are either lakes of Norland or reservoirs of Vesterdal have a surface area of more than 10 km²?
+
+Example criteria, with their current status:
+c1 [probable]: the complete list of the lakes that are either lakes of Norland or reservoirs of Vesterdal
+  - support: "The lakes of Norland are Lake Varn, Lake Osby and Lake Tirsa." (List of lakes of Norland)
+c2 [unknown]: Lake Varn: surface area of more than 10 km²
+c3 [unknown]: Lake Osby: surface area of more than 10 km²
+c4 [unknown]: Lake Tirsa: surface area of more than 10 km²
+c5 [unknown]: any other member: surface area of more than 10 km²
+
+Example new passages:
+<passage 1>
+Lake Varn
+Lake Varn is a freshwater lake in central Norland. It has a surface area of 14.2 km² and a maximum depth of 38 m.
+</passage 1>
+
+<passage 2>
+Fishing on Lake Osby
+Lake Osby is popular with anglers for its pike and perch, and boats can be hired from May to September.
+</passage 2>
+
+<passage 3>
+Norland tourism figures
+Norland welcomed 2.4 million visitors last year, most of them in the summer months.
+</passage 3>
+
+Example output:
+{
+  "updates": [
+    {"id": "c1", "support": [{"passage": 1, "spans": ["Lake Varn is a freshwater lake in central Norland"]}], "contradict": [], "reason": "Passage 1 confirms Lake Varn as a lake of Norland, a member already in the evidence; the reservoirs of Vesterdal are still missing.", "status": "probable"},
+    {"id": "c2", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km², more than 10 km².", "status": "almost certain"},
+    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "unlikely"}
+  ]
+}

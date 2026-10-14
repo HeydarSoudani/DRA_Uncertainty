@@ -8,9 +8,9 @@ stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The per-iteration seen doc ids live in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 12::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 14::
 
-    line 1  {"record": "meta", "schema_version": 12, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 14, "query_id": "q1", "question": "...",
              "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
              "llm_criteria": "...", "max_criteria": 8,
              "criteria_source": "llm", "belief_updater": "llm:...",
@@ -18,15 +18,15 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 12::
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "set", "errors": []},
-             "final_belief": ["very likely", "almost no chance", ...],
+             "final_belief": ["almost certain", "unknown", ...],
              "final_criteria_attempts": [2, 0, ...],
-             "criteria_evidence": [{"id": "c1", "kind": "closed", "label": "very likely",
+             "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "almost certain",
                                     "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
                                                   "spans": ["..."], "span_verified": [true]}]}, ...]}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
-             "doc_novelty": 1.0, "belief_delta": 5, "query_novelty": 1.0,
+             "doc_novelty": 1.0, "criteria_delta": 5, "query_novelty": 1.0,
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
@@ -35,11 +35,11 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 12::
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [1.0, 0.5, ...]}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
-             "belief_before": ["almost no chance", ...], "belief_after": ["very likely", ...],
+             "belief_before": ["unknown", ...], "belief_after": ["almost certain", ...],
              "criteria_sources_after": [1, 0, ...],
              "criteria_targeted": ["c1"], "criteria_attempts_after": [1, 0, ...],
-             "criteria_updates": [{"id": "c1", "from": "almost no chance", "to": "very likely",
-                                   "written": "very likely", "support": [{"doc_id": "d1", ...}],
+             "criteria_updates": [{"id": "c1", "from": "unknown", "to": "almost certain",
+                                   "written": "almost certain", "support": [{"doc_id": "d1", ...}],
                                    "contradict": [], "reason": "...", "note": ""}, ...],
              "belief_updater_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
@@ -55,16 +55,26 @@ schema_version 9 drops the graded gold (``new_item_graded_recall``,
 schema_version 10 adds ``criteria_sources_after`` (distinct supporting
 documents per criterion); only cited passages with a verified span are
 attached.  schema_version 11 is the belief model: the criteria state is one
-ICD 203 WEP label per criterion (``belief_model.types.WEP_LABELS``),
+ICD 203 word of estimative probability per criterion,
 rewritten every step by the belief updater from every document of the step
-(``belief_delta`` sums the label moves over levels 0 to 6),
+(``criteria_delta`` sums the label moves over levels 0 to 6),
 ``criteria_updates`` has one record per criterion with the label as
 ``written``, ``criteria_judge`` and ``criteria_judge_output`` become
 ``belief_updater`` and ``belief_updater_output``, and ``criteria_evidence``
 gives each criterion's ``label``.  schema_version 12 renames
 ``criteria_state_before`` / ``criteria_state_after`` / ``final_criteria_state``
 to ``belief_before`` / ``belief_after`` / ``final_belief`` and
-``criteria_delta`` to ``belief_delta``.  ``iteration`` counts from 1 for
+``criteria_delta`` to ``belief_delta``; schema_version 13 renames
+``belief_delta`` back to ``criteria_delta``.  schema_version 14 replaces
+the ICD 203 labels with the seven statuses of Agent-BRACE's belief scale
+(``belief_model.types.BELIEF_STATUSES``; levels ``STATUS_LEVEL``: doubtful 0,
+unknown 1 (b_0), unlikely 2, possible 3, probable 4, almost certain 5,
+confirmed 6), so ``criteria_delta`` sums the status moves and a
+contradiction lowers it; the belief updater sees only the documents it has
+not judged in an earlier step and updates only the criteria they support,
+contradict or relate to (``criteria_updates`` notes the others as not
+updated); ``criteria_evidence`` gives each criterion's ``status`` (was
+``label``).  ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
 search still gets its meta line.  The file is written atomically.
@@ -79,7 +89,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 14
 
 
 def _clean(obj: Any) -> Any:

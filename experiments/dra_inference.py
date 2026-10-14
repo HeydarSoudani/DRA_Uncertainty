@@ -610,7 +610,7 @@ def _parse_args():
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (one WEP label per criterion) and the per-step signals (doc_novelty, belief_delta, query_novelty, criteria attempts, new-item precision, recall so far, intermediate answers) to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its WEP label and attempts, then doc_novelty, belief_delta, query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (one belief status per criterion) and the per-step signals (doc_novelty, criteria_delta, query_novelty, criteria attempts, new-item precision, recall so far, intermediate answers) to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its belief status and attempts, then doc_novelty, criteria_delta, query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
@@ -833,3 +833,4 @@ if __name__ == "__main__":
 #   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/dra_inference.py --dataset neuclir --limit 1
 #   python experiments/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
 #   python experiments/dra_inference.py --num-gpus 4 --quiet --limit 9
+#   python experiments/dra_inference.py --limit 1

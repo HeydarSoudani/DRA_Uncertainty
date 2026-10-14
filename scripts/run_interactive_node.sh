@@ -42,8 +42,8 @@ fi
 set -euo pipefail
 
 PARTITION="${1:-h100}"
-TIME="${TIME:-0:30:00}"
-GPUS="${GPUS:-3}"
+TIME="${TIME:-0:20:00}"
+GPUS="${GPUS:-1}"
 
 case "$PARTITION" in
     a100|gpu_a100) PART=gpu_a100; CPUS_PER_GPU=18; MEM_PER_GPU=120 ;;

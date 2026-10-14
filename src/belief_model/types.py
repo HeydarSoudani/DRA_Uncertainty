@@ -4,43 +4,34 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-# Belief state b_t(k): one label per criterion from the seven words of
-# estimative probability of ICD 203 (US Intelligence Community Directive 203,
-# "Analytic Standards"), lowest first.  A label rates how likely it is that
-# the passages found so far give the information the criterion asks for.
-WEP_LABELS = (
-    "almost no chance",
-    "very unlikely",
+# Belief state b_t(k): one status per criterion from the seven words of
+# Agent-BRACE's verbal belief scale (arXiv 2605.11436), lowest level first.
+# A status rates how far the passages found so far establish the information
+# the criterion asks for.  "doubtful" (the passages contradict the criterion)
+# is level 0, below "unknown" (no passage relates to it), so a contradiction
+# always lowers the level.
+BELIEF_STATUSES = (
+    "doubtful",
+    "unknown",
     "unlikely",
-    "roughly even chance",
-    "likely",
-    "very likely",
+    "possible",
+    "probable",
     "almost certain",
+    "confirmed",
 )
-# Ordinal level of each label (0 to 6), for Delta^D.
-WEP_LEVEL: Dict[str, int] = {label: k for k, label in enumerate(WEP_LABELS)}
-# Midpoint of each label's ICD 203 probability band (1-5%, 5-20%, 20-45%,
-# 45-55%, 55-80%, 80-95%, 95-99%), for analysis only; never shown to a model.
-WEP_PROBABILITY: Dict[str, float] = dict(zip(WEP_LABELS, (0.03, 0.125, 0.325, 0.5, 0.675, 0.875, 0.97)))
+# Ordinal level of each status (0 to 6), for Delta^D and analysis.
+STATUS_LEVEL: Dict[str, int] = {status: k for k, status in enumerate(BELIEF_STATUSES)}
 # b_0: no passage found yet.
-INITIAL_LABEL = WEP_LABELS[0]
-# ICD 203's alternative terms, read as the label of the same band.
-_WEP_SYNONYMS = {
-    "remote": "almost no chance",
-    "highly improbable": "very unlikely",
-    "improbable": "unlikely",
-    "roughly even odds": "roughly even chance",
-    "probable": "likely",
-    "highly probable": "very likely",
-    "nearly certain": "almost certain",
-}
+INITIAL_STATUS = "unknown"
+# The paper's "confirmed or certain": "certain" read as "confirmed".
+_STATUS_SYNONYMS = {"certain": "confirmed"}
 
 
-def parse_label(text: Any) -> Optional[str]:
-    """The WEP label *text* names (case, underscores, hyphens and extra
-    spaces ignored; ICD 203's alternative terms accepted), or None."""
+def parse_status(text: Any) -> Optional[str]:
+    """The belief status *text* names (case, underscores, hyphens and extra
+    spaces ignored; "certain" accepted for "confirmed"), or None."""
     key = " ".join(str(text or "").lower().replace("_", " ").replace("-", " ").split())
-    return key if key in WEP_LEVEL else _WEP_SYNONYMS.get(key)
+    return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
 
 
 # Criterion kinds: a closed criterion is one fact that a single document can
@@ -108,11 +99,11 @@ class Evidence:
 class CriterionUpdate:
     """One criterion of the belief the belief updater wrote for one step.
 
-    ``label`` is b_t(k) as written (None when it names no WEP label);
+    ``status`` is b_t(k) as written (None when it names no belief status);
     ``support`` and ``contradict`` are the step's passages cited for it.
     """
     id: str
-    label: Optional[str]
+    status: Optional[str]
     support: List[Evidence] = field(default_factory=list)
     contradict: List[Evidence] = field(default_factory=list)
     reason: str = ""

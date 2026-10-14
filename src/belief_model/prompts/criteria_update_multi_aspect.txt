@@ -1,0 +1,41 @@
+The response to this query is a report that covers several aspects of a topic.
+
+---status---
+For this query:
+- A passage supports a criterion when it gives specific facts about the subject the criterion names, such as figures, named cases, findings or measures, within the limits the criterion's wording sets: a period, place, group, or what a "..., not ..." leaves out. A mere mention of the topic, or facts only outside such a limit, is not support.
+
+---example---
+Example query: I lead a local history club, and we are preparing an exhibition on the Brennholt Tunnel. I want the facts of its recent water leak straight before we write the panels.
+I need a report on the water leak in the Brennholt railway tunnel. The report should include when it was detected, what might have led to the leak, and whether and how it was fixed.
+
+Example criteria, with their current status:
+c1 [almost certain]: when the water leak in the Brennholt Tunnel was detected
+  - support: "Maintenance crews first noticed water seeping through the tunnel lining on 14 March" (Brennholt Tunnel closed after leak found)
+c2 [unknown]: what might have led to the water leak in the Brennholt Tunnel
+c3 [probable]: whether and how the water leak in the Brennholt Tunnel was fixed
+  - support: "Engineers began pumping water out of the tunnel on Friday" (Repairs under way in Brennholt Tunnel)
+c4 [unknown]: the disruption the water leak caused to rail services through the Brennholt Tunnel
+
+Example new passages:
+<passage 1>
+Engineers point to cracked pipe in Brennholt leak
+Investigators said a cracked drainage pipe above the eastern section of the tunnel was the most likely cause of the leak.
+Heavy snowmelt in early March may also have played a role, they added.
+</passage 1>
+
+<passage 2>
+Second tunnel planned under Brennholt pass
+The regional government approved plans for a second rail tunnel under the pass, due to open in 2031.
+</passage 2>
+
+<passage 3>
+Alpine Rail posts record year
+Alpine Rail carried 41 million passengers last year, its highest number since the company was founded.
+</passage 3>
+
+Example output:
+{
+  "updates": [
+    {"id": "c2", "support": [{"passage": 1, "spans": ["a cracked drainage pipe above the eastern section of the tunnel was the most likely cause of the leak", "Heavy snowmelt in early March may also have played a role"]}], "contradict": [], "reason": "Passage 1 gives the likely causes of the leak directly: a cracked drainage pipe and heavy snowmelt.", "status": "almost certain"}
+  ]
+}

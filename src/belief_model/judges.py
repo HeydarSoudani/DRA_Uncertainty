@@ -2,10 +2,10 @@
 
 - ``LLMBeliefUpdater``: the belief update b_t = f(query, b_{t-1}, o_t),
   Agent-BRACE style.  One call per step sees the current belief (each
-  criterion's WEP label and evidence) plus every passage of the step, and
-  rewrites the belief: per criterion, the passages that support or
-  contradict it and its new label.  ``BeliefState.update`` takes the labels
-  as written.
+  criterion's status and evidence) plus the step's passages not judged
+  before, and updates the criteria they support, contradict or relate to:
+  the passages that support or contradict each one and its new status.
+  ``BeliefState.update`` takes the statuses as written.
 - ``LLMQueryScorer``: one call per step scores how strongly each query
   targets each criterion (0, 0.5 or 1), given a short summary of the
   belief; used for the targeting state a.
@@ -24,13 +24,13 @@ from utils.text_utils import doc_id as _doc_id, doc_text, parse_json_object
 
 from .criteria import BeliefState
 from .prompts import (
-    BELIEF_UPDATE_PASSAGE_TEMPLATE,
-    BELIEF_UPDATE_SYSTEMS,
-    BELIEF_UPDATE_USER_TEMPLATE,
+    CRITERIA_UPDATE_PASSAGE_TEMPLATE,
+    CRITERIA_UPDATE_SYSTEMS,
+    CRITERIA_UPDATE_USER_TEMPLATE,
     QUERY_TARGETING_SYSTEM,
     QUERY_TARGETING_USER_TEMPLATE,
 )
-from .types import MULTI_ASPECT, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence, parse_label
+from .types import MULTI_ASPECT, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence, parse_status
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,11 @@ def _quote(spans: List[str]) -> str:
 
 
 def format_state_summary(state: BeliefState) -> str:
-    """Per criterion, its label and the verified spans of its latest
+    """Per criterion, its status and the verified spans of its latest
     evidence passage that has any."""
     blocks = []
     for k, c in enumerate(state.criteria):
-        lines = [f"{c.id} [{state.labels[k]}]: {c.text}"]
+        lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
         latest = next((e for e in reversed(state.attached(k)) if e.verified_spans), None)
         if latest is not None:
             lines.append(f"  evidence ({latest.role}): {_quote(latest.verified_spans)}")
@@ -94,13 +94,13 @@ def passage_title(text: str, max_chars: int = 120) -> str:
 # Belief updater (b_t, Delta^D)
 # ---------------------------------------------------------------------------
 
-def _parse_belief(raw: str) -> Optional[List[Any]]:
-    """The updater's list of criteria, or None when *raw* has none.  Besides
-    ``{"belief": [...]}``, a bare list (the criteria without their key) is
+def _parse_updates(raw: str) -> Optional[List[Any]]:
+    """The updater's list of updates, or None when *raw* has none.  Besides
+    ``{"updates": [...]}``, a bare list (the updates without their key) is
     accepted."""
     data = parse_json_object(raw)
     if data is not None:
-        return data["belief"] if isinstance(data.get("belief"), list) else None
+        return data["updates"] if isinstance(data.get("updates"), list) else None
     text = raw.strip()
     fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
     if fence:
@@ -113,15 +113,17 @@ def _parse_belief(raw: str) -> Optional[List[Any]]:
 
 
 class LLMBeliefUpdater:
-    """Stateful LLM belief updater: one call per step rewrites the belief.
+    """Stateful LLM belief updater: one call per step updates the criteria
+    that the step's new passages support, contradict or relate to.
 
-    The prompt (one per query shape) shows each criterion with its label and
+    The prompt (one per query shape) shows each criterion with its status and
     its last ``max_evidence_per_criterion`` evidence passages (each as its
-    verified spans and its title line), then every passage of the step
-    (``max_passage_chars`` each), also the ones seen in earlier steps.  The
-    updater gives every criterion its label, with the step's passages that
-    support or contradict it.  It sees neither the agent's search queries
-    nor the signals.
+    verified spans and its title line), then the passages of the step not
+    seen in earlier steps (``max_passage_chars`` each).  The updater gives a
+    new status, with the passages that support or contradict it, only to
+    the criteria those passages support, contradict or relate to (both
+    lists may be empty).  It sees neither the agent's
+    search queries nor the signals.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
@@ -133,8 +135,7 @@ class LLMBeliefUpdater:
             shows the whole passage.
         max_evidence_per_criterion: Attached evidence passages shown per
             criterion (the most recent).
-        max_tokens / temperature: LLM call settings.  The reply has one
-            entry per criterion, so it grows with the criteria list.
+        max_tokens / temperature: LLM call settings.
         parse_retries: Extra calls when the output cannot be parsed; each
             failed attempt is recorded in the step's errors.
     """
@@ -153,9 +154,8 @@ class LLMBeliefUpdater:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
         self._llm = llm_client
-        self.model_name = model_name
         self.name = f"llm:{model_name}"
-        self._system = BELIEF_UPDATE_SYSTEMS[query_shape]
+        self._system = CRITERIA_UPDATE_SYSTEMS[query_shape]
         self._parse_retries = parse_retries
         self._max_passage_chars = max_passage_chars
         self._max_evidence = max_evidence_per_criterion
@@ -165,10 +165,10 @@ class LLMBeliefUpdater:
     def _format_belief(self, state: BeliefState) -> str:
         lines = []
         for k, c in enumerate(state.criteria):
-            lines.append(f"{c.id} [{state.labels[k]}]: {c.text}")
+            lines.append(f"{c.id} [{state.statuses[k]}]: {c.text}")
             for e in state.attached(k, self._max_evidence):
                 title = f" ({e.title})" if e.title else ""
-                lines.append(f"  - {e.role} (step {e.step}): {_quote(e.verified_spans)}{title}")
+                lines.append(f"  - {e.role}: {_quote(e.verified_spans)}{title}")
             hidden = len(state.attached(k)) - self._max_evidence
             if hidden > 0:
                 lines.append(f"  - and {hidden} earlier evidence passages")
@@ -215,12 +215,12 @@ class LLMBeliefUpdater:
         if not kept:
             return [], None, errors
         passages = "\n\n".join(
-            BELIEF_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
+            CRITERIA_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
             for i, doc in enumerate(kept)
         )
         messages = [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": BELIEF_UPDATE_USER_TEMPLATE.format(
+            {"role": "user", "content": CRITERIA_UPDATE_USER_TEMPLATE.format(
                 query=query, belief=self._format_belief(state), passages=passages,
             )},
         ]
@@ -231,10 +231,10 @@ class LLMBeliefUpdater:
             except Exception as e:
                 logger.warning("LLMBeliefUpdater: step call failed: %s", e)
                 return None, "", errors + [f"belief_updater: {e}"]
-            data = _parse_belief(raw)
+            data = _parse_updates(raw)
             if data is not None:
                 break
-            errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with a 'belief' list")
+            errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
         else:
             logger.warning("LLMBeliefUpdater: step %d dropped, updater output not parseable", step)
             return None, raw, errors
@@ -245,7 +245,7 @@ class LLMBeliefUpdater:
                 continue
             updates.append(CriterionUpdate(
                 id=str(item.get("id", "")).strip(),
-                label=parse_label(item.get("label")),
+                status=parse_status(item.get("status")),
                 support=self._evidence(item.get("support"), kept, step, "support"),
                 contradict=self._evidence(item.get("contradict"), kept, step, "contradict"),
                 reason=str(item.get("reason", "")),
@@ -259,7 +259,7 @@ class LLMBeliefUpdater:
 
 class LLMQueryScorer:
     """LLM as judge: one call per step scores every (query, criterion) pair
-    as 0, 0.5 or 1.  The prompt shows the belief (label, latest verified
+    as 0, 0.5 or 1.  The prompt shows the belief (status, latest verified
     evidence), so a query naming an entity the evidence already linked to a
     criterion counts as targeting it."""
 

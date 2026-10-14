@@ -2,9 +2,10 @@
 
 The report (Section "Instantiation") replaces the hidden state with a fixed
 per-query criteria list C = {c_1, ..., c_K}; the belief state b_t gives each
-criterion a label from the seven ICD 203 words of estimative probability
-(``types.WEP_LABELS``), rewritten every step by the belief updater from the
-current belief and the step's documents (it can move up or down).
+criterion a status from Agent-BRACE's seven-level belief scale
+(``types.BELIEF_STATUSES``).  Every step the belief updater updates the
+criteria that the step's new documents support, contradict or relate to (a
+status can move up or down); the other criteria keep their status.
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` derives the criteria from the query;
@@ -36,7 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    ASPECT, CLOSED, INITIAL_LABEL, MULTI_ASPECT, OPEN, QUERY_SHAPES, REST, SET,
+    ASPECT, CLOSED, INITIAL_STATUS, MULTI_ASPECT, OPEN, QUERY_SHAPES, REST, SET,
     Criterion, CriterionUpdate, Evidence,
 )
 
@@ -319,29 +320,29 @@ class BankedCriteriaSource(CriteriaSource):
 # ---------------------------------------------------------------------------
 
 class BeliefState:
-    """Belief state b_t: per criterion, its WEP label and its evidence.
+    """Belief state b_t: per criterion, its belief status and its evidence.
 
-    b_0 labels every criterion ``INITIAL_LABEL``.  Each step the belief
-    updater rewrites the belief from the current one and the step's passages
-    (Agent-BRACE style) and ``update`` takes it as written:
+    b_0 gives every criterion ``INITIAL_STATUS``.  Each step the belief
+    updater updates the criteria that the step's new passages support,
+    contradict or relate to, from the current belief and those passages
+    (Agent-BRACE style), and ``update`` takes the statuses as written:
 
-    - the label of each criterion is the one the updater gave; a label may
-      stay, rise or fall by any number of levels;
-    - a criterion the updater left out, or gave no WEP label, keeps its
-      label (``note`` says why);
+    - the updater lists only the criteria the step's passages support,
+      contradict or relate to; each listed criterion takes the status it gave;
+    - a criterion the updater left out, or gave no valid status, keeps its
+      status (``note`` says why);
     - a cited passage is attached only with at least one span that occurs
       in it verbatim (``Evidence.verified_spans``); the others are dropped.
-      This guards the evidence only, never the label;
+      This guards the evidence only, never the status;
     - a passage already attached to the criterion with the same role is not
-      attached again (every passage of a step is shown, also ones seen
-      before).
+      attached again.
 
     The updater sees the attached evidence in later steps.
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
-        self.labels: List[str] = [INITIAL_LABEL] * len(self.criteria)
+        self.statuses: List[str] = [INITIAL_STATUS] * len(self.criteria)
         self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
 
@@ -355,7 +356,7 @@ class BeliefState:
 
         Returns one record per criterion, in criteria order, then one per
         update with an unknown or repeated id: ``{id, from, to, written,
-        support, contradict, reason, note}``.  ``written`` is the label as
+        support, contradict, reason, note}``.  ``written`` is the status as
         the updater wrote it (null when left out); ``support`` and
         ``contradict`` are the passages as cited, with ``span_verified``.
         Only the first update of a criterion is used.
@@ -366,7 +367,7 @@ class BeliefState:
             k = self._index.get(u.id)
             if k is None or k in first:
                 extra.append({
-                    "id": u.id, "from": None, "to": None, "written": u.label,
+                    "id": u.id, "from": None, "to": None, "written": u.status,
                     "support": [e.to_dict() for e in u.support],
                     "contradict": [e.to_dict() for e in u.contradict],
                     "reason": u.reason,
@@ -379,15 +380,15 @@ class BeliefState:
         for k, c in enumerate(self.criteria):
             u = first.get(k)
             record = {
-                "id": c.id, "from": self.labels[k], "to": self.labels[k], "written": None,
+                "id": c.id, "from": self.statuses[k], "to": self.statuses[k], "written": None,
                 "support": [], "contradict": [], "reason": "", "note": "",
             }
             records.append(record)
             if u is None:
-                record["note"] = "left out by the updater; label kept"
+                record["note"] = "not updated; status kept"
                 continue
             record.update(
-                written=u.label, reason=u.reason,
+                written=u.status, reason=u.reason,
                 support=[e.to_dict() for e in u.support],
                 contradict=[e.to_dict() for e in u.contradict],
             )
@@ -401,11 +402,11 @@ class BeliefState:
                 if (e.doc_id, e.role) not in known:
                     self._evidence[k].append(e)
                     known.add((e.doc_id, e.role))
-            if u.label is None:
-                notes.append("no WEP label; label kept")
+            if u.status is None:
+                notes.append("no valid status; status kept")
             else:
-                self.labels[k] = u.label
-                record["to"] = u.label
+                self.statuses[k] = u.status
+                record["to"] = u.status
             record["note"] = "; ".join(notes)
         return records + extra
 
@@ -418,9 +419,9 @@ class BeliefState:
         return len({e.doc_id for e in self._evidence[k] if e.role == "support"})
 
     def evidence(self) -> List[Dict[str, Any]]:
-        """Per criterion, its kind, label and its attached evidence (without
+        """Per criterion, its kind, status and its attached evidence (without
         text)."""
         return [
-            {"id": c.id, "kind": c.kind, "label": label, "evidence": [e.to_dict() for e in ev]}
-            for c, label, ev in zip(self.criteria, self.labels, self._evidence)
+            {"id": c.id, "kind": c.kind, "status": status, "evidence": [e.to_dict() for e in ev]}
+            for c, status, ev in zip(self.criteria, self.statuses, self._evidence)
         ]

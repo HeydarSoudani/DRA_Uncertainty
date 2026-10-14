@@ -104,7 +104,7 @@ def build_belief_model(
             request, the number the extractor may add, asked in the prompt);
             None = the
             dataset's ``max_criteria`` (layout.DATASET_SPECS).
-        belief_judge_model: LLM behind the belief state and belief_delta
+        belief_judge_model: LLM behind the belief state and criteria_delta
             (belief updater) and the criteria attempts (targeting scorer);
             "" = *llm_criteria*.
         add_intermediate_answer: Ask the agent for an intermediate answer

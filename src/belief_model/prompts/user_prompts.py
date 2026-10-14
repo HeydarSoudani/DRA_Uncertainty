@@ -25,25 +25,25 @@ def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
     return CRITERIA_INIT_USER_TEMPLATE.format(
         query=query, instruction=instruction.format(max_criteria=max_criteria))
 
-BELIEF_UPDATE_USER_TEMPLATE = """\
+CRITERIA_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Current belief:
+Criteria, with their current status:
 {belief}
 
-Passages of this step:
+New passages:
 {passages}
 
-Update the belief: give every criterion its new label, with the passages of this step that support or contradict it, if any.\
+Decide which criteria each new passage supports, contradicts or relates to, if any, and give their new status.\
 """
 
 # One passage of the belief updater's user message.
-BELIEF_UPDATE_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
+CRITERIA_UPDATE_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
 
 QUERY_TARGETING_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current label and what the search has found so far:
+Criteria, with their current status and what the search has found so far:
 {criteria}
 
 Search queries:

@@ -23,7 +23,7 @@ paired.
 Signals (step record fields of ``belief/{query_id}.jsonl``):
 
 - ``doc_novelty``           nu^D
-- ``belief_delta``        Delta^D
+- ``criteria_delta``        Delta^D
 - ``query_novelty``         nu^q
 
 Steps with a null gold (no qrels for the query, no documents) are dropped;
@@ -31,10 +31,10 @@ per signal, steps where the signal is null are dropped and counted.
 
 Final belief state.  The belief at the end of the run is also read as an
 uncertainty estimate of the whole query: the final belief is the mean, over
-the criteria, of the midpoint of the ICD 203 probability band of each
-criterion's WEP label (``belief_model.types.WEP_PROBABILITY``) in the last
-step's ``belief_after`` (0.03 every criterion "almost no chance",
-0.97 every criterion "almost certain").
+the criteria, of each criterion's status level
+(``belief_model.types.STATUS_LEVEL``, 0 to 6) in the last step's
+``belief_after``, divided by 6 (0 every criterion "doubtful", 1/6 every
+criterion "unknown" as at b_0, 1 every criterion "confirmed").
 Per query it is compared with:
 
 - correctness (binary; ``correct`` of the LLM judge or ``exact_match`` of
@@ -45,9 +45,10 @@ Per query it is compared with:
 
 CIs from a bootstrap over queries.  Queries without a belief state, a
 correctness label (judge errors) or a recall are dropped and counted.  Only
-schema_version >= 12 files are read (the belief model's WEP labels start
-at 11, the ``belief_*`` field names at 12).  The default mode is ``monitor``: in ``inform`` mode the agent reads
-the signals, which changes the trajectory.
+schema_version >= 14 files are read (the ``belief_*`` field names start
+at 12, ``criteria_delta`` at 13, the Agent-BRACE statuses at 14).  The
+default mode is ``monitor``: in ``inform`` mode the agent reads the signals,
+which changes the trajectory.
 
 The run is selected with the same arguments as ``experiments/dra_inference.py``
 (``--config``, ``--agentic-model``, ``--dataset``, ``--subset``, ``--retriever``,
@@ -108,7 +109,7 @@ from utils.cli_setup import (
     parse_cli_overrides,
     resolve_dataset_defaults,
 )
-from belief_model.types import WEP_PROBABILITY
+from belief_model.types import BELIEF_STATUSES, STATUS_LEVEL
 from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
@@ -117,7 +118,7 @@ logger = logging.getLogger(__name__)
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(_REPO_ROOT / "experiments" / "configs" / "dra_inference.yaml")
 
-MIN_SCHEMA_VERSION = 12
+MIN_SCHEMA_VERSION = 14
 OUT_SUBDIR = Path("analysis") / "signal_correlation"
 NUM_CONTINUOUS_BINS = 20
 GOLD_KEY = "new_item_precision"
@@ -127,7 +128,7 @@ GOLD_KEY = "new_item_precision"
 # ``NUM_CONTINUOUS_BINS`` equal-width bins over the range.
 SIGNALS = [
     {"key": "doc_novelty", "name": "Doc novelty (nu^D)", "discrete": False, "range": (0.0, 1.0)},
-    {"key": "belief_delta", "name": "Belief change (Delta^D)", "discrete": True, "range": (-6, 12)},
+    {"key": "criteria_delta", "name": "Criteria change (Delta^D)", "discrete": True, "range": (-8, 12)},
     {"key": "query_novelty", "name": "Query novelty (nu^q)", "discrete": False, "range": (0.0, 1.0)},
 ]
 
@@ -192,12 +193,13 @@ def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["query_id", "productive", GOLD_KEY] + [s["key"] for s in SIGNALS])
 
 
-def _final_belief(labels: Optional[List[str]]) -> Optional[float]:
-    """Mean band midpoint (``WEP_PROBABILITY``) of a belief state's labels;
-    None without one."""
-    if not labels:
+def _final_belief(statuses: Optional[List[str]]) -> Optional[float]:
+    """Mean status level (``STATUS_LEVEL``) of a belief state, scaled to 0
+    to 1; None without one."""
+    if not statuses:
         return None
-    return sum(WEP_PROBABILITY[label] for label in labels) / len(labels)
+    top = len(BELIEF_STATUSES) - 1
+    return sum(STATUS_LEVEL[status] for status in statuses) / (len(statuses) * top)
 
 
 def load_correctness(run_dir: Path) -> Dict[str, Optional[int]]:

@@ -3,15 +3,16 @@ per-step signals, for deep research agents.
 
 Plugged into any agent with ``--belief-mode monitor`` (observe only) or
 ``inform`` (also inject a ``<belief_state>`` tag into the trajectory).  At
-the end of each search iteration the belief updater rewrites the belief
-state b_t, one ICD 203 word of estimative probability per criterion of a
-fixed per-query criteria list (Agent-BRACE style: b_t = f(query, b_{t-1},
+the end of each search iteration the belief updater updates the belief
+state b_t, one Agent-BRACE belief status per criterion of a
+fixed per-query criteria list, for the criteria the iteration's new documents
+support, contradict or relate to (Agent-BRACE style: b_t = f(query, b_{t-1},
 o_t)), and the model computes the report's per-step signals
 x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t), plus extra saved information
 (retrieval gain against qrels, intermediate answers).
 
 Module layout:
-    types         WEP labels, Criterion, Evidence, CriterionUpdate
+    types         belief statuses, Criterion, Evidence, CriterionUpdate
     criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource, BeliefState
     judges        LLMBeliefUpdater, LLMQueryScorer, build_belief_judges
     signals       DocNoveltySignal, QueryNoveltySignal, BeliefUpdateSignal,
@@ -22,11 +23,10 @@ Module layout:
 """
 
 from .types import (
-    WEP_LABELS,
-    WEP_LEVEL,
-    WEP_PROBABILITY,
-    INITIAL_LABEL,
-    parse_label,
+    BELIEF_STATUSES,
+    STATUS_LEVEL,
+    INITIAL_STATUS,
+    parse_status,
     Criterion,
     CriterionUpdate,
     Evidence,
@@ -55,11 +55,10 @@ from .belief_state import render_belief_state, strip_belief_state
 from .belief_model import BeliefModel
 
 __all__ = [
-    "WEP_LABELS",
-    "WEP_LEVEL",
-    "WEP_PROBABILITY",
-    "INITIAL_LABEL",
-    "parse_label",
+    "BELIEF_STATUSES",
+    "STATUS_LEVEL",
+    "INITIAL_STATUS",
+    "parse_status",
     "Criterion",
     "CriterionUpdate",
     "Evidence",
