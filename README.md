@@ -186,17 +186,16 @@ iteration's search results, one `<certainty>` tag is appended to the trajectory 
 
 ```xml
 <certainty step="3">
-  <criteria covered="1" partial="1" not_covered="1">
+  <criteria>
     <k1 status="covered" attempts="1">born in the 1960s</k1>
     <k2 status="partial" attempts="2">won a regional award</k2>
-    <k3 status="not_covered" kind="open" attempts="0">the films they directed</k3>
+    <k3 status="not_covered" attempts="0">the films they directed</k3>
   </criteria>
-  <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
-  <reasoning_signals query_novelty="0.81"/>
+  <signals doc_novelty="0.40" criteria_delta="+1" query_novelty="0.81"/>
 </certainty>
 ```
 
-`kind="open"` marks an open criterion and `kind="rest"` the rest criterion of a set query; closed and aspect criteria carry no kind. Only the criteria state with the attempts and the other three signals above are shown; gold-based fields (`new_item_precision`,
+The tag is descriptive only: each criterion's status and attempts, then the step's three signals; gold-based fields (`new_item_precision`,
 `recall_so_far`, relevant counts) stay in `uncertainty/{qid}.jsonl` for analysis. A null signal is left out.
 The system prompts are unchanged. Where the tag goes:
 
@@ -210,7 +209,8 @@ The system prompts are unchanged. Where the tag goes:
 
 The tag is also saved as `certainty` on the search step in `trajectory/{qid}.jsonl` and as `certainty_tag` in
 `uncertainty/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `uncertainty_aware`
-follows the flag like every other agent; in `inform` mode its system prompt also explains the tag, and in `monitor` and
+follows the flag like every other agent; in `inform` mode its system prompt also introduces the tag (one section,
+`certainty_section.txt`, the same for every task, with no advice on how to use it), and in `monitor` and
 `off` modes the prompt never mentions it.
 
 #### Report evaluation (Auto-ARGUE)

@@ -3,8 +3,10 @@
 `--agentic-model uncertainty_aware` is a SearchR1-style search agent that, after every retrieval, reads the
 `<certainty>` tag of the shared uncertainty estimator in `inform` mode. The tag is computed by code, never written by
 the policy, and is exactly the one every other agent reads under `--uncertainty-estimator-mode inform` (criteria
-states, retrieval signals `doc_novelty` / `criteria_delta`, attempts per criterion, reasoning signal `query_novelty`;
-no gold-based signal). What sets this agent apart is only its system prompt, which explains the tag.
+status and attempts per criterion, then the signals `doc_novelty`, `criteria_delta`, `query_novelty`; no gold-based
+signal). What sets this agent apart is only its system prompt, which introduces the tag: one section
+(`certainty_section.txt`) shared by the `qa` and `report` tasks, describing the fields only, with no advice on how
+to use them.
 
 `--uncertainty-estimator-mode` applies as for every other agent:
 
@@ -48,13 +50,12 @@ Question: …
 text…
 </information>
 <certainty step="1">
-  <criteria covered="1" partial="1" not_covered="1">
-    <k1 status="covered" attempts="1">its conservation status is 'endangered'</k1>
-    <k2 status="partial" attempts="2">it is the only representative of its genus in the country</k2>
-    <k3 status="not_covered" attempts="0">one of its local names roughly translates to 'devil's basket'</k3>
+  <criteria>
+    <k1 status="covered" attempts="1">the plant whose conservation status is 'endangered'</k1>
+    <k2 status="partial" attempts="2">the plant that is the only representative of its genus in the country</k2>
+    <k3 status="not_covered" attempts="0">the plant one of whose local names roughly translates to 'devil's basket'</k3>
   </criteria>
-  <retrieval_signals doc_novelty="0.40" criteria_delta="+1"/>
-  <reasoning_signals query_novelty="0.81"/>
+  <signals doc_novelty="0.40" criteria_delta="+1" query_novelty="0.81"/>
 </certainty>
 <reasoning>…</reasoning>
 …

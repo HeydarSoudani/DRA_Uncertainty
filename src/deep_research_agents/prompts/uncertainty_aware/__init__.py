@@ -1,9 +1,10 @@
 """Prompt templates for the uncertainty-aware agent (plain-text files next to this module).
 
 Two task variants, picked by the dataset's ``task`` (layout.DATASET_SPECS):
-``qa`` answers a question (``system.txt``, ``certainty_section.txt``,
-``user.txt``); ``report`` writes a report for a request (the ``*_report.txt``
-files).  The turn protocol and the format-error message are shared.
+``qa`` answers a question (``system.txt``, ``user.txt``); ``report`` writes a
+report for a request (the ``*_report.txt`` files).  The turn protocol, the
+section that introduces the <certainty> tag (``certainty_section.txt``) and
+the format-error message are shared.
 
 Placeholders are filled with str.replace, not str.format, so a literal brace
 added to a template later cannot break rendering.
@@ -27,7 +28,7 @@ def _suffix(task: str) -> str:
 
 
 SYSTEM_TEMPLATES = {task: _read(f"system{_suffix(task)}.txt") for task in TASKS}
-CERTAINTY_SECTIONS = {task: _read(f"certainty_section{_suffix(task)}.txt") for task in TASKS}
+CERTAINTY_SECTION: str = _read("certainty_section.txt")
 USER_TEMPLATES = {task: _read(f"user{_suffix(task)}.txt") for task in TASKS}
 FORMAT_ERROR_TEMPLATE: str = _read("format_error.txt")
 
@@ -43,7 +44,7 @@ def render_system(inform: bool, task: str = "qa", report_chars: int | None = Non
     """
     _suffix(task)
     prompt = (SYSTEM_TEMPLATES[task]
-              .replace("{certainty_section}", CERTAINTY_SECTIONS[task] if inform else "")
+              .replace("{certainty_section}", CERTAINTY_SECTION if inform else "")
               .replace("{injected_tags}", "<information> or <certainty>" if inform else "<information>"))
     if task == "report":
         if report_chars is None:
