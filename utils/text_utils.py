@@ -240,8 +240,8 @@ def verbose_print_belief(
     novelty), queries (criteria attempts, targeted criteria, query novelty),
     gold (new-item precision, recall so far, intermediate answer), then any errors.
 
-    ``status`` is one status level per criterion (0 = doubtful,
-    1 = unknown, ..., 6 = confirmed) in criterion order, index-aligned with
+    ``status`` is one status level per criterion (-2 = doubtful,
+    0 = unknown, ..., 4 = certain) in criterion order, index-aligned with
     ``criteria_attempts``."""
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[Iter {iter_num}] [belief]: "
@@ -255,7 +255,8 @@ def verbose_print_belief(
     targeted = record.get("criteria_targeted")
     from belief_model.types import STATUS_LEVEL as levels
     # Pad both lists to one column width so criterion i lines up across rows.
-    width = max((len(str(n)) for n in attempts or []), default=1)
+    width = max((len(str(n)) for n in (attempts or []) + [levels.get(s, '?') for s in state or []]),
+                default=1)
 
     def _list(items):
         if items is None:

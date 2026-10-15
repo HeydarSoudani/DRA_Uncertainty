@@ -32,9 +32,9 @@ per signal, steps where the signal is null are dropped and counted.
 Final belief state.  The belief at the end of the run is also read as an
 uncertainty estimate of the whole query: the final belief is the mean, over
 the criteria, of each criterion's status level
-(``belief_model.types.STATUS_LEVEL``, 0 to 6) in the last step's
-``belief_after``, divided by 6 (0 every criterion "doubtful", 1/6 every
-criterion "unknown" as at b_0, 1 every criterion "confirmed").
+(``belief_model.types.STATUS_LEVEL``, -2 to 4) in the last step's
+``belief_after``, divided by 4 (-0.5 every criterion "doubtful", 0 every
+criterion "unknown" as at b_0, 1 every criterion "certain").
 Per query it is compared with:
 
 - correctness (binary; ``correct`` of the LLM judge or ``exact_match`` of
@@ -45,8 +45,9 @@ Per query it is compared with:
 
 CIs from a bootstrap over queries.  Queries without a belief state, a
 correctness label (judge errors) or a recall are dropped and counted.  Only
-schema_version >= 14 files are read (the ``belief_*`` field names start
-at 12, ``criteria_delta`` at 13, the Agent-BRACE statuses at 14).  The
+schema_version >= 15 files are read (the ``belief_*`` field names start
+at 12, ``criteria_delta`` at 13, the Agent-BRACE statuses at 14, the signed
+scale at 15).  The
 default mode is ``monitor``: in ``inform`` mode the agent reads the signals,
 which changes the trajectory.
 
@@ -109,7 +110,7 @@ from utils.cli_setup import (
     parse_cli_overrides,
     resolve_dataset_defaults,
 )
-from belief_model.types import BELIEF_STATUSES, STATUS_LEVEL
+from belief_model.types import STATUS_LEVEL
 from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
@@ -118,7 +119,7 @@ logger = logging.getLogger(__name__)
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(_REPO_ROOT / "experiments" / "configs" / "dra_inference.yaml")
 
-MIN_SCHEMA_VERSION = 14
+MIN_SCHEMA_VERSION = 15
 OUT_SUBDIR = Path("analysis") / "signal_correlation"
 NUM_CONTINUOUS_BINS = 20
 GOLD_KEY = "new_item_precision"
@@ -194,11 +195,13 @@ def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
 
 
 def _final_belief(statuses: Optional[List[str]]) -> Optional[float]:
-    """Mean status level (``STATUS_LEVEL``) of a belief state, scaled to 0
-    to 1; None without one."""
+    """Mean status level (``STATUS_LEVEL``) of a belief state, divided by
+    the top level: 1 every criterion "certain", 0 every criterion
+    "unknown", negative when the passages are against them; None without
+    one."""
     if not statuses:
         return None
-    top = len(BELIEF_STATUSES) - 1
+    top = max(STATUS_LEVEL.values())
     return sum(STATUS_LEVEL[status] for status in statuses) / (len(statuses) * top)
 
 

@@ -148,7 +148,7 @@ the report (`papers/ACL_2027__Uncertainty_Quantification_for_DRAs/report`, Secti
 | field | report | meaning |
 |---|---|---|
 | `doc_novelty` | ν^D | fraction of the iteration's docs whose id was not seen in an earlier iteration (0, 0.2, ..., 1 for 5 docs) |
-| `criteria_delta` | Δ^D | change of the belief state over the status levels (doubtful 0, unknown 1, ..., confirmed 6), summed over the criteria; negative when the belief fell (a contradiction lowers it) |
+| `criteria_delta` | Δ^D | change of the belief state over the signed status levels (doubtful -2, unlikely -1, unknown 0, ..., certain 4), summed over the criteria; positive when the passages cover more of the criteria, negative when they turn against them |
 | `query_novelty` | ν^q | novelty of the iteration's queries vs earlier queries: 1 − max cosine similarity |
 | `criteria_attempts_after` | a | per criterion, the number of iterations whose queries directly targeted it (a state, like the belief state) |
 
@@ -166,28 +166,31 @@ model `belief_judge_model`, default `llm_criteria`):
   attached evidence (the last 4 passages, each shown as the spans the updater cited that occur verbatim in the passage
   and the passage's title line), plus the passages of the iteration it has not judged in an earlier iteration (none: no call, belief
   unchanged; the passages of an iteration whose update failed are shown again when retrieved again). It sees neither the search queries nor the signals. It lists only the criteria those passages
-  support, contradict or relate to (mention in passing, facts outside the criterion's limits): the passages that support
+  support, contradict or relate to (including passages that point against a criterion): the passages that support
   or contradict each, with one or more verbatim spans each, and the new status, one of the seven
   statuses of Agent-BRACE's verbal belief scale, lowest first:
 
   | level | status | the passages found so far ... |
   |---|---|---|
-  | 0 | doubtful | contradict it, and none supports it |
-  | 1 | unknown | do not relate to it (b_0) |
-  | 2 | unlikely | mention the criterion's subject only in passing, or give facts on it outside the limits its wording sets |
-  | 3 | possible | relate to it but leave it open, or disagree on it |
-  | 4 | probable | give it only in part, only indirectly, or only by combining passages |
-  | 5 | almost certain | give it in whole and directly in one passage, and none contradicts it |
-  | 6 | confirmed | give the information in whole, directly, in several passages that agree |
+  | -2 | doubtful | contradict it, and none supports it |
+  | -1 | unlikely | point against it without contradicting it, and none supports it |
+  | 0 | unknown | do not relate to it (b_0) |
+  | 1 | possible | relate to it but give none of its parts directly, or disagree on it |
+  | 2 | probable | give some parts of it, or give it only indirectly or by combining passages |
+  | 3 | almost certain | give most parts of it directly, and none contradicts it |
+  | 4 | certain | give all parts of it directly, and none contradicts it |
 
-  The status rates how far the passages found so far establish the information the criterion asks for. The
+  The parts of a criterion are the pieces of information it asks for. The positive levels rate how much of the
+  criterion the passages give, by one passage or several; the negative levels rate evidence against it. Agent-BRACE
+  ranks "unknown" lowest (nominal probability 0); here it is the neutral level 0, so a contradiction lowers the level
+  and new coverage raises it. "certain" is the paper's "confirmed / certain". A search that finds nothing on a
+  criterion never lowers it. The
   status words are Agent-BRACE's; their evidence descriptions adapt them to retrieval and draw on GRADE's certainty
   factors (directness, consistency, completeness). A shape block refines what support means for its queries. The guidance lives in the prompt only:
   `BeliefState.update` takes every status as written, so a status may stay, rise or fall by any number of levels. A
   criterion the updater leaves out, or gives no valid status, keeps its status. Each span is checked on its own (a span joined with "..." is split first);
   only cited passages with a verified span are attached, once per criterion and role. This guards the evidence, never
-  the status. `criteria_delta` and the analysis read each status as its level (`STATUS_LEVEL`, 0 to 6); "doubtful"
-  is placed below "unknown", so a contradiction always lowers the level.
+  the status. `criteria_delta` and the analysis read each status as its signed level (`STATUS_LEVEL`, -2 to 4).
 - `criteria_attempts_after`: one more call per iteration scores every (query, criterion) pair as 0, 0.5 or 1. It sees
   each criterion's status and the verified spans of its latest evidence passage, so a query naming
   an entity the evidence already linked to a criterion counts as targeting it; a query that restates most of the user
@@ -203,7 +206,7 @@ iteration's search results, one `<belief_state>` tag is appended to the trajecto
 ```xml
 <belief_state step="3">
   <criteria>
-    <k1 status="almost certain" attempts="1">born in the 1960s</k1>
+    <k1 status="certain" attempts="1">born in the 1960s</k1>
     <k2 status="possible" attempts="2">won a regional award</k2>
     <k3 status="unknown" attempts="0">the films they directed</k3>
   </criteria>
@@ -313,7 +316,7 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 13 |
+| `schema_version` | 15 |
 | `question` | the query text |
 | `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
 | `criteria_source`, `belief_updater`, `query_scorer`, `encoder` | components in use (null when off) |

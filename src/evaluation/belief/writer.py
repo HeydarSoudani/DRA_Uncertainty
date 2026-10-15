@@ -74,7 +74,13 @@ contradiction lowers it; the belief updater sees only the documents it has
 not judged in an earlier step and updates only the criteria they support,
 contradict or relate to (``criteria_updates`` notes the others as not
 updated); ``criteria_evidence`` gives each criterion's ``status`` (was
-``label``).  ``iteration`` counts from 1 for
+``label``).  schema_version 15 makes the scale signed, centred on
+"unknown": doubtful -2, unlikely -1 (the passages point against the
+criterion), unknown 0 (b_0), possible 1, probable 2, almost certain 3,
+certain 4 (was "confirmed"); the positive levels rate how much of the
+criterion the passages give, not how many passages give it, so a positive
+``criteria_delta`` is more coverage and a negative one evidence against.
+``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
 search still gets its meta line.  The file is written atomically.
@@ -89,7 +95,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 def _clean(obj: Any) -> Any:

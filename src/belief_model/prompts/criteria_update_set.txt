@@ -28,15 +28,21 @@ Lake Osby is popular with anglers for its pike and perch, and boats can be hired
 </passage 2>
 
 <passage 3>
+Walks in Norland
+Lake Tirsa is a small mountain pond of Norland, and a path around its shore takes about twenty minutes.
+</passage 3>
+
+<passage 4>
 Norland tourism figures
 Norland welcomed 2.4 million visitors last year, most of them in the summer months.
-</passage 3>
+</passage 4>
 
 Example output:
 {
   "updates": [
     {"id": "c1", "support": [{"passage": 1, "spans": ["Lake Varn is a freshwater lake in central Norland"]}], "contradict": [], "reason": "Passage 1 confirms Lake Varn as a lake of Norland, a member already in the evidence; the reservoirs of Vesterdal are still missing.", "status": "probable"},
-    {"id": "c2", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km², more than 10 km².", "status": "almost certain"},
-    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "unlikely"}
+    {"id": "c2", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km², more than 10 km².", "status": "certain"},
+    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "possible"},
+    {"id": "c4", "support": [], "contradict": [], "reason": "Passage 3 calls Lake Tirsa a small pond with a twenty-minute shore path, which points against a surface area of more than 10 km² without giving it.", "status": "unlikely"}
   ]
 }

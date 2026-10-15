@@ -6,30 +6,33 @@ from typing import Any, Dict, List, Optional
 
 # Belief state b_t(k): one status per criterion from the seven words of
 # Agent-BRACE's verbal belief scale (arXiv 2605.11436), lowest level first.
-# A status rates how far the passages found so far establish the information
-# the criterion asks for.  "doubtful" (the passages contradict the criterion)
-# is level 0, below "unknown" (no passage relates to it), so a contradiction
-# always lowers the level.
+# The paper ranks "unknown" lowest; here it is the neutral level 0 (b_0, no
+# passage relates to the criterion).  The positive levels rate how much of the
+# information the criterion asks for the passages found so far give; the
+# negative levels rate evidence against it: "unlikely" (the passages point
+# against it) and "doubtful" (a passage contradicts it).
 BELIEF_STATUSES = (
     "doubtful",
-    "unknown",
     "unlikely",
+    "unknown",
     "possible",
     "probable",
     "almost certain",
-    "confirmed",
+    "certain",
 )
-# Ordinal level of each status (0 to 6), for Delta^D and analysis.
-STATUS_LEVEL: Dict[str, int] = {status: k for k, status in enumerate(BELIEF_STATUSES)}
+# Signed level of each status (-2 to 4), for Delta^D and analysis.
+STATUS_LEVEL: Dict[str, int] = {
+    status: k - BELIEF_STATUSES.index("unknown") for k, status in enumerate(BELIEF_STATUSES)
+}
 # b_0: no passage found yet.
 INITIAL_STATUS = "unknown"
-# The paper's "confirmed or certain": "certain" read as "confirmed".
-_STATUS_SYNONYMS = {"certain": "confirmed"}
+# The paper's "confirmed or certain": "confirmed" read as "certain".
+_STATUS_SYNONYMS = {"confirmed": "certain"}
 
 
 def parse_status(text: Any) -> Optional[str]:
     """The belief status *text* names (case, underscores, hyphens and extra
-    spaces ignored; "certain" accepted for "confirmed"), or None."""
+    spaces ignored; "confirmed" accepted for "certain"), or None."""
     key = " ".join(str(text or "").lower().replace("_", " ").replace("-", " ").split())
     return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
 

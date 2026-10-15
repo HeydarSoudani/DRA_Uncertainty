@@ -180,10 +180,12 @@ class BeliefUpdateSignal:
     The stateful updater sees the current belief with its attached evidence
     and the documents of the step it has not judged in an earlier step, and
     updates the criteria they support, contradict or relate to; a status can go
-    up (new or combined evidence) or down (a contradiction) by any number of
+    up (new or combined evidence) or down (a contradiction or a passage that
+    points against it) by any number of
     levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the status
-    levels (``types.STATUS_LEVEL``, 0 to 6); it is negative when the belief
-    fell.  With no unjudged document the updater is not called and Delta^D
+    levels (``types.STATUS_LEVEL``, -2 to 4, "unknown" 0); it is positive
+    when the passages cover more of the criteria and negative when they
+    turn against them.  With no unjudged document the updater is not called and Delta^D
     is 0; when the updater fails the belief is unchanged, Delta^D is null
     and the step's documents stay unjudged, so a later step that retrieves
     them shows them again.

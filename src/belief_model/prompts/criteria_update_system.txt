@@ -7,22 +7,22 @@ A new passage supports a criterion, contradicts it, relates to it, or none of th
 - "contradict": The passage states a fact that conflicts with the criterion, or the same fact as the evidence with an incompatible value.
 - relates to: The passage mentions the criterion's subject, or gives facts on it, but neither supports nor contradicts the criterion.
 
-A criterion has one of seven statuses, from lowest to highest:
-- "doubtful": The passages contradict the criterion, and no passage supports it.
+A criterion has one of seven statuses, from lowest to highest. The parts of a criterion are the pieces of information it asks for.
+- "doubtful": A passage contradicts the criterion, and no passage supports it.
+- "unlikely": The passages point against the criterion without contradicting it, and no passage supports it.
 - "unknown": No passage relates to the criterion.
-- "unlikely": The passages mention the criterion's subject only in passing, or give facts on it outside the limits its wording sets.
-- "possible": The passages relate to the information but leave it open, or disagree on it.
-- "probable": The passages give the information only in part, only indirectly, or only by combining several of them.
-- "almost certain": One passage gives the information in whole and directly, and no passage contradicts it.
-- "confirmed": Several passages give the information in whole, directly, and agree.
+- "possible": The passages relate to the criterion but give none of its parts directly, or they disagree on it.
+- "probable": The passages give some parts of the information, or give it only indirectly or by combining several passages.
+- "almost certain": The passages give most parts of the information directly, and no passage contradicts it.
+- "certain": The passages give all parts of the information directly, and no passage contradicts it.
 {shape_status}
 
 == Rules ==
 1. Use the query to understand what each criterion means, but judge a passage only by the criteria: a passage on the query's topic that gives nothing a criterion asks for supports none.
 2. Judge each passage and each criterion on its own; a passage may support several criteria or none.
-3. Cite every new passage that supports a criterion, also when the criterion is already "confirmed".
-4. Lower a status only when a new passage contradicts the criterion.
-5. When unsure whether a passage supports a criterion, do not cite it; when unsure between two statuses, choose the lower one.
+3. Cite every new passage that supports a criterion, also when the criterion is already "certain".
+4. Lower a status only when a new passage contradicts the criterion or points against it; never lower it because the new passages give nothing on it.
+5. When unsure whether a passage supports a criterion, do not cite it; when unsure between two statuses, choose the one closer to "unknown".
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:

@@ -8,7 +8,7 @@ For this query:
 Example query: A composer who won a conservatory prize wrote an essay less than 5 years before receiving the prize. The composer co-wrote an opera with 2 others that premiered more than 20 years before the prize. The essay names a different work by the composer as being 25 years since it premiered. What is the composer's first and last name?
 
 Example criteria, with their current status:
-c1 [almost certain]: the composer who received a prize from a conservatory
+c1 [certain]: the composer who received a prize from a conservatory
   - support: "Marta Leclerc received the Halden Conservatory Prize in 2019." (Marta Leclerc - Wikipedia)
 c2 [unknown]: the composer who wrote an essay less than 5 years before receiving the prize
 c3 [unknown]: the composer who co-wrote an opera with 2 others that premiered more than 20 years before the prize
@@ -26,14 +26,20 @@ The 2019 prize went to the cellist Anna Varga for her recordings of Bach's suite
 </passage 2>
 
 <passage 3>
+Marta Leclerc in conversation
+Leclerc has written song cycles and chamber music, but she has never written an opera.
+</passage 3>
+
+<passage 4>
 Opera in Lyon
 The Opéra de Lyon opened its new season with a production of Carmen that ran for six weeks.
-</passage 3>
+</passage 4>
 
 Example output:
 {
   "updates": [
     {"id": "c1", "support": [], "contradict": [{"passage": 2, "spans": ["The 2019 prize went to the cellist Anna Varga"]}], "reason": "Passage 2 gives a different winner of the 2019 prize that the attached evidence gives to Marta Leclerc.", "status": "possible"},
-    {"id": "c4", "support": [{"passage": 1, "spans": ["Marta Leclerc looked back on Glass Harbour, the song cycle she premiered 25 years earlier"]}], "contradict": [], "reason": "Passage 1 states that the essay names Glass Harbour as premiered 25 years earlier.", "status": "almost certain"}
+    {"id": "c4", "support": [{"passage": 1, "spans": ["Marta Leclerc looked back on Glass Harbour, the song cycle she premiered 25 years earlier"]}], "contradict": [], "reason": "Passage 1 states that the essay names Glass Harbour as premiered 25 years earlier.", "status": "certain"},
+    {"id": "c3", "support": [], "contradict": [{"passage": 3, "spans": ["she has never written an opera"]}], "reason": "Passage 3 states that Marta Leclerc, the composer in the evidence, never wrote an opera.", "status": "doubtful"}
   ]
 }

@@ -5,7 +5,7 @@ iteration's step record::
 
     <belief_state step="3">
       <criteria>
-        <k1 status="almost certain" attempts="1">born in the 1960s</k1>
+        <k1 status="certain" attempts="1">born in the 1960s</k1>
         <k2 status="possible" attempts="2">won a regional award</k2>
         <k3 status="unknown" attempts="0">the films they directed</k3>
       </criteria>
