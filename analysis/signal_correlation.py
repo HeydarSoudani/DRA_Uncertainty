@@ -32,7 +32,7 @@ per signal, steps where the signal is null are dropped and counted.
 Final belief state.  The belief at the end of the run is also read as an
 uncertainty estimate of the whole query: the final belief is the mean, over
 the criteria, of each criterion's status level
-(``belief_model.types.STATUS_LEVEL``, -2 to 4) in the last step's
+(``belief_model_component.types.STATUS_LEVEL``, -2 to 4) in the last step's
 ``belief_after``, divided by 4 (-0.5 every criterion "doubtful", 0 every
 criterion "unknown" as at b_0, 1 every criterion "certain").
 Per query it is compared with:
@@ -110,7 +110,7 @@ from utils.cli_setup import (
     parse_cli_overrides,
     resolve_dataset_defaults,
 )
-from belief_model.types import STATUS_LEVEL
+from belief_model_component.types import STATUS_LEVEL
 from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 

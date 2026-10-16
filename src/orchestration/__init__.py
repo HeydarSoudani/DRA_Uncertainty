@@ -1,7 +1,7 @@
 """Pipeline orchestration: retriever/belief-model factories and multi-GPU workers.
 
 This is the wiring layer that assembles heavy component packages
-(``belief_model``, ``searcher_component``, ``deep_research_agents``,
+(``belief_model_component``, ``searcher_component``, ``deep_research_agents``,
 ``evaluation``) into a runnable agent. It is consumed by the ``run_pipeline``
 entry point in ``experiments/dra_inference.py``.
 
@@ -73,6 +73,16 @@ def setup_retriever_from_args(args):
 NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
 
 
+def _belief_llm(model: str):
+    """LLM client of a belief model call, native reasoning off.  A ``vllm/``
+    model (e.g. a trained belief model) is served locally at
+    ``$BELIEF_VLLM_API_BASE`` (default ``$VLLM_API_BASE``, so it can sit
+    next to a locally served agent); any other model goes through the API."""
+    if model.startswith("vllm/"):
+        return disable_native_thinking(create_generator(model, api_base=os.getenv("BELIEF_VLLM_API_BASE")))
+    return disable_native_thinking(create_generator(model, backend="api"))
+
+
 def build_belief_model(
     mode: str,
     retriever=None,
@@ -106,7 +116,8 @@ def build_belief_model(
             dataset's ``max_criteria`` (layout.DATASET_SPECS).
         belief_judge_model: LLM behind the belief state and criteria_delta
             (belief updater) and the criteria attempts (targeting scorer);
-            "" = *llm_criteria*.
+            "" = *llm_criteria*.  A ``vllm/`` model is served locally
+            (``_belief_llm``), e.g. a trained belief model.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
@@ -125,7 +136,7 @@ def build_belief_model(
     if mode not in ("monitor", "inform"):
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
-    from belief_model import (
+    from belief_model_component import (
         BankedCriteriaSource, LLMCriteriaSource, BeliefModel, build_belief_judges,
         encode_fn_from_retriever,
     )
@@ -137,7 +148,7 @@ def build_belief_model(
     criteria_source = None
     if llm_criteria:
         criteria_source = LLMCriteriaSource(
-            llm_client=disable_native_thinking(create_generator(llm_criteria, backend="api")),
+            llm_client=_belief_llm(llm_criteria),
             max_criteria=max_criteria,
             model_name=llm_criteria,
             query_shape=query_shape,
@@ -171,7 +182,7 @@ def build_belief_model(
     if criteria_source is not None:
         judge_model = belief_judge_model or llm_criteria
         belief_updater, query_scorer = build_belief_judges(
-            disable_native_thinking(create_generator(judge_model, backend="api")), model=judge_model,
+            _belief_llm(judge_model), model=judge_model,
             query_shape=query_shape,
         )
         print(f"Belief model: belief updater {belief_updater.name}, query scorer {query_scorer.name}")

@@ -253,7 +253,7 @@ def verbose_print_belief(
     state = record.get("belief_after")
     attempts = record.get("criteria_attempts_after")
     targeted = record.get("criteria_targeted")
-    from belief_model.types import STATUS_LEVEL as levels
+    from belief_model_component.types import STATUS_LEVEL as levels
     # Pad both lists to one column width so criterion i lines up across rows.
     width = max((len(str(n)) for n in (attempts or []) + [levels.get(s, '?') for s in state or []]),
                 default=1)

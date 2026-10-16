@@ -67,7 +67,7 @@ to ``belief_before`` / ``belief_after`` / ``final_belief`` and
 ``criteria_delta`` to ``belief_delta``; schema_version 13 renames
 ``belief_delta`` back to ``criteria_delta``.  schema_version 14 replaces
 the ICD 203 labels with the seven statuses of Agent-BRACE's belief scale
-(``belief_model.types.BELIEF_STATUSES``; levels ``STATUS_LEVEL``: doubtful 0,
+(``belief_model_component.types.BELIEF_STATUSES``; levels ``STATUS_LEVEL``: doubtful 0,
 unknown 1 (b_0), unlikely 2, possible 3, probable 4, almost certain 5,
 confirmed 6), so ``criteria_delta`` sums the status moves and a
 contradiction lowers it; the belief updater sees only the documents it has

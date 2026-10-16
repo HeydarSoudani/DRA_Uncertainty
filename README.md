@@ -115,7 +115,7 @@ Run defaults (top_k, rerankers, criteria LLM, eval k-values, …) are in
 
 ### Belief model
 
-`--belief-mode monitor` plugs a passive belief model (`src/belief_model/`) into any agent; `off` (the
+`--belief-mode monitor` plugs a passive belief model (`src/belief_model_component/`) into any agent; `off` (the
 default) disables it. It never changes the trajectory. The belief model follows Agent-BRACE (Singh et al., 2026,
 arXiv:2605.11436), adapted to search: the environment is the retriever, the observation is the documents of a search
 iteration, and the belief state gives each criterion of the query one of the seven statuses of
@@ -157,8 +157,8 @@ NeuCLIR and RAGTIME use grade 3, the very valuable docs, while the end-of-run `G
 counts every official level with its gain) and per-step intermediate answers (BrowseComp-Plus and
 TRQA, all agents except `cpm_report`): after each iteration the agent's own model is asked, from its trajectory so
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
-prompt in `src/belief_model/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
-`query_novelty` is null. The criteria signals use LLM judges (`src/belief_model/judges.py`,
+prompt in `src/belief_model_component/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
+`query_novelty` is null. The criteria signals use LLM judges (`src/belief_model_component/judges.py`,
 model `belief_judge_model`, default `llm_criteria`):
 
 - Belief state and `criteria_delta`: the belief updater (Agent-BRACE's b_t = f(query, b_{t-1}, o_t)). b_0 gives
@@ -201,7 +201,7 @@ model `belief_judge_model`, default `llm_criteria`):
 #### Inform mode
 
 `--belief-mode inform` computes the same signals and also shows them to the agent: right after each
-iteration's search results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model/belief_state.py`):
+iteration's search results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model_component/belief_state.py`):
 
 ```xml
 <belief_state step="3">
@@ -392,4 +392,6 @@ python analysis/criteria_reachability.py --dataset browsecomp_plus   # criteria 
 
 ## 4. Training
 
-> 🚧 Under construction.
+Belief model training with the agent frozen (Agent-BRACE adapted to retrieval), one phase per call of
+`experiments/belief_model_training.py`; see [docs/belief_model_training.md](docs/belief_model_training.md).
+Phase 0 (training queries) and the RL rewards are still to do.

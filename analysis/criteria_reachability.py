@@ -45,7 +45,7 @@ Per request:
 1. Criteria: from the criteria bank of the split
    (:func:`indexing_corpus_dataset.layout.criteria_bank_path`, shared with
    ``dra_inference``); a request missing from it gets its criteria from
-   :class:`belief_model.criteria.LLMCriteriaSource` with the
+   :class:`belief_model_component.criteria.LLMCriteriaSource` with the
    dataset's init prompt and ``max_criteria``, and they are added to it.
    ``llm_criteria`` and ``max_criteria`` default to the run config
    (``--config``, ``dra_inference.yaml``), so the analysis reads the
@@ -129,9 +129,9 @@ from indexing_corpus_dataset.layout import (
     default_corpus_path, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
-from belief_model.criteria import BankedCriteriaSource, LLMCriteriaSource
-from belief_model.judges import span_in_passage, split_span
-from belief_model.types import CLOSED
+from belief_model_component.criteria import BankedCriteriaSource, LLMCriteriaSource
+from belief_model_component.judges import span_in_passage, split_span
+from belief_model_component.types import CLOSED
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object
 

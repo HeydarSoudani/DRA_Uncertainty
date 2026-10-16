@@ -172,7 +172,7 @@ class AgentVerboseMixin:
         """Drop <belief_state> tags the model wrote itself (inform mode only)."""
         if not self._informs:
             return text
-        from belief_model.belief_state import strip_belief_state
+        from belief_model_component.belief_state import strip_belief_state
         return strip_belief_state(text)
 
     @staticmethod

@@ -83,13 +83,14 @@ class CorpusLookup:
         with np.load(self.index_path) as index:
             self._hashes, self._offsets = index["hashes"], index["offsets"]
 
-    def get(self, doc_ids: Iterable[str]) -> Dict[str, Dict[str, str]]:
-        """``{doc_id: {"title", "text"}}`` for the ids found in the corpus."""
+    def contents(self, doc_ids: Iterable[str]) -> Dict[str, str]:
+        """``{doc_id: contents}`` for the ids found in the corpus; ``contents``
+        is the corpus field as stored (what the retrievers return)."""
         wanted = sorted(set(doc_ids))
         if not wanted:
             return {}
         self._load_index()
-        found: Dict[str, Dict[str, str]] = {}
+        found: Dict[str, str] = {}
         with open(self.corpus_path, "rb") as f:
             for doc_id in wanted:
                 h = np.uint64(_id_hash(doc_id))
@@ -99,8 +100,15 @@ class CorpusLookup:
                     f.seek(int(self._offsets[i]))
                     record = json.loads(f.readline())
                     if str(record.get("id")) == doc_id:
-                        title, text = split_contents(record.get("contents", ""))
-                        found[doc_id] = {"title": title, "text": text}
+                        found[doc_id] = record.get("contents", "")
                         break
                     i += 1
+        return found
+
+    def get(self, doc_ids: Iterable[str]) -> Dict[str, Dict[str, str]]:
+        """``{doc_id: {"title", "text"}}`` for the ids found in the corpus."""
+        found: Dict[str, Dict[str, str]] = {}
+        for doc_id, contents in self.contents(doc_ids).items():
+            title, text = split_contents(contents)
+            found[doc_id] = {"title": title, "text": text}
         return found

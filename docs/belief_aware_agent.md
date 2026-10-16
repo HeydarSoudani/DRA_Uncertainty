@@ -22,7 +22,7 @@ Criteria extraction, the belief updater, the signals, the per-step intermediate 
 
 Code: `src/deep_research_agents/agents/belief_aware_agent.py` (loop, turn parsing, passage labels). Prompts:
 `src/deep_research_agents/prompts/belief_aware/` (`system.txt`, `belief_section.txt`, `user.txt`,
-`format_error.txt`). The tag layout is in `src/belief_model/belief_state.py`.
+`format_error.txt`). The tag layout is in `src/belief_model_component/belief_state.py`.
 
 ## Loop
 
@@ -90,7 +90,7 @@ model then skips reasoning altogether instead of opening `<think>` again.
 
 The intermediate answer (asked by the belief model after each search) is appended to the transcript's user
 message, uses the `<reasoning>` + `<answer>` format, and stops at `</answer>` or at a `<search>` the model
-starts instead (then the intermediate answer is None). Its prompt is `INTERMEDIATE_ANSWER_INSTRUCTION` in `src/belief_model/prompts/user_prompts.py`.
+starts instead (then the intermediate answer is None). Its prompt is `INTERMEDIATE_ANSWER_INSTRUCTION` in `src/belief_model_component/prompts/user_prompts.py`.
 
 The forced answer works the same way: its instruction plus the `<reasoning>` + `<answer>` format is
 appended to the transcript's user message, and one call is made, with no re-ask. It is asked in two cases:

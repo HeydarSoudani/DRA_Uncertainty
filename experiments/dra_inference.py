@@ -181,6 +181,14 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     if answers:
         print(f"Loaded {len(answers)} ground-truth answers (accuracy evaluation available)")
 
+    # Only the queries listed in the file (one id per line), e.g. the training
+    # queries of experiments/belief_model_training.py.
+    query_ids_file = kwargs.pop("query_ids_file", None)
+    if query_ids_file:
+        wanted = {line.strip() for line in Path(query_ids_file).read_text().splitlines() if line.strip()}
+        queries = {qid: q for qid, q in queries.items() if qid in wanted}
+        print(f"Kept {len(queries)} queries listed in {query_ids_file} ({len(wanted)} ids)")
+
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
@@ -749,6 +757,7 @@ def main():
         "vllm_manager": vllm_manager,
         "total_gpus_on_machine": total_gpus_on_machine,
         "judge_model": args.judge_model,
+        "query_ids_file": args.query_ids_file,
     })
 
     # ── Optional post-retrieval & post-fusion rerankers ─────────────────

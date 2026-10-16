@@ -12,7 +12,7 @@
 
 The forced answer is a user message; the agent keeps its own system prompt.
 
-The intermediate-answer instruction lives in ``belief_model.prompts.user_prompts``.
+The intermediate-answer instruction lives in ``belief_model_component.prompts.user_prompts``.
 """
 
 import json

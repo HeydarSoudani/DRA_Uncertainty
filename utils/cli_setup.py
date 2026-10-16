@@ -47,6 +47,7 @@ FILE_BACKED_DEFAULTS = {
     "query_key": None,
     "qrels_data_path": None,
     "min_relevance_score": None,
+    "query_ids_file": None,
     # Retriever
     "index_dir": None,
     "corpus_path": None,

@@ -222,20 +222,33 @@ class BeliefUpdateSignal:
         was not called).  Documents without an id are shown every step."""
         if self._state is None:
             return None, [], None, []
-        docs = [d for d in docs if _doc_id(d) not in self._judged]
+        docs = self.unjudged(docs)
         if not docs:
             return 0, [], None, []
-        before = list(self._state.statuses)
         updates, raw, errors = self.updater.update(self._query, self._state, docs, step)
+        delta, records = self.apply(docs, updates, raw)
+        return delta, records, raw, errors
+
+    def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """The documents of *docs* the updater has not judged yet."""
+        return [d for d in docs if _doc_id(d) not in self._judged]
+
+    def apply(
+        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], raw: Optional[str],
+    ) -> Tuple[Optional[int], List[Dict[str, Any]]]:
+        """Apply the updater's result on the unjudged *docs*: return
+        ``(delta, records)``.  *updates* None (failed call) leaves the belief
+        and the judged documents unchanged; *raw* None (not called) only
+        marks *docs* judged."""
         if updates is None:
-            return None, [], raw, errors
+            return None, []
         self._judged.update(i for i in map(_doc_id, docs) if i)
         if raw is None:
-            return 0, [], None, errors
+            return 0, []
+        before = list(self._state.statuses)
         records = self._state.update(updates)
         after = list(self._state.statuses)
-        delta = sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after))
-        return delta, records, raw, errors
+        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after)), records
 
 
 # ---------------------------------------------------------------------------

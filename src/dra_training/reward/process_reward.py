@@ -1,7 +1,7 @@
 """Process reward — DESIGNABLE, stubbed.
 
 Per-search-turn credit.  The plan is to
-wrap the finalized ``belief_model.signals`` (READ-ONLY) — DocNovelty,
+wrap the finalized ``belief_model_component.signals`` (READ-ONLY) — DocNovelty,
 QueryNovelty, RetrievalGain (needs qrels), the criteria signals — and pair information-gain with a
 redundancy penalty (StepSearch-style) to resist novelty-farming.
 
@@ -27,7 +27,7 @@ class ProcessReward(ProcessComponent):
     def __init__(self, cfg: RewardConfig) -> None:
         self.cfg = cfg
         # TODO(reward-process): lazily construct the requested signals, e.g.
-        #   from belief_model.signals import DocNoveltySignal, RetrievalGainSignal
+        #   from belief_model_component.signals import DocNoveltySignal, RetrievalGainSignal
         #   self._novelty = DocNoveltySignal(); self._gain = RetrievalGainSignal(qrels=...)
         # NOTE: RetrievalGain needs qrels at RL time -> thread prompt.qrels through.
 

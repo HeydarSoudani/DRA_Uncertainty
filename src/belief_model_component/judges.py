@@ -203,17 +203,17 @@ class LLMBeliefUpdater:
                     ev.span_verified.append(matched is not None)
         return list(out.values())
 
-    def update(
-        self, query: str, state: BeliefState, docs: List[Dict[str, Any]], step: int,
-    ) -> Tuple[Optional[List[CriterionUpdate]], Optional[str], List[str]]:
-        """Return ``(updates, raw, errors)``; *updates* is None when the call
-        or its parsing failed, *raw* is None when the updater was not called
-        (no document with text).  Documents without text are left out."""
+    def prompt(
+        self, query: str, state: BeliefState, docs: List[Dict[str, Any]],
+    ) -> Tuple[Optional[List[Dict[str, str]]], List[Dict[str, Any]], List[str]]:
+        """Return ``(messages, kept, errors)`` of one step's call: *kept* are
+        the documents with text, numbered as passages in that order;
+        *messages* is None when none has text."""
         has_text = [bool(doc_text(doc, max_length=None)) for doc in docs]
         kept = [doc for doc, ok in zip(docs, has_text) if ok]
         errors = [f"belief_updater: empty text for doc {_doc_id(d)}" for d, ok in zip(docs, has_text) if not ok]
         if not kept:
-            return [], None, errors
+            return None, kept, errors
         passages = "\n\n".join(
             CRITERIA_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
             for i, doc in enumerate(kept)
@@ -224,21 +224,14 @@ class LLMBeliefUpdater:
                 query=query, belief=self._format_belief(state), passages=passages,
             )},
         ]
-        raw, data = "", None
-        for attempt in range(1 + self._parse_retries):
-            try:
-                raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
-            except Exception as e:
-                logger.warning("LLMBeliefUpdater: step call failed: %s", e)
-                return None, "", errors + [f"belief_updater: {e}"]
-            data = _parse_updates(raw)
-            if data is not None:
-                break
-            errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
-        else:
-            logger.warning("LLMBeliefUpdater: step %d dropped, updater output not parseable", step)
-            return None, raw, errors
+        return messages, kept, errors
 
+    def parse(self, raw: str, kept: List[Dict[str, Any]], step: int) -> Optional[List[CriterionUpdate]]:
+        """The updates in the reply *raw* to the call on the passages *kept*,
+        or None when it has no list of updates."""
+        data = _parse_updates(raw)
+        if data is None:
+            return None
         updates: List[CriterionUpdate] = []
         for item in data:
             if not isinstance(item, dict):
@@ -250,7 +243,30 @@ class LLMBeliefUpdater:
                 contradict=self._evidence(item.get("contradict"), kept, step, "contradict"),
                 reason=str(item.get("reason", "")),
             ))
-        return updates, raw, errors
+        return updates
+
+    def update(
+        self, query: str, state: BeliefState, docs: List[Dict[str, Any]], step: int,
+    ) -> Tuple[Optional[List[CriterionUpdate]], Optional[str], List[str]]:
+        """Return ``(updates, raw, errors)``; *updates* is None when the call
+        or its parsing failed, *raw* is None when the updater was not called
+        (no document with text).  Documents without text are left out."""
+        messages, kept, errors = self.prompt(query, state, docs)
+        if messages is None:
+            return [], None, errors
+        raw = ""
+        for attempt in range(1 + self._parse_retries):
+            try:
+                raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
+            except Exception as e:
+                logger.warning("LLMBeliefUpdater: step call failed: %s", e)
+                return None, "", errors + [f"belief_updater: {e}"]
+            updates = self.parse(raw, kept, step)
+            if updates is not None:
+                return updates, raw, errors
+            errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
+        logger.warning("LLMBeliefUpdater: step %d dropped, updater output not parseable", step)
+        return None, raw, errors
 
 
 # ---------------------------------------------------------------------------

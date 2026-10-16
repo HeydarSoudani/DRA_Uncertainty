@@ -34,6 +34,7 @@ dataset_year: null              # neuclir: '2023'|'2024'; ragtime: '2025'; trqa:
 query_key: null                 # JSONL key for query text. neuclir: request|topic_title|topic_description|topic_narrative; ragtime: text|title
 qrels_data_path: null           # Path to load qrels from (defaults to data_path)
 min_relevance_score: null       # Minimum qrel grade treated as relevant; queries without one are not run
+query_ids_file: null            # File with one query id per line: run only these queries (null = all)
 
 # ── Retriever ────────────────────────────────────────────────────────────────
 # Qwen3-Embedding size variants are selected via --retriever (qwen3_emb_0.6b|qwen3_emb_4b|qwen3_emb_8b)
@@ -60,7 +61,7 @@ max_passage_chars: 4000         # Chars of one retrieved passage shown to the ag
 # ── Belief model (the rest; --belief-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the belief-aware agent, reasoning off
 max_criteria: null                  # Cap on the number of criteria per query (null = the dataset's default in layout.DATASET_SPECS)
-belief_judge_model: ""            # LLM of the belief updater (belief state, criteria_delta) and the query scorer (criteria attempts); "" = llm_criteria
+belief_judge_model: ""            # LLM of the belief updater (belief state, criteria_delta) and the query scorer (criteria attempts); "" = llm_criteria; a vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE)
 criteria_bank: true                 # Read each query's criteria from CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl (shared with analysis/criteria_reachability.py); extract and add only the missing ones
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 
