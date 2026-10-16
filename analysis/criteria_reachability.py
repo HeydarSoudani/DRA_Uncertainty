@@ -125,7 +125,7 @@ from evaluation.gold import ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gol
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import (
-    DATA_ROOT, DATASET_SPECS, DATASETS, apply_dataset_defaults, criteria_bank_path, criteria_reachability_dir,
+    DATASET_SPECS, DATASETS, dataset_root, apply_dataset_defaults, criteria_bank_path, criteria_reachability_dir,
     default_corpus_path, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
@@ -672,7 +672,7 @@ def run(args: argparse.Namespace) -> None:
     args.judge_model = args.judge_model or args.llm_criteria
     apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_criteria"))
     split = resolve_split_id(args.dataset, args.dataset_year, args.subset)
-    data_path = Path(args.data_path or DATA_ROOT / args.dataset)
+    data_path = Path(args.data_path or dataset_root(args.dataset))
     args.split_dir = Path(args.output or criteria_reachability_dir(args.dataset, split))
     source = criteria_source(args, criteria_bank_path(args.dataset, split))
     RUNNERS[spec.reachability](args, spec, split, data_path, source)
@@ -698,8 +698,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-year", type=str, default=None, help="Split year (None = the dataset's default); trqa: test|validation.")
     parser.add_argument("--query-key", type=str, default=None, help="Key of the query text in the query records (None = the dataset's default).")
     parser.add_argument("--grades", type=int, nargs="+", default=None, help="Qrel grades of the gold documents, document reachability only (None = the top grade). neuclir: 1 3; ragtime: 2 3.")
-    parser.add_argument("--data-path", type=str, default=None, help="Dataset folder (None = DATA_ROOT/{dataset}).")
-    parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus under DATA_ROOT).")
+    parser.add_argument("--data-path", type=str, default=None, help="Dataset folder (None = layout.dataset_root(dataset)).")
+    parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus, layout.default_corpus_path).")
 
     # ── Criteria and judge ──────────────────────────────────────────────────
     parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that llm_criteria and max_criteria are read from.")

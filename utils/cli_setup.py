@@ -12,8 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from indexing_corpus_dataset.layout import apply_dataset_defaults, default_corpus_path
-from utils.config import _IR_ROOT
+from indexing_corpus_dataset.layout import apply_dataset_defaults, dataset_root, default_corpus_path, default_index_dir
 
 logger = logging.getLogger(__name__)
 
@@ -238,13 +237,13 @@ def resolve_dataset_defaults(args) -> None:
     dataset's :data:`~indexing_corpus_dataset.layout.DATASET_SPECS` entry.
     """
     if args.data_path is None:
-        args.data_path = str(_IR_ROOT / args.dataset)
+        args.data_path = str(dataset_root(args.dataset))
         print(f"Auto-selected data path: {args.data_path}")
 
     apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score", "max_criteria"))
 
     if args.index_dir is None:
-        args.index_dir = str(_IR_ROOT / args.dataset / "indices")
+        args.index_dir = str(default_index_dir(args.dataset))
         print(f"Auto-selected index directory: {args.index_dir}")
     if args.corpus_path is None:
         args.corpus_path = str(default_corpus_path(args.dataset, args.subset))

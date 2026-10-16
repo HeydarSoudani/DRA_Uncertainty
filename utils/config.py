@@ -121,10 +121,6 @@ def resolve_temperature(agentic_model: str, explicit: Optional[float] = None) ->
     return AGENT_TEMPERATURE.get(internal, DEFAULT_AGENT_TEMPERATURE)
 
 
-# Canonical dataset root — single source of truth in indexing_corpus_dataset.layout
-# (import-light, so this stays safe to import from anywhere).
-from indexing_corpus_dataset.layout import DATA_ROOT as _IR_ROOT
-
 # Agents that manage their own LLM connection (direct vLLM/OpenAI clients)
 SELF_MANAGED_LLM_AGENTS = frozenset({"oss", "tongyi", "glm", "cpm_explore", "cpm_report"})
 

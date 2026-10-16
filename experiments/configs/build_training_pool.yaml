@@ -1,0 +1,30 @@
+# ============================================================================
+# Settings of experiments/build_training_pool.py (training pool: questions of
+# InfoSeek-Hard, WebShaper and FRAMES with their gold pages).  The sources and
+# the dropped question types of step 1 are fixed in code; the keys below are
+# the dataclass fields of src/indexing_corpus_dataset/training_pool/config.py.
+#
+# Precedence (lowest -> highest):
+#   dataclass defaults  <  this file  <  CLI flags
+# --limit and --source are CLI flags only (step 2 is incremental: the next N
+# questions, of the given sources when --source is set).
+# ============================================================================
+
+# ── Shared ───────────────────────────────────────────────────────────────────
+shared:
+  output_dir: null                  # null = data/training_pool of the repo
+  contact: null                     # e-mail or URL in the User-Agent (required by step 2); null = DRA_CONTACT in .env
+  timeout: 30.0                     # seconds per request
+  max_retries: 4                    # retries on transport errors and HTTP 429 / 5xx
+
+# ── Step 2: gold pages + Filter A ────────────────────────────────────────────
+pages:
+  wiki_lang: en                     # other-language Wikipedia pages are dropped
+  wiki_workers: 3                   # Wikimedia asks for at most 3 concurrent requests
+  wiki_rate_per_min: 180            # limit: 200/min with contact info in the User-Agent, 10/min without
+  web_workers: 8
+  wayback: true                     # Wayback Machine fallback for dead web pages
+  wayback_rate_per_min: 15         # the archive refuses connections above ~15/min
+  wayback_timestamp: "20250601"     # closest snapshot to when WebShaper was built
+  min_words: 50                     # fewer extracted words = dead page (soft 404)
+  min_page_share: 0.8               # Filter A, questions with web gold pages: this share of all their gold pages (Wikipedia-only: all)

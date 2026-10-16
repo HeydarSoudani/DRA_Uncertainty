@@ -69,6 +69,8 @@ PyYAML==6.0.3
 json5==0.15.0
 requests==2.34.2
 tqdm==4.68.3
+trafilatura==2.0.0
+pypdf==6.21.0
 packaging==26.2
 
 # --- Optional ---
