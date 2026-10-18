@@ -1,6 +1,6 @@
 """Run deep research agents pipeline.
 
-Supported agents via --agentic-model (the LLM is selected automatically per agent):
+Supported agents via --policy-model (the LLM is selected automatically per agent):
     cpm_report      Writing-as-Reasoning agent (CPMReport)         → openbmb/AgentCPM-Report (vLLM)
     searchr1        SearchR1 reasoning agent                       → PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-it-em-grpo-v0.3 (vLLM)
     research        ReSearch reasoning agent                       → agentrl/ReSearch-Qwen-7B-Instruct (vLLM)
@@ -86,7 +86,7 @@ from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qr
 from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_bank_path
 
 from deep_research_agents.agents import ALL_AGENTS
-from utils.config import AGENTIC_MODEL_TO_LLM, AGENTIC_MODEL_ALIAS, resolve_temperature
+from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
 from orchestration import (
     gpu_worker,
     setup_retriever_from_args,
@@ -117,13 +117,13 @@ from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_
 from evaluation.retrieval.fusion import run_fusion_eval
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
-_CONFIG_DEFAULT = str(Path(__file__).resolve().parent / "configs" / "dra_inference.yaml")
+_CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inference.yaml")
 
 
 # ============================================================================
 # Pipeline
 # ============================================================================
-def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Optional[str] = None, query_key: Optional[str] = None, output_path: Optional[str] = None, agentic_model: str = "cpm_report", limit: Optional[int] = None, verbose: bool = True, num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
+def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Optional[str] = None, query_key: Optional[str] = None, output_path: Optional[str] = None, policy_model: str = "cpm_report", limit: Optional[int] = None, verbose: bool = True, num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
     """Execute the deep research agents pipeline on a dataset.
 
     Args:
@@ -137,7 +137,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                        e.g. "request" for neuclir.  Records without the key
                        are not run.
         output_path:   Root path for saving results (optional).
-        agentic_model: Agent to use; one of ALL_AGENTS.
+        policy_model: Agent to use; one of ALL_AGENTS.
         limit:         Cap the number of queries (for quick tests).
         verbose:       Whether to print detailed logs.
         num_gpus:      Number of GPU workers for query-level parallelism.
@@ -147,9 +147,9 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                        can rebuild the agent stack.  Required when num_gpus > 1.
         **kwargs:      Agent-specific and evaluation parameters.
     """
-    if agentic_model not in ALL_AGENTS:
+    if policy_model not in ALL_AGENTS:
         raise ValueError(
-            f"Unknown agentic_model '{agentic_model}'. Choose from: {', '.join(ALL_AGENTS)}"
+            f"Unknown policy_model '{policy_model}'. Choose from: {', '.join(ALL_AGENTS)}"
         )
 
     # ==================== Resolve file-level dataset identifier ====================
@@ -182,7 +182,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         print(f"Loaded {len(answers)} ground-truth answers (accuracy evaluation available)")
 
     # Only the queries listed in the file (one id per line), e.g. the training
-    # queries of experiments/belief_model_training.py.
+    # queries of experiments/training/belief_model_training.py.
     query_ids_file = kwargs.pop("query_ids_file", None)
     if query_ids_file:
         wanted = {line.strip() for line in Path(query_ids_file).read_text().splitlines() if line.strip()}
@@ -204,7 +204,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     processed: set = set()
 
     if output_path:
-        run_name = build_run_name_for_pipeline(agentic_model=agentic_model, llm_model=llm_model, **kwargs)
+        run_name = build_run_name_for_pipeline(policy_model=policy_model, llm_model=llm_model, **kwargs)
         retriever_label = kwargs.get("retriever_name", "e5")
         dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, retriever_label)
         belief_config_name = build_belief_config_name(**kwargs)
@@ -303,8 +303,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     belief_model = None
     if num_gpus <= 1 and queries:
         agent = build_agent(
-            agentic_model=agentic_model,
-            agentic_model_cli=kwargs.get("agentic_model_cli", agentic_model),
+            policy_model=policy_model,
+            policy_model_cli=kwargs.get("policy_model_cli", policy_model),
             dataset=dataset,
             llm_model=llm_model,
             llm_client=kwargs.get("llm_client"),
@@ -331,9 +331,10 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             llm_criteria=kwargs.get("llm_criteria"),
             max_criteria=kwargs.get("max_criteria"),
             belief_judge_model=kwargs.get("belief_judge_model", ""),
+            query_scorer_model=kwargs.get("query_scorer_model", ""),
             add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
             agent=agent if hasattr(agent, "belief_model") else None,
-            agentic_model=agentic_model,
+            policy_model=policy_model,
             dataset=dataset,
             llm_model=llm_model,
             criteria_bank=criteria_bank,
@@ -349,7 +350,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     trajectory_dir = None
     if output_path:
         trajectory_dir = setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)["trajectory"]
-        write_run_config(run_dir, agentic_model=agentic_model, llm_model=llm_model, **kwargs)
+        write_run_config(run_dir, policy_model=policy_model, llm_model=llm_model, **kwargs)
         print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
 
     # ==================== Loop: run + save per query ====================
@@ -483,7 +484,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             # so an interrupted run still leaves this query's work on disk.
             traj_logger = TrajectoryLogger(
                 trajectory_dir, query_id, query_text,
-                agent_name=agentic_model, model=llm_model,
+                agent_name=policy_model, model=llm_model,
                 answer=answers.get(query_id),
             ) if trajectory_dir else None
             result = agent.run_single(
@@ -614,7 +615,7 @@ def _parse_args():
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
 
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--policy-model", type=str, default="glm", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
@@ -636,10 +637,10 @@ def _parse_args():
     if cli_subset is not None:
         args.subset = cli_subset
 
-    # ── Derive --llm-model from --agentic-model ────────────────────────────-
-    args.llm_model = AGENTIC_MODEL_TO_LLM[args.agentic_model]
-    args.agentic_model_cli = args.agentic_model
-    args.agentic_model = AGENTIC_MODEL_ALIAS.get(args.agentic_model, args.agentic_model)
+    # ── Derive --llm-model from --policy-model ────────────────────────────-
+    args.llm_model = POLICY_MODEL_TO_LLM[args.policy_model]
+    args.policy_model_cli = args.policy_model
+    args.policy_model = POLICY_MODEL_ALIAS.get(args.policy_model, args.policy_model)
 
     # ── Resolve the sampling temperature from the agent ────────────────────-
     # Left on auto (null in the YAML), each agent gets the value it was tuned
@@ -647,9 +648,9 @@ def _parse_args():
     # Resolved here, before assemble_pipeline_kwargs, so the generator, the
     # worker config and the recorded run_config all see the one number.
     _explicit_temp = args.llm_temperature
-    args.llm_temperature = resolve_temperature(args.agentic_model, _explicit_temp)
+    args.llm_temperature = resolve_temperature(args.policy_model, _explicit_temp)
     if _explicit_temp is None:
-        print(f"Auto-selected temperature: {args.llm_temperature} (from --agentic-model {args.agentic_model})")
+        print(f"Auto-selected temperature: {args.llm_temperature} (from --policy-model {args.policy_model})")
 
     if args.output is None:
         args.output = _OUTPUT_PREFIX
@@ -695,15 +696,15 @@ def main():
 
     # ── GPU plan: retriever first (fixed footprint), then agent ──────────
     from utils.config import resolve_agent_backend, RETRIEVER_VRAM_GB
-    _agent_backend, _agent_slug = resolve_agent_backend(args.agentic_model_cli)
+    _agent_backend, _agent_slug = resolve_agent_backend(args.policy_model_cli)
     print(f"[GPU Plan] total GPUs : {total_gpus_on_machine}")
     print(f"[GPU Plan] retriever  : {args.retriever} "
           f"(~{RETRIEVER_VRAM_GB} GB fp16, FAISS on CPU — shares a worker GPU)")
     if _agent_backend == "api":
-        print(f"[GPU Plan] agent      : {args.agentic_model} → "
+        print(f"[GPU Plan] agent      : {args.policy_model} → "
               f"OpenRouter '{_agent_slug}' (0 local GPU)")
     else:
-        print(f"[GPU Plan] agent      : {args.agentic_model} → "
+        print(f"[GPU Plan] agent      : {args.policy_model} → "
               f"local vLLM (reserves leftmost GPUs)")
 
     if args.eval_only:
@@ -790,7 +791,7 @@ def main():
             dataset_year=args.dataset_year,
             query_key=args.query_key,
             output_path=args.output,
-            agentic_model=args.agentic_model,
+            policy_model=args.policy_model,
             limit=args.limit,
             verbose=verbose,
             **pipeline_kwargs,
@@ -838,8 +839,8 @@ if __name__ == "__main__":
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
-#   CUDA_VISIBLE_DEVICES=5,6 python experiments/dra_inference.py --dataset browsecomp_plus --limit 1
-#   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/dra_inference.py --dataset neuclir --limit 1
-#   python experiments/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
-#   python experiments/dra_inference.py --num-gpus 4 --quiet --limit 9
-#   python experiments/dra_inference.py --limit 1
+#   CUDA_VISIBLE_DEVICES=5,6 python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
+#   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/inference/dra_inference.py --dataset neuclir --limit 1
+#   python experiments/inference/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
+#   python experiments/inference/dra_inference.py --num-gpus 4 --quiet --limit 9
+#   python experiments/inference/dra_inference.py --limit 1

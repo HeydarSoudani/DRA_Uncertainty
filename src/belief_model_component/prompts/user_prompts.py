@@ -63,7 +63,7 @@ If the evidence is insufficient to answer, respond with 'no candidate'.\
 """
 
 
-def intermediate_answer_instruction(agentic_model: str) -> str:
+def intermediate_answer_instruction(policy_model: str) -> str:
     """The instruction plus the agent's answer format."""
-    fmt = AGENT_ANSWER_FORMATS.get(agentic_model, TAG_FORMAT)
+    fmt = AGENT_ANSWER_FORMATS.get(policy_model, TAG_FORMAT)
     return f"{INTERMEDIATE_ANSWER_INSTRUCTION}\n\n{fmt}"

@@ -68,6 +68,7 @@ FILE_BACKED_DEFAULTS = {
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
     "belief_judge_model": "",
+    "query_scorer_model": "",
     "criteria_bank": True,
     "add_intermediate_answer": True,
     # Evaluation
@@ -302,12 +303,13 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
     pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", None)
     pipeline_kwargs["belief_judge_model"] = getattr(args, "belief_judge_model", "")
+    pipeline_kwargs["query_scorer_model"] = getattr(args, "query_scorer_model", "")
     pipeline_kwargs["criteria_bank"] = getattr(args, "criteria_bank", True)
     pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
 
     worker_config = {
-        "agentic_model":           args.agentic_model,
-        "agentic_model_cli":       getattr(args, "agentic_model_cli", args.agentic_model),
+        "policy_model":            args.policy_model,
+        "policy_model_cli":        getattr(args, "policy_model_cli", args.policy_model),
         "llm_model":               args.llm_model,
         "llm_temperature":         args.llm_temperature,
         "llm_max_tokens_per_call":          args.llm_max_tokens_per_call,
@@ -338,6 +340,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "llm_criteria":                  getattr(args, "llm_criteria", None),
         "max_criteria":                  getattr(args, "max_criteria", None),
         "belief_judge_model":          getattr(args, "belief_judge_model", ""),
+        "query_scorer_model":          getattr(args, "query_scorer_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
         "judge_model":                   getattr(args, "judge_model", None),
         "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),
@@ -346,7 +349,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
 
     pipeline_kwargs["num_gpus"]      = num_gpus
     pipeline_kwargs["worker_config"] = worker_config
-    pipeline_kwargs["agentic_model_cli"] = getattr(args, "agentic_model_cli", args.agentic_model)
+    pipeline_kwargs["policy_model_cli"] = getattr(args, "policy_model_cli", args.policy_model)
     return pipeline_kwargs
 
 

@@ -176,19 +176,31 @@ class LLMCriteriaSource(CriteriaSource):
             "prompt": hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12],
         }
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
-        messages = [
+    def messages(self, query: str) -> List[Dict[str, str]]:
+        """The extractor's chat messages for *query*."""
+        return [
             {"role": "system", "content": self._system},
             {"role": "user", "content": criteria_init_user(self._shape, query, self._max_criteria)},
         ]
+
+    @staticmethod
+    def target(criteria: List[Criterion]) -> str:
+        """The reply that parses to *criteria*, in the format the prompt asks
+        for (the SFT target of belief model training)."""
+        return json.dumps({"criteria": [c.text for c in criteria]}, ensure_ascii=False)
+
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
         try:
-            raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature)
+            raw = self._llm.complete(self.messages(query), max_tokens=self._max_tokens,
+                                     temperature=self._temperature)
         except Exception as e:
             logger.warning("LLMCriteriaSource: LLM call failed", exc_info=True)
-            info["errors"].append(f"llm_call: {e}")
-            return [], info
+            return [], {"model": self.model_name, "query_shape": self._shape, "errors": [f"llm_call: {e}"]}
+        return self.parse(raw)
 
+    def parse(self, raw: Optional[str]) -> Tuple[List[Criterion], Dict[str, Any]]:
+        """The criteria of the extractor's reply *raw* and the extraction info."""
+        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
         data = parse_json_object(raw or "")
         if data is None or not isinstance(data.get("criteria"), list):
             # Keep the complete items of malformed or truncated output.

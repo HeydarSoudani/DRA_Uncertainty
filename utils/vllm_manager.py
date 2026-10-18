@@ -1,6 +1,6 @@
 """Auto-start and manage vLLM servers for the deep research pipeline.
 
-Examines ``--agentic-model``, ``--llm-model``, and ``--post-*-reranker`` CLI
+Examines ``--policy-model``, ``--llm-model``, and ``--post-*-reranker`` CLI
 args to determine which vLLM servers (if any) are required, allocates GPUs,
 launches them as background processes, waits for health, and tears them down
 on exit.
@@ -92,8 +92,8 @@ class ServerSpec:
 
 # --- LLM servers (port 6008) ------------------------------------------------
 _LLM_SERVER_SPECS: Dict[str, ServerSpec] = {
-    # key = agentic_model name (for self-managed agents)
-    #        or "finetuned:{agentic_model}" (for finetuned variants)
+    # key = policy_model name (for self-managed agents)
+    #        or "finetuned:{policy_model}" (for finetuned variants)
     "oss:gpt-oss-20b": ServerSpec(
         model="openai/gpt-oss-20b",
         port=6008, tp_size=1,
@@ -506,9 +506,9 @@ class VLLMServerManager:
         return specs
 
     def _resolve_llm_server(self, args) -> Optional[ServerSpec]:
-        """Resolve the LLM server spec from agentic_model + llm_model."""
-        agentic_model = getattr(args, "agentic_model", "")
-        agentic_model_cli = getattr(args, "agentic_model_cli", agentic_model)
+        """Resolve the LLM server spec from policy_model + llm_model."""
+        policy_model = getattr(args, "policy_model", "")
+        policy_model_cli = getattr(args, "policy_model_cli", policy_model)
         llm_model = getattr(args, "llm_model", "")
 
         # OpenRouter-routed agents are served via the hosted API — no local
@@ -516,26 +516,26 @@ class VLLMServerManager:
         # off the user-facing CLI name (oss_20b / oss_120b are distinct slugs
         # that both collapse to the internal agent name "oss").
         from utils.config import resolve_agent_backend
-        if resolve_agent_backend(agentic_model_cli)[0] == "api":
-            print(f"[vLLM Manager] '{agentic_model_cli}' routed to OpenRouter — "
+        if resolve_agent_backend(policy_model_cli)[0] == "api":
+            print(f"[vLLM Manager] '{policy_model_cli}' routed to OpenRouter — "
                   f"no vLLM server needed.")
             return None
 
         # Self-managed agents always need their own vLLM server
-        if agentic_model in _SELF_MANAGED_AGENTS:
+        if policy_model in _SELF_MANAGED_AGENTS:
             # OSS agent: model variant is determined by --llm-model
-            if agentic_model == "oss":
+            if policy_model == "oss":
                 key = f"oss:{llm_model}"
                 if key in _LLM_SERVER_SPECS:
                     return _LLM_SERVER_SPECS[key]
                 # Default to oss:gpt-oss-20b if llm_model not recognized
                 return _LLM_SERVER_SPECS.get("oss:gpt-oss-20b")
             # tongyi, glm
-            if agentic_model in _LLM_SERVER_SPECS:
-                return _LLM_SERVER_SPECS[agentic_model]
+            if policy_model in _LLM_SERVER_SPECS:
+                return _LLM_SERVER_SPECS[policy_model]
 
         # Finetuned models served via vLLM — match by HF model name
-        key = f"finetuned:{agentic_model}"
+        key = f"finetuned:{policy_model}"
         if key in _LLM_SERVER_SPECS:
             spec = _LLM_SERVER_SPECS[key]
             if llm_model == spec.model:

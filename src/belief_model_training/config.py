@@ -6,10 +6,6 @@ same sections and keys as the dataclasses below; CLI flags and
 error.  Training hyperparameters default to Agent-BRACE's recipes
 (arXiv 2605.11436; ``recipes/finetune_belief_qwen25_3b.sh`` for SFT,
 ``recipes/textworld_basic_ppo_decouple_joint_belief_vllm.sh`` for RL).
-
-A split is written ``dataset[:subset[:dataset_year]]`` (the arguments of
-``experiments/dra_inference.py``), e.g. ``trqa:wiki1:validation``,
-``browsecomp_plus``, ``neuclir:news:2024``.
 """
 
 import dataclasses
@@ -19,26 +15,15 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, OUTPUT_ROOT, resolve_split_id
+from indexing_corpus_dataset.layout import OUTPUT_ROOT, resolve_split_id
 
 
 @dataclass(frozen=True)
 class Split:
-    """One dataset split, as ``experiments/dra_inference.py`` addresses it."""
+    """One dataset split, as ``experiments/inference/dra_inference.py`` addresses it."""
     dataset: str
     subset: Optional[str] = None
     dataset_year: Optional[str] = None
-
-    @classmethod
-    def parse(cls, text: str) -> "Split":
-        parts = [p.strip() or None for p in text.split(":")]
-        if not parts[0] or parts[0] not in DATASET_SPECS or len(parts) > 3:
-            raise ValueError(f"bad split {text!r}; expected dataset[:subset[:dataset_year]] "
-                             f"with dataset in {list(DATASET_SPECS)}")
-        spec = DATASET_SPECS[parts[0]]
-        subset = parts[1] if len(parts) > 1 and parts[1] else spec.subset
-        year = parts[2] if len(parts) > 2 and parts[2] else spec.dataset_year
-        return cls(parts[0], subset, year)
 
     @property
     def split_id(self) -> str:
@@ -49,9 +34,6 @@ class Split:
     def name(self) -> str:
         return f"{self.dataset}_{self.split_id}"
 
-    def __str__(self) -> str:
-        return ":".join([self.dataset, self.subset or "", self.dataset_year or ""])
-
 
 @dataclass
 class SharedConfig:
@@ -60,69 +42,82 @@ class SharedConfig:
     output_root: Optional[str] = None
     seed: int = 0
     # Agent, retriever and belief model settings of the inference runs in
-    # phases 1 and 4 (max_iteration, seen_top_k, ...): never repeated here.
+    # phase 1 (max_iteration, seen_top_k, ...): never repeated here.
     inference_config: str = "experiments/configs/dra_inference.yaml"
     retriever: str = "qwen3_emb_4b"
-    # dra_inference workers in phases 1 and 4.
+    # dra_inference workers in phase 1.
     num_gpus: int = 4
-
-
-@dataclass
-class QueriesConfig:
-    """Phase 0: the training queries.  TODO: to be designed."""
+    # Query targeting scorer (criteria attempts) of phase 1: frozen,
+    # not part of the trained belief model; null = trajectories.teacher_belief_model.
+    query_scorer_model: Optional[str] = None
+    # Longest sequence (prompt + reply, tokens) of the student, in SFT and RL:
+    # longer SFT samples are dropped, longer RL prompts get no reply.
+    max_seq_len: int = 32768
 
 
 @dataclass
 class TrajectoriesConfig:
-    """Phase 1: frozen agent + teacher belief model in monitor mode."""
-    agent: str = "glm"
-    # Belief updater whose replies are the SFT targets.
-    teacher_model: str = "openrouter/qwen/qwen3.6-27b"
-    # Criteria extraction (frozen; criteria come from the criteria bank).
-    criteria_model: str = "openrouter/qwen/qwen3.6-27b"
+    """Phase 1: frozen agent + teacher belief model in monitor mode, on the
+    training pool (experiments/training/build_training_pool.py)."""
+    policy_model: str = "glm"
+    # Teacher belief model: its criteria (init) and belief updates are the SFT targets.
+    teacher_belief_model: str = "openrouter/qwen/qwen3.6-27b"
     # SFT samples only from replies whose cited spans all occur in their passage.
     require_verified_spans: bool = True
+    # The next N pool queries not run yet (null = all), as dra_inference --limit.
+    limit: Optional[int] = None
+    # Shares of the queries for SFT and validation (episodes.assign_use); the rest is for RL.
+    sft_share: float = 0.30
+    val_share: float = 0.05
 
 
 @dataclass
 class SFTConfig:
     """Phase 2: SFT warm-up of the student on the teacher's replies (LoRA, then merged)."""
-    student_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    student_belief_model: str = "Qwen/Qwen3-4B-Instruct-2507"
     lora_r: int = 64
     lora_alpha: int = 128
     lora_dropout: float = 0.05
     lora_target_modules: List[str] = field(default_factory=lambda: [
         "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
     ])
-    learning_rate: float = 2e-5
-    num_epochs: int = 5
-    per_device_batch_size: int = 4
-    gradient_accumulation_steps: int = 8
+    # Agent-BRACE uses 2e-5; 1e-4 is the usual LoRA rate (LoRA trains few weights).
+    learning_rate: float = 1e-4
+    # Upper bound: the checkpoint with the lowest validation loss is kept.
+    num_epochs: int = 3
+    # Effective batch per GPU 1 x 32 = Agent-BRACE's 4 x 8; one sample per
+    # forward pass bounds the memory of samples up to shared.max_seq_len.
+    per_device_batch_size: int = 1
+    gradient_accumulation_steps: int = 32
     warmup_ratio: float = 0.03
-    # Samples longer than this (prompt + reply, tokens) are dropped.
-    max_length: int = 16384
     logging_steps: int = 5
-    save_steps: int = 100
 
 
 @dataclass
 class RLConfig:
-    """Phase 3: PPO on the belief updater call, ported from Agent-BRACE's
-    BeliefStateLMTrainer (no critic, no KL by default)."""
-    # Start checkpoint; null = the merged phase 2 model.
-    student_init: Optional[str] = None
-    # LLM judge of the rewards.  TODO: the rewards are to be designed.
-    judge_model: Optional[str] = None
-    # replay: the student re-tracks the belief over the phase 1 trajectories
-    # (fixed observations).  online: TODO.
-    env: str = "replay"
+    """Phase 3: GRPO on teacher-forced belief updates (env, rewards), with the
+    PPO update of Agent-BRACE's BeliefStateLMTrainer (no critic, no KL by
+    default)."""
+    # Start checkpoint of the student belief model; null = the merged phase 2 model.
+    init_belief_model: Optional[str] = None
     num_iterations: int = 200
-    episodes_per_batch: int = 16
-    # Steps of an episode replayed per batch; null = all.
-    max_episode_steps: Optional[int] = None
+    # Prompts (updater steps of rl episodes) per iteration, and replies per prompt (GRPO group).
+    prompts_per_batch: int = 32
+    group_size: int = 8
+    # Batch mix: share of steps with new gold; at most this share from episodes without gold.
+    gold_step_share: float = 0.5
+    no_gold_share: float = 0.15
+    # Weights of the reward terms (rewards.py): state tracking, state correctness, task success.
+    reward_weight_st: float = 1.0
+    reward_weight_sc: float = 1.0
+    reward_weight_ts: float = 1.0
+    # Validation every val_every iterations on at most val_max_prompts steps of the val episodes.
+    val_every: int = 20
+    val_max_prompts: int = 400
     learning_rate: float = 1e-5
     ppo_epochs: int = 1
-    ppo_mini_batch_size: int = 4
+    # 256 replies per iteration / 32 = 8 optimizer steps per iteration.
+    ppo_mini_batch_size: int = 32
     clip_ratio: float = 0.2
     clip_ratio_c: float = 3.0
     loss_agg_mode: str = "token-mean"
@@ -131,57 +126,38 @@ class RLConfig:
     kl_loss_coef: float = 0.001
     kl_loss_type: str = "low_var_kl"
     temperature: float = 1.0
-    max_new_tokens: int = 4096
+    # The inference updater's max_tokens (LLMBeliefUpdater).
+    max_new_tokens: int = 8192
     vllm_gpu_memory_utilization: float = 0.55
-    vllm_max_model_len: int = 32768
-    vllm_max_num_seqs: int = 16
+    vllm_max_num_seqs: int = 64
+    # A step_{n}/ checkpoint every save_every iterations; the last save_total_limit are kept.
     save_every: int = 20
+    save_total_limit: int = 3
     # The updated weights pass from the trainer to vLLM through this directory.
     sync_dir: str = "/dev/shm/belief_model_training_sync"
 
 
-@dataclass
-class EvalConfig:
-    """Phase 4: the frozen agent with each belief model, scored by the
-    existing evaluators (correctness, Recall@N, GradedRecall@N)."""
-    # Checkpoint to evaluate; null = the final phase 3 model.
-    belief_model: Optional[str] = None
-    # Agent; null = the phase 1 agent.
-    agent: Optional[str] = None
-    splits: List[str] = field(default_factory=list)
-    # off: no belief model; teacher / student: that belief model in inform mode.
-    variants: List[str] = field(default_factory=lambda: ["off", "teacher", "student"])
-    # GPUs of the inference workers ("" = dra_inference decides); with the
-    # student variant, leave serve_gpu out of them.
-    inference_gpu_ids: str = "1,2,3"
-    # GPU and port of the vLLM server of the student.
-    serve_gpu: int = 0
-    serve_port: int = 6020
-    serve_max_model_len: int = 32768
-    serve_gpu_memory_utilization: float = 0.85
-
-
 SECTIONS = {
     "shared": SharedConfig,
-    "queries": QueriesConfig,
     "trajectories": TrajectoriesConfig,
     "sft": SFTConfig,
     "rl": RLConfig,
-    "eval": EvalConfig,
 }
 
 
 @dataclass
 class TrainingConfig:
     shared: SharedConfig = field(default_factory=SharedConfig)
-    queries: QueriesConfig = field(default_factory=QueriesConfig)
     trajectories: TrajectoriesConfig = field(default_factory=TrajectoriesConfig)
     sft: SFTConfig = field(default_factory=SFTConfig)
     rl: RLConfig = field(default_factory=RLConfig)
-    eval: EvalConfig = field(default_factory=EvalConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
+
+    @property
+    def query_scorer_model(self) -> str:
+        return self.shared.query_scorer_model or self.trajectories.teacher_belief_model
 
 
 def _coerce(value: Any, current: Any, key: str) -> Any:
@@ -228,15 +204,13 @@ class RunPaths:
     def __init__(self, cfg: TrainingConfig) -> None:
         root = Path(cfg.shared.output_root) if cfg.shared.output_root else OUTPUT_ROOT / "belief_model_training"
         self.root = root / cfg.shared.run_name
-        self.config_file = self.root / "config.yaml"
-        # Phase 0
-        self.queries_file = self.root / "phase0_queries" / "queries.jsonl"
         # Phase 1
         self.trajectories_dir = self.root / "phase1_trajectories"
         self.inference_runs = self.trajectories_dir / "runs"
-        self.query_ids_dir = self.trajectories_dir / "query_ids"
         self.episodes_file = self.trajectories_dir / "episodes.jsonl"
         self.sft_file = self.trajectories_dir / "sft.jsonl"
+        self.sft_val_file = self.trajectories_dir / "sft_val.jsonl"
+        self.teacher_scores_file = self.trajectories_dir / "teacher_scores.json"
         # Phase 2
         self.sft_dir = self.root / "phase2_sft"
         self.sft_merged = self.sft_dir / "merged"
@@ -244,6 +218,4 @@ class RunPaths:
         self.rl_dir = self.root / "phase3_rl"
         self.rl_final = self.rl_dir / "final"
         self.rl_metrics = self.rl_dir / "metrics.jsonl"
-        # Phase 4
-        self.eval_dir = self.root / "phase4_eval"
-        self.eval_summary = self.eval_dir / "summary.json"
+        self.rl_validation = self.rl_dir / "validation.jsonl"

@@ -3,7 +3,7 @@
 This is the wiring layer that assembles heavy component packages
 (``belief_model_component``, ``searcher_component``, ``deep_research_agents``,
 ``evaluation``) into a runnable agent. It is consumed by the ``run_pipeline``
-entry point in ``experiments/dra_inference.py``.
+entry point in ``experiments/inference/dra_inference.py``.
 
 Leaf-level helpers (LLM-client factory, CLI arg resolution, output naming) live
 in ``utils`` so this module is the only place that depends on the heavy
@@ -90,9 +90,10 @@ def build_belief_model(
     llm_criteria: Optional[str] = None,
     max_criteria: Optional[int] = None,
     belief_judge_model: str = "",
+    query_scorer_model: str = "",
     add_intermediate_answer: bool = True,
     agent=None,
-    agentic_model: Optional[str] = None,
+    policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
     llm_model: Optional[str] = None,
     criteria_bank: Optional[str] = None,
@@ -115,14 +116,15 @@ def build_belief_model(
             None = the
             dataset's ``max_criteria`` (layout.DATASET_SPECS).
         belief_judge_model: LLM behind the belief state and criteria_delta
-            (belief updater) and the criteria attempts (targeting scorer);
-            "" = *llm_criteria*.  A ``vllm/`` model is served locally
-            (``_belief_llm``), e.g. a trained belief model.
+            (belief updater); "" = *llm_criteria*.  A ``vllm/`` model is
+            served locally (``_belief_llm``), e.g. a trained belief model.
+        query_scorer_model: LLM behind the criteria attempts (targeting
+            scorer); "" = the belief updater's model.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
             per-step intermediate answers.
-        agentic_model: Agent type name (answer format, intermediate answer
+        policy_model: Agent type name (answer format, intermediate answer
             gating).
         dataset: Dataset name; intermediate answers only for ``task == "qa"``.
         llm_model: The agent's LLM; saved with the other run settings in
@@ -137,7 +139,7 @@ def build_belief_model(
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from belief_model_component import (
-        BankedCriteriaSource, LLMCriteriaSource, BeliefModel, build_belief_judges,
+        BankedCriteriaSource, LLMCriteriaSource, LLMQueryScorer, BeliefModel, build_belief_judges,
         encode_fn_from_retriever,
     )
 
@@ -170,13 +172,13 @@ def build_belief_model(
         print("Belief model: intermediate answers disabled (--add-intermediate-answer false)")
     elif (
         agent is not None
-        and agentic_model not in NO_INTERMEDIATE_ANSWER_AGENTS
+        and policy_model not in NO_INTERMEDIATE_ANSWER_AGENTS
         # Only short-answer tasks: a report has no answer candidates.
         and dataset is not None and DATASET_SPECS[dataset].task == "qa"
         and hasattr(agent, "answer_from_trajectory")
     ):
         intermediate_answer_fn = agent.answer_from_trajectory
-        print(f"Belief model: intermediate answers via {agentic_model}.answer_from_trajectory")
+        print(f"Belief model: intermediate answers via {policy_model}.answer_from_trajectory")
 
     belief_updater, query_scorer = None, None
     if criteria_source is not None:
@@ -185,6 +187,8 @@ def build_belief_model(
             _belief_llm(judge_model), model=judge_model,
             query_shape=query_shape,
         )
+        if query_scorer_model and query_scorer_model != judge_model:
+            query_scorer = LLMQueryScorer(_belief_llm(query_scorer_model), model_name=query_scorer_model)
         print(f"Belief model: belief updater {belief_updater.name}, query scorer {query_scorer.name}")
 
     return BeliefModel(
@@ -195,9 +199,9 @@ def build_belief_model(
         encoder_name=encoder_name,
         qrels=qrels or {},
         intermediate_answer_fn=intermediate_answer_fn,
-        agentic_model=agentic_model or "",
+        policy_model=policy_model or "",
         run_info={
-            "agent": agentic_model,
+            "agent": policy_model,
             "llm_model": llm_model,
             "dataset": dataset,
             "task": DATASET_SPECS[dataset].task if dataset else None,
@@ -216,12 +220,12 @@ def build_belief_model(
 # ===========================================================================
 
 def build_agent(
-    agentic_model: str,
+    policy_model: str,
     llm_model: str,
     llm_client=None,
     retriever=None,
     *,
-    agentic_model_cli: Optional[str] = None,
+    policy_model_cli: Optional[str] = None,
     dataset: Optional[str] = None,
     max_iteration: int = 100,
     seen_top_k: int = 5,
@@ -242,19 +246,19 @@ def build_agent(
     place.
 
     The agent-specific keyword arguments are assembled into ``_reasoning_extra``
-    based on ``agentic_model`` and forwarded to the agent constructor.
+    based on ``policy_model`` and forwarded to the agent constructor.
     """
     from deep_research_agents.agents import AGENT_MAP
 
-    model_class = AGENT_MAP[agentic_model]
+    model_class = AGENT_MAP[policy_model]
     # Backend (API vs vLLM) is resolved on the user-facing CLI name because the
     # OpenRouter registry distinguishes oss_20b / oss_120b, which both collapse
     # to the internal agent name "oss".
-    _cli_name = agentic_model_cli or agentic_model
+    _cli_name = policy_model_cli or policy_model
     _reasoning_extra: dict = {}
-    if use_plan and agentic_model == "react":
+    if use_plan and policy_model == "react":
         _reasoning_extra["use_plan"] = True
-    if agentic_model == "glm":
+    if policy_model == "glm":
         _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 20000)
         # Prefer OpenRouter when the agent is in the registry (0 local GPU);
         # otherwise fall through to the agent's vLLM defaults (localhost:6008).
@@ -263,7 +267,7 @@ def build_agent(
             _reasoning_extra["model_url"] = OPENROUTER_BASE_URL
             _reasoning_extra["model_name"] = _slug
             _reasoning_extra["api_key"] = os.getenv("OPENROUTER_API_KEY")
-    elif agentic_model == "oss":
+    elif policy_model == "oss":
         # Cap per-call output like GLM so the prompt/history still fits inside
         # the 131072-token vLLM window (gpt-oss native max = OpenRouter's max).
         # On the OpenRouter Responses path truncation:"auto" reclaims the full
@@ -278,20 +282,20 @@ def build_agent(
             _reasoning_extra["api_key"] = os.getenv("OPENROUTER_API_KEY")
         else:
             _reasoning_extra["model_name"] = f"openai/{llm_model}"
-    elif agentic_model == "tongyi":
+    elif policy_model == "tongyi":
         _reasoning_extra["max_tokens_per_step"] = min(max_output_tokens_total, 20000)
-    elif agentic_model == "cpm_explore":
+    elif policy_model == "cpm_explore":
         _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 16384)
         # The run's resolved temperature (utils.config.resolve_temperature),
         # not a falsy-guarded default: 0.0 is a temperature a user can ask for.
         _reasoning_extra["temperature"] = temperature
-    elif agentic_model == "cpm_report":
+    elif policy_model == "cpm_report":
         _reasoning_extra["max_extend_steps"] = max_extend_steps
         _reasoning_extra["max_retries"] = max_retries
         _reasoning_extra["hard_mode"] = hard_mode
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["model_name"] = llm_model
-    elif agentic_model == "belief_aware":
+    elif policy_model == "belief_aware":
         _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["max_retries"] = max_retries
         # Report datasets get the report prompts (task from the dataset).
@@ -329,15 +333,15 @@ def _build_components_from_config(worker_config: dict):
     Returns:
         (llm_client, retriever)  — llm_client may be None for self-managed agents.
     """
-    agentic_model = worker_config["agentic_model"]
+    policy_model = worker_config["policy_model"]
     llm_model     = worker_config["llm_model"]
     dataset       = worker_config["dataset"]
 
     llm_client = None
 
-    if agentic_model in SELF_MANAGED_LLM_AGENTS:
+    if policy_model in SELF_MANAGED_LLM_AGENTS:
         pass
-    elif is_local_finetuned(agentic_model, llm_model):
+    elif is_local_finetuned(policy_model, llm_model):
         hf_model = llm_model
         api_base = os.getenv("VLLM_API_BASE", "http://127.0.0.1:6008/v1")
         llm_client = create_generator(
@@ -474,7 +478,7 @@ def _init_worker(worker_id: int, worker_config: dict):
     llm_client, retriever = _build_components_from_config(worker_config)
     print(f"[Worker {worker_id}] Components built", flush=True)
 
-    agentic_model = worker_config["agentic_model"]
+    policy_model = worker_config["policy_model"]
     dataset = worker_config["dataset"]
 
     from searcher_component import RetrievalSearchTool
@@ -501,11 +505,11 @@ def _init_worker(worker_id: int, worker_config: dict):
             seen_top_k=worker_config.get("seen_top_k", 5),
         )
 
-    print(f"[Worker {worker_id}] Creating agent ({agentic_model})...", flush=True)
+    print(f"[Worker {worker_id}] Creating agent ({policy_model})...", flush=True)
     llm_model = worker_config["llm_model"]
     agent = build_agent(
-        agentic_model=agentic_model,
-        agentic_model_cli=worker_config.get("agentic_model_cli", agentic_model),
+        policy_model=policy_model,
+        policy_model_cli=worker_config.get("policy_model_cli", policy_model),
         dataset=worker_config["dataset"],
         llm_model=llm_model,
         llm_client=llm_client,
@@ -530,9 +534,10 @@ def _init_worker(worker_id: int, worker_config: dict):
         llm_criteria=worker_config.get("llm_criteria"),
         max_criteria=worker_config.get("max_criteria"),
         belief_judge_model=worker_config.get("belief_judge_model", ""),
+        query_scorer_model=worker_config.get("query_scorer_model", ""),
         add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
         agent=agent if hasattr(agent, "belief_model") else None,
-        agentic_model=agentic_model,
+        policy_model=policy_model,
         dataset=dataset,
         llm_model=llm_model,
         criteria_bank=worker_config.get("criteria_bank"),
@@ -609,7 +614,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         # worker that dies mid-query still leaves that query's work on disk.
         traj_logger = TrajectoryLogger(
             trajectory_dir, query_id, query_text,
-            agent_name=worker_config.get("agentic_model", ""),
+            agent_name=worker_config.get("policy_model", ""),
             model=worker_config.get("llm_model", ""),
         )
         result = agent.run_single(

@@ -1,5 +1,5 @@
 # ============================================================================
-# Settings of experiments/belief_model_training.py (belief model training,
+# Settings of experiments/training/belief_model_training.py (belief model training,
 # agent frozen).  One section per phase plus `shared`; the keys are the
 # dataclass fields of src/belief_model_training/config.py.
 #
@@ -9,7 +9,6 @@
 # Hyperparameters follow Agent-BRACE's recipes (arXiv 2605.11436):
 # recipes/finetune_belief_qwen25_3b.sh (sft) and
 # recipes/textworld_basic_ppo_decouple_joint_belief_vllm.sh (rl).
-# A split is dataset[:subset[:dataset_year]], e.g. trqa:wiki1:validation.
 # ============================================================================
 
 # ── Shared ───────────────────────────────────────────────────────────────────
@@ -17,47 +16,54 @@ shared:
   run_name: default
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
   seed: 0
-  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief settings of phases 1 and 4
+  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief settings of phase 1
   retriever: qwen3_emb_4b
-  num_gpus: 4                       # dra_inference workers (phases 1 and 4)
+  num_gpus: 4                       # dra_inference workers (phase 1)
+  query_scorer_model: null          # frozen query targeting scorer (phase 1); null = trajectories.teacher_belief_model
+  max_seq_len: 32768                # longest student sequence (prompt + reply) in SFT and RL
 
-# ── Phase 0: training queries (TODO) ─────────────────────────────────────────
-queries: {}
-
-# ── Phase 1: teacher trajectories (monitor mode) ─────────────────────────────
+# ── Phase 1: teacher trajectories (monitor mode, training pool) ──────────────
 trajectories:
-  agent: glm                                  # frozen agent (--agentic-model)
-  teacher_model: openrouter/qwen/qwen3.6-27b  # belief updater whose replies are the SFT targets
-  criteria_model: openrouter/qwen/qwen3.6-27b # criteria extraction (frozen, criteria bank)
-  require_verified_spans: true                # SFT samples only from replies whose spans all occur in their passage
+  policy_model: glm                                 # frozen agent (--policy-model)
+  teacher_belief_model: openrouter/qwen/qwen3.6-27b # belief model whose criteria (init) and updates are the SFT targets
+  require_verified_spans: true                      # SFT samples only from replies whose spans all occur in their passage
+  limit: null                                       # next N pool queries not run yet (null = all)
+  sft_share: 0.30                                   # share of the queries for SFT (by a hash of the query id)
+  val_share: 0.05                                   # share for validation; the rest is for RL
 
 # ── Phase 2: SFT warm-up (LoRA, then merged) ─────────────────────────────────
+# Validation loss after every epoch on phase1_trajectories/sft_val.jsonl; the
+# checkpoint with the lowest one is merged.
 sft:
-  student_model: Qwen/Qwen3-4B-Instruct-2507
+  student_belief_model: Qwen/Qwen3-4B-Instruct-2507
   lora_r: 64
   lora_alpha: 128
   lora_dropout: 0.05
   lora_target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
-  learning_rate: 2.0e-5
-  num_epochs: 5
-  per_device_batch_size: 4
-  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4               # Agent-BRACE: 2e-5; 1e-4 is the usual LoRA rate
+  num_epochs: 3                       # upper bound; the best epoch by validation loss is kept
+  per_device_batch_size: 1           # 1 x 32 = Agent-BRACE's 4 x 8; bounds memory up to shared.max_seq_len
+  gradient_accumulation_steps: 32
   warmup_ratio: 0.03
-  max_length: 16384                 # longer samples (prompt + reply, tokens) are dropped
   logging_steps: 5
-  save_steps: 100
 
-# ── Phase 3: RL (Agent-BRACE belief PPO; no critic, no KL) ───────────────────
+# ── Phase 3: RL (GRPO on teacher-forced belief updates; PPO update of ────────
+#    Agent-BRACE, no critic, no KL)
 rl:
-  student_init: null                # null = phase2_sft/merged
-  judge_model: null                 # reward judge (rewards TODO)
-  env: replay                       # replay (phase 1 trajectories) | online (TODO)
+  init_belief_model: null          # null = phase2_sft/merged
   num_iterations: 200
-  episodes_per_batch: 16
-  max_episode_steps: null           # null = whole episodes
+  prompts_per_batch: 32             # updater steps of rl episodes per iteration
+  group_size: 8                     # replies per prompt (GRPO group)
+  gold_step_share: 0.5              # share of the batch from steps with new gold documents
+  no_gold_share: 0.15               # at most this share from episodes without gold
+  reward_weight_st: 1.0             # state tracking: F1 of cited support vs new gold
+  reward_weight_sc: 1.0             # state correctness: 1 - (C_t - recall_so_far)^2
+  reward_weight_ts: 1.0             # task success: 1 - (C_T - y)^2, last updater call
+  val_every: 20                     # validation (greedy, val episodes) every N iterations
+  val_max_prompts: 400
   learning_rate: 1.0e-5
   ppo_epochs: 1
-  ppo_mini_batch_size: 4
+  ppo_mini_batch_size: 32           # 256 replies / 32 = 8 optimizer steps per iteration
   clip_ratio: 0.2
   clip_ratio_c: 3.0
   loss_agg_mode: token-mean
@@ -66,21 +72,9 @@ rl:
   kl_loss_coef: 0.001
   kl_loss_type: low_var_kl
   temperature: 1.0
-  max_new_tokens: 4096
+  max_new_tokens: 8192              # the inference updater's max_tokens
   vllm_gpu_memory_utilization: 0.55
-  vllm_max_model_len: 32768
-  vllm_max_num_seqs: 16
+  vllm_max_num_seqs: 64
   save_every: 20
+  save_total_limit: 3               # step_{n}/ checkpoints kept
   sync_dir: /dev/shm/belief_model_training_sync
-
-# ── Phase 4: evaluation (existing evaluators) ────────────────────────────────
-eval:
-  belief_model: null                # null = phase3_rl/final
-  agent: null                       # null = trajectories.agent
-  splits: []                        # e.g. [trqa:wiki1:test, browsecomp_plus]
-  variants: [off, teacher, student]
-  inference_gpu_ids: "1,2,3"        # inference workers; keep serve_gpu out
-  serve_gpu: 0                      # vLLM server of the student
-  serve_port: 6020
-  serve_max_model_len: 32768
-  serve_gpu_memory_utilization: 0.85

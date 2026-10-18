@@ -36,7 +36,7 @@ from indexing_corpus_dataset.training_pool.config import PoolPaths, load_config
 from indexing_corpus_dataset.training_pool.steps import run_step1, run_step2, run_step3
 
 _HERE = Path(__file__).resolve().parent
-_CONFIG_DEFAULT = str(_HERE / "configs" / "build_training_pool.yaml")
+_CONFIG_DEFAULT = str(_HERE.parent / "configs" / "build_training_pool.yaml")
 
 # CLI flag (dest) -> config key.
 _FLAGS = {
@@ -84,8 +84,8 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# python experiments/build_training_pool.py --step 1
-# python experiments/build_training_pool.py --step 2 --limit 10
-# python experiments/build_training_pool.py --step 2 --source infoseek --limit 10
-# python experiments/build_training_pool.py --step 2 --source frames --limit 10
-# python experiments/build_training_pool.py --step 3
+# python experiments/training/build_training_pool.py --step 1
+# python experiments/training/build_training_pool.py --step 2 --limit 10
+# python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10
+# python experiments/training/build_training_pool.py --step 2 --source frames --limit 10
+# python experiments/training/build_training_pool.py --step 3

@@ -1,6 +1,6 @@
 # OpenRouter model registry
 # ---------------------------------------------------------------------------
-# Maps the internal --agentic-model name to its OpenRouter model slug.
+# Maps the internal --policy-model name to its OpenRouter model slug.
 #
 # An entry here means: "this agent is available on OpenRouter — prefer the
 # hosted API over a local vLLM server (0 local GPU)."  Omit or comment out a
@@ -15,7 +15,7 @@
 # written into the output directory name, run_config.json and the GPU plan.
 # Omitting one does not make it fall back -- it makes the run record itself as
 # "vllm" when it is really hitting the hosted API.  For such an agent the entry
-# must agree with utils.config.AGENTIC_MODEL_TO_LLM, which carries the same slug
+# must agree with utils.config.POLICY_MODEL_TO_LLM, which carries the same slug
 # with the "openrouter/" prefix that selects the API generator.
 #
 # Fill in the exact slugs as you confirm them at https://openrouter.ai/models
@@ -28,7 +28,7 @@ models:
   webweaver: qwen/qwen3.6-35b-a3b
 
 # Optional curated short labels used in output directory names, keyed by the
-# full model id (--llm-model / AGENTIC_MODEL_TO_LLM value).  When a model is
+# full model id (--llm-model / POLICY_MODEL_TO_LLM value).  When a model is
 # absent here, the label falls back to the last path segment, lowercased
 # (e.g. zai-org/GLM-4.7-Flash -> glm-4.7-flash).
 display_names:

@@ -15,7 +15,7 @@ from typing import Dict, Optional, Tuple
 # Model maps and agent categories
 # ---------------------------------------------------------------------------
 
-# Maps agentic-model name → HuggingFace model ID for vLLM-served finetuned models
+# Maps policy-model name → HuggingFace model ID for vLLM-served finetuned models
 FINETUNED_MODEL_MAP: Dict[str, str] = {
     "drtulu":     "rl-research/DR-Tulu-8B",
     "webweaver":  "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
@@ -27,17 +27,17 @@ FINETUNED_MODEL_MAP: Dict[str, str] = {
 }
 
 
-def is_local_finetuned(agentic_model: str, llm_model: str) -> bool:
+def is_local_finetuned(policy_model: str, llm_model: str) -> bool:
     """True when llm_model matches the agent's known HF model name."""
-    return llm_model == FINETUNED_MODEL_MAP.get(agentic_model)
+    return llm_model == FINETUNED_MODEL_MAP.get(policy_model)
 
 
-# Single source of truth: CLI --agentic-model value → the LLM it runs on.
+# Single source of truth: CLI --policy-model value → the LLM it runs on.
 # --llm-model is no longer a CLI input; it is derived from this map.
 # Some agents are exposed under multiple CLI names so different model sizes are
-# selectable (oss_20b / oss_120b → "oss"); AGENTIC_MODEL_ALIAS maps each back to
+# selectable (oss_20b / oss_120b → "oss"); POLICY_MODEL_ALIAS maps each back to
 # the internal agent name used by AGENT_MAP / SELF_MANAGED_LLM_AGENTS.
-AGENTIC_MODEL_TO_LLM: Dict[str, str] = {
+POLICY_MODEL_TO_LLM: Dict[str, str] = {
     # self-managed (vLLM)
     "cpm_report":  "openbmb/AgentCPM-Report",
     "cpm_explore": "openbmb/AgentCPM-Explore",
@@ -79,15 +79,15 @@ AGENT_META_KEYS: Tuple[str, ...] = (
 )
 
 
-# CLI --agentic-model value → internal agent name (when they differ).
-AGENTIC_MODEL_ALIAS: Dict[str, str] = {
+# CLI --policy-model value → internal agent name (when they differ).
+POLICY_MODEL_ALIAS: Dict[str, str] = {
     "oss_20b":  "oss",
     "oss_120b": "oss",
 }
 
 
 # Sampling temperature per agent, keyed by the internal agent name (the value
-# AGENTIC_MODEL_ALIAS resolves to, not the CLI name).  Each agent was tuned at a
+# POLICY_MODEL_ALIAS resolves to, not the CLI name).  Each agent was tuned at a
 # different point: the values here are the ones its own constructor defaults to,
 # lifted into one table so a run cannot silently override them.
 #
@@ -108,8 +108,8 @@ AGENT_TEMPERATURE: Dict[str, float] = {
 }
 
 
-def resolve_temperature(agentic_model: str, explicit: Optional[float] = None) -> float:
-    """The temperature a run of ``agentic_model`` uses.
+def resolve_temperature(policy_model: str, explicit: Optional[float] = None) -> float:
+    """The temperature a run of ``policy_model`` uses.
 
     ``explicit`` is the run config's ``llm_temperature``: ``None`` means the
     user left it on auto and the agent's own value applies, any float means they
@@ -117,7 +117,7 @@ def resolve_temperature(agentic_model: str, explicit: Optional[float] = None) ->
     """
     if explicit is not None:
         return float(explicit)
-    internal = AGENTIC_MODEL_ALIAS.get(agentic_model, agentic_model)
+    internal = POLICY_MODEL_ALIAS.get(policy_model, policy_model)
     return AGENT_TEMPERATURE.get(internal, DEFAULT_AGENT_TEMPERATURE)
 
 
@@ -147,7 +147,7 @@ _OPENROUTER_REGISTRY_PATH = (
 
 @functools.lru_cache(maxsize=1)
 def load_openrouter_registry() -> Dict[str, str]:
-    """Load the agentic-model → OpenRouter-slug map from the registry file.
+    """Load the policy-model → OpenRouter-slug map from the registry file.
 
     Returns an empty dict if the file is missing or empty, so every agent
     safely falls back to the local vLLM path until slugs are filled in.
@@ -194,7 +194,7 @@ def model_display_name(model: str) -> str:
     return model.split("/")[-1].lower()
 
 
-def resolve_agent_backend(agentic_model: str) -> Tuple[str, Optional[str]]:
+def resolve_agent_backend(policy_model: str) -> Tuple[str, Optional[str]]:
     """Decide how an agent's LLM is served.
 
     Priority: if the agent is in the OpenRouter registry AND OPENROUTER_API_KEY
@@ -203,29 +203,29 @@ def resolve_agent_backend(agentic_model: str) -> Tuple[str, Optional[str]]:
     Returns:
         ("api", openrouter_slug) or ("vllm", None).
     """
-    slug = load_openrouter_registry().get(agentic_model)
+    slug = load_openrouter_registry().get(policy_model)
 
     # The same slug is spelled twice for agents addressed directly through
-    # AGENTIC_MODEL_TO_LLM: once bare in the registry (which decides the
+    # POLICY_MODEL_TO_LLM: once bare in the registry (which decides the
     # reported backend) and once "openrouter/"-prefixed here (which selects the
     # generator).  Drift between them is silent and ships a run recorded
     # against the wrong model, so say so loudly instead.
-    configured = AGENTIC_MODEL_TO_LLM.get(agentic_model, "")
+    configured = POLICY_MODEL_TO_LLM.get(policy_model, "")
     if configured.startswith("openrouter/"):
         bare = configured.removeprefix("openrouter/")
         if slug is None:
             logging.getLogger(__name__).warning(
                 "Agent %r runs on OpenRouter (%s) but is missing from %s; the run "
                 "will record itself as backend 'vllm'.  Add '%s: %s' to its models "
-                "section.", agentic_model, configured,
-                os.path.basename(_OPENROUTER_REGISTRY_PATH), agentic_model, bare,
+                "section.", policy_model, configured,
+                os.path.basename(_OPENROUTER_REGISTRY_PATH), policy_model, bare,
             )
         elif slug != bare:
             logging.getLogger(__name__).warning(
                 "OpenRouter slug mismatch for %r: registry says %r, "
-                "AGENTIC_MODEL_TO_LLM says %r.  The registry value is reported as "
+                "POLICY_MODEL_TO_LLM says %r.  The registry value is reported as "
                 "the backend; the latter is what actually gets called.",
-                agentic_model, slug, bare,
+                policy_model, slug, bare,
             )
 
     if slug and os.getenv("OPENROUTER_API_KEY"):

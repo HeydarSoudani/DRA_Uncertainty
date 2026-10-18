@@ -31,16 +31,16 @@ export OMP_NUM_THREADS=16
 DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
 SUBSET=                            # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
-AGENT=belief_aware                 # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
+POLICY_MODEL=belief_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 BELIEF_MODE=off                    # off | monitor | inform (belief_aware shows the <belief_state> tag only in inform)
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
 NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
 
-python experiments/dra_inference.py \
+python experiments/inference/dra_inference.py \
     --dataset "$DATASET" \
     ${SUBSET:+--subset "$SUBSET"} \
     --retriever "$RETRIEVER" \
-    --agentic-model "$AGENT" \
+    --policy-model "$POLICY_MODEL" \
     --belief-mode "$BELIEF_MODE" \
     --limit "$LIMIT" \
     --num-gpus "$NUM_GPUS" \
@@ -62,5 +62,5 @@ python experiments/dra_inference.py \
 # Its 4 queries are real results and are kept: resume skips them, so the follow-up
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.
 #
-# Smoke test: python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model belief_aware --limit 1 --num-gpus 1
-# Eval only:  python experiments/dra_inference.py --dataset trqa --subset wiki2 --agentic-model belief_aware --eval-only --num-gpus 0
+# Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model belief_aware --limit 1 --num-gpus 1
+# Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model belief_aware --eval-only --num-gpus 0

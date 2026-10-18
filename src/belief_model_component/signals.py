@@ -389,19 +389,19 @@ class IntermediateAnswerSignal:
 
     Args:
         answer_fn: The agent's ``answer_from_trajectory``.
-        agentic_model: Agent name; picks the answer format and the parser.
+        policy_model: Agent name; picks the answer format and the parser.
     """
 
-    def __init__(self, answer_fn: AnswerFn, agentic_model: str) -> None:
+    def __init__(self, answer_fn: AnswerFn, policy_model: str) -> None:
         self._answer_fn = answer_fn
-        self._agentic_model = agentic_model
+        self._policy_model = policy_model
 
     def score(self, original_query: str, trajectory: Any) -> Optional[Dict[str, Any]]:
-        instruction = intermediate_answer_instruction(self._agentic_model)
+        instruction = intermediate_answer_instruction(self._policy_model)
         raw = self._answer_fn(original_query, trajectory, instruction) or ""
         if raw.startswith(REASONING_FALLBACK_PREFIX):
             raw = raw[len(REASONING_FALLBACK_PREFIX):]
-        outputs, format_matched = extract_answer_candidates(raw, expected_format=self._agentic_model)
+        outputs, format_matched = extract_answer_candidates(raw, expected_format=self._policy_model)
         if not format_matched:
             outputs = extract_bare_answer(raw)
             if outputs is None:

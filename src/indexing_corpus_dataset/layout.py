@@ -199,7 +199,7 @@ DATASET_SPECS = {
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="title",
     ),
-    # Built by this project (experiments/build_training_pool.py), under
+    # Built by this project (experiments/training/build_training_pool.py), under
     # REPO_DATA_ROOT: BrowseComp-style questions (WebShaper, ...) with their
     # gold Wikipedia and web pages as binary qrels; the split is "train".
     # Lengths as BrowseComp-Plus (long web pages and multi-clue questions).

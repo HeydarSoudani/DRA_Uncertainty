@@ -1,6 +1,6 @@
 # Belief-Aware Agent
 
-`--agentic-model belief_aware` is a SearchR1-style search agent that, after every retrieval, reads the
+`--policy-model belief_aware` is a SearchR1-style search agent that, after every retrieval, reads the
 `<belief_state>` tag of the shared belief model in `inform` mode. The tag is computed by code, never written by
 the policy, and is exactly the one every other agent reads under `--belief-mode inform` (belief
 status and attempts per criterion, then the signals `doc_novelty`, `criteria_delta`, `query_novelty`; no gold-based
@@ -18,7 +18,7 @@ to use them.
 
 Criteria extraction, the belief updater, the signals, the per-step intermediate answers and
 `belief/{qid}.jsonl` all come from the belief model settings (`llm_criteria`, `max_criteria`,
-`belief_judge_model`).
+`belief_judge_model`, `query_scorer_model`).
 
 Code: `src/deep_research_agents/agents/belief_aware_agent.py` (loop, turn parsing, passage labels). Prompts:
 `src/deep_research_agents/prompts/belief_aware/` (`system.txt`, `belief_section.txt`, `user.txt`,

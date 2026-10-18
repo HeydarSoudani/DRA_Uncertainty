@@ -75,7 +75,7 @@ python src/indexing_corpus_dataset/index_builder_test.py \
 
 ## 3. Inference
 
-Run via the wrapper script (edit `DATASET` / `RETRIEVER` / `AGENT` /
+Run via the wrapper script (edit `DATASET` / `RETRIEVER` / `POLICY_MODEL` /
 `BELIEF_MODE` at the top):
 
 ```bash
@@ -85,10 +85,10 @@ sbatch scripts/run_dra_inference.sh
 Underlying command:
 
 ```bash
-python experiments/dra_inference.py \
+python experiments/inference/dra_inference.py \
     --dataset browsecomp_plus \
     --retriever qwen3_emb_4b \
-    --agentic-model glm \
+    --policy-model glm \
     --belief-mode monitor \
     --num-gpus 0
 ```
@@ -97,9 +97,9 @@ Quick checks:
 
 ```bash
 # single-query smoke test
-python experiments/dra_inference.py --dataset browsecomp_plus --limit 1 --num-gpus 0
+python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1 --num-gpus 0
 # evaluate already-saved runs, no generation
-python experiments/dra_inference.py --dataset browsecomp_plus --eval-only --num-gpus 0
+python experiments/inference/dra_inference.py --dataset browsecomp_plus --eval-only --num-gpus 0
 ```
 
 A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
@@ -159,7 +159,8 @@ TRQA, all agents except `cpm_report`): after each iteration the agent's own mode
 far, for its most likely answer(s) in its answer format; it may give one, several or none (`IntermediateAnswerSignal`,
 prompt in `src/belief_model_component/prompts/`). They are saved as is, not evaluated. Embeddings come from the retriever's encoder, so with a sparse retriever
 `query_novelty` is null. The criteria signals use LLM judges (`src/belief_model_component/judges.py`,
-model `belief_judge_model`, default `llm_criteria`):
+model `belief_judge_model`, default `llm_criteria`; the query scorer's model is `query_scorer_model`, default
+`belief_judge_model`):
 
 - Belief state and `criteria_delta`: the belief updater (Agent-BRACE's b_t = f(query, b_{t-1}, o_t)). b_0 gives
   every criterion the status "unknown". One call per iteration sees each criterion with its current status and its
@@ -393,5 +394,6 @@ python analysis/criteria_reachability.py --dataset browsecomp_plus   # criteria 
 ## 4. Training
 
 Belief model training with the agent frozen (Agent-BRACE adapted to retrieval), one phase per call of
-`experiments/belief_model_training.py`; see [docs/belief_model_training.md](docs/belief_model_training.md).
-Phase 0 (training queries) and the RL rewards are still to do.
+`experiments/training/belief_model_training.py`; see [docs/belief_model_training.md](docs/belief_model_training.md).
+The trained belief model makes both calls, criteria init and belief update; the query scorer stays frozen.
+Phase 1 runs on the training pool (`experiments/training/build_training_pool.py`); the RL rewards are still to do.

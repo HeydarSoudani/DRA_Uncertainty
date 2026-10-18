@@ -91,7 +91,7 @@ def _round(value: Optional[float], ndigits: int = 4) -> Optional[float]:
     return round(value, ndigits) if value is not None else None
 
 
-def _unique(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def unique_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """*docs* without repeated ids, first occurrence kept (docs without an
     id are all kept)."""
     seen: Set[str] = set()
@@ -123,7 +123,7 @@ class BeliefModel:
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
             asked every step, its answers are saved (extra, not in x_t).
             None disables the intermediate answer.
-        agentic_model: Agent name; picks the intermediate answer format.
+        policy_model: Agent name; picks the intermediate answer format.
         run_info: Run settings saved in every meta line (agent, dataset,
             belief model configuration), so a file can be read on its own.
         inform: Render each step's ``<belief_state>`` tag for the agent to
@@ -139,7 +139,7 @@ class BeliefModel:
         encoder_name: Optional[str] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         intermediate_answer_fn: Optional[AnswerFn] = None,
-        agentic_model: str = "",
+        policy_model: str = "",
         run_info: Optional[Dict[str, Any]] = None,
         inform: bool = False,
     ) -> None:
@@ -154,7 +154,7 @@ class BeliefModel:
         self._belief = BeliefUpdateSignal(belief_updater) if belief_updater is not None else None
         self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
-            IntermediateAnswerSignal(intermediate_answer_fn, agentic_model)
+            IntermediateAnswerSignal(intermediate_answer_fn, policy_model)
             if intermediate_answer_fn is not None else None
         )
 
@@ -293,7 +293,7 @@ class BeliefModel:
         if tracks_state:
             try:
                 criteria_delta, updates, updater_output, updater_errors = self._belief.score(
-                    _unique(docs), self._step,
+                    unique_docs(docs), self._step,
                 )
                 errors.extend(f"belief_update: {e}" for e in updater_errors)
             except Exception as e:

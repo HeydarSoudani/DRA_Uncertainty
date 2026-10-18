@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 # Qwen3.5-9B is the student of the trajectory-distillation plan: it is the
 # backbone DeepSearch-World validated in an offline verifiable search
 # environment, and it shares its tokenizer with the Qwen3.6-27B teacher that
-# generates the trajectories (utils.config.AGENTIC_MODEL_TO_LLM["belief_aware"]),
+# generates the trajectories (utils.config.POLICY_MODEL_TO_LLM["belief_aware"]),
 # which is what keeps token-level on-policy distillation available after SFT.
 DEFAULT_POLICY_MODEL: str = "Qwen/Qwen3.5-9B"
 

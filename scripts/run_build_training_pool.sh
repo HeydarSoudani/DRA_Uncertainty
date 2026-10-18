@@ -24,4 +24,4 @@ ARGS=(--step "$STEP")
 [ -n "$LIMIT" ] && ARGS+=(--limit "$LIMIT")
 [ -n "$SOURCE" ] && ARGS+=(--source "$SOURCE")
 
-python experiments/build_training_pool.py "${ARGS[@]}"
+python experiments/training/build_training_pool.py "${ARGS[@]}"

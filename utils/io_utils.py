@@ -266,7 +266,7 @@ def build_dataset_dir_name(dataset: str, split: str, query_key: str, retriever: 
     return f"{dataset}_{split}{qk_part}_{retriever}"
 
 
-def build_run_name_for_pipeline(agentic_model: str, llm_model: str, **kwargs) -> str:
+def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> str:
     """Build a consistent output directory name for the current pipeline run.
 
     Template: {agent_name}_{backend}_{model}
@@ -276,10 +276,10 @@ def build_run_name_for_pipeline(agentic_model: str, llm_model: str, **kwargs) ->
     """
     from utils.config import resolve_agent_backend, model_display_name
 
-    name = agentic_model
-    if agentic_model == "react":
+    name = policy_model
+    if policy_model == "react":
         name = "react_w_plan" if kwargs.get("use_plan", False) else "react_wo_plan"
-    backend, _slug = resolve_agent_backend(agentic_model)
+    backend, _slug = resolve_agent_backend(policy_model)
     return f"{name}_{backend}_{model_display_name(llm_model)}"
 
 
@@ -298,7 +298,7 @@ def build_belief_config_name(**kwargs) -> str:
     return name
 
 
-def write_run_config(run_dir: Union[str, Path], agentic_model: str,
+def write_run_config(run_dir: Union[str, Path], policy_model: str,
                      llm_model: str, **kwargs) -> None:
     """Persist the full run configuration to ``run_dir/run_config.json``.
 
@@ -308,10 +308,10 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
     """
     from utils.config import resolve_agent_backend, model_display_name
 
-    backend, slug = resolve_agent_backend(agentic_model)
+    backend, slug = resolve_agent_backend(policy_model)
     config = {
         "agent": {
-            "agentic_model": agentic_model,
+            "policy_model": policy_model,
             "backend": backend,
             "openrouter_slug": slug,
             "llm_model": llm_model,
@@ -337,6 +337,7 @@ def write_run_config(run_dir: Union[str, Path], agentic_model: str,
             "llm_criteria": kwargs.get("llm_criteria"),
             "max_criteria": kwargs.get("max_criteria"),
             "belief_judge_model": kwargs.get("belief_judge_model", ""),
+            "query_scorer_model": kwargs.get("query_scorer_model", ""),
             "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
         },
     }

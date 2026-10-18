@@ -3,7 +3,7 @@ merged from InfoSeek-Hard, WebShaper and FRAMES, with their gold pages
 fetched from the source.  Shared by the trainings that need such questions
 (first the belief model, phase 0).
 
-Steps (``experiments/build_training_pool.py --step N``) under
+Steps (``experiments/training/build_training_pool.py --step N``) under
 ``{REPO_DATA_ROOT}/training_pool/`` (the repo's data/):
 
     1  questions      merge the sources, drop duplicates and the fixed

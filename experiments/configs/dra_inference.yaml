@@ -1,17 +1,17 @@
 # ============================================================================
-# Default run configuration for experiments/dra_inference.py
+# Default run configuration for experiments/inference/dra_inference.py
 # ============================================================================
 # This file holds the mostly-fixed variables for the DRA inference pipeline.
 # Edit values here instead of passing long command lines.
 #
 # The frequently-varied knobs stay on the CLI and are NOT listed here:
-#   --agentic-model  --dataset  --retriever  --belief-mode
+#   --policy-model  --dataset  --retriever  --belief-mode
 #   --limit  --num-gpus  --eval-only  --quiet
 #
 # Precedence (lowest -> highest):
 #   built-in fallback  <  this file  <  explicit CLI flag
 # So any value below can still be overridden for a single run, e.g.:
-#   python experiments/dra_inference.py --dataset neuclir --top-k 50
+#   python experiments/inference/dra_inference.py --dataset neuclir --top-k 50
 #
 # Use a different file with:  --config path/to/other.yaml
 #
@@ -53,7 +53,7 @@ post_fusion_reranker_input: "original_query"  # original_query | original_query+
 ensure_novel_seen_docs: false            # Filter docs seen in previous iterations before returning
 
 # ── Agent-specific ───────────────────────────────────────────────────────────
-use_plan: false                 # Enable planning in ReAct agent (only --agentic-model=react)
+use_plan: false                 # Enable planning in ReAct agent (only --policy-model=react)
 max_extend_steps: 5             # Max outline extensions (cpm_report)
 hard_mode: true                 # Enforce strict validation rules (cpm_report)
 max_passage_chars: 4000         # Chars of one retrieved passage shown to the agent (cpm_report, belief_aware)
@@ -61,7 +61,8 @@ max_passage_chars: 4000         # Chars of one retrieved passage shown to the ag
 # ── Belief model (the rest; --belief-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per sample); same backbone as the belief-aware agent, reasoning off
 max_criteria: null                  # Cap on the number of criteria per query (null = the dataset's default in layout.DATASET_SPECS)
-belief_judge_model: ""            # LLM of the belief updater (belief state, criteria_delta) and the query scorer (criteria attempts); "" = llm_criteria; a vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE)
+belief_judge_model: ""            # LLM of the belief updater (belief state, criteria_delta); "" = llm_criteria; a vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE)
+query_scorer_model: ""            # LLM of the query scorer (criteria attempts); "" = belief_judge_model
 criteria_bank: true                 # Read each query's criteria from CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl (shared with analysis/criteria_reachability.py); extract and add only the missing ones
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 

@@ -1,7 +1,7 @@
 """DRA agent training infrastructure (SFT + async GRPO).
 
 This package holds the *training* pipeline plumbing.  It is a sibling of the
-finalized *inference* pipeline (``experiments/dra_inference.py`` +
+finalized *inference* pipeline (``experiments/inference/dra_inference.py`` +
 ``deep_research_agents`` / ``searcher_component`` / ``reasoner_component`` /
 ``belief_model_component``) and consumes those components **read-only** — nothing
 here mutates the inference code path.

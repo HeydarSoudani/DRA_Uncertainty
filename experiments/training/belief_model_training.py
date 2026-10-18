@@ -1,30 +1,38 @@
-"""Train the belief model (the belief updater call) with the agent frozen.
+"""Train the belief model with the agent frozen.
 
-Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model
-b_t = f(query, b_{t-1}, o_t) is trained, here with the agent frozen.  One
+Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model is
+trained, here with the agent frozen.  It is one model with two calls: init
+f(query) -> the criteria, then every step the update
+b_t = f(query, b_{t-1}, o_t) -> their statuses.  One
 phase per call (``--phase N``); each phase reads the previous one's output
 from the run directory ``{output_root}/{run_name}/``:
 
-    0  training queries                          phase0_queries/        TODO
     1  frozen agent + teacher belief model in     phase1_trajectories/
-       monitor mode -> episodes and SFT samples
+       monitor mode on the training pool
+       -> episodes and SFT samples
     2  SFT warm-up of the student (LoRA, merged)  phase2_sft/
-    3  RL of the student (Agent-BRACE belief PPO) phase3_rl/            rewards TODO
-    4  frozen agent with off / teacher / student  phase4_eval/
-       belief model, existing evaluators
+    3  RL of the student (GRPO on teacher-forced  phase3_rl/
+       belief updates, Agent-BRACE PPO update)
+
+The trained belief model is evaluated with experiments/inference/dra_inference.py
+(see experiments/training/README.md, "Evaluation").
 
 Settings: ``--config`` (YAML, one section per phase plus ``shared``), then
 the flags below, then ``--set section.key=value`` (any key, e.g.
 ``--set rl.learning_rate=5e-6``).  The agent and retriever settings of the
-inference runs (phases 1 and 4) come from ``shared.inference_config``
+inference run (phase 1) come from ``shared.inference_config``
 (experiments/configs/dra_inference.yaml) and are never repeated here.
 The merged settings of each phase are saved as ``phase{N}_config.yaml``.
 
+The training data is the training pool (``data/training_pool``, dataset
+``training_pool`` of dra_inference), built by experiments/training/build_training_pool.py
+with its index under ``data/training_pool/indices``.
+
 Examples:
-    python experiments/belief_model_training.py --phase 1 --run-name trqa_glm --agent glm
-    torchrun --nproc_per_node 4 experiments/belief_model_training.py --phase 2 --run-name trqa_glm
-    python experiments/belief_model_training.py --phase 3 --run-name trqa_glm
-    python experiments/belief_model_training.py --phase 4 --run-name trqa_glm --eval-splits trqa:wiki1:test
+    python experiments/training/belief_model_training.py --phase 1 --run-name pool_glm --policy-model glm
+    python experiments/training/belief_model_training.py --phase 1 --run-name pool_glm --policy-model glm --limit 2
+    torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phase 2 --run-name pool_glm
+    python experiments/training/belief_model_training.py --phase 3 --run-name pool_glm
 """
 
 import argparse
@@ -45,7 +53,7 @@ load_dotenv()
 
 from belief_model_training.config import RunPaths, load_config
 
-_CONFIG_DEFAULT = str(_HERE / "configs" / "belief_model_training.yaml")
+_CONFIG_DEFAULT = str(_HERE.parent / "configs" / "belief_model_training.yaml")
 
 # CLI flag (dest) -> config key.
 _FLAGS = {
@@ -55,21 +63,15 @@ _FLAGS = {
     "seed": "shared.seed",
     "retriever": "shared.retriever",
     "num_gpus": "shared.num_gpus",
+    "query_scorer_model": "shared.query_scorer_model",
     # phase 1
-    "agent": "trajectories.agent",
-    "teacher_model": "trajectories.teacher_model",
-    "criteria_model": "trajectories.criteria_model",
+    "policy_model": "trajectories.policy_model",
+    "teacher_belief_model": "trajectories.teacher_belief_model",
+    "limit": "trajectories.limit",
     # phase 2
-    "student_model": "sft.student_model",
+    "student_belief_model": "sft.student_belief_model",
     # phase 3
-    "student_init": "rl.student_init",
-    "judge_model": "rl.judge_model",
-    "rl_env": "rl.env",
-    # phase 4
-    "belief_model": "eval.belief_model",
-    "eval_agent": "eval.agent",
-    "eval_splits": "eval.splits",
-    "eval_variants": "eval.variants",
+    "rl_init_belief_model": "rl.init_belief_model",
 }
 
 
@@ -80,7 +82,7 @@ def _parse_args() -> argparse.Namespace:
         allow_abbrev=False,
     )
     # ── Phase and settings files ────────────────────────────────────────────
-    parser.add_argument("--phase", type=int, required=True, choices=[0, 1, 2, 3, 4], help="0 training queries (TODO), 1 teacher trajectories, 2 SFT, 3 RL, 4 evaluation.")
+    parser.add_argument("--phase", type=int, required=True, choices=[1, 2, 3], help="1 teacher trajectories, 2 SFT, 3 RL.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, one section per phase plus 'shared'.")
     parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE", help="Override any config key; repeatable; lists comma-separated.")
 
@@ -88,27 +90,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--run-name", type=str, default="default", help="Run directory name under the output root.")
     parser.add_argument("--output-root", type=str, default=None, help="Root of the training runs (None = OUTPUT_ROOT/belief_model_training).")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
-    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phases 1 and 4).")
-    parser.add_argument("--num-gpus", type=int, default=4, help="dra_inference workers (phases 1 and 4).")
+    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phase 1).")
+    parser.add_argument("--num-gpus", type=int, default=4, help="dra_inference workers (phase 1).")
+    parser.add_argument("--query-scorer-model", type=str, default=None, help="Frozen query targeting scorer (phase 1; None = the teacher belief model).")
 
     # ── Phase 1: teacher trajectories ───────────────────────────────────────
-    parser.add_argument("--agent", type=str, default="glm", help="Frozen agent (--agentic-model of dra_inference), e.g. glm, oss_20b.")
-    parser.add_argument("--teacher-model", type=str, default="openrouter/qwen/qwen3.6-27b", help="Teacher belief updater LLM.")
-    parser.add_argument("--criteria-model", type=str, default="openrouter/qwen/qwen3.6-27b", help="Criteria extraction LLM (frozen; phases 1 and 4).")
+    parser.add_argument("--policy-model", type=str, default="glm", help="Frozen agent (--policy-model of dra_inference), e.g. glm, oss_20b.")
+    parser.add_argument("--teacher-belief-model", type=str, default="openrouter/qwen/qwen3.6-27b", help="Teacher belief model (criteria init and belief updates).")
+    parser.add_argument("--limit", type=int, default=None, help="The next N training pool queries not run yet (None = all).")
 
     # ── Phase 2: SFT ────────────────────────────────────────────────────────
-    parser.add_argument("--student-model", type=str, default="Qwen/Qwen3-4B-Instruct-2507", help="Base checkpoint of the student belief model.")
+    parser.add_argument("--student-belief-model", type=str, default="Qwen/Qwen3-4B-Instruct-2507", help="Base checkpoint of the student belief model.")
 
     # ── Phase 3: RL ─────────────────────────────────────────────────────────
-    parser.add_argument("--student-init", type=str, default=None, help="Start checkpoint (None = the merged phase 2 model).")
-    parser.add_argument("--judge-model", type=str, default=None, help="LLM judge of the rewards (rewards TODO).")
-    parser.add_argument("--rl-env", type=str, default="replay", choices=["replay", "online"], help="replay: phase 1 trajectories; online: TODO.")
-
-    # ── Phase 4: evaluation ─────────────────────────────────────────────────
-    parser.add_argument("--belief-model", type=str, default=None, help="Student checkpoint (None = the final phase 3 model).")
-    parser.add_argument("--eval-agent", type=str, default=None, help="Agent (None = the phase 1 agent).")
-    parser.add_argument("--eval-splits", type=str, default=None, help="Comma-separated dataset[:subset[:dataset_year]] splits.")
-    parser.add_argument("--eval-variants", type=str, default="off,teacher,student", help="Comma-separated subset of off,teacher,student.")
+    parser.add_argument("--rl-init-belief-model", type=str, default=None, help="Start checkpoint of the student belief model (None = the merged phase 2 model).")
 
     args = parser.parse_args()
     # The defaults above document the standard values; only the flags given
@@ -137,21 +132,15 @@ def main() -> None:
         (paths.root / f"phase{args.phase}_config.yaml").write_text(yaml.safe_dump(cfg.to_dict(), sort_keys=False))
     print(f"[belief_model_training] phase {args.phase}, run {paths.root}")
 
-    if args.phase == 0:
-        from belief_model_training.queries import build_training_queries
-        build_training_queries(cfg, paths)
-    elif args.phase == 1:
+    if args.phase == 1:
         from belief_model_training.trajectories import run_trajectories
         run_trajectories(cfg, paths)
     elif args.phase == 2:
         from belief_model_training.sft import run_sft
         run_sft(cfg, paths)
-    elif args.phase == 3:
+    else:
         from belief_model_training.rl import run_rl
         run_rl(cfg, paths)
-    else:
-        from belief_model_training.evaluate import run_eval
-        run_eval(cfg, paths)
 
 
 if __name__ == "__main__":

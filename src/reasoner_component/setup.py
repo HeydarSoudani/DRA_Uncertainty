@@ -28,10 +28,10 @@ def setup_llm(args, num_gpus: int) -> Optional[BaseGenerator]:
     name, so an ``hf/``-prefixed (or registered) model routes to ``HFGenerator``
     while ordinary slugs route to ``APIGenerator``.
     """
-    if args.agentic_model in SELF_MANAGED_LLM_AGENTS:
+    if args.policy_model in SELF_MANAGED_LLM_AGENTS:
         return None
 
-    if is_local_finetuned(args.agentic_model, args.llm_model):
+    if is_local_finetuned(args.policy_model, args.llm_model):
         hf_model = args.llm_model
         api_base = os.getenv("VLLM_API_BASE", "http://127.0.0.1:6008/v1")
         generator = create_generator(

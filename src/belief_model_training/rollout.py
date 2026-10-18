@@ -1,7 +1,9 @@
 """vLLM generation of the student belief updater during RL.
 
-As Agent-BRACE's belief vLLM: batched sampling (temperature 1.0) that keeps
-``log pi_old`` of every sampled token for PPO.  The engine shares its GPU
+As Agent-BRACE's belief vLLM: batched sampling (temperature 1.0), the
+replies of a GRPO group drawn from one request (``n``).  The log-prob of
+every sampled token is kept to check the trainer's recomputed
+``log pi_old`` against it.  The engine shares its GPU
 with the trainer: ``sleep`` frees the GPU memory for the update and
 ``load_weights`` brings the engine back with the updated weights
 (vLLM sleep mode and ``reload_weights``, in place of Agent-BRACE's rebuild
@@ -43,30 +45,31 @@ class VLLMRolloutEngine:
         self.tokenizer = self.llm.get_tokenizer()
 
     def generate(self, prompts: List[List[Dict[str, str]]], *, temperature: float,
-                 max_new_tokens: int) -> List[Generation]:
-        """One sampled reply per chat prompt.  A prompt that leaves no room
-        to generate in ``max_model_len`` gets no reply (``text`` None)."""
+                 max_new_tokens: int, n: int = 1) -> List[List[Generation]]:
+        """*n* sampled replies per chat prompt (each prompt tokenized and
+        sent once).  A prompt that leaves no room to generate in
+        ``max_model_len`` gets *n* empty replies (``text`` None)."""
         from vllm import SamplingParams
         from vllm.inputs import TokensPrompt
 
         prompt_ids = [self.tokenizer(chat_prompt(self.tokenizer, m), add_special_tokens=False)["input_ids"]
                       for m in prompts]
         fits = [i for i, p in enumerate(prompt_ids) if len(p) < self.max_model_len]
-        out: List[Generation] = [Generation(p, [], [], None, "prompt_too_long") for p in prompt_ids]
+        out = [[Generation(p, [], [], None, "prompt_too_long") for _ in range(n)] for p in prompt_ids]
         if not fits:
             return out
-        params = [SamplingParams(temperature=temperature, top_p=1.0, logprobs=0,
+        params = [SamplingParams(n=n, temperature=temperature, top_p=1.0, logprobs=0,
                                  max_tokens=min(max_new_tokens, self.max_model_len - len(prompt_ids[i])))
                   for i in fits]
         results = self.llm.generate([TokensPrompt(prompt_token_ids=prompt_ids[i]) for i in fits],
                                     sampling_params=params, use_tqdm=False)
         for i, res in zip(fits, results):
-            seq = res.outputs[0]
-            ids = [int(t) for t in seq.token_ids]
-            lps = [float(step[tok].logprob) for step, tok in zip(seq.logprobs or [], ids)]
-            if len(lps) != len(ids):
-                raise RuntimeError("vLLM returned no log-prob for some sampled tokens")
-            out[i] = Generation(prompt_ids[i], ids, lps, seq.text, seq.finish_reason)
+            for j, seq in enumerate(sorted(res.outputs, key=lambda s: s.index)):
+                ids = [int(t) for t in seq.token_ids]
+                lps = [float(step[tok].logprob) for step, tok in zip(seq.logprobs or [], ids)]
+                if len(lps) != len(ids):
+                    raise RuntimeError("vLLM returned no log-prob for some sampled tokens")
+                out[i][j] = Generation(prompt_ids[i], ids, lps, seq.text, seq.finish_reason)
         return out
 
     def sleep(self) -> None:

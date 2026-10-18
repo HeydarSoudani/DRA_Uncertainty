@@ -51,8 +51,8 @@ scale at 15).  The
 default mode is ``monitor``: in ``inform`` mode the agent reads the signals,
 which changes the trajectory.
 
-The run is selected with the same arguments as ``experiments/dra_inference.py``
-(``--config``, ``--agentic-model``, ``--dataset``, ``--subset``, ``--retriever``,
+The run is selected with the same arguments as ``experiments/inference/dra_inference.py``
+(``--config``, ``--policy-model``, ``--dataset``, ``--subset``, ``--retriever``,
 ``--belief-mode`` and any YAML key as ``--flag`` override), and
 its directory is built the same way:
 ``{output}/{dataset}_{split}[_{query_key}]_{retriever}/{run_name}/{belief_config}/``.
@@ -74,7 +74,7 @@ Output in ``<run_dir>/analysis/signal_correlation/``:
 Usage::
 
     python analysis/signal_correlation.py --dataset browsecomp_plus --subset test \\
-        --agentic-model belief_aware --belief-mode monitor
+        --policy-model belief_aware --belief-mode monitor
 """
 
 import argparse
@@ -111,7 +111,7 @@ from utils.cli_setup import (
     resolve_dataset_defaults,
 )
 from belief_model_component.types import STATUS_LEVEL
-from utils.config import AGENTIC_MODEL_ALIAS, AGENTIC_MODEL_TO_LLM
+from utils.config import POLICY_MODEL_ALIAS, POLICY_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
 logger = logging.getLogger(__name__)
@@ -565,7 +565,7 @@ def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    """Same run-selecting arguments as experiments/dra_inference.py.
+    """Same run-selecting arguments as experiments/inference/dra_inference.py.
 
     The frequently-varied knobs are CLI arguments; the rest come from the
     YAML ``--config`` and can be overridden with the matching ``--flag``.
@@ -579,8 +579,8 @@ def _parse_args() -> argparse.Namespace:
     # ── File-backed config ─────────────────────────────────────────────────
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables (the one the run used). Any value in it can be overridden by passing the matching --flag on the CLI.")
 
-    # ── Run selection (same as experiments/dra_inference.py) ───────────────
-    parser.add_argument("--agentic-model", type=str, default="glm", choices=list(AGENTIC_MODEL_TO_LLM), help="Agent of the run; the LLM is selected automatically from the agent.")
+    # ── Run selection (same as experiments/inference/dra_inference.py) ───────────────
+    parser.add_argument("--policy-model", type=str, default="glm", choices=list(POLICY_MODEL_TO_LLM), help="Agent of the run; the LLM is selected automatically from the agent.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset of the run.")
     parser.add_argument("--subset", type=lambda v: None if v == "null" else v, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever of the run.")
@@ -600,9 +600,9 @@ def _parse_args() -> argparse.Namespace:
     if cli_subset is not None:
         args.subset = cli_subset
 
-    # ── Derive --llm-model from --agentic-model ────────────────────────────-
-    args.llm_model = AGENTIC_MODEL_TO_LLM[args.agentic_model]
-    args.agentic_model = AGENTIC_MODEL_ALIAS.get(args.agentic_model, args.agentic_model)
+    # ── Derive --llm-model from --policy-model ────────────────────────────-
+    args.llm_model = POLICY_MODEL_TO_LLM[args.policy_model]
+    args.policy_model = POLICY_MODEL_ALIAS.get(args.policy_model, args.policy_model)
 
     if args.output is None:
         args.output = _OUTPUT_PREFIX
@@ -610,11 +610,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def resolve_run_dir(args: argparse.Namespace) -> Path:
-    """The run directory experiments/dra_inference.py writes for *args*."""
+    """The run directory experiments/inference/dra_inference.py writes for *args*."""
     resolve_dataset_defaults(args)
     file_data_set = resolve_split_id(args.dataset, args.dataset_year, args.subset)
     run_name = build_run_name_for_pipeline(
-        agentic_model=args.agentic_model, llm_model=args.llm_model, use_plan=args.use_plan,
+        policy_model=args.policy_model, llm_model=args.llm_model, use_plan=args.use_plan,
     )
     dataset_dir = build_dataset_dir_name(args.dataset, file_data_set, args.query_key, args.retriever)
     belief_config = build_belief_config_name(

@@ -1,4 +1,4 @@
-"""Evaluation of an inference run, used by ``experiments/dra_inference.py``.
+"""Evaluation of an inference run, used by ``experiments/inference/dra_inference.py``.
 
     save_query_outputs      Write one query's files under the run directory.
     build_evaluators        Instantiate the evaluators of a dataset.
