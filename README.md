@@ -394,6 +394,6 @@ python analysis/criteria_reachability.py --dataset browsecomp_plus   # criteria 
 ## 4. Training
 
 Belief model training with the agent frozen (Agent-BRACE adapted to retrieval), one phase per call of
-`experiments/training/belief_model_training.py`; see [docs/belief_model_training.md](docs/belief_model_training.md).
+`experiments/training/belief_model_training.py`.
 The trained belief model makes both calls, criteria init and belief update; the query scorer stays frozen.
 Phase 1 runs on a training pool (`experiments/training/build_training_pool.py`: `deep_qa` or `trqa_validation`); the RL rewards are still to do.
