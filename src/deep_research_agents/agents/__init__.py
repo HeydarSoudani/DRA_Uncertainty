@@ -32,9 +32,7 @@ REASONING_AGENTS = frozenset({
     "cpm_report",
     "belief_aware",
 })
-CPM_REPORT_AGENTS  = frozenset()  # kept for backward-compat; now part of REASONING_AGENTS
-AGENTCPM_EXPLORE_AGENTS = frozenset({"cpm_explore"})  # kept for vLLM spec resolution
-ALL_AGENTS         = sorted(REASONING_AGENTS | CPM_REPORT_AGENTS | AGENTCPM_EXPLORE_AGENTS)
+ALL_AGENTS         = sorted(REASONING_AGENTS)
 
 AGENT_MAP = {
     "react": ReActAgent,
@@ -71,8 +69,6 @@ __all__ = [
     "BeliefAwareAgent",
     "REASONING_AGENTS",
     "CPMExplore",
-    "CPM_REPORT_AGENTS",
-    "AGENTCPM_EXPLORE_AGENTS",
     "ALL_AGENTS",
     "AGENT_MAP",
 ]

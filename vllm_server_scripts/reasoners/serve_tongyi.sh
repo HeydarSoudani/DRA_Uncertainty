@@ -3,8 +3,8 @@
 # Start a vLLM server for the Tongyi-DeepResearch-30B-A3B model.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_tongyi.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_tongyi.sh
+#   bash vllm_server_scripts/reasoners/serve_tongyi.sh
+#   PORT=8000 bash vllm_server_scripts/reasoners/serve_tongyi.sh
 #
 # Requirements:
 #   - vLLM installed.

@@ -303,8 +303,8 @@ class CriteriaTargetingSignal:
 class RetrievalGainSignal:
     """Supervised retrieval gain of each step against the qrels.
 
-    Binary (``qrels``, relevant = grade >= ``min_relevance_score``), over the
-    step's unique doc ids:
+    Binary (``qrels``, thresholded by the caller: relevant = grade > 0),
+    over the step's unique doc ids:
 
     - ``new_item_precision``: newly seen relevant docs / the step's docs
       (0, 0.2, ..., 1 for 5 docs).

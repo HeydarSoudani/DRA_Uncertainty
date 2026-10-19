@@ -118,7 +118,6 @@ ENV/
 
 # My
 data/
-!src/training/data/
 archive/
 run_outputs/
 script_logging/

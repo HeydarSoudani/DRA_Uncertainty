@@ -3,8 +3,8 @@
 # Start a vLLM server for Rank1 (JHU CLSP) used as a pointwise reranker.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_rank1.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_rank1.sh
+#   bash vllm_server_scripts/rerankers/serve_rank1.sh
+#   PORT=8000 bash vllm_server_scripts/rerankers/serve_rank1.sh
 #
 # The pipeline connects to this server via --rank1-api-url
 # (default http://localhost:8000/v1).

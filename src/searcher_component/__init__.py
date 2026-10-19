@@ -10,7 +10,6 @@ from .retriever import (
 )
 from .fusion import (
     interleaving_fusion,
-    nested_interleaving_fusion,
     reciprocal_rank_fusion,
     simple_concatenation,
     fuse_results,
@@ -30,7 +29,6 @@ __all__ = [
     "DenseRetriever",
     "Encoder",
     "interleaving_fusion",
-    "nested_interleaving_fusion",
     "reciprocal_rank_fusion",
     "simple_concatenation",
     "fuse_results",

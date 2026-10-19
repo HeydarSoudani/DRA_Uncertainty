@@ -25,8 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import openai
-
 from reasoner_component import REASONING_FALLBACK_PREFIX
 
 from .base_agent import BasicAgent
@@ -46,26 +44,6 @@ _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "cpm_explore"
 def _load_prompt(name: str) -> str:
     return (_PROMPT_DIR / name).read_text(encoding="utf-8")
 
-
-# ── Respond instruction variants ────────────────────────────────────────────
-
-_RESPOND_WITH_TOOLS = (
-    "## How to Respond\n\n"
-    "1. **Think**: Reason about the problem and plan your next action.\n"
-    "2. **Search**: Call the search tool to find relevant information. "
-    "Use different queries to explore multiple angles.\n"
-    "3. **Answer**: When you have gathered sufficient evidence, "
-    "provide your final answer inside <answer></answer> tags.\n\n"
-    "To call a tool, output:\n"
-    '<tool_call>{"name": "search", "arguments": {"query": "your search query"}}</tool_call>'
-)
-
-_RESPOND_NO_TOOLS = (
-    "## How to Respond\n\n"
-    "1. **Think**: Reason about the problem and plan your next action.\n"
-    "2. **Answer**: When you have gathered sufficient evidence, "
-    "provide your final answer inside <answer></answer> tags."
-)
 
 # ── Query template ───────────────────────────────────────────────────────────
 
@@ -305,8 +283,7 @@ class CPMExplore(BasicAgent):
                 current_date=datetime.now().strftime("%Y-%m-%d"),
             )
         remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
-        client = openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
-        response = client.chat.completions.create(
+        response = self._openai_client().chat.completions.create(
             model=cfg.model_name,
             messages=messages,
             max_tokens=min(remaining_tokens, 4096),
@@ -335,7 +312,7 @@ class CPMExplore(BasicAgent):
             return messages
 
         cfg = self.inference_config
-        client = openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
+        client = self._openai_client()
 
         assistant_parts = []
         for msg in messages[2:]:
@@ -414,10 +391,7 @@ class CPMExplore(BasicAgent):
             num_iterations  : number of LLM iterations used
         """
         cfg = self.inference_config
-        client = openai.OpenAI(
-            base_url=cfg.api_base,
-            api_key=cfg.api_key,
-        )
+        client = self._openai_client()
 
         system_prompt = self._build_system_prompt()
         formatted_query = QUERY_TEMPLATE.format(Question=query)
@@ -451,7 +425,7 @@ class CPMExplore(BasicAgent):
                     )
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -486,7 +460,7 @@ class CPMExplore(BasicAgent):
                     )
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -508,6 +482,8 @@ class CPMExplore(BasicAgent):
             }
             if "content" not in assistant_msg:
                 assistant_msg["content"] = ""
+            # The model's own <belief_state> tags never enter the history.
+            assistant_msg["content"] = self._strip_belief_state(assistant_msg["content"] or "")
             content = assistant_msg.get("content") or ""
             raw_content = content  # preserve for tool-call parsing
 
@@ -584,7 +560,8 @@ class CPMExplore(BasicAgent):
                 self._notify_progress("answer", iteration)
                 self._vprint(iteration, "think", current_thinking or "(no thinking)")
                 self._vprint(iteration, "answer", (answer or content)[:300])
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
+                    "iteration": iteration,
                     "action_type": "answer",
                     "think": current_thinking or "",
                     "generation": content,
@@ -630,6 +607,7 @@ class CPMExplore(BasicAgent):
             n_searches = sum(1 for tc in all_tool_calls if tc["function"]["name"] == "search")
             _iter_subqueries: List[str] = []
             _iter_seen_docs: List[Dict[str, Any]] = []
+            _iter_steps: List[Dict[str, Any]] = []
 
             for idx, tool_call in enumerate(all_tool_calls):
                 tname = tool_call["function"]["name"]
@@ -661,7 +639,7 @@ class CPMExplore(BasicAgent):
                         result_text = self._format_search_results(docs)
                         self._vprint_docs(iteration, docs[:self.seen_top_k], sub_iter=sub_iter)
 
-                        reasoning_path.append({
+                        _iter_steps.append({
                             "action_type": "search",
                             "think": current_thinking if idx == 0 else "",
                             "search_query": search_query,
@@ -701,12 +679,11 @@ class CPMExplore(BasicAgent):
                         ),
                     })
 
-            if _iter_subqueries:
-                tag = self._observe_step(
-                    _iter_subqueries, _iter_seen_docs, iteration, query,
-                    trajectory=messages,
-                )
-                self._append_belief_state(messages, tag, reasoning_path[-1])
+            self._observe_and_record(
+                reasoning_path, _iter_steps,
+                _iter_subqueries, _iter_seen_docs, iteration, query,
+                trajectory=messages, messages=messages,
+            )
 
             iteration += 1
 
@@ -722,7 +699,7 @@ class CPMExplore(BasicAgent):
                 )
             if forced_text:
                 prediction = forced_text
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
                     "action_type": "max_iter_force",
                     "think": FINAL_ANSWER_INSTRUCTION,
                     "generation": forced_text,

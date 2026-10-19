@@ -1,7 +1,7 @@
 """Base prompt template for listwise reranking."""
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List
 
 
@@ -29,7 +29,6 @@ class PromptTemplate:
     body_ack: str = ""  # format var: {rank}
 
     # Output parsing
-    output_validation_regex: str = r"\[\d+\]( > \[\d+\])*"
     output_extraction_regex: str = r"\[(\d+)\]"
 
     def build_messages( self, query: str, candidate_texts: List[str], ) -> List[Dict[str, str]]:

@@ -334,9 +334,27 @@ def doc_text(doc: Dict[str, Any], max_length: Optional[int] = 300) -> str:
     return text
 
 
-# Backwards-compatible private aliases (existing call sites).
+# Backwards-compatible private alias (existing call sites).
 _doc_title = doc_title
-_doc_text = doc_text
+
+
+def unique_docs(docs: List[Dict[str, Any]], *, keep_unidentified: bool = True) -> List[Dict[str, Any]]:
+    """*docs* in order without repeated ids (``doc_id``), first occurrence
+    kept.  Docs without an id are all kept, or all dropped with
+    ``keep_unidentified=False`` (e.g. when every doc needs a label)."""
+    seen = set()
+    out = []
+    for doc in docs:
+        key = doc_id(doc)
+        if not key:
+            if keep_unidentified:
+                out.append(doc)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(doc)
+    return out
 
 
 def _collect_cited_docs(result: dict) -> List[Dict[str, Any]]:

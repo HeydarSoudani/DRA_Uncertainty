@@ -20,12 +20,11 @@ rerank(request, rank_start, rank_end, ...)         ->  Result
 rerank(query_str, documents, top_k)               ->  List[Dict]   (convenience)
 """
 
-import copy
 import logging
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from rank_llm.data import Candidate, Query, Request, Result
+from rank_llm.data import Request, Result
 
 from .prompts import RANK_R1_ANSWER_PATTERN, RANK_R1_SYSTEM_PROMPT, RANK_R1_USER_PROMPT
 

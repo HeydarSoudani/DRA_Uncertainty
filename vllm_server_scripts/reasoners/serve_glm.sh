@@ -3,8 +3,8 @@
 # Start a vLLM server for the GLM-4.7-Flash model.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_glm.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_glm.sh
+#   bash vllm_server_scripts/reasoners/serve_glm.sh
+#   PORT=8000 bash vllm_server_scripts/reasoners/serve_glm.sh
 #
 # Requirements:
 #   - vLLM installed.

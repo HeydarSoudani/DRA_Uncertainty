@@ -58,19 +58,10 @@ class ToolCallParser(ABC):
     def has_calls(self, text: str, tool_name: str) -> bool: ...
     @abstractmethod
     def parse_call(self, text: str, tool_name: str) -> Optional[ToolCallInfo]: ...
-    @abstractmethod
-    def format_result(self, formatted_output: str, output: Any) -> str: ...
-    @property
-    @abstractmethod
-    def stop_sequences(self) -> List[str]: ...
 
 
 class UnifiedToolCallParserV20250824(ToolCallParser):
     """Parser for <call_tool name="...">...</call_tool> and </call> closing variant."""
-
-    @property
-    def stop_sequences(self) -> List[str]:
-        return ["</call_tool>", "</call>"]
 
     def has_calls(self, text: str, tool_name: str) -> bool:
         for pattern in [
@@ -96,9 +87,6 @@ class UnifiedToolCallParserV20250824(ToolCallParser):
                         end_pos=match.end(),
                     )
         return None
-
-    def format_result(self, formatted_output: str, output: Any) -> str:
-        return f"<tool_output>{formatted_output}</tool_output>"
 
 # ── Pipeline imports (LLM + retriever) ───────────────────────────────────────
 from utils.llm_client import LiteLLMClient              # noqa: E402
@@ -134,7 +122,7 @@ class DrTulu_Agent(BasicAgent):
         )
     """
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, max_tokens_per_step: int = 1024, verbose: bool = True, search_backend: str = "serper") -> None:
+    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, max_tokens_per_step: int = 1024, verbose: bool = True) -> None:
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
 
         # DR-Tulu action prompts (think / tool / answer / cite)
@@ -151,13 +139,6 @@ class DrTulu_Agent(BasicAgent):
         self.verbose: bool = verbose
 
     AGENT_NAME = "DrTulu"
-
-    # ── Snippet ID helpers ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _make_snippet_id(counter: int) -> str:
-        """Return a snippet ID in the DR-Tulu format: S1, S2, …"""
-        return f"S{counter}"
 
     # ── Document formatting ───────────────────────────────────────────────────
 
@@ -206,7 +187,7 @@ class DrTulu_Agent(BasicAgent):
         formatted_snippets, ids = self._format_docs_as_snippets(docs, snippet_offset)
         new_offset = snippet_offset + len(ids)
 
-        # Wrap in <tool_output> — mirrors UnifiedToolCallParserV20250824.format_result()
+        # Wrap in <tool_output>, the DR-Tulu tool output format
         tool_output_xml = f"<tool_output>\n{formatted_snippets}\n</tool_output>"
         return tool_output_xml, docs, new_offset
 
@@ -302,7 +283,7 @@ class DrTulu_Agent(BasicAgent):
                     )
                     forced_text = "<answer>" + (forced_resp or "")
                     full_generation += forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -315,6 +296,8 @@ class DrTulu_Agent(BasicAgent):
             if not response_text:
                 self._vprint(iter_num, "error", "Empty response, stopping")
                 break
+            # The model's own <belief_state> tags never enter the history.
+            response_text = self._strip_belief_state(response_text)
 
             # 2. Parse first <call_tool> action (DR-Tulu tool action)
             tool_info, matched_tool = self._find_first_tool_call(response_text)
@@ -333,7 +316,8 @@ class DrTulu_Agent(BasicAgent):
                 self._vprint(iter_num, "think", think_text or "(no think)")
                 self._vprint(iter_num, "answer" if has_answer else "stop", self._extract_answer(response_text) or "(budget exhausted)")
 
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
+                    "iteration":         iter_num,
                     "action_type":       "answer",
                     "think":             think_text,
                     "generation":        response_text,
@@ -361,8 +345,9 @@ class DrTulu_Agent(BasicAgent):
             )
             seen_docs = docs[:self.seen_top_k]
 
-            # 4. Record step in the trajectory (pipeline-compatible)
-            reasoning_path.append({
+            # 4. The step of the trajectory (pipeline-compatible), recorded
+            #    once the iteration is observed
+            step = {
                 "action_type":       "search",
                 "think":             think_text,
                 "tool_name":         matched_tool,
@@ -372,18 +357,17 @@ class DrTulu_Agent(BasicAgent):
                     d.get("doc_id", "") for d in docs[: self.seen_top_k]
                 ],
                 "tokens":            self._step_tokens(),
-            })
+            }
 
             # 5. Append tool output as user turn so the model can continue
             #    reasoning with the retrieved evidence (DR-Tulu output handling).
             messages = [*messages, {"role": "user", "content": tool_output_xml}]
 
-            tag = self._observe_step(
-                tool_query or "", seen_docs, iter_num, query,
+            self._observe_and_record(
+                reasoning_path, step, tool_query or "", seen_docs, iter_num, query,
                 seen_docs=seen_docs,
-                trajectory=messages,
+                trajectory=messages, messages=messages,
             )
-            self._append_belief_state(messages, tag, reasoning_path[-1])
 
         # ── Force final answer if budget exhausted on a search step ─────────
         # When max_iteration is reached and the last step was a search (not an answer),
@@ -408,7 +392,7 @@ class DrTulu_Agent(BasicAgent):
             # Model continues from the prefill; reconstruct the full tag
             forced_text = "<answer>" + (forced_response or "")
             full_generation += forced_text
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
                 "action_type":       "answer",
                 "think":             FINAL_ANSWER_INSTRUCTION,
                 "generation":        forced_text,

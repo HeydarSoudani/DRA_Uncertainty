@@ -122,8 +122,10 @@ class AgentVerboseMixin:
 
         Returns the iteration's ``<belief_state>`` tag in ``inform`` mode, which
         the agent appends to its context right after the iteration's search
-        results (``_append_belief_state``); None otherwise, and whenever the
-        belief model failed, so the agent then goes on without a tag.
+        results; None otherwise, and whenever the belief model failed, so the
+        agent then goes on without a tag.  Agents call it through
+        ``_observe_and_record``, which also stamps and records the
+        iteration's trajectory steps.
 
         The belief model is isolated from the agent run: its errors are logged,
         never raised; the tokens its intermediate answer spends on the
@@ -159,6 +161,57 @@ class AgentVerboseMixin:
             if saved is not None:
                 meter.input_tokens, meter.output_tokens, meter.num_calls = saved
             self._belief_seconds = getattr(self, "_belief_seconds", 0.0) + time.monotonic() - started
+        return tag
+
+    def _observe_and_record(
+        self,
+        reasoning_path: list,
+        steps: Union[Dict[str, Any], List[Dict[str, Any]]],
+        subqueries: Union[str, List[str]],
+        docs: List[Dict[str, Any]],
+        iter_num: int,
+        original_query: Optional[str] = None,
+        *,
+        seen_docs: Optional[List[Dict[str, Any]]] = None,
+        trajectory: Any = None,
+        messages: Optional[List[Any]] = None,
+    ) -> Optional[str]:
+        """Close one search iteration: observe it, then stamp and record its steps.
+
+        1. passes the iteration to the belief model (``_observe_step``);
+        2. sets ``iteration`` to *iter_num* on each of *steps* (the
+           iteration's search steps, not yet in *reasoning_path*; their
+           ``sub_iter`` is kept), so the trajectory label and the belief
+           record's ``agent_iteration`` are the same number;
+        3. in ``inform`` mode appends the tag to the last of *messages* (when
+           given, see ``_append_belief_state``) and stores it on the
+           iteration's last step;
+        4. appends the steps to *reasoning_path* through ``_record_step``,
+           after the tag, so the trajectory log has it.
+
+        Without *subqueries* and *docs* (the iteration searched nothing) the
+        belief model is not called and the steps are only stamped and
+        recorded.
+
+        Returns the tag (None outside ``inform`` mode or when the belief
+        model failed), for agents that add it to a prompt string themselves.
+        """
+        steps = [steps] if isinstance(steps, dict) else list(steps)
+        for step in steps:
+            step["iteration"] = iter_num
+        tag = None
+        if subqueries or docs:
+            tag = self._observe_step(
+                subqueries, docs, iter_num, original_query,
+                seen_docs=seen_docs, trajectory=trajectory,
+            )
+        if tag:
+            if messages is not None:
+                self._append_belief_state(messages, tag)
+            if steps:
+                steps[-1]["belief_state"] = tag
+        for step in steps:
+            self._record_step(reasoning_path, step)
         return tag
 
     # -- inform mode: the <belief_state> tag --
@@ -323,24 +376,38 @@ class BasicAgent(AgentVerboseMixin):
         Self-managed agents (those with model_name / model_url attributes)
         automatically get a hosted_vllm/ LiteLLM wrapper pointing at the
         same vLLM server so the intermediate answer uses the same
-        backbone model.  API-backed agents fall back to self.generator.
-        Subclasses with non-standard routing (e.g. Bedrock) can still
-        override this method.
+        backbone model; it is built on first use and reused.  API-backed
+        agents fall back to self.generator.  Subclasses with non-standard
+        routing (e.g. Bedrock) can still override this method.
         """
         model_name = getattr(self, "model_name", None)
         model_url = getattr(self, "model_url", None)
         if model_name and model_url:
             api_key = getattr(self, "_api_key", "EMPTY")
-            return LiteLLMClient(
-                model=f"hosted_vllm/{model_name}",
-                api_base=model_url,
-                api_key=api_key,
-            )
+            key = (model_name, model_url, api_key)
+            cached = getattr(self, "_intermediate_answer_llm", None)
+            if cached is None or cached[0] != key:
+                cached = (key, LiteLLMClient(
+                    model=f"hosted_vllm/{model_name}",
+                    api_base=model_url,
+                    api_key=api_key,
+                ))
+                self._intermediate_answer_llm = cached
+            return cached[1]
         return self.generator
 
-    def get_system_prompt(self) -> Optional[str]:
-        """Return the agent's system prompt, or None if not set."""
-        return getattr(self, "system_prompt", None) or getattr(self, "_system_prompt", None)
+    def _openai_client(self):
+        """An ``openai.OpenAI`` client for ``inference_config``'s endpoint,
+        built on first use and reused while the endpoint stays the same."""
+        import openai as _openai
+
+        cfg = self.inference_config
+        key = (cfg.api_base, cfg.api_key)
+        cached = getattr(self, "_openai_client_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, _openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key))
+            self._openai_client_cache = cached
+        return cached[1]
 
     # ------------------------------------------------------------------
     # Default document formatting and tool definitions
@@ -417,10 +484,8 @@ class BasicAgent(AgentVerboseMixin):
         ``[reasoning_fallback]`` so callers can distinguish it).
         Returns None only on API failure or truly empty output.
         """
-        import openai as _openai
-
         cfg = self.inference_config
-        client = _openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
+        client = self._openai_client()
 
         request: Dict[str, Any] = {
             "model": cfg.model_name,
@@ -560,10 +625,8 @@ class BasicAgent(AgentVerboseMixin):
         Uses ``inference_config`` for model, api_base, api_key, max_output_tokens.
         Trims the first iteration to free context space for the instruction.
         """
-        import openai as _openai
-
         cfg = self.inference_config
-        client = _openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
+        client = self._openai_client()
         trimmed = self._trim_first_iteration(messages)
         trimmed.append({
             "role": "user",
@@ -591,10 +654,8 @@ class BasicAgent(AgentVerboseMixin):
 
         Uses ``inference_config`` for model, api_base, api_key, max_output_tokens.
         """
-        import openai as _openai
-
         cfg = self.inference_config
-        client = _openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
+        client = self._openai_client()
         prompt = self._build_force_answer_prompt(
             query, reasoning_path, cfg.format_instructions,
         )
@@ -822,10 +883,6 @@ class BasicAgent(AgentVerboseMixin):
     # Other helpers
     # ------------------------------------------------------------------
 
-    def get_unique_docs(self, docs_lst: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Deduplicate documents based on doc_id."""
-        return list({doc['doc_id']: doc for doc in docs_lst}.values())
-
     def get_think(self, text: str) -> Optional[str]:
         """Extract thinking process from <think> tags."""
         return _get_think(text)
@@ -960,7 +1017,7 @@ class BasicAgent(AgentVerboseMixin):
             forced_output = self.generator.complete(messages, **kwargs)
             answer = extract_fn(forced_output)
             self._vprint(-1, "forced_answer", (answer or "(no answer)")[:300])
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
                 'action_type': 'context_limit',
                 'think': FINAL_ANSWER_INSTRUCTION,
                 'prediction': answer,
@@ -1075,7 +1132,10 @@ class TagReasoningAgent(BasicAgent):
                 self._vprint(iter_num, "think", one_step_think or "(no think)")
                 self._notify_progress("answer", iter_num)
                 self._vprint(iter_num, "answer", prediction or "(no answer)")
-                reasoning_path.append({'think': one_step_think, 'prediction': prediction, 'tokens': self._step_tokens()})
+                self._record_step(reasoning_path, {
+                    'iteration': iter_num, 'think': one_step_think, 'prediction': prediction,
+                    'tokens': self._step_tokens(),
+                })
                 break
 
             output_text = self._strip_belief_state(output_text)
@@ -1096,29 +1156,28 @@ class TagReasoningAgent(BasicAgent):
             else:
                 search_docs, search_results = [], ''
 
-            reasoning_path.append({
+            step = {
+                'iteration': iter_num,
                 'think': think_text,
                 'search_query': tmp_query,
                 'docs': search_docs,
                 'component_doc_ids': [d.get('doc_id', '') for d in search_docs[:self.seen_top_k]],
                 'tokens': self._step_tokens(),
-            })
+            }
 
             search_text = self.curr_step_template.format(output_text=output_text, search_results=search_results)
             input_prompt += search_text
             messages = self._build_messages(input_prompt)
 
-            if tmp_query:
-                seen_docs = search_docs[:self.seen_top_k]
-                tag = self._observe_step(
-                    tmp_query, seen_docs, iter_num, question,
-                    seen_docs=seen_docs,
-                    trajectory=messages,
-                )
-                if tag:
-                    input_prompt += f"{tag}\n"
-                    reasoning_path[-1]['belief_state'] = tag
-                    messages = self._build_messages(input_prompt)
+            seen_docs = search_docs[:self.seen_top_k]
+            tag = self._observe_and_record(
+                reasoning_path, step, tmp_query, seen_docs, iter_num, question,
+                seen_docs=seen_docs,
+                trajectory=messages,
+            )
+            if tag:
+                input_prompt += f"{tag}\n"
+                messages = self._build_messages(input_prompt)
 
         prediction = reasoning_path[-1].get('prediction') if reasoning_path else None
 
@@ -1132,7 +1191,7 @@ class TagReasoningAgent(BasicAgent):
             prediction = (force_output or "").split("</answer>")[0].strip()
             self._vprint(iter_num, "think", FINAL_ANSWER_INSTRUCTION)
             self._vprint(iter_num, "finish", prediction or "(no answer)")
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
                 'action_type': action_type,
                 'think': FINAL_ANSWER_INSTRUCTION,
                 'prediction': prediction,

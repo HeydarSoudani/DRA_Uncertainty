@@ -8,7 +8,7 @@ continue to work without modification.
 
 from typing import Any, Dict, List, Optional
 
-from searcher_component.fusion_methods.interleaving import InterleavingFusion, NestedInterleavingFusion
+from searcher_component.fusion_methods.interleaving import InterleavingFusion
 from searcher_component.fusion_methods.rrf import ReciprocalRankFusion
 from searcher_component.fusion_methods.concatenation import SimpleConcatenation
 
@@ -23,14 +23,6 @@ def interleaving_fusion(
 ) -> List[Dict[str, Any]]:
     """Block-interleaved fusion across multiple ranked lists."""
     return InterleavingFusion(window=window).fuse(ranked_lists)
-
-
-def nested_interleaving_fusion(
-    nested_ranked_lists: List[List[List[Dict[str, Any]]]],
-    window: int = 1,
-) -> List[Dict[str, Any]]:
-    """Two-level interleaving fusion (within + across Search calls)."""
-    return NestedInterleavingFusion(window=window).fuse(nested_ranked_lists)
 
 
 def reciprocal_rank_fusion(

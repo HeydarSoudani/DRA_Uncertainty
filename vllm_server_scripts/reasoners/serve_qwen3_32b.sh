@@ -3,8 +3,8 @@
 # Start a vLLM server for Qwen3-32B used as the accuracy-evaluation judge.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_32b.sh
-#   PORT=6009 bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_32b.sh
+#   bash vllm_server_scripts/reasoners/serve_qwen3_32b.sh
+#   PORT=6009 bash vllm_server_scripts/reasoners/serve_qwen3_32b.sh
 #
 # The pipeline connects to this server via --judge-api-url
 # (default http://localhost:6009/v1).

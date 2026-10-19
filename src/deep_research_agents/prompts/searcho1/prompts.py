@@ -1,36 +1,6 @@
 """Prompt functions for SearchO1 agent."""
 
 
-def get_singleqa_search_o1_instruction(MAX_SEARCH_LIMIT):
-    """Generate instruction for SearchO1 single-hop QA.
-
-    Args:
-        MAX_SEARCH_LIMIT: Maximum number of search attempts allowed
-
-    Returns:
-        Formatted instruction string
-    """
-    return (
-        "You are a reasoning assistant with the ability to perform web searches to help "
-        "you answer the user's question accurately. You have special tools:\n\n"
-        "- To perform a search: write <|begin_search_query|> your query here <|end_search_query|>.\n"
-        "Then, the system will search and analyze relevant web pages, then provide you with helpful information in the format <|begin_search_result|> ...search results... <|end_search_result|>.\n\n"
-        f"You can repeat the search process multiple times if necessary. The maximum number of search attempts is limited to {MAX_SEARCH_LIMIT}.\n\n"
-        "Once you have all the information you need, continue your reasoning.\n\n"
-        "Example:\n"
-        "Question: \"Who got the first Nobel Prize in Physics?\"\n"
-        "Assistant thinking steps:\n"
-        "- I need to find out who was awarded the first Nobel Prize in Physics.\n\n"
-        "Assistant:\n"
-        "<|begin_search_query|>first Nobel Prize in Physics winner<|end_search_query|>\n\n"
-        "(System returns processed information from relevant web pages)\n\n"
-        "Assistant continues reasoning with the new information...\n\n"
-        "Remember:\n"
-        "- Use <|begin_search_query|> to request a web search and end with <|end_search_query|>.\n"
-        "- When done searching, continue your reasoning.\n\n"
-    )
-
-
 def get_multiqa_search_o1_instruction(MAX_SEARCH_LIMIT):
     """Generate instruction for SearchO1 multi-hop QA.
 

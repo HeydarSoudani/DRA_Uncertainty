@@ -9,10 +9,8 @@ and running multiple repetitions for self-consistency.
 import asyncio
 import logging
 import random
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from pydantic import BaseModel, Field
 
 from reasoner_component import LiteLLMClient, get_litellm_client
@@ -92,18 +90,15 @@ class BatchedLLMEvaluator:
     - Batched processing of documents for better control over context size
     - Self-consistency through multiple runs with shuffling
     - Optional explanations for scores
-    - Jinja2 templates for flexible prompt formatting
     """
 
-    def __init__( self, model: LiteLLMClient, thinking: str = "", reasoning: bool = False, template_path: Path = Path("./"), template_name: str = "relevance_scoring.jinja", max_chars_per_document: int = 4096, enable_selector: bool = False, selector_score_threshold: float = 3.0, selector_min_keep: int = 0, ):
+    def __init__( self, model: LiteLLMClient, thinking: str = "", reasoning: bool = False, max_chars_per_document: int = 4096, enable_selector: bool = False, selector_score_threshold: float = 3.0, selector_min_keep: int = 0, ):
         """Initialize the BatchedLLMEvaluator with a model.
 
         Args:
             model: LiteLLM client for scoring
             thinking: Additional thinking instructions to append to system prompt
             reasoning: Whether to request explanations for scores
-            template_path: Path to Jinja2 template directory
-            template_name: Name of the Jinja2 template file
             max_chars_per_document: Maximum characters per document to send to LLM
             enable_selector: When True, ``rerank`` truncates its output to only the
                 documents whose ``rank_score`` clears ``selector_score_threshold``,
@@ -115,8 +110,6 @@ class BatchedLLMEvaluator:
         """
         self.model = model
         self.max_chars = max_chars_per_document
-        self.template_path = template_path
-        self.template_name = template_name
         self.thinking = thinking
         self.reasoning = reasoning
         self.enable_selector = enable_selector
@@ -163,30 +156,6 @@ class BatchedLLMEvaluator:
         prompt = get_rerank_relevance_scoring_user_prompt(query, documents)
 
         return prompt, id_pairs
-
-    def _render_template( self, params: Dict[str, Any], prompt_template_string: Optional[str] = None ) -> str:
-        """Render a Jinja template with the given parameters.
-
-        Args:
-            params: Parameters to pass to the template
-            prompt_template_string: Optional template string (if None, loads from file)
-
-        Returns:
-            Rendered template string
-        """
-        if prompt_template_string is None:
-            environment = Environment(
-                loader=FileSystemLoader(searchpath=self.template_path, encoding="utf-8"),
-                undefined=StrictUndefined,
-                keep_trailing_newline=True,
-                trim_blocks=True,
-                lstrip_blocks=True,
-            )
-            template = environment.get_template(self.template_name)
-            return template.render(params)
-        else:
-            template = Environment().from_string(prompt_template_string)
-            return template.render(params)
 
     async def _get_llm_scores_single_batch( self, query: str, data: List[Tuple[str, str]], metadata: Optional[Dict[str, Any]] = None, ) -> Tuple[Dict[str, ResultScore | ResultScoreWithExplanation], bool]:
         """Get LLM scores for a single batch of documents.
@@ -427,45 +396,13 @@ class BatchedLLMEvaluator:
 
         return ranked
 
-    async def get_scores( self, query: str, data: List[Tuple[str, str]], *, number_of_runs: int = 2, number_of_batches: int = 1, shuffle: bool = False, shuffle_seed_before_batch: Optional[int] = None, shuffle_seed_within_batch: Optional[int] = None, metadata: Optional[Dict[str, Any]] = None, **_, ) -> Dict[str, float | bool]:
-        """Get LLM scores for all documents (wrapper method for pipeline compatibility).
-
-        Args:
-            query: Query text
-            data: List of (doc_id, content) tuples
-            number_of_runs: Number of repetitions for self-consistency
-            number_of_batches: Number of batches to split documents into
-            shuffle: Enable shuffling for self-consistency
-            shuffle_seed_before_batch: Seed for shuffling documents before batching
-            shuffle_seed_within_batch: Seed for shuffling documents within each batch
-            metadata: Optional metadata for tracking
-            **_: Additional kwargs (ignored)
-
-        Returns:
-            Dictionary with doc_id -> score mappings, plus a special key '__is_skipped'
-            indicating if query was skipped
-        """
-        results, is_skipped = await self.get_llm_scores(
-            query,
-            data,
-            number_of_runs,
-            number_of_batches,
-            shuffle,
-            shuffle_seed_before_batch,
-            shuffle_seed_within_batch,
-            metadata,
-        )
-        scores = {doc_id: result.score for doc_id, result in results.items()}
-        scores["__is_skipped"] = is_skipped
-        return scores
-
 
 # ============================================================================
 # SETUP FUNCTION
 # ============================================================================
 
 
-def setup_batched_reranker( reranker_model: str, use_reranker: bool = True, temperature: float = 0.0, max_chars_per_document: int = 4096, thinking: str = "", reasoning: bool = False, template_path: Path = Path("./"), template_name: str = "relevance_scoring.jinja", metadata: Optional[Dict] = None, enable_selector: bool = False, selector_score_threshold: float = 3.0, selector_min_keep: int = 0, ) -> Optional[BatchedLLMEvaluator]:
+def setup_batched_reranker( reranker_model: str, use_reranker: bool = True, temperature: float = 0.0, max_chars_per_document: int = 4096, thinking: str = "", reasoning: bool = False, metadata: Optional[Dict] = None, enable_selector: bool = False, selector_score_threshold: float = 3.0, selector_min_keep: int = 0, ) -> Optional[BatchedLLMEvaluator]:
     """Setup batched LLM-based reranker if enabled.
 
     Args:
@@ -475,8 +412,6 @@ def setup_batched_reranker( reranker_model: str, use_reranker: bool = True, temp
         max_chars_per_document: Maximum characters per document (default: 4096)
         thinking: Additional thinking instructions to append to system prompt
         reasoning: Whether to request explanations for scores
-        template_path: Path to Jinja2 template directory
-        template_name: Name of the Jinja2 template file
         metadata: Optional metadata to attach to LLM calls
         enable_selector: Enable the optional score-threshold selector (see
             :class:`BatchedLLMEvaluator`) to return a dynamic-length list.
@@ -504,8 +439,6 @@ def setup_batched_reranker( reranker_model: str, use_reranker: bool = True, temp
         model=reranker_client,
         thinking=thinking,
         reasoning=reasoning,
-        template_path=template_path,
-        template_name=template_name,
         max_chars_per_document=max_chars_per_document,
         enable_selector=enable_selector,
         selector_score_threshold=selector_score_threshold,

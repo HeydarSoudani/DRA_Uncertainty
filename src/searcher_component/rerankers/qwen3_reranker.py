@@ -26,7 +26,7 @@ import time
 from typing import Any, Dict, List, Optional, Union
 
 from reasoner_component import get_openai_client
-from rank_llm.data import Candidate, Query, Request, Result
+from rank_llm.data import Request, Result
 
 logger = logging.getLogger(__name__)
 

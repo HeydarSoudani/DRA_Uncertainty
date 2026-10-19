@@ -34,6 +34,16 @@ from .types import MULTI_ASPECT, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, E
 
 logger = logging.getLogger(__name__)
 
+# Text of one short-answer passage shown to the belief updater; a report
+# document (multi-aspect query) is shown whole.  Shared with belief model
+# training, which rebuilds the updater prompts.
+SHORT_ANSWER_PASSAGE_CHARS = 3000
+
+
+def _cut(text: str, max_chars: Optional[int]) -> str:
+    """*text* cut to *max_chars* as ``doc_text`` cuts it (None keeps it whole)."""
+    return text[:max_chars] + "..." if max_chars is not None and len(text) > max_chars else text
+
 
 def _quote(spans: List[str]) -> str:
     return " | ".join(f'"{s}"' for s in spans)
@@ -145,7 +155,7 @@ class LLMBeliefUpdater:
         llm_client: Any,
         model_name: Optional[str] = None,
         query_shape: str = SINGLE_TARGET,
-        max_passage_chars: Optional[int] = 3000,
+        max_passage_chars: Optional[int] = SHORT_ANSWER_PASSAGE_CHARS,
         max_evidence_per_criterion: int = 4,
         max_tokens: int = 8192,
         temperature: float = 0.0,
@@ -174,10 +184,11 @@ class LLMBeliefUpdater:
                 lines.append(f"  - and {hidden} earlier evidence passages")
         return "\n".join(lines)
 
-    def _evidence(self, items: Any, docs: List[Dict[str, Any]], step: int, role: str) -> List[Evidence]:
+    def _evidence(self, items: Any, docs: List[Dict[str, Any]], texts: List[str],
+                  step: int, role: str) -> List[Evidence]:
         """One Evidence per cited passage; the spans of a passage cited twice
         are merged.  Each span is checked on its own, and a span joined with
-        an ellipsis is split first."""
+        an ellipsis is split first.  *texts* are the full texts of *docs*."""
         out: Dict[str, Evidence] = {}
         for item in items if isinstance(items, list) else []:
             if not isinstance(item, dict):
@@ -190,7 +201,7 @@ class LLMBeliefUpdater:
                 continue
             cited = item.get("spans", [])
             cited = cited if isinstance(cited, list) else [cited]
-            text = doc_text(docs[i], max_length=None)
+            text = texts[i]
             ev = out.setdefault(_doc_id(docs[i]), Evidence(
                 doc_id=_doc_id(docs[i]), step=step, role=role, spans=[], span_verified=[],
                 title=passage_title(text),
@@ -209,14 +220,14 @@ class LLMBeliefUpdater:
         """Return ``(messages, kept, errors)`` of one step's call: *kept* are
         the documents with text, numbered as passages in that order;
         *messages* is None when none has text."""
-        has_text = [bool(doc_text(doc, max_length=None)) for doc in docs]
-        kept = [doc for doc, ok in zip(docs, has_text) if ok]
-        errors = [f"belief_updater: empty text for doc {_doc_id(d)}" for d, ok in zip(docs, has_text) if not ok]
+        texts = [doc_text(doc, max_length=None) for doc in docs]
+        kept = [doc for doc, text in zip(docs, texts) if text]
+        errors = [f"belief_updater: empty text for doc {_doc_id(d)}" for d, text in zip(docs, texts) if not text]
         if not kept:
             return None, kept, errors
         passages = "\n\n".join(
-            CRITERIA_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=doc_text(doc, max_length=self._max_passage_chars))
-            for i, doc in enumerate(kept)
+            CRITERIA_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=_cut(text, self._max_passage_chars))
+            for i, text in enumerate(t for t in texts if t)
         )
         messages = [
             {"role": "system", "content": self._system},
@@ -232,6 +243,7 @@ class LLMBeliefUpdater:
         data = _parse_updates(raw)
         if data is None:
             return None
+        texts = [doc_text(doc, max_length=None) for doc in kept]
         updates: List[CriterionUpdate] = []
         for item in data:
             if not isinstance(item, dict):
@@ -239,8 +251,8 @@ class LLMBeliefUpdater:
             updates.append(CriterionUpdate(
                 id=str(item.get("id", "")).strip(),
                 status=parse_status(item.get("status")),
-                support=self._evidence(item.get("support"), kept, step, "support"),
-                contradict=self._evidence(item.get("contradict"), kept, step, "contradict"),
+                support=self._evidence(item.get("support"), kept, texts, step, "support"),
+                contradict=self._evidence(item.get("contradict"), kept, texts, step, "contradict"),
                 reason=str(item.get("reason", "")),
             ))
         return updates
@@ -250,7 +262,8 @@ class LLMBeliefUpdater:
     ) -> Tuple[Optional[List[CriterionUpdate]], Optional[str], List[str]]:
         """Return ``(updates, raw, errors)``; *updates* is None when the call
         or its parsing failed, *raw* is None when the updater was not called
-        (no document with text).  Documents without text are left out."""
+        (no document with text) or its call raised.  Documents without text
+        are left out."""
         messages, kept, errors = self.prompt(query, state, docs)
         if messages is None:
             return [], None, errors
@@ -260,7 +273,7 @@ class LLMBeliefUpdater:
                 raw = self._llm.complete(messages, max_tokens=self._max_tokens, temperature=self._temperature) or ""
             except Exception as e:
                 logger.warning("LLMBeliefUpdater: step call failed: %s", e)
-                return None, "", errors + [f"belief_updater: {e}"]
+                return None, None, errors + [f"belief_updater: {e}"]
             updates = self.parse(raw, kept, step)
             if updates is not None:
                 return updates, raw, errors
@@ -345,7 +358,7 @@ def build_belief_judges(
     (often a long web page) is cut."""
     if llm_client is None:
         raise ValueError("the criteria judges need an LLM client")
-    max_passage_chars = None if query_shape == MULTI_ASPECT else 3000
+    max_passage_chars = None if query_shape == MULTI_ASPECT else SHORT_ANSWER_PASSAGE_CHARS
     return (
         LLMBeliefUpdater(llm_client, model_name=model, query_shape=query_shape, max_passage_chars=max_passage_chars),
         LLMQueryScorer(llm_client, model_name=model),

@@ -1,8 +1,6 @@
 """Tools for ReAct retrieval model."""
 
-from pathlib import Path
 from typing import Dict, Any, Optional, List
-
 
 from utils.llm_client import LiteLLMClient
 from deep_research_agents.prompts.react.plan_create import REACT_PLAN_CREATE_PROMPT
@@ -159,14 +157,6 @@ class PlanTool:
             Current plan content or None if no plan exists
         """
         return self.current_plan
-
-    def get_plan_history(self) -> list:
-        """Get the full history of plan operations.
-
-        Returns:
-            List of plan operations with timestamps
-        """
-        return self.plan_history.copy()
 
     def reset(self):
         """Reset the plan tool state."""

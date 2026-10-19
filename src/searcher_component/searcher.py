@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from searcher_component.fusion import fuse_results
 from searcher_component.normalize import normalize_retrieval_response
+from utils.text_utils import unique_docs
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +46,6 @@ class RetrievalSearchTool:
     reranker:
         Legacy alias for ``post_fusion_reranker``. If both are provided,
         ``post_fusion_reranker`` takes precedence.
-    top_k:
-        Number of documents to retrieve per query (passed to retriever).
     rerank_top_k:
         Number of top documents to pass to each reranker.
         Documents beyond this position are appended unchanged.
@@ -66,11 +65,10 @@ class RetrievalSearchTool:
         One of ``"original_query"`` (default — current behaviour),
         ``"original_query+subqueries"``, ``"original_query+reasoning"``,
         ``"reasoning+subqueries"``.
-    """
 
-    # Valid option sets (also used for CLI choices)
-    RETRIEVAL_INPUT_CHOICES = ("subquery", "original_query+subquery", "reasoning+subquery")
-    POST_FUSION_RERANKER_INPUT_CHOICES = ("original_query", "original_query+subqueries", "original_query+reasoning", "reasoning+subqueries")
+    The number of documents retrieved per query is the retriever's own
+    setting.
+    """
 
     def __init__(
         self,
@@ -79,7 +77,6 @@ class RetrievalSearchTool:
         reranker=None,
         post_retrieval_reranker=None,
         post_fusion_reranker=None,
-        top_k: int = 100,
         rerank_top_k: int = 100,
         fusion_method: str = "interleaving",
         fusion_window: int = 1,
@@ -91,7 +88,6 @@ class RetrievalSearchTool:
         self.post_retrieval_reranker = post_retrieval_reranker
         # post_fusion_reranker takes precedence; fall back to legacy `reranker`
         self.post_fusion_reranker = post_fusion_reranker or reranker
-        self.top_k = top_k
         self.rerank_top_k = rerank_top_k
         self.fusion_method = fusion_method
         self.fusion_window = fusion_window
@@ -147,7 +143,6 @@ class RetrievalSearchTool:
         *,
         original_query: Optional[str] = None,
         reasoning: Optional[str] = None,
-        top_k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Run the full retrieval pipeline and return a single ranked list.
 
@@ -166,8 +161,6 @@ class RetrievalSearchTool:
             accumulated reasoning) that can be mixed into retrieval or
             reranking queries depending on ``retrieval_input`` /
             ``post_fusion_reranker_input`` configuration.
-        top_k:
-            Override the default ``self.top_k`` for this call.
 
         Returns
         -------
@@ -219,15 +212,7 @@ class RetrievalSearchTool:
         )
 
         # 5. Deduplicate (keep first occurrence)
-        seen_ids = set()
-        deduped: List[Dict[str, Any]] = []
-        for doc in fused_docs:
-            doc_id = doc.get("doc_id") or doc.get("id")
-            if doc_id and doc_id in seen_ids:
-                continue
-            if doc_id:
-                seen_ids.add(doc_id)
-            deduped.append(doc)
+        deduped = unique_docs(fused_docs)
 
         # 6. Optional post-fusion reranking (compose query based on config)
         if self.post_fusion_reranker is not None and deduped:

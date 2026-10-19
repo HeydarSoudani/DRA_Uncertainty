@@ -8,9 +8,6 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 
-
-from utils.llm_client import LiteLLMClient
-
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "react"
 REACT_SYSTEM_PROMPT = (_PROMPT_DIR / "system.txt").read_text()
 REACT_WITH_PLAN_SYSTEM_PROMPT = (_PROMPT_DIR / "system_with_plan.txt").read_text()
@@ -210,7 +207,8 @@ class ReActAgent(BasicAgent):
             plan_result = self.plan_tool.execute(mode="create", query=query)
             plan_obs = plan_result["observation"]
             self._vprint(0, "plan-output", (plan_obs or "")[:500])
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
+                "iteration": 0,
                 "think": "",
                 "action_type": "plan",
                 "plan_mode": "create",
@@ -224,7 +222,6 @@ class ReActAgent(BasicAgent):
 
         for iter_num in range(self.max_iteration):
             display_iter = iter_num + 1
-            self._current_iter = display_iter
             self._notify_progress("think", display_iter)
 
             # Build the prompt
@@ -316,7 +313,6 @@ class ReActAgent(BasicAgent):
 
             # Verbose output: print think/action BEFORE executing
             self._vprint(display_iter, "think", thought or "(no thought)")
-            self._current_thought = thought or ""
             if action_type == "search":
                 self._notify_progress("search", display_iter)
                 self._vprint(display_iter, "search", action_entity)
@@ -346,16 +342,14 @@ class ReActAgent(BasicAgent):
                     history_entry["component_doc_ids"] = component_doc_ids
                     history_entry["num_docs"] = len(docs)
 
-                    reasoning_path.append({
+                    step = {
                         "think": thought,
                         "action_type": action_type,
                         "query": action_entity,
                         "docs": docs,
                         "component_doc_ids": component_doc_ids,
                         "tokens": self._step_tokens(),
-                    })
-
-                if docs is not None:
+                    }
                     # The prompt the next call would see, including this step;
                     # built separately so input_prompt is not touched.
                     context = (
@@ -365,7 +359,8 @@ class ReActAgent(BasicAgent):
                     context += self.current_step_template.format(
                         think=thought, action_text=action_text, observation=obs,
                     ) + "\n"
-                    tag = self._observe_step(
+                    tag = self._observe_and_record(
+                        reasoning_path, step,
                         action_entity, docs[:self.seen_top_k], display_iter, self.query,
                         seen_docs=docs[:self.seen_top_k],
                         trajectory=[
@@ -377,7 +372,6 @@ class ReActAgent(BasicAgent):
                         # Shown after this step's observation, in both the
                         # linear prompt and the plan-mode history context.
                         history_entry["belief_state"] = tag
-                        reasoning_path[-1]["belief_state"] = tag
 
                 # Hard-coded: update plan after each search observation
                 if self.use_plan:
@@ -389,7 +383,8 @@ class ReActAgent(BasicAgent):
                         search_results=self.last_search_results,
                     )
                     self._vprint(display_iter, "plan-output", (plan_result["observation"] or "")[:500])
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
+                        "iteration": display_iter,
                         "think": "",
                         "action_type": "plan",
                         "plan_mode": "update",
@@ -397,7 +392,8 @@ class ReActAgent(BasicAgent):
                     })
 
             elif action_type == "finish":
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
+                    "iteration": display_iter,
                     "think": thought,
                     "action_type": action_type,
                     "conclusion": action_entity,
@@ -453,7 +449,7 @@ class ReActAgent(BasicAgent):
             force_think = self.get_think(force_output) or ""
             self._vprint(iter_num + 1, "think", force_think or "(no thought)")
             self._vprint(iter_num + 1, "finish", conclusion or "(no conclusion)")
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
                 "think": "",
                 "action_type": action_type,
                 "conclusion": conclusion,
@@ -469,10 +465,3 @@ class ReActAgent(BasicAgent):
         num_iterations = iter_num + 1
         return reasoning_path, conclusion if conclusion else "", num_iterations
 
-    # ------------------------------------------------------------------
-    # Public helpers
-    # ------------------------------------------------------------------
-
-    def get_history(self) -> list:
-        """Return a copy of the action history."""
-        return self.history.copy()

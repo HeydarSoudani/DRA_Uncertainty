@@ -198,7 +198,7 @@ class TongyiDR_Agent(BasicAgent):
                 # belief model's time is excluded so it never shortens a run.
                 if time.time() - start_time - getattr(self, "_belief_seconds", 0.0) > 150 * 60:
                     self._print("Time limit reached (150 min)")
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "answer",
                         "think": "",
                         "generation": "No answer found after 2h30mins",
@@ -220,7 +220,7 @@ class TongyiDR_Agent(BasicAgent):
                         )
                     if forced_text:
                         prediction = forced_text
-                        reasoning_path.append({
+                        self._record_step(reasoning_path, {
                             "action_type": "context_limit",
                             "think": FINAL_ANSWER_INSTRUCTION,
                             "generation": forced_text,
@@ -243,7 +243,7 @@ class TongyiDR_Agent(BasicAgent):
                         )
                     if forced_text:
                         prediction = forced_text
-                        reasoning_path.append({
+                        self._record_step(reasoning_path, {
                             "action_type": "context_limit",
                             "think": FINAL_ANSWER_INSTRUCTION,
                             "generation": forced_text,
@@ -258,6 +258,8 @@ class TongyiDR_Agent(BasicAgent):
                 # Strip leaked <tool_response> (AgentIR behaviour)
                 if "<tool_response>" in content:
                     content = content[: content.find("<tool_response>")]
+                # The model's own <belief_state> tags never enter the history.
+                content = self._strip_belief_state(content)
 
                 messages = [*messages, {"role": "assistant", "content": content.strip()}]
 
@@ -275,7 +277,7 @@ class TongyiDR_Agent(BasicAgent):
                             tool_calls = [_loads(tool_call_str)]
                         except Exception as e:
                             result_text = f"Error during tool execution: {e}"
-                            reasoning_path.append({
+                            self._record_step(reasoning_path, {
                                 "action_type": "search",
                                 "think": think_text,
                                 "search_query": "",
@@ -323,6 +325,7 @@ class TongyiDR_Agent(BasicAgent):
 
                     all_subqueries: List[str] = []
                     all_seen_docs: List[Dict[str, Any]] = []
+                    iter_steps: List[Dict[str, Any]] = []
 
                     # Report unavailable tools
                     if error_tool_calls:
@@ -373,7 +376,7 @@ class TongyiDR_Agent(BasicAgent):
                             all_docs.extend(docs)
                             all_seen_docs.extend(docs[:self.seen_top_k])
 
-                            reasoning_path.append({
+                            iter_steps.append({
                                 "action_type": "search",
                                 "think": think_text if idx == 0 else "",
                                 "search_query": sq,
@@ -396,12 +399,11 @@ class TongyiDR_Agent(BasicAgent):
                         {"role": "user", "content": f"<tool_response>\n{result_text}\n</tool_response>"},
                     ]
 
-                    if all_subqueries:
-                        tag = self._observe_step(
-                            all_subqueries, all_seen_docs, iteration, query,
-                            trajectory=messages,
-                        )
-                        self._append_belief_state(messages, tag, reasoning_path[-1])
+                    self._observe_and_record(
+                        reasoning_path, iter_steps,
+                        all_subqueries, all_seen_docs, iteration, query,
+                        trajectory=messages, messages=messages,
+                    )
 
                     iteration += 1
 
@@ -411,7 +413,8 @@ class TongyiDR_Agent(BasicAgent):
                     answer_preview = answer_text[:200] + "..." if len(answer_text) > 200 else answer_text
                     self._notify_progress("answer", iteration)
                     self._vprint(iteration, "answer", answer_preview.replace("\n", "\\n"))
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
+                        "iteration": iteration,
                         "action_type": "answer",
                         "think": think_text,
                         "generation": content,
@@ -436,7 +439,7 @@ class TongyiDR_Agent(BasicAgent):
                         )
                     if forced_text:
                         prediction = forced_text
-                        reasoning_path.append({
+                        self._record_step(reasoning_path, {
                             "action_type": "context_limit",
                             "think": FINAL_ANSWER_INSTRUCTION,
                             "generation": forced_text,
@@ -451,7 +454,7 @@ class TongyiDR_Agent(BasicAgent):
                 forced_text = self._force_answer_chat_in_conversation(messages)
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "max_iter_force",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -465,7 +468,7 @@ class TongyiDR_Agent(BasicAgent):
                     )
                     if forced_text:
                         prediction = forced_text
-                        reasoning_path.append({
+                        self._record_step(reasoning_path, {
                             "action_type": "max_iter_force",
                             "think": FINAL_ANSWER_INSTRUCTION,
                             "generation": forced_text,

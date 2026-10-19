@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # CPU-only interactive node helper — same design as run_interactive_node.sh but
 # grabs a GPU-less shell on the `staging` partition. Use it for work that never
-# touches CUDA (e.g. analysis/reasoning_error_analysis.py, corpus/gold munging).
+# touches CUDA (e.g. analysis/signal_correlation.py, corpus/gold munging).
 # The environment is IDENTICAL to what the SBATCH scripts use: the Snellius 2025
 # module stack (Python 3.13.5 + Java) plus the project venv. All of that lives
 # in scripts/_activate.sh, the single source of truth.

@@ -3,8 +3,8 @@
 # Start a vLLM server for Rank-R1 (ielab) used as a setwise reranker.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_rank_r1.sh
-#   PORT=8001 bash experiments/deep_research_agents/vllm_server_scripts/serve_rank_r1.sh
+#   bash vllm_server_scripts/rerankers/serve_rank_r1.sh
+#   PORT=8001 bash vllm_server_scripts/rerankers/serve_rank_r1.sh
 #
 # The pipeline connects to this server via --rank-r1-api-url
 # (default http://localhost:8000/v1).

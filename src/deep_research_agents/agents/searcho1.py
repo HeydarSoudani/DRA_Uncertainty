@@ -2,7 +2,6 @@
 
 import logging
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -123,7 +122,7 @@ class SearchO1_Agent(BasicAgent):
                 self._vprint(iter_num, "think", last_think or "(no think)")
                 self._notify_progress("answer", iter_num)
                 self._vprint(iter_num, "answer", pred_answer or "(no answer)")
-                reasoning_path.append({'think': last_think, 'prediction': pred_answer})
+                self._record_step(reasoning_path, {'iteration': iter_num, 'think': last_think, 'prediction': pred_answer})
                 break
 
             # Extract search query
@@ -153,18 +152,18 @@ class SearchO1_Agent(BasicAgent):
             if seen_docs:
                 self._vprint_docs(iter_num, seen_docs)
 
-            reasoning_path.append({
+            step = {
                 'think': tmp_think,
                 'search_query': tmp_query,
                 'docs': search_docs,  # all top_k docs — used for TREC file
                 'component_doc_ids': [d.get('doc_id', '') for d in search_docs[:self.seen_top_k]],
                 'tokens': self._step_tokens(),
-            })
+            }
 
             # Reason in documents
             if self.with_reason_in_documents and tmp_query:
-                rid_output_text = self.reason_in_documents(reasoning_path, tmp_query, docs_text)
-                reasoning_path[-1]['reason_in_docs'] = rid_output_text
+                rid_output_text = self.reason_in_documents(reasoning_path + [step], tmp_query, docs_text)
+                step['reason_in_docs'] = rid_output_text
                 self._vprint(iter_num, "reason-in-docs", rid_output_text or "(empty)")
                 search_result_txt = rid_output_text
             else:
@@ -179,15 +178,13 @@ class SearchO1_Agent(BasicAgent):
             input_prompt += current_step_text
 
             messages = [{"role": "user", "content": input_prompt}]
-            if tmp_query:
-                tag = self._observe_step(
-                    tmp_query, seen_docs, iter_num, question,
-                    trajectory=messages,
-                )
-                if tag:
-                    input_prompt += f"{tag}\n"
-                    reasoning_path[-1]['belief_state'] = tag
-                    messages = [{"role": "user", "content": input_prompt}]
+            tag = self._observe_and_record(
+                reasoning_path, step, tmp_query, seen_docs, iter_num, question,
+                trajectory=messages,
+            )
+            if tag:
+                input_prompt += f"{tag}\n"
+                messages = [{"role": "user", "content": input_prompt}]
 
         pred_answer = reasoning_path[-1].get('prediction') if reasoning_path else None
 
@@ -199,7 +196,7 @@ class SearchO1_Agent(BasicAgent):
             pred_answer = (force_output or "").split("}")[0].strip()
             self._vprint(iter_num, "think", FINAL_ANSWER_INSTRUCTION)
             self._vprint(iter_num, "finish", pred_answer or "(no answer)")
-            reasoning_path.append({
+            self._record_step(reasoning_path, {
                 'action_type': action_type,
                 'think': FINAL_ANSWER_INSTRUCTION,
                 'prediction': pred_answer,

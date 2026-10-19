@@ -66,19 +66,3 @@ def get_rerank_relevance_scoring_user_prompt(query: str, documents: list) -> str
 Rate the relevance of the above {len(documents)} documents to the query."""
 
     return prompt
-
-
-def format_rerank_prompt(query: str, documents: list) -> tuple:
-    """Format the complete reranking prompt as (system_prompt, user_prompt).
-
-    Args:
-        query: The search query
-        documents: List of documents to score, each with 'id' and 'content' keys
-
-    Returns:
-        (system_prompt, user_prompt) tuple
-    """
-    system_prompt = RERANK_RELEVANCE_SCORING_SYSTEM_PROMPT
-    user_prompt = get_rerank_relevance_scoring_user_prompt(query, documents)
-
-    return system_prompt, user_prompt

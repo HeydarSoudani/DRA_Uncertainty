@@ -27,6 +27,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 from abc import ABC, abstractmethod
@@ -86,20 +87,25 @@ def _kinds(shape: str, texts: List[str]) -> List[str]:
 def _set_with_rest(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
     """A set query's criteria as the prompt asks: the set criterion, the
     members, then one rest criterion (added with the members' property when
-    the model left it out), within *cap* by leaving out members."""
+    the model left it out), within *cap* (at least 2) by leaving out
+    members.  Every left-out item is noted in ``info["warnings"]``."""
     if not items:
         return items
     first, rest = items[0], [t for t in items[1:] if _is_rest(t)]
     members = [t for t in items[1:] if not _is_rest(t)]
     if rest:
         rest_item = rest[0]
+        if len(rest) > 1:
+            info.setdefault("warnings", []).append(
+                f"rest: kept the first of {len(rest)} rest criteria, dropped {rest[1:]}")
     else:
         prop = next((t.rsplit(":", 1)[1].strip() for t in members if ":" in t), "")
         rest_item = f"{REST_SUBJECT}: {prop or 'the property the query asks about'}"
         info.setdefault("warnings", []).append("rest: added the missing rest criterion")
-    keep = max(cap - 2, 0)
+    keep = cap - 2
     if len(members) > keep:
-        info.setdefault("warnings", []).append(f"cap: kept {keep} of {len(members)} members")
+        info.setdefault("warnings", []).append(
+            f"cap: kept {keep} of {len(members)} members, dropped {members[keep:]}")
     return [first] + members[:keep] + [rest_item]
 
 
@@ -109,8 +115,6 @@ def _set_with_rest(items: List[str], cap: int, info: Dict[str, Any]) -> List[str
 
 class CriteriaSource(ABC):
     """Produces the fixed criteria list of one query."""
-
-    name: str = ""
 
     @abstractmethod
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
@@ -131,7 +135,8 @@ class LLMCriteriaSource(CriteriaSource):
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
-            ``max_criteria`` in layout.DATASET_SPECS).  For a multi-aspect
+            ``max_criteria`` in layout.DATASET_SPECS); at least 2 for a
+            set query (the set and the rest criterion).  For a multi-aspect
             query it is the number of criteria the model may add to the
             request's own, asked in the prompt; the list is kept whole, since
             a cut could drop a criterion the request states.
@@ -141,8 +146,6 @@ class LLMCriteriaSource(CriteriaSource):
         query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
             (the dataset's ``query_shape`` in layout.DATASET_SPECS).
     """
-
-    name = "llm"
 
     def __init__(
         self,
@@ -155,6 +158,9 @@ class LLMCriteriaSource(CriteriaSource):
     ) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
+        if query_shape == SET and max_criteria < 2:
+            raise ValueError(f"max_criteria={max_criteria} for a set query; it needs at least 2 "
+                             "(the set criterion and the rest criterion)")
         self._shape = query_shape
         self._system = CRITERIA_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
@@ -256,21 +262,29 @@ class BankedCriteriaSource(CriteriaSource):
     criteria, not added).
     """
 
-    name = "bank"
-
     def __init__(self, inner: LLMCriteriaSource, path: Path | str) -> None:
         self._inner = inner
         self.path = Path(path)
-        self.model_name = inner.model_name
         self._fields = inner.bank_fields
         self._lock = threading.Lock()
         self._bank: Dict[str, Dict[str, Any]] = {}
         if self.path.exists():
-            with open(self.path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        rec = json.loads(line)
-                        self._bank[rec["key"]] = rec
+            with open(self.path, encoding="utf-8", errors="replace") as f:
+                self._read_lines(f)
+
+    def _read_lines(self, f) -> None:
+        """Add the bank lines of *f* to the in-memory bank.  A line that is
+        not a whole record (e.g. cut by a killed process) is skipped with a
+        warning."""
+        for n, line in enumerate(f, 1):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                self._bank[rec["key"]] = rec
+            except (json.JSONDecodeError, KeyError, TypeError):
+                logger.warning("BankedCriteriaSource: %s line %d is not a bank record; skipped",
+                               self.path, n)
 
     def _key(self, query_id: Optional[str], query: str) -> str:
         fields = {"query_id": query_id, "query": query, **self._fields}
@@ -306,18 +320,19 @@ class BankedCriteriaSource(CriteriaSource):
         }
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a+", encoding="utf-8") as f:
+            with open(self.path, "a+", encoding="utf-8", errors="replace") as f:
                 fcntl.flock(f, fcntl.LOCK_EX)
                 try:
                     # Lines another worker or process added since the bank was read.
                     f.seek(0)
-                    for line in f:
-                        if line.strip():
-                            other = json.loads(line)
-                            self._bank[other["key"]] = other
+                    self._read_lines(f)
                     banked = self._bank.get(key)
                     if banked is None:
-                        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                        # A partial last line (a killed writer) must not run
+                        # into the new record.
+                        size = os.fstat(f.fileno()).st_size
+                        needs_newline = size > 0 and os.pread(f.fileno(), 1, size - 1) != b"\n"
+                        f.write(("\n" if needs_newline else "") + json.dumps(rec, ensure_ascii=False) + "\n")
                         f.flush()
                         self._bank[key] = rec
                 finally:

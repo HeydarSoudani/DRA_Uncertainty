@@ -3,8 +3,8 @@
 # Start a vLLM server for RankZephyr used as a listwise reranker.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_rankzephyr.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_rankzephyr.sh
+#   bash vllm_server_scripts/rerankers/serve_rankzephyr.sh
+#   PORT=8000 bash vllm_server_scripts/rerankers/serve_rankzephyr.sh
 #
 # The decomposition pipeline connects to this server via --listwise-api-url
 # (default http://localhost:8000/v1).

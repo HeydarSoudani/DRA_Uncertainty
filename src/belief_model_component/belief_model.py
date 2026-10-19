@@ -57,7 +57,7 @@ documents so far (null without a criteria state).
 ``criteria_updates`` has one ``{id, from, to, written, support[],
 contradict[], reason, note}`` per criterion (``BeliefState.update``);
 ``belief_updater_output`` is the updater's raw reply (null when it was not
-called).
+called or its call raised).
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
 ``ok``, ``no_candidate`` (``[]``), ``unparsed`` (reply without answer
@@ -68,7 +68,8 @@ configured, e.g. ``--add-intermediate-answer false``).
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from utils.text_utils import doc_id
+# unique_docs is re-exported here for belief model training.
+from utils.text_utils import unique_docs  # noqa: F401
 
 from .belief_state import render_belief_state
 from .criteria import CriteriaSource
@@ -90,20 +91,6 @@ logger = logging.getLogger(__name__)
 
 def _round(value: Optional[float], ndigits: int = 4) -> Optional[float]:
     return round(value, ndigits) if value is not None else None
-
-
-def unique_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """*docs* without repeated ids, first occurrence kept (docs without an
-    id are all kept)."""
-    seen: Set[str] = set()
-    out = []
-    for d in docs:
-        key = doc_id(d)
-        if key and key in seen:
-            continue
-        seen.add(key)
-        out.append(d)
-    return out
 
 
 class BeliefModel:

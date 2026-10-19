@@ -8,7 +8,6 @@ All bandit fusion classes share:
 
 from __future__ import annotations
 
-import copy
 import math
 from typing import Any, Dict, List, Optional, Tuple
 

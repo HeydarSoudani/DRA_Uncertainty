@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from reasoner_component import disable_native_thinking, is_context_window_error
-from utils.text_utils import doc_id, doc_text, doc_title, number_citations
+from utils.text_utils import doc_id, doc_text, doc_title, number_citations, unique_docs
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     MAX_TURNS_ANSWER_INSTRUCTION,
@@ -211,19 +211,6 @@ class DocRegistry:
         return labels
 
 
-def unique_docs(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """*docs* in order, without repeated ids and without docs that have none
-    (they cannot be labelled)."""
-    seen = set()
-    unique = []
-    for doc in docs:
-        did = doc_id(doc)
-        if did and did not in seen:
-            seen.add(did)
-            unique.append(doc)
-    return unique
-
-
 def render_information(docs: List[Dict[str, Any]], labels: List[str], max_chars: int) -> str:
     parts = [f"[{label}] {doc_title(doc)}\n{doc_text(doc, max_length=max_chars)}"
              for doc, label in zip(docs, labels)]
@@ -248,16 +235,20 @@ class SearchBlock:
     belief_state: Optional[str] = None
 
 
+def render_block(block: SearchBlock, information: Optional[str] = None) -> str:
+    """One search iteration of the transcript: the turn, its <information>
+    (*information* in place of the block's own) and its tag."""
+    text = f"\n\n{block.turn}\n{block.information if information is None else information}\n"
+    return f"{text}{block.belief_state}\n" if block.belief_state else text
+
+
 def render_transcript(question: str, blocks: List[SearchBlock],
                       keep_last: Optional[int] = None, task: str = "qa") -> str:
     """The policy's user message; with *keep_last*, older passages are omitted."""
     parts = [render_user(question, task)]
     first_kept = 0 if keep_last is None else max(len(blocks) - keep_last, 0)
     for i, block in enumerate(blocks):
-        information = block.information if i >= first_kept else _OMITTED_INFORMATION
-        parts.append(f"\n\n{block.turn}\n{information}\n")
-        if block.belief_state:
-            parts.append(f"{block.belief_state}\n")
+        parts.append(render_block(block, None if i >= first_kept else _OMITTED_INFORMATION))
     return "".join(parts)
 
 
@@ -449,10 +440,11 @@ class BeliefAwareAgent(BasicAgent):
         end = END_MAX_TURNS
         turns = 0
         searches = 0
+        # The transcript grows by one rendered block per search iteration.
+        transcript = render_transcript(question, blocks, task=self.task)
 
         for t in range(self.max_iteration):
             self._notify_progress("think", t + 1)
-            transcript = render_transcript(question, blocks, task=self.task)
             turn, attempts, error = self._generate_turn(self._messages(system, transcript), t, generation_temp)
             if turn is None:
                 if is_context_window_error(error):
@@ -501,7 +493,8 @@ class BeliefAwareAgent(BasicAgent):
             self._notify_progress("search", t + 1)
             self._vprint(t, "search", query)
             docs = self.retrieve_documents(query, original_query=question, reasoning=turn.think)
-            shown = unique_docs(docs)[:self.seen_top_k]
+            # Docs without an id are dropped: they cannot be labelled.
+            shown = unique_docs(docs, keep_unidentified=False)[:self.seen_top_k]
             labels = registry.register(shown)
             block = SearchBlock(turn=turn.text,
                                 information=render_information(shown, labels, self.max_passage_chars))
@@ -514,15 +507,15 @@ class BeliefAwareAgent(BasicAgent):
                 "tokens": self._step_tokens(), **diagnostics,
             }
 
-            tag = self._observe_step(
-                query, shown, t, question,
+            transcript += render_block(block)
+            tag = self._observe_and_record(
+                reasoning_path, step, query, shown, t, question,
                 seen_docs=shown,
-                trajectory=self._messages(system, render_transcript(question, blocks, task=self.task)),
+                trajectory=self._messages(system, transcript),
             )
             if tag:
                 block.belief_state = tag
-                step["belief_state"] = tag
-            self._record_step(reasoning_path, step)
+                transcript += f"{tag}\n"
             searches += 1
 
         forced_by = end if end in (END_MAX_TURNS, END_CONTEXT_LIMIT) else None

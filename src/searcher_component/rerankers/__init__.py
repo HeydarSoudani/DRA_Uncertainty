@@ -1,6 +1,5 @@
 """LLM-based reranking functionality for retrieval results."""
 
-from .pointwise_llm_reranker import LLMEvaluator, setup_reranker
 from .batched_reranker import BatchedLLMEvaluator, setup_batched_reranker
 from .rankllama_reranker import RankLLaMAReranker, setup_rankllama_reranker
 from .rank1_reranker import Rank1Reranker, setup_rank1_reranker
@@ -11,8 +10,6 @@ from .qwen3_reranker import Qwen3Reranker, setup_qwen3_reranker, QWEN3_RERANKER_
 from .factory import build_reranker_from_config
 
 __all__ = [
-    "LLMEvaluator",
-    "setup_reranker",
     "BatchedLLMEvaluator",
     "setup_batched_reranker",
     "RankLLaMAReranker",

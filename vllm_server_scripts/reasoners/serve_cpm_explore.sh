@@ -3,8 +3,8 @@
 # Start a vLLM server for the AgentCPM-Explore model.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_cpm_explore.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_cpm_explore.sh
+#   bash vllm_server_scripts/reasoners/serve_cpm_explore.sh
+#   PORT=8000 bash vllm_server_scripts/reasoners/serve_cpm_explore.sh
 #
 # Requirements:
 #   - vLLM installed.

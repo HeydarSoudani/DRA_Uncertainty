@@ -3,8 +3,6 @@
 import copy
 from typing import Any, Dict, List
 
-import numpy as np
-
 from .base import BaseFusion
 from ._bandit_base import (
     SubqueryRandom,

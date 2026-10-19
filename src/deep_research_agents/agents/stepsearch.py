@@ -1,8 +1,6 @@
 """StepSearch model with planned searching."""
 
-from pathlib import Path
 from typing import Any
-
 
 from utils.llm_client import LiteLLMClient
 from deep_research_agents.prompts.stepsearch.user_prompt import PROMPT_STEPSEARCH

@@ -9,9 +9,9 @@
 # Models: Qwen/Qwen3-Reranker-0.6B, Qwen/Qwen3-Reranker-4B, Qwen/Qwen3-Reranker-8B
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_pointwise_reranker.sh
-#   MODEL_SIZE=8B bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_pointwise_reranker.sh
-#   PORT=8001 MODEL_SIZE=0.6B bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_pointwise_reranker.sh
+#   bash vllm_server_scripts/rerankers/serve_qwen3_pointwise_reranker.sh
+#   MODEL_SIZE=8B bash vllm_server_scripts/rerankers/serve_qwen3_pointwise_reranker.sh
+#   PORT=8001 MODEL_SIZE=0.6B bash vllm_server_scripts/rerankers/serve_qwen3_pointwise_reranker.sh
 #
 # Requirements:
 #   - vLLM installed.

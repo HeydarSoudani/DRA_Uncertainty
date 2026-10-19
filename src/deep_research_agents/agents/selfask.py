@@ -14,7 +14,8 @@ SELF_ASK_PROMPT_MULTI_HOP = (_PROMPT_DIR / "system.txt").read_text()
 from deep_research_agents.prompts.selfask.user_prompt import USER_PROMPT as _SELFASK_USER_PROMPT
 
 from .base_agent import BasicAgent
-from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, SELFASK_FORMAT
+from deep_research_agents.prompts.answer_prompts import SELFASK_FORMAT
+from utils.text_utils import unique_docs
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +90,15 @@ class SelfAsk_Agent(BasicAgent):
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_input_prompt}
         ]
-        reasoning_path.append({
+        step = {
             'think': '',
             'search_query': search_query,
             'docs': cur_search_docs,  # all top_k docs — used for TREC file
             'component_doc_ids': [d.get('doc_id', '') for d in cur_search_docs[:self.seen_top_k]],
             'tokens': self._step_tokens(),
-        })
-        tag = self._observe_step(
-            search_query, seen_docs_init, 0, question,
+        }
+        tag = self._observe_and_record(
+            reasoning_path, step, search_query, seen_docs_init, 0, question,
             seen_docs=seen_docs_init,
             trajectory=messages,
         )
@@ -105,7 +106,6 @@ class SelfAsk_Agent(BasicAgent):
             # The initial retrieval's tag opens the running text, right after
             # the prompt; it stays there for the whole run.
             text = f"{tag}\n"
-            reasoning_path[-1]['belief_state'] = tag
             messages[-1]['content'] += text
 
         output_text = ""
@@ -162,15 +162,15 @@ class SelfAsk_Agent(BasicAgent):
                 doc for step in reasoning_path
                 for doc in step['docs'][:self.seen_top_k]
             ] + cur_search_docs[:self.seen_top_k]
-            unq_tmp_doc = self.get_unique_docs(tmp_docs)
+            unq_tmp_doc = unique_docs(tmp_docs)
 
-            reasoning_path.append({
+            step = {
                 'think': intermediate_ans,
                 'search_query': search_query,
                 'docs': cur_search_docs,  # all top_k docs — used for TREC file
                 'component_doc_ids': [d.get('doc_id', '') for d in cur_search_docs[:self.seen_top_k]],
                 'tokens': self._step_tokens(),
-            })
+            }
 
             if idx == 0:
                 step_text = f"Follow up: {search_query}\n"
@@ -187,15 +187,13 @@ class SelfAsk_Agent(BasicAgent):
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt_head + text + step_text + prefill}
             ]
-            if search_query:
-                tag = self._observe_step(
-                    search_query, seen_docs, iter_num, question,
-                    trajectory=messages,
-                )
-                if tag:
-                    # Between the follow-up and the intermediate-answer prefill.
-                    step_text += f"{tag}\n"
-                    reasoning_path[-1]['belief_state'] = tag
+            tag = self._observe_and_record(
+                reasoning_path, step, search_query, seen_docs, iter_num, question,
+                trajectory=messages,
+            )
+            if tag:
+                # Between the follow-up and the intermediate-answer prefill.
+                step_text += f"{tag}\n"
             text += step_text + prefill
             messages[-1]['content'] = prompt_head + text
 
@@ -204,7 +202,7 @@ class SelfAsk_Agent(BasicAgent):
             text += f"{output_text}.\nSo the final answer is: "
 
             tmp_docs = [doc for step in reasoning_path for doc in step['docs'][:self.seen_top_k]]
-            unq_tmp_doc = self.get_unique_docs(tmp_docs)
+            unq_tmp_doc = unique_docs(tmp_docs)
             user_input_prompt = self.user_prompt.format(
                 documents=self.documents2string(unq_tmp_doc),
                 question=question
@@ -217,11 +215,11 @@ class SelfAsk_Agent(BasicAgent):
             pred_answer = self.extract_final_answer(output_text) or output_text
             self._vprint(iter_num, "think", output_text or "(no thought)")
             self._vprint(iter_num, "finish", pred_answer or "(no answer)")
-            reasoning_path.append({'think': output_text, 'prediction': pred_answer})
+            self._record_step(reasoning_path, {'think': output_text, 'prediction': pred_answer})
         else:
             intermediate_ans = self.extract_intermediate(output_text)
             pred_answer = self.extract_final_answer(output_text)
-            reasoning_path.append({'think': intermediate_ans, 'prediction': pred_answer})
+            self._record_step(reasoning_path, {'iteration': iter_num, 'think': intermediate_ans, 'prediction': pred_answer})
 
         num_iterations = iter_num + 1 if reasoning_path else 0
         return reasoning_path, pred_answer, num_iterations

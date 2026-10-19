@@ -126,7 +126,7 @@ class OSS_Agent(BasicAgent):
                     )
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -154,6 +154,14 @@ class OSS_Agent(BasicAgent):
                     _last_completed_iter = iteration
                     break
                 continue
+
+            # The model's own <belief_state> tags never enter the history.
+            if self._informs:
+                for item in response_dict["output"]:
+                    if item.get("type") == "message":
+                        for part in item.get("content") or []:
+                            if isinstance(part, dict) and part.get("text"):
+                                part["text"] = self._strip_belief_state(part["text"])
 
             # vLLM bug: convert mcp_call to function_call format
             for i in range(len(response_dict["output"])):
@@ -205,7 +213,8 @@ class OSS_Agent(BasicAgent):
                     self._notify_progress("answer", iteration)
                 self._vprint(iteration, "think", (cur_reasoning or "(no reasoning)")[:100])
                 self._vprint(iteration, "answer", cur_text[:100])
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
+                    "iteration": iteration,
                     "action_type": "answer",
                     "think": cur_reasoning if not function_calls else "",
                     "generation": cur_text,
@@ -226,6 +235,7 @@ class OSS_Agent(BasicAgent):
             n_searches = sum(1 for fc in function_calls if fc["name"] == "search")
             _iter_subqueries: List[str] = []
             _iter_seen_docs: List[Dict[str, Any]] = []
+            _iter_steps: List[Dict[str, Any]] = []
 
             for idx, tool_call in enumerate(function_calls):
                 sub_iter = idx if n_searches > 1 else None
@@ -263,7 +273,7 @@ class OSS_Agent(BasicAgent):
                         result_text = self._format_search_results(docs)
                         self._vprint_docs(iteration, docs[:self.seen_top_k], sub_iter=sub_iter)
 
-                        reasoning_path.append({
+                        _iter_steps.append({
                             "action_type": "search",
                             "think": cur_reasoning if idx == 0 else "",
                             "search_query": search_query,
@@ -294,12 +304,11 @@ class OSS_Agent(BasicAgent):
                         tool_call.get("call_id", ""), error_msg,
                     ))
 
-            if _iter_subqueries:
-                tag = self._observe_step(
-                    _iter_subqueries, _iter_seen_docs, iteration, query,
-                    trajectory=new_messages,
-                )
-                self._append_belief_state(new_messages, tag, reasoning_path[-1])
+            self._observe_and_record(
+                reasoning_path, _iter_steps,
+                _iter_subqueries, _iter_seen_docs, iteration, query,
+                trajectory=new_messages, messages=new_messages,
+            )
 
             messages = new_messages
             _last_completed_iter = iteration
@@ -315,7 +324,7 @@ class OSS_Agent(BasicAgent):
                 )
             if forced_text:
                 prediction = forced_text
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
                     "action_type": "max_iter_force",
                     "think": FINAL_ANSWER_INSTRUCTION,
                     "generation": forced_text,

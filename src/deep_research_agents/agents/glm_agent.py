@@ -17,8 +17,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import openai
-
 from reasoner_component import REASONING_FALLBACK_PREFIX
 
 from .base_agent import BasicAgent
@@ -169,8 +167,7 @@ class GLM_Agent(BasicAgent):
         cfg = self.inference_config
         messages = self._intermediate_answer_messages(trajectory, instruction)
         remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
-        client = openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
-        response = client.chat.completions.create(
+        response = self._openai_client().chat.completions.create(
             model=cfg.model_name,
             messages=messages,
             max_tokens=min(remaining_tokens, self._intermediate_answer_max_tokens),
@@ -203,10 +200,7 @@ class GLM_Agent(BasicAgent):
             num_iterations  : number of LLM iterations used
         """
         cfg = self.inference_config
-        client = openai.OpenAI(
-            base_url=cfg.api_base,
-            api_key=cfg.api_key,
-        )
+        client = self._openai_client()
 
         formatted_query = QUERY_TEMPLATE.format(Question=query)
         messages: List[Any] = [
@@ -236,7 +230,7 @@ class GLM_Agent(BasicAgent):
                     )
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -269,7 +263,7 @@ class GLM_Agent(BasicAgent):
                     )
                 if forced_text:
                     prediction = forced_text
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "context_limit",
                         "think": FINAL_ANSWER_INSTRUCTION,
                         "generation": forced_text,
@@ -284,6 +278,9 @@ class GLM_Agent(BasicAgent):
 
             message = response.choices[0].message
             cur_reasoning = self._read_reasoning(message)
+            if message.content and self._informs:
+                # The model's own <belief_state> tags never enter the history.
+                message.content = self._strip_belief_state(message.content)
             cur_text = message.content
             official_tool_calls = message.tool_calls or []
 
@@ -352,7 +349,8 @@ class GLM_Agent(BasicAgent):
                     self._notify_progress("answer", iteration)
                     self._vprint(iteration, "think", (cur_reasoning or "(no reasoning)")[:100])
                     self._vprint(iteration, "answer", cur_text[:100])
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
+                        "iteration": iteration,
                         "action_type": "answer",
                         "think": cur_reasoning or "",
                         "generation": cur_text,
@@ -369,6 +367,7 @@ class GLM_Agent(BasicAgent):
             n_searches = sum(1 for fc in function_calls if fc["name"] == "search")
             _iter_subqueries: List[str] = []
             _iter_seen_docs: List[Dict[str, Any]] = []
+            _iter_steps: List[Dict[str, Any]] = []
 
             for idx, tc in enumerate(function_calls):
                 sub_iter = idx if n_searches > 1 else None
@@ -407,7 +406,7 @@ class GLM_Agent(BasicAgent):
                         result_text = self._format_search_results(docs)
                         self._vprint_docs(iteration, docs[:self.seen_top_k], sub_iter=sub_iter)
 
-                        reasoning_path.append({
+                        _iter_steps.append({
                             "action_type": "search",
                             "think": cur_reasoning if idx == 0 else "",
                             "search_query": search_query,
@@ -436,12 +435,11 @@ class GLM_Agent(BasicAgent):
                         tc.get("id", ""), error_msg,
                     ))
 
-            if _iter_subqueries:
-                tag = self._observe_step(
-                    _iter_subqueries, _iter_seen_docs, iteration, query,
-                    trajectory=messages,
-                )
-                self._append_belief_state(messages, tag, reasoning_path[-1])
+            self._observe_and_record(
+                reasoning_path, _iter_steps,
+                _iter_subqueries, _iter_seen_docs, iteration, query,
+                trajectory=messages, messages=messages,
+            )
 
             iteration += 1
 
@@ -455,7 +453,7 @@ class GLM_Agent(BasicAgent):
                 )
             if forced_text:
                 prediction = forced_text
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
                     "action_type": "max_iter_force",
                     "think": FINAL_ANSWER_INSTRUCTION,
                     "generation": forced_text,

@@ -466,7 +466,6 @@ class BaseRetriever:
         self.retriever_name = config.retriever_name
         self.corpus_path = config.corpus_path
         self.topk = config.retrieval_topk
-        self._docid_to_doc = None
         corpus_path = getattr(config, 'corpus_path', None)
         if corpus_path and not corpus_path.endswith("*.jsonl"):
             from pathlib import Path as _P
@@ -509,10 +508,6 @@ class BaseRetriever:
     def retrieve(self, query: str, num: int = None, return_score: bool = False):
         """Alias for search method to unify interface with endpoint retrievers."""
         return self.search(query, num, return_score)
-
-    def batch_retrieve(self, query_list: List[str], num: int = None, return_score: bool = False):
-        """Alias for batch_search method to unify interface with endpoint retrievers."""
-        return self.batch_search(query_list, num, return_score)
 
 class BM25Retriever(BaseRetriever):
     def __init__(self, config):
@@ -749,9 +744,6 @@ class RerankRetriever(BaseRetriever):
             device=str(self.device)  # CrossEncoder accepts device as string
         )
     
-    def set_topk(self, new_k):
-        self.topk = new_k
-      
     def _check_contain_doc(self):
         return self.searcher.doc(0).raw() is not None
     

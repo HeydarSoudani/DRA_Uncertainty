@@ -34,7 +34,6 @@ from deep_research_agents.prompts.webweaver.user_prompts import (
     PLANNER_USER_TEMPLATE,
     WRITER_USER_TEMPLATE,
 )
-from searcher_component.fusion import interleaving_fusion
 
 # An inline citation of the writer: <cite id="id_3">span</cite> (ids may be a
 # list), or a self-closing <cite id="id_3"/>.
@@ -168,13 +167,15 @@ class WebWeaver_Agent(BasicAgent):
     def run_single(self, query_id: str, query_text: str, temperature: float = 0.7, status_callback=None, trajectory_logger=None) -> Any:
         """Override to unpack the 3-tuple from inference and include citation_to_doc_id.
 
-        ``trajectory_logger`` is accepted for signature compatibility but not yet
-        honoured: this agent's steps do not go through ``_record_step``, so it has
-        no online log and keeps relying on ``evaluation.trajectory.save_trajectory()``.
+        ``trajectory_logger`` streams each step as it is recorded
+        (``_record_step``), as in ``BasicAgent.run_single``.
         """
 
         self._status_callback = status_callback
         self._search_iter     = 0
+        self._begin_trajectory_log(trajectory_logger)
+        _error: Optional[BaseException] = None
+        _result: Optional[Dict[str, Any]] = None
         # Reset the belief model (creates the query's criteria, loads its qrels)
         self._reset_belief_model(query_id, query_text)
         _meter = self._token_meter()
@@ -203,13 +204,16 @@ class WebWeaver_Agent(BasicAgent):
                 result["token_usage"] = token_usage
 
             logger.info(f"  ✓ {num_searches} searches, {len(reasoning_path)} steps, {len(citation_to_doc_id)} cited docs")
+            _result = result
             return result
 
         except Exception as e:
+            _error = e
             logger.error(f"  ✗ Error processing {query_id}: {e}")
             traceback.print_exc()
             return None
         finally:
+            self._end_trajectory_log(result=_result, error=_error)
             self._status_callback = None
             self._search_iter     = 0
 
@@ -261,6 +265,8 @@ class WebWeaver_Agent(BasicAgent):
             {"role": "user",   "content": user_content},
         ]
         raw_response = self.generator.complete(messages, temperature=temperature, strip_think=False)
+        # The model's own <belief_state> tags never enter the history.
+        raw_response = self._strip_belief_state(raw_response)
 
         step_num = len(state.history)
 
@@ -362,7 +368,7 @@ class WebWeaver_Agent(BasicAgent):
                 pending_retrieve_obs = None
                 history_lines.append(f"- Thought: {thought_snippet}\n  Action: wrote section\n  Observation: (Section appended to report.)")
             elif "<terminate>" in action:
-                history_lines.append(f"- Action: <terminate>")
+                history_lines.append("- Action: <terminate>")
             else:
                 history_lines.append(f"- Thought: {thought_snippet}\n  Action: {action}\n  Observation: {h.get('observation', '')[:200]}")
         writer_history = "\n".join(history_lines) if history_lines else "(No previous writer steps.)"
@@ -386,6 +392,8 @@ class WebWeaver_Agent(BasicAgent):
             {"role": "user",   "content": user_content},
         ]
         raw_response = self.generator.complete(messages, temperature=temperature, strip_think=False)
+        # The model's own <belief_state> tags never enter the history.
+        raw_response = self._strip_belief_state(raw_response)
 
         step_num = len(state.history)
 
@@ -514,6 +522,7 @@ class WebWeaver_Agent(BasicAgent):
             n_queries = len(queries)
             iter_subqueries: List[str] = []
             iter_seen_docs: List[Dict[str, Any]] = []
+            iter_steps: List[Dict[str, Any]] = []
 
             for q_idx, query in enumerate(queries):
                 sub_iter = q_idx if n_queries > 1 else None
@@ -548,7 +557,7 @@ class WebWeaver_Agent(BasicAgent):
 
                 self._vprint_docs(search_iter, docs[:self.seen_top_k], sub_iter=sub_iter)
 
-                reasoning_path.append({
+                iter_steps.append({
                     "action_type":       "search",
                     "phase":             "planner",
                     "search_query":      query,
@@ -561,20 +570,15 @@ class WebWeaver_Agent(BasicAgent):
                 iter_subqueries.append(query)
                 iter_seen_docs.extend(docs[:self.seen_top_k])
 
-
-            if iter_subqueries:
-                # The intermediate answer reads the memory bank including this search.
-                self._answer_memory_bank = dict(self._answer_memory_bank_base)
-                self._answer_memory_bank.update(new_entries)
-                tag = self._observe_step(
-                    iter_subqueries, iter_seen_docs, search_iter, question,
-                    trajectory=[],
-                )
-                if tag:
-                    reasoning_path[-1]["belief_state"] = tag
-                return new_entries, tag
-
-            return new_entries, None
+            # The intermediate answer reads the memory bank including this search.
+            self._answer_memory_bank = dict(self._answer_memory_bank_base)
+            self._answer_memory_bank.update(new_entries)
+            tag = self._observe_and_record(
+                reasoning_path, iter_steps,
+                iter_subqueries, iter_seen_docs, search_iter, question,
+                trajectory=[],
+            )
+            return new_entries, tag
 
         # ── Planner loop ──────────────────────────────────────────────────────
         self._current_phase = "plan"
@@ -589,7 +593,7 @@ class WebWeaver_Agent(BasicAgent):
             # Record write_outline step (search steps are already recorded inside search_fn)
             if planner_state.outline and planner_state.outline != prev_outline:
                 last_thought = planner_state.history[-1].get("thought", "") if planner_state.history else ""
-                reasoning_path.append({
+                self._record_step(reasoning_path, {
                     "action_type": "write_outline",
                     "phase":       "planner",
                     "think":       last_thought,
@@ -621,19 +625,19 @@ class WebWeaver_Agent(BasicAgent):
                 last = writer_state.history[-1]
                 step_action = last.get("action", "")
                 if "retrieve" in step_action:
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "retrieve",
                         "phase":       "writer",
                         "think":       last.get("thought", ""),
                     })
                 elif written is not None:
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "write",
                         "phase":       "writer",
                         "think":       last.get("thought", ""),
                     })
                 elif writer_state.terminated:
-                    reasoning_path.append({
+                    self._record_step(reasoning_path, {
                         "action_type": "terminate",
                         "phase":       "writer",
                         "think":       last.get("thought", ""),

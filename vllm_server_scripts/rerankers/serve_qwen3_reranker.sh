@@ -3,8 +3,8 @@
 # Start a vLLM server for Qwen3-8B used as a listwise reranker.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_reranker.sh
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_qwen3_reranker.sh
+#   bash vllm_server_scripts/rerankers/serve_qwen3_reranker.sh
+#   PORT=8000 bash vllm_server_scripts/rerankers/serve_qwen3_reranker.sh
 #
 # The decomposition pipeline connects to this server via --listwise-api-url
 # (default http://localhost:8000/v1).

@@ -3,9 +3,9 @@
 # Start a vLLM server for the OpenAI gpt-oss-20b model.
 #
 # Usage:
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh              # defaults: gpt-oss-20b, port 6008
-#   bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh 120b         # serve gpt-oss-120b instead
-#   PORT=8000 bash experiments/deep_research_agents/vllm_server_scripts/serve_gpt_oss.sh    # custom port
+#   bash vllm_server_scripts/reasoners/serve_gpt_oss.sh              # defaults: gpt-oss-20b, port 6008
+#   bash vllm_server_scripts/reasoners/serve_gpt_oss.sh 120b         # serve gpt-oss-120b instead
+#   PORT=8000 bash vllm_server_scripts/reasoners/serve_gpt_oss.sh    # custom port
 #
 # Requirements:
 #   - vLLM installed with gpt-oss support.

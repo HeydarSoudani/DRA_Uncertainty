@@ -113,8 +113,11 @@ class CPMReport(BasicAgent):
         max_tokens: Optional[int] = None,
     ) -> str:
         if self._use_vllm:
-            return await self._llm_call_vllm(messages, temperature, max_tokens)
-        return await self._llm_call_api(messages, temperature, max_tokens)
+            response = await self._llm_call_vllm(messages, temperature, max_tokens)
+        else:
+            response = await self._llm_call_api(messages, temperature, max_tokens)
+        # The model's own <belief_state> tags never reach the parsers.
+        return self._strip_belief_state(response or "")
 
     async def _llm_call_api(
         self,
@@ -133,10 +136,8 @@ class CPMReport(BasicAgent):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> str:
-        import openai as _openai
-
         cfg = self.inference_config
-        client = _openai.OpenAI(base_url=cfg.api_base, api_key=cfg.api_key)
+        client = self._openai_client()
         create_kwargs: Dict[str, Any] = {
             "model": cfg.model_name,
             "messages": messages,
@@ -477,7 +478,6 @@ class CPMReport(BasicAgent):
     async def _init_plan(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """Create initial report outline."""
         query = state["query"]
-        retrieved_info = state["retrieved_info"]
 
         prompt = self.prompts["init_plan"].render(
             user_query=query,
@@ -544,7 +544,7 @@ class CPMReport(BasicAgent):
         survey = state["survey"]
         cursor = state["cursor"]
 
-        survey_text = self._print_survey_outline(survey, last_detail=True)
+        survey_text = self._print_survey_outline(survey)
 
         prompt = self.prompts["extend_plan"].render(
             user_query=query,
@@ -630,7 +630,7 @@ class CPMReport(BasicAgent):
         cursor = state["cursor"]
         retrieved_info = state["retrieved_info"]
 
-        survey_text = self._print_survey_outline(survey, last_detail=True)
+        survey_text = self._print_survey_outline(survey)
         current_instruction = self._get_current_instruction(state)
 
         step = state['step']
@@ -725,12 +725,11 @@ class CPMReport(BasicAgent):
         think_pattern = r"<thought>(.*?)</thought>"
         action_pattern = r"<action>(.*?)</action>"
 
-        think_is_valid, action_is_valid = False, False
+        action_is_valid = False
 
         think_match = re.search(think_pattern, response_text, re.DOTALL)
         if think_match:
             think = think_match.group(1).strip()
-            think_is_valid = True
         else:
             think = ""
         extracted_result["thought"] = think
@@ -931,7 +930,7 @@ class CPMReport(BasicAgent):
                         #     raise
 
                         try:
-                            assert len(citations) > 0, f"Content has brackets but no valid citations [1], [2], etc."
+                            assert len(citations) > 0, "Content has brackets but no valid citations [1], [2], etc."
                         except AssertionError as e:
                             if self.verbose:
                                 print(f"[Validation Failed] {e}")
@@ -1035,7 +1034,7 @@ class CPMReport(BasicAgent):
         except:
             return f"Please write content for {cursor}"
 
-    def _print_survey_outline(self, survey: Dict[str, Any], last_detail: bool = False) -> str:
+    def _print_survey_outline(self, survey: Dict[str, Any]) -> str:
         """Print survey structure with hierarchical detail."""
         if not survey or survey == {}:
             return "There is no survey."
@@ -1047,12 +1046,9 @@ class CPMReport(BasicAgent):
             title = survey.get("title", "Untitled")
             lines.append(f"# Title: {title}\n")
         except:
-            lines.append(f"# Title: None\n")
+            lines.append("# Title: None\n")
 
         # Sections
-        now_section = self._check_progress_position(survey)
-        now_hire = now_section.count(".") if now_section else 0
-
         if "sections" in survey:
             for i, section in enumerate(survey["sections"]):
                 title_key = "name" if "name" in section else "title"
@@ -1420,7 +1416,6 @@ class CPMReport(BasicAgent):
 
         # Initialize state
         state = self._init_state(query)
-        self._current_survey = state["survey"]
 
         _STAGE_LABELS = {
             "search":               "search",
@@ -1456,9 +1451,6 @@ class CPMReport(BasicAgent):
                 # Update state
                 state = self._update_state(state)
 
-                # Keep survey reference current for answer candidates
-                self._current_survey = state["survey"]
-
                 # Count iterations: plan steps and search-write pairs each count as 1
                 num_iterations += 1
 
@@ -1475,7 +1467,7 @@ class CPMReport(BasicAgent):
         references_section = self._generate_references_section(final_report, state)
         if references_section:
             final_report = final_report.rstrip() + references_section
-            self._print(f"  ✓ Appended References section")
+            self._print("  ✓ Appended References section")
 
         num_citations = len(state.get("citation_to_doc_id", {}))
         self._print(f"  → Citations tracked: {num_citations}")
@@ -1494,6 +1486,9 @@ class CPMReport(BasicAgent):
         reasoning_path: List[Dict[str, Any]] = []
         for entry in state.get("trajectory", []):
             rp_entry: Dict[str, Any] = {
+                # The state machine's step: the iteration the belief model
+                # got for a search (its agent_iteration).
+                "iteration": entry.get("step"),
                 "think": entry.get("think", ""),
                 "action_type": entry.get("action", entry.get("state", "")),
             }
@@ -1522,22 +1517,20 @@ class CPMReport(BasicAgent):
             rp_entry["_cpm_step"] = entry.get("step")
             rp_entry["_cpm_output"] = entry.get("output", {})
 
-            reasoning_path.append(rp_entry)
+            self._record_step(reasoning_path, rp_entry)
 
         return reasoning_path
 
     def run_single(self, query_id: str, query_text: str, temperature: float = 0.7, status_callback=None, trajectory_logger=None) -> Optional[Dict[str, Any]]:
         """Override to attach CPM-specific extras to the base result.
 
-        ``trajectory_logger`` is accepted for signature compatibility but not
-        forwarded: this agent builds ``state["trajectory"]`` during the run and
-        only converts it to the standard step shape afterwards, so there is
-        nothing to stream yet.  Its ``.jsonl`` still comes from
-        ``evaluation.trajectory.save_trajectory()``.
+        This agent builds ``state["trajectory"]`` during the run and converts
+        it to the standard step shape only at the end
+        (``_build_reasoning_path``), so ``trajectory_logger`` receives all
+        steps then, not as they happen.
         """
-        self._current_query_id = query_id
-        self._current_survey = {}
-        result = super().run_single(query_id, query_text, temperature, status_callback)
+        result = super().run_single(query_id, query_text, temperature, status_callback,
+                                    trajectory_logger=trajectory_logger)
         if result is None:
             return None
 

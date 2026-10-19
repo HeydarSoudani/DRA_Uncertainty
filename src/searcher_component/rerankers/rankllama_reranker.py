@@ -15,7 +15,7 @@ rerank_batch(requests, rank_start, rank_end, ...)  ->  List[Result]
 rerank(request, rank_start, rank_end, ...)         ->  Result
 rerank(query_str, documents, top_k)               ->  List[Dict]   (convenience)
 
-Data types ``Request``, ``Result``, ``Query``, ``Candidate`` are imported
+Data types ``Request`` and ``Result`` are imported
 directly from ``rank_llm.data`` so they stay fully compatible with the rest
 of the rank_llm ecosystem.
 
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from transformers import AutoTokenizer
 
-from rank_llm.data import Candidate, Query, Request, Result
+from rank_llm.data import Request, Result
 
 logger = logging.getLogger(__name__)
 
