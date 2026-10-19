@@ -65,7 +65,6 @@ SPLADE_WEIGHT_SCALE = 100
 # Canonical dataset root + path derivation (single source of truth in layout.py).
 from indexing_corpus_dataset.layout import (
     DATASETS,
-    DATA_ROOT,
     default_corpus_path,
     default_index_dir,
 )
@@ -381,7 +380,7 @@ class Index_Builder:
 
         # Print device info
         print(f"\n{'='*50}")
-        print(f"Device Configuration:")
+        print("Device Configuration:")
         print(f"{'='*50}")
         print(f"Using device: {self.device}")
         if self.device.type == "cuda":
@@ -389,8 +388,8 @@ class Index_Builder:
             if device_id is not None:
                 print(f"Selected GPU ID: {device_id}")
         elif self.device.type == "mps":
-            print(f"MPS (Metal Performance Shaders) enabled")
-            print(f"Note: MPS automatically uses all GPU cores")
+            print("MPS (Metal Performance Shaders) enabled")
+            print("Note: MPS automatically uses all GPU cores")
         print(f"Batch size: {self.batch_size}")
         print(f"FP16 enabled: {self.use_fp16 and self.device.type == 'cuda'}")
         print(f"{'='*50}\n")
@@ -692,7 +691,7 @@ class Index_Builder:
         import torch.multiprocessing as mp
 
         print(f"\n{'='*50}")
-        print(f"Multi-GPU Encoding (process-based sharding)")
+        print("Multi-GPU Encoding (process-based sharding)")
         print(f"GPUs: {self.gpu_num}, Batch size per GPU: {self.batch_size}, "
               f"length-sorted batching: {self.length_sorted}")
         print(f"Corpus: {self.corpus_size:,} documents")

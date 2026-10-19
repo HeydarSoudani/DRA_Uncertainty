@@ -14,7 +14,8 @@ Bodies are streamed: at most ``_MAX_BYTES``, read within ``_MAX_SECONDS``
 (the request timeout bounds each read only).
 
 Wayback: the replay URL ``/web/{timestamp}id_/{url}`` redirects to the
-closest capture, one request.  Only when that capture is not an HTTP 200 one
+closest capture, one call (two requests against the archive's rate: the
+redirect hop counts, ``HttpClient.request``).  Only when that capture is not an HTTP 200 one
 (e.g. an archived 403 page) does the CDX API look for the closest 200 capture.
 """
 

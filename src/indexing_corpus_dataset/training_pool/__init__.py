@@ -21,18 +21,18 @@ source.  Steps (``experiments/training/build_training_pool.py --step N``):
                       kept questions in the canonical layout:
                       queries/queries_all.jsonl, qrels/qrels_all.txt
                       (binary, one line per fetched gold page),
-                      corpus/corpus.jsonl (those pages); incremental
+                      corpus/corpus.jsonl (those pages); then the split:
+                      queries/queries_{sft,rl,val}.jsonl,
+                      qrels/qrels_{sft,rl,val}.txt (``splits.py``; a query
+                      keeps its split as the pool grows); incremental
                       (--limit N = the next N unprocessed questions,
                       --source to pick sources)
     3  stats          the dataset as written, per source, and consistency
                       checks between queries, qrels and corpus
-    4  split          queries/queries_{sft,rl,val}.jsonl,
-                      qrels/qrels_{sft,rl,val}.txt (``splits.py``); rerun
-                      after step 2 runs: a query keeps its split
 
-Every step writes its section of ``stats.json`` (step 2 with its settings);
-steps 1 and 2 write their dropped questions with their reasons to
-``dropped.jsonl``.
+Every step writes its section of ``stats.json`` (step 2 with its settings,
+the split its shares and counts in ``split``); steps 1 and 2 write their
+dropped questions with their reasons to ``dropped.jsonl``.
 
 Modules:
     config         settings (shared, pages, split) and the build paths

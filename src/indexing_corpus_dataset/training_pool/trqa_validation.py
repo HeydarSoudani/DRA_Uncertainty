@@ -17,56 +17,53 @@ then splits ``all`` into ``sft``, ``rl`` and ``val`` (``splits.py``).
 import json
 from collections import Counter
 from pathlib import Path
-from typing import List, Set
+from typing import Set
 
 from indexing_corpus_dataset.layout import dataset_root, qrels_base, queries_base, resolve_split_id
+from utils.io_utils import atomic_write_text, iter_jsonl
 
 from .config import PoolPaths
+from .splits import read_lines
 
 SUBSETS = ("wiki1", "wiki2")
-
-
-def _lines(path: Path) -> List[str]:
-    with open(path, encoding="utf-8") as fh:
-        return [line if line.endswith("\n") else line + "\n" for line in fh if line.strip()]
 
 
 def _test_texts(trqa: Path) -> Set[str]:
     texts = set()
     for subset in SUBSETS:
         path = queries_base(trqa, resolve_split_id("trqa", "test", subset)).with_suffix(".jsonl")
-        texts |= {json.loads(line)["text"] for line in _lines(path)}
+        texts |= {row["text"] for row in iter_jsonl(path)}
     return texts
 
 
 def build(paths: PoolPaths) -> None:
     trqa = dataset_root("trqa")
     test_texts = _test_texts(trqa)
-    queries, info, qrels, overlap, ambiguous = [], [], [], [], []
+    queries, ids, info, qrels, overlap, ambiguous = [], [], [], [], [], []
     for subset in SUBSETS:
         split = resolve_split_id("trqa", "validation", subset)
         base = queries_base(trqa, split)
-        rows = _lines(base.with_suffix(".jsonl"))
-        counts = Counter(json.loads(line)["id"] for line in rows)
+        lines = read_lines(base.with_suffix(".jsonl"))
+        rows = [json.loads(line) for line in lines]
+        counts = Counter(row["id"] for row in rows)
         dup = {qid for qid, n in counts.items() if n > 1}
-        test = {json.loads(line)["id"] for line in rows if json.loads(line)["text"] in test_texts} - dup
+        test = {row["id"] for row in rows if row["text"] in test_texts} - dup
         ambiguous += sorted(dup)
         overlap += sorted(test)
         drop = dup | test
-        queries += [line for line in rows if json.loads(line)["id"] not in drop]
-        info += [line for line in _lines(base.with_name(f"{base.name}_intermediate_info.jsonl"))
+        queries += [line for line, row in zip(lines, rows) if row["id"] not in drop]
+        ids += [row["id"] for row in rows if row["id"] not in drop]
+        info += [line for line in read_lines(base.with_name(f"{base.name}_intermediate_info.jsonl"))
                  if json.loads(line)["qid"] not in drop]
-        qrels += [line for line in _lines(qrels_base(trqa, split).with_suffix(".txt"))
+        qrels += [line for line in read_lines(qrels_base(trqa, split).with_suffix(".txt"))
                   if line.split()[0] not in drop]
 
-    ids = [json.loads(line)["id"] for line in queries]
     if len(ids) != len(set(ids)):
         raise SystemExit("query ids collide between the TRQA validation splits")
 
     info_path = paths.split_info(paths.split)
     for path, lines in ((paths.queries, queries), (info_path, info), (paths.qrels, qrels)):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(lines), encoding="utf-8")
+        atomic_write_text(path, "".join(lines))
 
     with_qrels = len({line.split()[0] for line in qrels})
     print(f"[trqa_validation] {len(queries)} queries ({with_qrels} with qrels), {len(qrels)} qrels -> {paths.root}")

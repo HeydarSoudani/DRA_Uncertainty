@@ -17,12 +17,15 @@ takes the next ``limit`` of the others (of ``sources`` only, when given;
 otherwise in step 1 order).  Transient failures (transport errors, HTTP 429 /
 5xx) leave a question unprocessed, so a later run retries it, up to
 ``filters.MAX_ATTEMPTS`` fetches of the page.  The dataset files are
-rewritten after every run from all the processed questions.
+rewritten after every run from all the processed questions, then split into
+sft / rl / val (``splits.py``).  The page settings that decide a question's
+verdict (``PAGE_SETTINGS``) must stay those of the earlier runs.
 """
 
 import hashlib
 import json
 import logging
+import os
 import re
 import sys
 import threading
@@ -34,11 +37,14 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
+from utils.io_utils import atomic_write_text, iter_jsonl, read_jsonl, write_jsonl
+
 from .config import PoolConfig, PoolPaths
 from .filters import failed_pages, failed_transiently, filter_a, is_transient, type_filter, verdict
-from .http_client import HttpClient, error_text
+from .http_client import HttpClient, error_text, failure_status
 from .sources import LOADERS
-from .stats import (dataset_stats, drop_stats, format_dataset_table, page_stats, question_stats,
+from .splits import check_shares, write_splits
+from .stats import (dataset_stats, drop_stats, format_dataset_table, page_stats, question_stats, read_stats,
                     write_stats)
 from .web_pages import WebFetcher
 from .wikipedia_api import WikipediaClient, html_to_text
@@ -51,41 +57,40 @@ _RESOLVE_BATCH = 50
 # this many seconds without one.
 _LINE_EVERY_SHARE = 0.01
 _LINE_EVERY_SECONDS = 60.0
-
-
-def _read_jsonl(path: Path) -> List[dict]:
-    with open(path, encoding="utf-8") as fh:
-        return [json.loads(line) for line in fh if line.strip()]
-
-
-def _write_jsonl(path: Path, records: Iterable[dict]) -> int:
-    n = 0
-    with open(path, "w", encoding="utf-8") as fh:
-        for record in records:
-            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-            n += 1
-    return n
+# The ``pages`` settings that decide a page's status or a question's verdict:
+# an incremental run must use those of the earlier runs (``--force`` to
+# override).  The worker counts and rates may change between runs.
+PAGE_SETTINGS = ("wiki_lang", "min_words", "min_page_share", "wayback", "wayback_timestamp")
 
 
 def _drop_partial_line(path: Path) -> None:
     """Cut a last line left unfinished by a killed run, so that appended
-    rows start on a line of their own."""
+    rows start on a line of their own (the file is read from its end)."""
     if not path.exists() or path.stat().st_size == 0:
         return
     with open(path, "rb+") as fh:
-        fh.seek(-1, 2)
+        end = fh.seek(0, 2)
+        fh.seek(end - 1)
         if fh.read(1) == b"\n":
             return
-        fh.seek(0)
-        end = fh.read().rfind(b"\n") + 1
-        fh.truncate(end)
+        pos, size = end, 1 << 16
+        while pos > 0:
+            start = max(0, pos - size)
+            fh.seek(start)
+            cut = fh.read(pos - start).rfind(b"\n")
+            if cut >= 0:
+                fh.truncate(start + cut + 1)
+                break
+            pos = start
+        else:
+            fh.truncate(0)
     log.warning("%s: removed an unfinished last line", path)
 
 
 def _write_dropped(paths: PoolPaths, step: int, dropped: List[dict]) -> None:
     """Replace the rows of *step* in ``dropped.jsonl``, the other steps' kept."""
-    others = [r for r in _read_jsonl(paths.dropped) if r["step"] != step] if paths.dropped.exists() else []
-    _write_jsonl(paths.dropped, others + [{"step": step, **d} for d in dropped])
+    others = [r for r in read_jsonl(paths.dropped) if r["step"] != step] if paths.dropped.exists() else []
+    write_jsonl(paths.dropped, others + [{"step": step, **d} for d in dropped])
 
 
 # ── Step 1 ──────────────────────────────────────────────────────────────────
@@ -116,9 +121,9 @@ def _merge() -> Tuple[List[dict], List[dict]]:
 def run_step1(paths: PoolPaths) -> None:
     merged, duplicates = _merge()
     kept, by_type = type_filter(merged)
-    _write_jsonl(paths.questions, kept)
+    write_jsonl(paths.questions, kept)
     _write_dropped(paths, 1, duplicates + by_type)
-    write_stats(paths.stats, 1, {"questions_merged": len(merged) + len(duplicates), "kept": question_stats(kept),
+    write_stats(paths.stats, "step1", {"questions_merged": len(merged) + len(duplicates), "kept": question_stats(kept),
                                  "dropped": drop_stats(duplicates + by_type)})
     log.info("step 1: kept %d of %d questions (%d duplicates, %d by type) -> %s",
              len(kept), len(merged) + len(duplicates), len(duplicates), len(by_type), paths.questions)
@@ -128,8 +133,10 @@ def run_step1(paths: PoolPaths) -> None:
 
 class _PageStore:
     """``pages/index.jsonl`` (append, latest row per key wins) and
-    ``pages/text.jsonl`` (the text of each fetched document).  A transient
-    failure row counts the fetches of its page in ``attempts``."""
+    ``pages/text.jsonl`` (the text of each fetched document, latest row per
+    id wins).  A transient failure row counts the fetches of its page in
+    ``attempts``.  Text that cannot be encoded (lone surrogates) is written
+    with replacement characters."""
 
     def __init__(self, paths: PoolPaths):
         self.rows: Dict[str, dict] = {}
@@ -139,11 +146,11 @@ class _PageStore:
         for path in (paths.page_index, paths.page_text):
             _drop_partial_line(path)
         if paths.page_index.exists():
-            for row in _read_jsonl(paths.page_index):
+            for row in iter_jsonl(paths.page_index):
                 self._remember(row)
         self._lock = threading.Lock()
-        self._index = open(paths.page_index, "a", encoding="utf-8")
-        self._text = open(paths.page_text, "a", encoding="utf-8")
+        self._index = open(paths.page_index, "a", encoding="utf-8", errors="replace")
+        self._text = open(paths.page_text, "a", encoding="utf-8", errors="replace")
         self.listener: Optional[Callable[[dict], None]] = None
 
     def _remember(self, row: dict) -> None:
@@ -276,8 +283,8 @@ def _resolve_wiki(golds: List[dict], store: _PageStore, wiki: WikipediaClient, w
     def resolve(batch: List[str]) -> Dict[str, dict]:
         try:
             return wiki.resolve_batch(batch)
-        except Exception as exc:  # noqa: BLE001 - recorded, retried on rerun
-            return {title: {"status": "error", "error": error_text(exc)} for title in batch}
+        except Exception as exc:  # noqa: BLE001 - recorded, retried on rerun (4xx: final)
+            return {title: {"status": failure_status(exc, "error"), "error": error_text(exc)} for title in batch}
 
     resolved: Dict[str, dict] = {}
     progress.set_phase(f"resolve 0/{len(batches)}")
@@ -301,7 +308,19 @@ def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: _
                  fetcher: WebFetcher, cfg: PoolConfig, progress: _Progress) -> None:
     """The Wikipedia pages and the web pages, two thread pools at once.  A
     Wikipedia page fetched by an earlier run under another title (a redirect)
-    reuses that text."""
+    reuses that text.  A worker that fails unexpectedly records an ``error``
+    row (retried on rerun) for its pages without a row of this run, so one
+    page never aborts the run."""
+
+    def guarded(fetch: Callable, arg, rows: List[dict]) -> None:
+        before = {row["key"]: store.rows.get(row["key"]) for row in rows}
+        try:
+            fetch(arg)
+        except Exception as exc:  # noqa: BLE001 - recorded, retried on rerun
+            log.warning("unexpected error on %s: %s", rows[0]["key"], error_text(exc))
+            for row in rows:
+                if store.rows.get(row["key"]) is before[row["key"]]:
+                    store.add({**row, "status": "error", "error": error_text(exc)})
 
     def fetch_wiki(pageid: int) -> None:
         rows = by_page[pageid]
@@ -313,9 +332,9 @@ def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: _
             return
         try:
             text = html_to_text(wiki.fetch_html(rows[0]["revid"]))
-        except Exception as exc:  # noqa: BLE001 - recorded, retried on rerun
+        except Exception as exc:  # noqa: BLE001 - recorded, retried on rerun (4xx: final)
             for row in rows:
-                store.add({**row, "status": "fetch_error", "error": error_text(exc)})
+                store.add({**row, "status": failure_status(exc, "fetch_error"), "error": error_text(exc)})
             return
         doc_id = f"wiki_{pageid}"
         store.add_text(doc_id, text)
@@ -337,54 +356,98 @@ def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: _
     progress.set_phase(f"fetch {len(by_page)} wiki + {len(web_golds)} web pages")
     with ThreadPoolExecutor(max_workers=max(1, cfg.pages.wiki_workers)) as wiki_pool, \
             ThreadPoolExecutor(max_workers=max(1, cfg.pages.web_workers)) as web_pool:
-        futures = ([wiki_pool.submit(fetch_wiki, pageid) for pageid in by_page]
-                   + [web_pool.submit(fetch_web, gold) for gold in web_golds])
+        futures = ([wiki_pool.submit(guarded, fetch_wiki, pageid, by_page[pageid]) for pageid in by_page]
+                   + [web_pool.submit(guarded, fetch_web, gold, [{"key": gold["key"], "kind": "web", "url": gold["url"]}])
+                      for gold in web_golds])
         for future in as_completed(futures):
             future.result()
 
 
+_ID_PREFIX = b'{"id": "'
+
+
+def _row_id(line: bytes) -> Optional[str]:
+    """The id of a ``pages/text.jsonl`` row, read from its prefix as
+    ``add_text`` writes it, without parsing the text (the full row otherwise)."""
+    if line.startswith(_ID_PREFIX):
+        end = line.find(b'"', len(_ID_PREFIX))
+        if end > 0 and b"\\" not in line[len(_ID_PREFIX):end]:
+            return line[len(_ID_PREFIX):end].decode("utf-8")
+    return json.loads(line)["id"] if line.strip() else None
+
+
 def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths) -> int:
     """The kept questions (queries), their fetched gold pages (binary qrels)
-    and the text of those pages (corpus) in the canonical layout; returns the
-    number of documents."""
-    for path in (paths.queries, paths.qrels, paths.corpus):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
-                                 for r in records))
+    and the text of those pages (corpus) in the canonical layout, each file
+    replaced atomically; returns the number of documents.  A document's text
+    is its last row in ``pages/text.jsonl`` (a page fetched again after a
+    crash between its text and its index rows has two)."""
+    write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
+                                for r in records))
     docs: Dict[str, dict] = {}
-    with open(paths.qrels, "w", encoding="utf-8") as fh:
-        for record in records:
-            fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
-            for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
-                fh.write(f"{record['id']} 0 {doc_id} 1\n")
-            for page in fetched:
-                docs.setdefault(page["doc_id"], page)
+    qrels = []
+    for record in records:
+        fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
+        for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
+            qrels.append(f"{record['id']} 0 {doc_id} 1\n")
+        for page in fetched:
+            docs.setdefault(page["doc_id"], page)
+    atomic_write_text(paths.qrels, "".join(qrels))
 
-    written: set = set()
-    with open(paths.corpus, "w", encoding="utf-8") as out:
-        if paths.page_text.exists():
-            with open(paths.page_text, encoding="utf-8") as fh:
-                for line in fh:
-                    item = json.loads(line)
-                    page = docs.get(item["id"])
-                    if page is None or item["id"] in written:
-                        continue
-                    written.add(item["id"])
+    # Byte offset of the last text row of each document, then those rows only.
+    offsets: Dict[str, int] = {}
+    if paths.page_text.exists():
+        with open(paths.page_text, "rb") as fh:
+            offset = 0
+            for line in fh:
+                doc_id = _row_id(line)
+                if doc_id in docs:
+                    offsets[doc_id] = offset
+                offset += len(line)
+    paths.corpus.parent.mkdir(parents=True, exist_ok=True)
+    tmp = paths.corpus.with_name(f".{paths.corpus.name}.tmp")
+    with open(tmp, "w", encoding="utf-8", errors="replace") as out:
+        if offsets:
+            with open(paths.page_text, "rb") as fh:
+                for doc_id, offset in sorted(offsets.items(), key=lambda item: item[1]):
+                    fh.seek(offset)
+                    item = json.loads(fh.readline())
                     # {id, contents} as the other corpora (layout.py), plus the
                     # page url; a wiki page's title is the first line of its text.
-                    out.write(json.dumps({"id": item["id"], "contents": item["text"], "url": page["url"]},
+                    out.write(json.dumps({"id": doc_id, "contents": item["text"], "url": docs[doc_id]["url"]},
                                          ensure_ascii=False) + "\n")
-    return len(written)
+    os.replace(tmp, paths.corpus)
+    return len(offsets)
+
+
+def _check_settings(cfg: PoolConfig, paths: PoolPaths, force: bool) -> None:
+    """Refuse page settings (``PAGE_SETTINGS``) other than those of the
+    earlier step 2 runs, and split shares other than the recorded ones,
+    unless *force*."""
+    recorded = read_stats(paths.stats).get("step2", {}).get("config", {}).get("pages", {})
+    pages = cfg.to_dict()["pages"]
+    diffs = [f"pages.{k}: {recorded[k]!r} -> {pages[k]!r}" for k in PAGE_SETTINGS
+             if k in recorded and recorded[k] != pages[k]]
+    if diffs and not force:
+        raise SystemExit(f"{paths.root}: the earlier step 2 runs used other page settings ({'; '.join(diffs)}); "
+                         "their pages and verdicts would mix with this run's. "
+                         "Restore the settings, or pass --force")
+    check_shares(paths, cfg.split, force)
 
 
 def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
-              sources: Optional[List[str]] = None) -> None:
+              sources: Optional[List[str]] = None, force: bool = False) -> None:
     if not cfg.shared.contact:
         raise SystemExit("step 2 needs shared.contact (e-mail or URL for the User-Agent, "
                          "as the Wikimedia User-Agent policy asks): DRA_CONTACT in .env or shared.contact in the config")
     if not paths.questions.exists():
         raise SystemExit(f"{paths.questions} not found: run step 1 first")
-    records = _read_jsonl(paths.questions)
+    _check_settings(cfg, paths, force)
+    config = cfg.to_dict()
+    del config["shared"]["contact"]  # personal: stays in .env
+    # The settings first, so a run that stops before its stats still records them.
+    write_stats(paths.stats, "step2", {**read_stats(paths.stats).get("step2", {}), "config": config})
+    records = read_jsonl(paths.questions)
     store = _PageStore(paths)
     min_page_share = cfg.pages.min_page_share
 
@@ -400,7 +463,7 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
             raise SystemExit(f"unknown source(s) {unknown}; expected some of {list(LOADERS)}")
         todo = [r for r in todo if r["source"] in sources]
         print(f"[step 2] this run: sources {', '.join(sources)}, {len(todo)} remaining")
-    if limit is not None and limit > 0:
+    if limit is not None:
         todo = todo[:limit]
         print(f"[step 2] this run: the next {len(todo)} questions (--limit {limit})")
     golds: Dict[str, dict] = {}
@@ -451,9 +514,7 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     partial = [p for p in partial if p["reasons"]]
     n_docs = _write_dataset(kept, pages, paths)
     _write_dropped(paths, 2, dropped)
-    config = cfg.to_dict()
-    del config["shared"]["contact"]  # personal: stays in .env
-    write_stats(paths.stats, 2, {
+    write_stats(paths.stats, "step2", {
         "config": config,
         "questions": {"candidates": len(records), "processed": len(done),
                       "remaining": len(records) - len(done)},
@@ -465,6 +526,7 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     print(f"[step 2] dataset: {len(kept)} kept of {len(done)} processed questions "
           f"({len(partial)} with failed gold pages, {len(records) - len(done)} remaining), "
           f"{n_docs} gold pages -> {paths.root}")
+    write_splits(paths, cfg.split, force)
 
 
 # ── Step 3 ──────────────────────────────────────────────────────────────────
@@ -481,8 +543,8 @@ def run_step3(paths: PoolPaths) -> None:
             if line.strip():
                 qid, _, doc_id, _ = line.split()
                 qrels.setdefault(qid, []).append(doc_id)
-    corpus = {row["id"]: row for row in _read_jsonl(paths.corpus)}
-    dropped = [r for r in _read_jsonl(paths.dropped) if r["step"] == 2] if paths.dropped.exists() else []
-    stats = dataset_stats(_read_jsonl(paths.questions), _read_jsonl(paths.queries), qrels, corpus, dropped)
-    write_stats(paths.stats, 3, stats)
+    doc_words = {row["id"]: len(row["contents"].split()) for row in iter_jsonl(paths.corpus)}
+    dropped = [r for r in iter_jsonl(paths.dropped) if r["step"] == 2] if paths.dropped.exists() else []
+    stats = dataset_stats(read_jsonl(paths.questions), read_jsonl(paths.queries), qrels, doc_words, dropped)
+    write_stats(paths.stats, "step3", stats)
     print(f"[step 3] dataset {paths.root}\n\n{format_dataset_table(stats)}\n")

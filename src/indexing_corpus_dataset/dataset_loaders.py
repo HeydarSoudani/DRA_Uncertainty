@@ -13,15 +13,13 @@ from pathlib import Path
 import csv
 import json
 
-# Layout vocabulary (single source of truth).  Re-exported below so existing
-# ``from ...dataset_loaders import queries_base`` call sites keep working.
-from .layout import (
-    DATA_ROOT,
+# Layout vocabulary (single source of truth).  ``resolve_split_id`` and
+# ``resolve_data_path`` are re-exported for the
+# ``from ...dataset_loaders import resolve_split_id`` call sites.
+from .layout import (  # noqa: F401
     queries_base,
     qrels_base,
     nuggets_base,
-    corpus_path,
-    corpus_name,
     resolve_split_id,
     resolve_data_path,
     _resolve_split_file,
@@ -98,17 +96,6 @@ def load_queries(
                     ("request" for neuclir, "text" for the others).
     """
     return _load_queries_and_answers(data_path, data_set, query_key)[0]
-
-
-def load_query_answers(
-    data_path: Path | str, data_set: str = "set1"
-) -> dict[str, str]:
-    """Load ground-truth answers from the JSONL queries file.
-
-    Returns ``{query_id: answer_text}`` for records that have an ``"answer"``
-    field (e.g. BrowseComp-Plus); empty for datasets without answers.
-    """
-    return _load_queries_and_answers(data_path, data_set)[1]
 
 
 # ===========================================================================

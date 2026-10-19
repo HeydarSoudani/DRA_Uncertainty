@@ -8,6 +8,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+from utils.io_utils import atomic_write_text
+
 
 def distribution(values: List[float]) -> dict:
     if not values:
@@ -76,20 +78,27 @@ def page_stats(pages: Iterable[dict]) -> dict:
     return out
 
 
-def write_stats(path: Path, step: int, stats: dict) -> None:
-    """Set the ``step{N}`` section of *path*, the other sections kept."""
-    sections = json.loads(path.read_text()) if path.exists() else {}
-    sections[f"step{step}"] = stats
-    path.write_text(json.dumps(dict(sorted(sections.items())), indent=2, ensure_ascii=False) + "\n")
+def read_stats(path: Path) -> dict:
+    """The sections of *path* (``{}`` when it does not exist)."""
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def write_stats(path: Path, section: str, stats: dict) -> None:
+    """Set *section* (``step1``, ``step2``, ``step3``, ``split``) of *path*,
+    the other sections kept."""
+    sections = read_stats(path)
+    sections[section] = stats
+    atomic_write_text(path, json.dumps(dict(sorted(sections.items())), indent=2, ensure_ascii=False) + "\n")
 
 
 def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, List[str]],
-                  corpus: Dict[str, dict], dropped: List[dict]) -> dict:
+                  doc_words: Dict[str, int], dropped: List[dict]) -> dict:
     """Step 3: the dataset as written (queries, qrels, corpus), per source
     (and ``all``), plus consistency checks between the three files.
 
     *candidates* are the step 1 questions, *qrels* maps a query id to its doc
-    ids, *corpus* maps a doc id to its row and *dropped* are the step 2 drops.
+    ids, *doc_words* maps a corpus doc id to its word count and *dropped* are
+    the step 2 drops.
     """
     groups: Dict[str, List[dict]] = defaultdict(list)
     for query in queries:
@@ -115,7 +124,7 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
             "unique_docs": len(uses),
             "docs_by_kind": dict(Counter(d.split("_", 1)[0] for d in uses)),
             "docs_shared": sum(n >= 2 for n in uses.values()),
-            "doc_words": distribution([len(corpus[d]["contents"].split()) for d in uses if d in corpus]),
+            "doc_words": distribution([doc_words[d] for d in uses if d in doc_words]),
             "query_words": distribution([len(q["text"].split()) for q in group]),
             "answer_words": distribution([len(str(q["answer"]).split()) for q in group]),
         }
@@ -126,10 +135,10 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
         "duplicate_query_ids": len(queries) - len(query_ids),
         "queries_without_qrels": sum(not qrels.get(q) for q in query_ids),
         "qrels_unknown_query": sum(q not in query_ids for q in qrels),
-        "qrels_docs_missing_from_corpus": len(qrel_docs - set(corpus)),
-        "corpus_docs_without_qrels": len(set(corpus) - qrel_docs),
+        "qrels_docs_missing_from_corpus": len(qrel_docs - set(doc_words)),
+        "corpus_docs_without_qrels": len(set(doc_words) - qrel_docs),
     }
-    return {"corpus_docs": len(corpus), "per_source": per_source, "checks": checks}
+    return {"corpus_docs": len(doc_words), "per_source": per_source, "checks": checks}
 
 
 def _fmt(value: float) -> str:

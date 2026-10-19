@@ -10,6 +10,11 @@ A query's split depends on its id only, so a rerun after the pool has grown
 (deep_qa step 2) keeps every earlier query in its split.  Each split gets the
 queries, the intermediate info (when the pool has it) and the qrels of its
 queries, rows copied unchanged.
+
+The shares and the per-split counts are recorded in the ``split`` section of
+``stats.json``; a split with other shares than the recorded ones (it would
+move queries between splits, e.g. from rl into val) is refused unless
+forced.
 """
 
 import hashlib
@@ -19,8 +24,10 @@ from pathlib import Path
 from typing import Dict, List
 
 from indexing_corpus_dataset.layout import POOL_SPLITS
+from utils.io_utils import atomic_write_text
 
 from .config import PoolPaths, SplitConfig
+from .stats import read_stats, write_stats
 
 
 def assign_split(qid: str, shares: Dict[str, float]) -> str:
@@ -35,45 +42,61 @@ def assign_split(qid: str, shares: Dict[str, float]) -> str:
     return POOL_SPLITS[-1]
 
 
-def _lines(path: Path) -> List[str]:
+def read_lines(path: Path) -> List[str]:
+    """The non-blank lines of *path*, each ending with a newline: rows to
+    copy unchanged."""
     with open(path, encoding="utf-8") as fh:
         return [line if line.endswith("\n") else line + "\n" for line in fh if line.strip()]
 
 
-def write_splits(paths: PoolPaths, cfg: SplitConfig) -> None:
-    """Write the splits ``sft``, ``rl`` and ``val`` of the pool's split ``all``."""
+def check_shares(paths: PoolPaths, cfg: SplitConfig, force: bool = False) -> None:
+    """Refuse *cfg*'s shares when ``stats.json`` records other ones, unless
+    *force*: other shares move queries between splits."""
+    recorded = read_stats(paths.stats).get("split", {}).get("shares")
+    if recorded is not None and recorded != cfg.shares() and not force:
+        raise SystemExit(f"{paths.root} was split with the shares {recorded}, the config has {cfg.shares()}: "
+                         "other shares move queries between splits (e.g. from rl into val). "
+                         "Restore the shares, or pass --force to re-split")
+
+
+def write_splits(paths: PoolPaths, cfg: SplitConfig, force: bool = False) -> None:
+    """Write the splits ``sft``, ``rl`` and ``val`` of the pool's split
+    ``all`` and record them in the ``split`` section of ``stats.json``."""
     for path in (paths.queries, paths.qrels):
         if not path.exists():
             raise SystemExit(f"{path} not found: build the pool first")
+    check_shares(paths, cfg, force)
     shares = cfg.shares()
-    queries = _lines(paths.queries)
-    split_of = {}
-    for line in queries:
-        row = json.loads(line)
-        split_of[str(row["id"])] = (assign_split(str(row["id"]), shares), row.get("source"))
+    queries = read_lines(paths.queries)
+    rows = [json.loads(line) for line in queries]
+    split_of = {str(row["id"]): (assign_split(str(row["id"]), shares), row.get("source")) for row in rows}
     if len(split_of) != len(queries):
         raise SystemExit(f"{paths.queries}: duplicate query ids")
 
+    # (file of split ``all``, its rows, their query ids, the path of a split)
+    files = [(paths.queries, queries, [str(row["id"]) for row in rows], paths.split_queries)]
+    qrels = read_lines(paths.qrels)
+    files.append((paths.qrels, qrels, [line.split()[0] for line in qrels], paths.split_qrels))
     info_all = paths.split_info(paths.split)
-    files = [(paths.queries, paths.split_queries, lambda line: json.loads(line)["id"]),
-             (paths.qrels, paths.split_qrels, lambda line: line.split()[0])]
     if info_all.exists():
-        files.append((info_all, paths.split_info, lambda line: json.loads(line)["qid"]))
-    for source, target, qid_of in files:
+        info = read_lines(info_all)
+        files.append((info_all, info, [str(json.loads(line)["qid"]) for line in info], paths.split_info))
+    for source, lines, qids, target in files:
         out: Dict[str, List[str]] = {name: [] for name in POOL_SPLITS}
-        for line in _lines(source):
-            qid = str(qid_of(line))
+        for line, qid in zip(lines, qids):
             if qid not in split_of:
                 raise SystemExit(f"{source}: query {qid} is not in {paths.queries}")
             out[split_of[qid][0]].append(line)
-        for name, lines in out.items():
-            path = target(name)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("".join(lines), encoding="utf-8")
+        for name, split_lines in out.items():
+            atomic_write_text(target(name), "".join(split_lines))
 
     counts = Counter(split for split, _ in split_of.values())
+    by_source = {name: dict(sorted(Counter(source for split, source in split_of.values()
+                                           if split == name and source).items()))
+                 for name in POOL_SPLITS}
+    write_stats(paths.stats, "split", {"shares": shares, "queries": {name: counts[name] for name in POOL_SPLITS},
+                                       "by_source": by_source})
     print(f"[split] {len(split_of)} queries of split {paths.split}, shares {shares} -> {paths.root}")
     for name in POOL_SPLITS:
-        by_source = Counter(source for split, source in split_of.values() if split == name and source)
-        detail = f" ({', '.join(f'{s} {n}' for s, n in sorted(by_source.items()))})" if by_source else ""
+        detail = f" ({', '.join(f'{s} {n}' for s, n in by_source[name].items())})" if by_source[name] else ""
         print(f"[split]   {name}: {counts[name]} queries ({counts[name] / max(1, len(split_of)):.1%}){detail}")

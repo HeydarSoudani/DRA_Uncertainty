@@ -62,7 +62,7 @@ CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --ph
 ## Phase 0: Training pools
 
 Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`. Split `all` holds every query of
-the pool. The last build step splits it by a hash of the query id into three disjoint splits, with the shares of
+the pool. The build (the end of deep_qa step 2, the trqa_validation call) splits it by a hash of the query id into three disjoint splits, with the shares of
 the `split` section of `experiments/configs/build_training_pool.yaml`:
 
 | Split | Share | Phase 1 mode | Used by |
@@ -76,7 +76,7 @@ never reaches the queries of another.
 
 ### deep_qa
 
-The deep_qa pool (split `train`) holds deep-research questions whose gold evidence spans
+The deep_qa pool holds deep-research questions whose gold evidence spans
 several documents, from InfoSeek-Hard, WebShaper and FRAMES. Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA,
 MuSiQue, TriviaQA) are not used: they need too little search.
 
@@ -91,12 +91,15 @@ Values are means, after step 1.
 
 ```bash
 python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
-python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A
+python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A, split all -> sft / rl / val
 python experiments/training/build_training_pool.py --step 3                               # print the statistics per source
-python experiments/training/build_training_pool.py --step 4                               # split all -> sft / rl / val
 ```
 
-Step 4 can run again after every step 2 call.
+Step 2 ends with the split, so the split files always match the pool. The shares and per-split counts are recorded
+in the `split` section of `stats.json`. Other shares (they would move queries between splits) and other page
+settings than the earlier step 2 runs' (`wiki_lang`, `min_words`, `min_page_share`, `wayback`, `wayback_timestamp`)
+are refused unless `--force` (`--step 2 --force` re-splits). One build of a pool runs at a time (`.build.lock` in
+its directory).
 
 ### trqa_validation
 
@@ -135,9 +138,10 @@ finished query:
 | step | `teacher_output`: the teacher's reply (monitor runs) | `belief/{qid}.jsonl` | SFT |
 | episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{ts}}$ |
 | episode | criteria and the model that wrote them (monitor runs) | `belief/{qid}.jsonl` | SFT init samples |
-| episode | the criteria cap of the init prompt (`belief_model.max_criteria`; the dataset's default in off runs) | `run_config.json` | SFT init samples, RL |
+| episode | the criteria cap of the init prompt (`belief_model.max_criteria` of the teacher's run: the split's own, the `val` run's for `rl`; the dataset's default when absent) | `run_config.json` | SFT init samples, RL |
 
-Only finished queries are episodes (the trajectory ends with its meta line). The runs a phase reads must share
+Only finished queries are episodes, as dra_inference counts them: the trajectory ends with its meta line and, in a
+monitor run, the belief file exists. The qrels are read with the run's `dataset.min_relevance_score`. The runs a phase reads must share
 their agent and searcher settings (`run_config.json`, the temperature included): phase 2 checks the sft
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
@@ -205,14 +209,15 @@ student's).
 - $S_t$: documents the reply cites as support, with a verified span;
 - $\rho_t$: `recall_so_far`, the share of the query's relevant documents seen up to step t;
 - $C_t$: coverage after the reply (see [Goal](#goal-uncertainty-of-the-deep-research-agent));
-- $T$: the last updater call of the chain; $y \in \{0, 1\}$: the agent's final answer is correct.
+- $T$: the last updater call of the student's chain; $y \in \{0, 1\}$: the agent's final answer is correct.
 
 **Prompts.** A prompt $x_t$ is one updater step of an `rl` episode: a step with a document not shown in an
 earlier step. The agent is frozen, so the documents of every step are fixed, and $b_{t-1}$ is the student's own:
 its criteria (greedy init call) and its greedy replies to steps $< t$, as at inference. Training on teacher states
 would leave the student unprepared for its own earlier errors at inference (exposure bias; DAgger, Ross et al.
 2011), and the `rl` run has no teacher. A step without a prompt (no criteria parsed, or no call there in the
-student's chain) is left out. $r_{\mathrm{ts}}$ applies on the episode's last updater step.
+student's chain) is left out. $r_{\mathrm{ts}}$ applies on the last updater call of the student's chain: no later step
+shows a document not judged yet once the reply parses (a reply that does not parse scores 0 anyway).
 
 **Groups.** The student samples $G = 8$ replies $o_1, \dots, o_G \sim \pi_{\phi_{\text{old}}}(\cdot \mid x_t)$ at
 temperature 1, and each is applied to a copy of $b_{t-1}$. A group whose replies all score alike gives no
@@ -236,10 +241,10 @@ $$
 
 | Term | Measures | Available when |
 |---|---|---|
-| format $f_t \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each known criterion one valid status and all cited spans occur verbatim in their passage | always |
+| format $f_t \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each criterion it lists a valid status, names only known criteria, each once, and every cited passage has spans that all occur verbatim in it (a citation without spans fails) | always |
 | state tracking $r_{\mathrm{st}}$ | the cited support matches the relevant documents of the step; citing nothing on a step without gold scores 1 | always |
 | state correctness $r_{\mathrm{sc}}$ | the coverage follows recall | $\rho_t$ known |
-| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | the episode's last updater step, $y$ known |
+| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | the last updater call of the chain, $y$ known |
 
 The squared errors are minimized by the expected target given the input, so they reward calibrated coverage.
 $R_t$ is the logged reward and the validation measure.
@@ -255,12 +260,13 @@ $$
 with mean and std over the $G$ replies of the group, a term with zero spread counting 0. A reply is thus judged
 against the other replies to the same step, not against easier or harder steps.
 
-**Objective.** The PPO update of Agent-BRACE with dual clipping, no critic and no KL term, averaged over all reply
-tokens of the batch, with DAPO's clip-higher. With the importance ratio
+**Objective.** The PPO update of Agent-BRACE with dual clipping, no critic and no KL term, with DAPO's clip-higher.
+Replies with a zero advantage (no gradient) are left out of the update; the loss of a mini-batch $\mathcal{M}$ is
+averaged over the reply tokens of its replies (`loss_agg_mode: token-mean`). With the importance ratio
 $\eta_{i,j} = \pi_\phi(o_{i,j} \mid x, o_{i,<j}) / \pi_{\phi_{\text{old}}}(o_{i,j} \mid x, o_{i,<j})$:
 
 $$
-\mathcal{L}_{\mathrm{RL}}(\phi) = -\frac{1}{\sum_i |o_i|} \sum_i \sum_{j=1}^{|o_i|} \ell_{i,j}, \qquad
+\mathcal{L}_{\mathrm{RL}}(\phi) = -\frac{1}{\sum_{i \in \mathcal{M}} |o_i|} \sum_{i \in \mathcal{M}} \sum_{j=1}^{|o_i|} \ell_{i,j}, \qquad
 \ell_{i,j} =
 \begin{cases}
 \min\left(\eta_{i,j}\hat{A}_i,\ \operatorname{clip}(\eta_{i,j}, 1-\epsilon_{\text{low}}, 1+\epsilon_{\text{high}})\,\hat{A}_i\right) & \hat{A}_i \ge 0 \\
@@ -269,7 +275,8 @@ $$
 $$
 
 with $\epsilon_{\text{low}} = 0.2$, $\epsilon_{\text{high}} = 0.28$, $c = 3$, learning rate 1e-5 and one PPO epoch in
-mini-batches of 32 replies. The mean token entropy of the replies is logged, to watch for entropy collapse.
+mini-batches of 32 replies with a nonzero advantage. An iteration with no group whose replies differ makes no
+update. The mean token entropy of the replies is logged, to watch for entropy collapse.
 
 **Batch.** 32 prompts × 8 replies = 256 replies per iteration: half of the prompts from steps with new gold, at
 most 15% from episodes without gold, the rest from other steps; last calls are balanced on $y$. 200 iterations ≈

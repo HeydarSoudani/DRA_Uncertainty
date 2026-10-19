@@ -5,14 +5,14 @@
 # the dataclass fields of src/indexing_corpus_dataset/training_pool/config.py.
 #
 # Precedence (lowest -> highest):
-#   dataclass defaults  <  this file  <  CLI flags
-# --limit and --source are CLI flags only (step 2 is incremental: the next N
-# questions, of the given sources when --source is set).
+#   dataclass defaults  <  this file
+# --limit, --source and --force are CLI flags only (step 2 is incremental: the
+# next N questions, of the given sources when --source is set).  The pool is
+# built under data/training_pool/{pool} of the repo.
 # ============================================================================
 
 # ── Shared ───────────────────────────────────────────────────────────────────
 shared:
-  output_dir: null                  # null = data/training_pool/{pool} of the repo
   contact: null                     # e-mail or URL in the User-Agent (required by step 2); null = DRA_CONTACT in .env
   timeout: 30.0                     # seconds per request
   max_retries: 4                    # retries on transport errors and HTTP 429 / 5xx
@@ -28,8 +28,12 @@ pages:
   wayback_timestamp: "20250601"     # closest snapshot to when WebShaper was built
   min_words: 50                     # fewer extracted words = dead page (soft 404)
   min_page_share: 0.8               # Filter A, questions with web gold pages: this share of all their gold pages (Wikipedia-only: all)
+# wiki_lang, min_words, min_page_share, wayback, wayback_timestamp must stay
+# those of the earlier step 2 runs of the pool (recorded in stats.json); --force overrides.
 
-# ── Split (deep_qa step 4, trqa_validation build): shares of the queries ────
+# ── Split (end of deep_qa step 2, trqa_validation build): shares of the queries
+# Recorded in stats.json; other shares move queries between splits and are
+# refused unless --force (step 2 --force re-splits).
 split:
   sft: 0.3                          # SFT samples (monitor mode, teacher replies)
   rl: 0.6                           # RL prompts (off mode)

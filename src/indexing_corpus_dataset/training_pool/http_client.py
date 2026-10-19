@@ -26,10 +26,20 @@ def error_text(exc: Exception) -> str:
 
 
 def is_permanent(exc: Exception) -> bool:
-    """A request error a retry cannot fix: unknown host, TLS failure,
-    redirect loop, malformed URL."""
-    return isinstance(exc, _PERMANENT_ERRORS) or (
-        isinstance(exc, requests.ConnectionError) and "NameResolutionError" in str(exc))
+    """A request error a retry cannot fix: TLS failure, redirect loop,
+    malformed URL.  A DNS failure is not one: resolvers fail transiently."""
+    return isinstance(exc, _PERMANENT_ERRORS)
+
+
+def failure_status(exc: Exception, default: str) -> str:
+    """The page status of a failed request: ``http_<code>`` for an HTTP 4xx
+    reply other than 429 (final, as for web pages), else *default*."""
+    response = getattr(exc, "response", None)
+    if isinstance(exc, requests.HTTPError) and response is not None:
+        code = response.status_code
+        if 400 <= code < 500 and code != 429:
+            return f"http_{code}"
+    return default
 
 
 class RateLimiter:
@@ -46,6 +56,12 @@ class RateLimiter:
             start = max(self._next, time.monotonic())
             self._next = start + self.interval
         time.sleep(max(0.0, start - time.monotonic()))
+
+    def charge(self, n: int) -> None:
+        """Count *n* more requests (redirect hops followed inside one
+        ``request``): the next starts come that much later."""
+        with self._lock:
+            self._next = max(self._next, time.monotonic()) + n * self.interval
 
     def pause(self, seconds: float) -> None:
         with self._lock:
@@ -96,6 +112,13 @@ class HttpClient:
                 else:
                     time.sleep(delay)
                 continue
+            # Redirect hops (e.g. a Wayback replay's 302 to its capture) are
+            # requests too.
+            if response.history:
+                with self._count_lock:
+                    self.requests += len(response.history)
+                if self.limiter:
+                    self.limiter.charge(len(response.history))
             # maxlag: the wiki's replicas lag, every client is asked to wait.
             maxlag = response.headers.get("MediaWiki-API-Error") == "maxlag"
             if (response.status_code not in _RETRY_CODES and not maxlag) or attempt == self.max_retries:

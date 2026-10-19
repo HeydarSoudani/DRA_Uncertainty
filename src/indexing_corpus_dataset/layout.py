@@ -83,8 +83,9 @@ OUTPUT_ROOT = Path(os.environ.get(
 ))
 
 # The repo's data folder: the data built by this project (not DATA_ROOT,
-# which only holds downloaded inputs).
-REPO_DATA_ROOT = Path("/home/hsoudani/DRA_Uncertainty/data")
+# which only holds downloaded inputs).  Derived from this file's location
+# (src/indexing_corpus_dataset/layout.py), so it follows the checkout.
+REPO_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 
 # The training pools, one folder per pool (``{TRAINING_POOL_ROOT}/{pool}``).
 TRAINING_POOL_ROOT = REPO_DATA_ROOT / "training_pool"

@@ -13,15 +13,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import yaml
-
-from indexing_corpus_dataset.layout import POOL_ALL_SPLIT, POOL_SPLITS, TRAINING_POOL_ROOT, corpus_path, qrels_base, queries_base
+from utils.sectioned_config import load_sectioned
+from indexing_corpus_dataset.layout import (BUILT_DATASETS, POOL_ALL_SPLIT, POOL_SPLITS, TRAINING_POOL_ROOT, corpus_path,
+                                            qrels_base, queries_base)
 
 
 @dataclass
 class SharedConfig:
-    # Root of the build; null = TRAINING_POOL_ROOT/{pool} (data/training_pool/{pool} of the repo).
-    output_dir: Optional[str] = None
     # Contact (e-mail or URL) put in the User-Agent of every request, as the
     # Wikimedia User-Agent policy asks; null = the DRA_CONTACT env var (.env).
     # Step 2 refuses to run without it.
@@ -85,19 +83,7 @@ class PoolConfig:
 def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> PoolConfig:
     """The config of *path* (YAML; None = the defaults) with *overrides*
     (``{"section.key": value}``) applied."""
-    cfg = PoolConfig()
-    data = yaml.safe_load(Path(path).read_text()) if path else {}
-    items = [(f"{section}.{key}", value)
-             for section, values in (data or {}).items() for key, value in (values or {}).items()]
-    items += list((overrides or {}).items())
-    for dotted, value in items:
-        section, _, key = dotted.partition(".")
-        if section not in SECTIONS:
-            raise ValueError(f"unknown config section {section!r}; expected one of {list(SECTIONS)}")
-        obj = getattr(cfg, section)
-        if key not in {f.name for f in dataclasses.fields(obj)}:
-            raise ValueError(f"unknown config key {dotted!r}")
-        setattr(obj, key, value)
+    cfg = load_sectioned(PoolConfig(), SECTIONS, path, overrides)
     if not cfg.shared.contact:
         cfg.shared.contact = os.environ.get("DRA_CONTACT") or None
     shares = cfg.split.shares()
@@ -106,20 +92,20 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
     return cfg
 
 
-# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-4,
+# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-3,
 # trqa_validation is merged from the TRQA validation files (trqa_validation.py);
 # both end with the split of their queries into sft / rl / val (splits.py).
-POOLS = ("deep_qa", "trqa_validation")
+POOLS = tuple(sorted(BUILT_DATASETS))
 
 
 class PoolPaths:
-    """The files of a build under ``shared.output_dir`` (null =
-    ``TRAINING_POOL_ROOT/{pool}``): the dataset in the canonical layout
+    """The files of a build under ``TRAINING_POOL_ROOT/{pool}``
+    (data/training_pool/{pool} of the repo): the dataset in the canonical layout
     (``layout.py``; ``queries``, ``qrels`` are split ``all``, every query of
     the pool) and, next to it, the step files of deep_qa."""
 
-    def __init__(self, cfg: PoolConfig, pool: str = "deep_qa"):
-        self.root = Path(cfg.shared.output_dir) if cfg.shared.output_dir else TRAINING_POOL_ROOT / pool
+    def __init__(self, pool: str = "deep_qa"):
+        self.root = TRAINING_POOL_ROOT / pool
         self.split = POOL_ALL_SPLIT
 
     # ── Dataset (canonical layout) ──────────────────────────────────────────
@@ -163,7 +149,8 @@ class PoolPaths:
 
     @property
     def stats(self) -> Path:
-        """One section per step (``step1``, ``step2``)."""
+        """One section per step (``step1``, ``step2``, ``step3``) and the
+        ``split`` section (shares and per-split counts, ``splits.py``)."""
         return self.root / "stats.json"
 
     @property
