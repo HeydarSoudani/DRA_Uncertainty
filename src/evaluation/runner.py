@@ -40,10 +40,11 @@ from .belief import save_belief
 
 logger = logging.getLogger(__name__)
 
-#: Per-query output directories under the run directory.
+#: Per-query output directories under the run directory (``belief/`` is
+#: created by its writer, only when the belief model is on).
 QUERY_OUTPUT_DIRS = (
     "retrieval/surfaced", "retrieval/seen", "retrieval/cited",
-    "generation", "trajectory", "belief",
+    "generation", "trajectory",
 )
 
 
@@ -51,16 +52,17 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
     """Write every per-query file of *result* under *run_dir*.
 
     ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
-    ``trajectory/{qid}.jsonl`` and ``belief/{qid}.jsonl`` (the last only
-    when the belief model ran).
+    ``belief/{qid}.jsonl`` (only when the belief model ran), then
+    ``trajectory/{qid}.jsonl``: its meta line marks the query as finished
+    (``utils.io_utils.get_processed_queries``), so it is written last.
     """
     run_dir = Path(run_dir)
     SurfacedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "surfaced")
     SeenDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "seen")
     CitedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "cited")
     GenerationEvaluator.save_item(query_id, result, run_dir / "generation")
-    save_trajectory(query_id, question, result, run_dir / "trajectory")
     save_belief(query_id, question, result, run_dir / "belief")
+    save_trajectory(query_id, question, result, run_dir / "trajectory")
 
 
 @dataclass

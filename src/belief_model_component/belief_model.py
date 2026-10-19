@@ -31,11 +31,12 @@ first, nested detail last::
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
     intermediate_answers, intermediate_answer_status,
-    subqueries[], queries[], docs[],
+    queries[], docs[],
     belief_before, belief_after, criteria_sources_after,
     criteria_targeted, criteria_attempts_after, criteria_updates[],
     belief_updater_output, intermediate_answer_reasoning, errors[],
-    belief_state_tag                                  # inform only; null when empty
+    belief_state_tag                                  # inform only, not saved (the
+                                                      # trajectory step has it)
 
 ``iteration`` counts the observed search iterations from 1, the same for
 every agent; ``agent_iteration`` is the agent's own counter, whose base and
@@ -117,15 +118,12 @@ class BeliefModel:
             the attempts are null.
         encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
             (``encode_fn_from_retriever``).  None: nu^q is null.
-        encoder_name: Saved in the meta line.
         qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
             new-item precision and the recall so far.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
             asked every step, its answers are saved (extra, not in x_t).
             None disables the intermediate answer.
         policy_model: Agent name; picks the intermediate answer format.
-        run_info: Run settings saved in every meta line (agent, dataset,
-            belief model configuration), so a file can be read on its own.
         inform: Render each step's ``<belief_state>`` tag for the agent to
             read (``--belief-mode inform``).
     """
@@ -136,17 +134,13 @@ class BeliefModel:
         belief_updater: Optional[LLMBeliefUpdater] = None,
         query_scorer: Optional[LLMQueryScorer] = None,
         encode_fn: Optional[EncodeFn] = None,
-        encoder_name: Optional[str] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         intermediate_answer_fn: Optional[AnswerFn] = None,
         policy_model: str = "",
-        run_info: Optional[Dict[str, Any]] = None,
         inform: bool = False,
     ) -> None:
         self.inform = inform
-        self._run_info = dict(run_info or {})
         self._criteria_source = criteria_source
-        self._encoder_name = encoder_name
 
         self._doc_novelty = DocNoveltySignal()
         self._query_novelty = QueryNoveltySignal(encode_fn)
@@ -203,13 +197,11 @@ class BeliefModel:
             self._targeting.reset(query, self._criteria)
 
     def meta(self) -> Dict[str, Any]:
-        """Per-sample information for the meta line of the saved file."""
+        """Per-sample information for the meta line of the saved file.  The
+        run settings (agent, models, mode, criteria cap) are in the run's
+        ``run_config.json``; ``criteria_info`` gives the model of this
+        query's criteria (and ``bank: hit`` when read from the bank)."""
         return {
-            **self._run_info,
-            "criteria_source": self._criteria_source.name if self._criteria_source else None,
-            "belief_updater": self._belief.updater.name if self._belief else None,
-            "query_scorer": self._targeting.scorer.name if self._targeting else None,
-            "encoder": self._encoder_name,
             "num_criteria": len(self._criteria),
             "num_iterations": len(self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
@@ -335,7 +327,6 @@ class BeliefModel:
             **gain,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
-            "subqueries": subqueries,
             "queries": per_query,
             "docs": per_doc,
             "belief_before": state_before,

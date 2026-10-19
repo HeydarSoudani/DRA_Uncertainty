@@ -1,8 +1,7 @@
 """Settings of belief model training: one section per phase plus the shared one.
 
 The YAML file (``experiments/configs/belief_model_training.yaml``) has the
-same sections and keys as the dataclasses below; CLI flags and
-``--set section.key=value`` override it.  An unknown section or key is an
+same sections and keys as the dataclasses below; CLI flags override it.  An unknown section or key is an
 error.  Training hyperparameters default to Agent-BRACE's recipes
 (arXiv 2605.11436; ``recipes/finetune_belief_qwen25_3b.sh`` for SFT,
 ``recipes/textworld_basic_ppo_decouple_joint_belief_vllm.sh`` for RL).
@@ -15,7 +14,9 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from indexing_corpus_dataset.layout import BUILT_DATASETS, DATASET_SPECS, OUTPUT_ROOT, resolve_split_id
+from indexing_corpus_dataset.layout import BUILT_DATASETS, OUTPUT_ROOT, POOL_SPLITS, resolve_split_id
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True)
@@ -41,19 +42,22 @@ class SharedConfig:
     # (InfoSeek-Hard, WebShaper, FRAMES) or trqa_validation (TRQA wiki1 +
     # wiki2 validation).
     training_data: str = "deep_qa"
-    run_name: str = "default"
+    # Frozen agent (--policy-model of dra_inference): phase 1 runs it, phases
+    # 2 and 3 read its runs and write under {output_root}/{training_data}/{policy_model}.
+    policy_model: str = "glm"
     # Root of the training runs; null = OUTPUT_ROOT/belief_model_training.
     output_root: Optional[str] = None
     seed: int = 0
-    # Agent, retriever and belief model settings of the inference runs in
-    # phase 1 (max_iteration, seen_top_k, ...): never repeated here.
+    # Agent, retriever, belief model and query scorer settings of the
+    # inference runs in phase 1 (max_iteration, seen_top_k, ...): never
+    # repeated here.  Its
+    # ``output`` is where phases 2 and 3 find the runs (null = OUTPUT_ROOT).
     inference_config: str = "experiments/configs/dra_inference.yaml"
     retriever: str = "qwen3_emb_4b"
-    # dra_inference workers in phase 1.
+    # dra_inference workers in phase 1, and their GPUs (comma-separated
+    # physical ids, e.g. "0,1,2,3"; null = gpu_ids of shared.inference_config).
     num_gpus: int = 4
-    # Query targeting scorer (criteria attempts) of phase 1: frozen,
-    # not part of the trained belief model; null = trajectories.teacher_belief_model.
-    query_scorer_model: Optional[str] = None
+    gpu_ids: Optional[str] = None
     # Longest sequence (prompt + reply, tokens) of the student, in SFT and RL:
     # longer SFT samples are dropped, longer RL prompts get no reply.
     max_seq_len: int = 32768
@@ -61,24 +65,24 @@ class SharedConfig:
 
 @dataclass
 class TrajectoriesConfig:
-    """Phase 1: frozen agent + teacher belief model in monitor mode, on the
-    training pool ``shared.training_data``."""
-    policy_model: str = "glm"
-    # Teacher belief model: its criteria (init) and belief updates are the SFT targets.
+    """Phase 1: dra_inference with the frozen agent on one split of the
+    training pool ``shared.training_data``: sft and val in monitor mode with
+    the teacher belief model, rl in off mode."""
+    # sft, rl or val (layout.POOL_SPLITS).
+    split: str = "sft"
+    # Teacher belief model: its criteria (init) and belief updates are the SFT
+    # targets; phase 2 checks that the monitor runs used it.
     teacher_belief_model: str = "openrouter/qwen/qwen3.6-27b"
-    # SFT samples only from replies whose cited spans all occur in their passage.
-    require_verified_spans: bool = True
-    # The next N pool queries not run yet (null = all), as dra_inference --limit.
+    # The next N queries of the split not run yet (null = all), as dra_inference --limit.
     limit: Optional[int] = None
-    # Shares of the queries for SFT and validation (episodes.assign_use); the rest is for RL.
-    sft_share: float = 0.30
-    val_share: float = 0.05
 
 
 @dataclass
 class SFTConfig:
     """Phase 2: SFT warm-up of the student on the teacher's replies (LoRA, then merged)."""
     student_belief_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    # SFT samples only from replies whose cited spans all occur in their passage.
+    require_verified_spans: bool = True
     lora_r: int = 64
     lora_alpha: int = 128
     lora_dropout: float = 0.05
@@ -99,8 +103,8 @@ class SFTConfig:
 
 @dataclass
 class RLConfig:
-    """Phase 3: GRPO on belief updates from the teacher's and the student's
-    own belief chains (env, rewards), with the PPO update of Agent-BRACE's
+    """Phase 3: GRPO on belief updates from the student's own belief chain
+    (env, rewards), with the PPO update of Agent-BRACE's
     BeliefStateLMTrainer (no critic, no KL by default)."""
     # Start checkpoint of the student belief model; null = the merged phase 2 model.
     init_belief_model: Optional[str] = None
@@ -111,19 +115,14 @@ class RLConfig:
     # Batch mix: share of steps with new gold; at most this share from episodes without gold.
     gold_step_share: float = 0.5
     no_gold_share: float = 0.15
-    # Share of the prompts from the student's own belief chain (the rest
-    # teacher-forced), reached linearly over the first student_state_ramp of
-    # the iterations (scheduled sampling; 0 = from the first iteration).
-    student_state_share: float = 1.0
-    student_state_ramp: float = 0.5
     # Weights of the reward terms (rewards.py): state tracking, state correctness, task success.
     reward_weight_st: float = 1.0
     reward_weight_sc: float = 1.0
     reward_weight_ts: float = 1.0
     # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
     adv_std_floor: float = 0.05
-    # Validation every val_every iterations on at most val_max_episodes val episodes
-    # (fully replayed): the student's own chain, and teacher-forced.
+    # Validation every val_every iterations on at most val_max_episodes val
+    # episodes: the student's own chain over each whole episode.
     val_every: int = 20
     val_max_episodes: int = 50
     learning_rate: float = 1e-5
@@ -169,18 +168,21 @@ class TrainingConfig:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
-    @property
-    def training_split(self) -> Split:
-        """The split of ``shared.training_data`` that dra_inference runs."""
-        return Split(self.shared.training_data, DATASET_SPECS[self.shared.training_data].subset)
+    def pool_split(self, name: str) -> Split:
+        """Split *name* (``sft``, ``rl`` or ``val``) of the training pool."""
+        return Split(self.shared.training_data, name)
 
     @property
-    def query_scorer_model(self) -> str:
-        return self.shared.query_scorer_model or self.trajectories.teacher_belief_model
+    def inference_output(self) -> Path:
+        """The root of the inference runs: ``output`` of
+        ``shared.inference_config`` (null = OUTPUT_ROOT)."""
+        path = Path(self.shared.inference_config)
+        data = yaml.safe_load((path if path.is_absolute() else REPO_ROOT / path).read_text()) or {}
+        return Path(data["output"]) if data.get("output") else OUTPUT_ROOT
 
 
 def _coerce(value: Any, current: Any, key: str) -> Any:
-    """A ``--set`` string as the type of the key's current value."""
+    """A YAML string (PyYAML reads e.g. ``5e-6`` as one) as the type of the key's current value."""
     if not isinstance(value, str):
         return value
     if value.lower() in ("null", "none"):
@@ -216,24 +218,22 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
         setattr(obj, key, _coerce(value, getattr(obj, key), dotted))
     if cfg.shared.training_data not in BUILT_DATASETS:
         raise ValueError(f"shared.training_data: expected one of {sorted(BUILT_DATASETS)}, got {cfg.shared.training_data!r}")
+    if cfg.trajectories.split not in POOL_SPLITS:
+        raise ValueError(f"trajectories.split: expected one of {list(POOL_SPLITS)}, got {cfg.trajectories.split!r}")
     return cfg
 
 
 class RunPaths:
-    """Files of one training run under ``{output_root}/{training_data}/{run_name}``."""
+    """Files of phases 2 and 3 under ``{output_root}/{training_data}/{policy_model}``."""
 
     def __init__(self, cfg: TrainingConfig) -> None:
         root = Path(cfg.shared.output_root) if cfg.shared.output_root else OUTPUT_ROOT / "belief_model_training"
-        self.root = root / cfg.shared.training_data / cfg.shared.run_name
-        # Phase 1
-        self.trajectories_dir = self.root / "phase1_trajectories"
-        self.inference_runs = self.trajectories_dir / "runs"
-        self.episodes_file = self.trajectories_dir / "episodes.jsonl"
-        self.sft_file = self.trajectories_dir / "sft.jsonl"
-        self.sft_val_file = self.trajectories_dir / "sft_val.jsonl"
-        self.teacher_scores_file = self.trajectories_dir / "teacher_scores.json"
+        self.root = root / cfg.shared.training_data / cfg.shared.policy_model
+        # Phase 1 writes the inference runs only (TrainingConfig.inference_output).
         # Phase 2
         self.sft_dir = self.root / "phase2_sft"
+        self.sft_samples = self.sft_dir / "samples.jsonl"
+        self.teacher_scores_file = self.sft_dir / "teacher_scores.json"
         self.sft_merged = self.sft_dir / "merged"
         # Phase 3
         self.rl_dir = self.root / "phase3_rl"

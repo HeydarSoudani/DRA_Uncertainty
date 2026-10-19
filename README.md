@@ -227,8 +227,7 @@ The system prompts are unchanged. Where the tag goes:
 | webweaver | appended to the planner's search observation |
 | cpm_report | appended to the current information of the next plan / write prompt |
 
-The tag is also saved as `belief_state` on the search step in `trajectory/{qid}.jsonl` and as `belief_state_tag` in
-`belief/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `belief_aware`
+The tag is saved once, as `belief_state` on the search step in `trajectory/{qid}.jsonl`. Tags the model writes itself are removed in the prompt-string agents. `belief_aware`
 follows the flag like every other agent; in `inform` mode its system prompt also introduces the tag (one section,
 `belief_section.txt`, the same for every task, with no advice on how to use it), and in `monitor` and
 `off` modes the prompt never mentions it.
@@ -278,17 +277,20 @@ src/evaluation/
 ### Output format
 
 ```
-$DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
-├── run_config.json                 full agent/searcher/belief-model settings
+$DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}/
+├── run_config.json                 every resolved setting: dataset, agent (temperature included), searcher,
+│                                   belief model, evaluation
 ├── retrieval/
 │   ├── surfaced/{qid}.trec         raw retriever output (all iterations, col 6 = iter_N)
 │   ├── seen/{qid}.trec             docs shown to the LLM
 │   ├── cited/{qid}.trec            docs cited by the LLM
 │   └── fusion_{method}.trec        deduped fusion ranking (aggregate over all queries)
-├── generation/{qid}.md             per-query report (markdown)
-├── trajectory/{qid}.jsonl          meta line + one line per step
-├── belief/{qid}.jsonl              meta line (criteria, config) + one line per search iteration (belief, signals)
-├── accuracy.jsonl                  per-query answer correctness (datasets with answers)
+├── generation/{qid}.md             the final generation (with its References section)
+├── belief/{qid}.jsonl              belief on only: meta line (criteria, final belief) + one line per search iteration
+├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, <belief_state> tags, per-turn
+│   │                               diagnostics), then the meta line (counts, agent data)
+│   └── {qid}.md                    the same trajectory, human-readable, written live
+├── accuracy.jsonl                  per-query verdicts (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
 └── summary.json                    grouped metrics (retrieval / generation / trajectory)
 ```
@@ -305,7 +307,13 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{mo
 }
 ```
 
-With the belief model on, `{belief_config}` is `belief-{mode}` (e.g. `belief-monitor`, `belief-inform`).
+`_{query_key}` is in the name only when it is not the dataset's default. Each fact has one file: the run settings are
+in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `summary.json` only.
+
+A query is finished when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other file
+of the query (and, with the belief model on, its belief file exists); a resumed run skips finished queries and runs
+the others again. A resume whose `dataset`, `agent`, `searcher` or `belief_model` settings differ from the run's
+`run_config.json` is refused, so every query of a directory ran with the same settings.
 
 #### `belief/{query_id}.jsonl`
 
@@ -317,14 +325,12 @@ Meta line (one per query):
 
 | field | meaning |
 |---|---|
-| `schema_version` | 15 |
+| `schema_version` | 16 |
 | `question` | the query text |
-| `agent`, `llm_model`, `dataset`, `llm_criteria`, `max_criteria` | run settings |
-| `criteria_source`, `belief_updater`, `query_scorer`, `encoder` | components in use (null when off) |
 | `num_criteria`, `num_iterations`, `num_unique_docs` | per-query counts |
 | `num_relevant` | relevant docs of the query in the qrels (null without qrels) |
 | `criteria` | `[{id, text, kind}]` |
-| `criteria_info` | criteria LLM `model`, `query_shape`, `errors` |
+| `criteria_info` | criteria LLM `model`, `query_shape`, `errors`; `bank: "hit"` when read from the criteria bank |
 | `final_criteria_attempts` | last attempts, one per criterion |
 | `final_belief`, `criteria_evidence` | last belief state (one belief status per criterion); per criterion, its `status` and attached evidence `[{doc_id, step, role, spans, span_verified}]` (`span_verified`: one bool per span) (`role`: `support` or `contradict`) |
 
@@ -340,7 +346,7 @@ Step line (one per search iteration, flat scalars first):
 | `num_new_relevant`, `num_repeated_relevant`, `num_irrelevant` | qrels counts |
 | `recall_so_far`, `num_relevant_seen`, `num_relevant` | relevant docs seen up to and including this step / all the query's relevant docs |
 | `intermediate_answers` | list of answers; `[]` for "no candidate", null when off or failed |
-| `subqueries`, `queries[]`, `docs[]` | per-query and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
+| `queries[]`, `docs[]` | per-query (`text`) and per-doc novelty detail (`queries[].target_scores` has one score per criterion) |
 | `belief_before`, `belief_after` | the belief state: one belief status per criterion, in `criteria` order |
 | `criteria_sources_after` | distinct supporting documents per criterion so far |
 | `criteria_targeted`, `criteria_attempts_after` | ids targeted directly this iteration (null when the scorer failed); attempts per criterion, in `criteria` order |
@@ -348,7 +354,9 @@ Step line (one per search iteration, flat scalars first):
 | `belief_updater_output` | the belief updater's raw reply (null when it was not called) |
 | `intermediate_answer_reasoning`, `errors` | free text, reasons for nulls |
 
-`iteration` is not the retrieval `iter_N`: `iter_N` counts retrieval calls, so an iteration with several queries spans
+The run settings (agent, mode, models, criteria cap, encoder) are in `run_config.json`; the iteration's
+`<belief_state>` tag (inform mode) is on its trajectory step. `agent_iteration` is the iteration of the step's searches
+in `trajectory/{qid}.jsonl` (`iter`, before the dot). `iteration` is not the retrieval `iter_N`: `iter_N` counts retrieval calls, so an iteration with several queries spans
 several `iter_N`. Join on `docs[].doc_id` when a doc-level link to `retrieval/*.trec` is needed.
 
 ### Criteria reachability
@@ -396,4 +404,4 @@ python analysis/criteria_reachability.py --dataset browsecomp_plus   # criteria 
 Belief model training with the agent frozen (Agent-BRACE adapted to retrieval), one phase per call of
 `experiments/training/belief_model_training.py`.
 The trained belief model makes both calls, criteria init and belief update; the query scorer stays frozen.
-Phase 1 runs on a training pool (`experiments/training/build_training_pool.py`: `deep_qa` or `trqa_validation`); the RL rewards are still to do.
+Phase 1 runs dra_inference on one split of a training pool (`experiments/training/build_training_pool.py`: `deep_qa` or `trqa_validation`, split into `sft` / `rl` / `val`): `sft` and `val` in monitor mode with the teacher, `rl` in off mode; phases 2 and 3 read those runs.

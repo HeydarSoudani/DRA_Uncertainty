@@ -1,16 +1,17 @@
 """The trqa_validation pool: the TRQA wiki1 and wiki2 validation splits merged
-into one split (``val``) in the canonical layout:
+into one split (``all``) in the canonical layout:
 
-    queries/queries_val.jsonl                    queries_wiki{1,2}_validation.jsonl
-    queries/queries_val_intermediate_info.jsonl  queries_wiki{1,2}_validation_intermediate_info.jsonl
-    qrels/qrels_val.txt                          qrels_wiki{1,2}_validation.txt
+    queries/queries_all.jsonl                    queries_wiki{1,2}_validation.jsonl
+    queries/queries_all_intermediate_info.jsonl  queries_wiki{1,2}_validation_intermediate_info.jsonl
+    qrels/qrels_all.txt                          qrels_wiki{1,2}_validation.txt
 
 Rows are copied unchanged (the query ids of the two collections do not
 collide).  Left out, with their qrels and intermediate info: a query whose
 text is also a TRQA test query, and both queries of an id that names two
 different questions in one split (14 ids in wiki2: their qrels and
 intermediate info cannot be told apart).  No corpus and no index: the pool
-searches TRQA's ``wiki_partial`` (``layout._SHARED_CORPUS``).
+searches TRQA's ``wiki_partial`` (``layout._SHARED_CORPUS``).  The build
+then splits ``all`` into ``sft``, ``rl`` and ``val`` (``splits.py``).
 """
 
 import json
@@ -62,8 +63,7 @@ def build(paths: PoolPaths) -> None:
     if len(ids) != len(set(ids)):
         raise SystemExit("query ids collide between the TRQA validation splits")
 
-    out = queries_base(paths.root, paths.split)
-    info_path = out.with_name(f"{out.name}_intermediate_info.jsonl")
+    info_path = paths.split_info(paths.split)
     for path, lines in ((paths.queries, queries), (info_path, info), (paths.qrels, qrels)):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(lines), encoding="utf-8")

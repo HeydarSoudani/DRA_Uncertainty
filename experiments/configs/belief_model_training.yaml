@@ -4,7 +4,7 @@
 # dataclass fields of src/belief_model_training/config.py.
 #
 # Precedence (lowest -> highest):
-#   dataclass defaults  <  this file  <  CLI flags  <  --set section.key=value
+#   dataclass defaults  <  this file  <  CLI flags
 #
 # Hyperparameters follow Agent-BRACE's recipes (arXiv 2605.11436):
 # recipes/finetune_belief_qwen25_3b.sh (sft) and
@@ -14,29 +14,28 @@
 # ── Shared ───────────────────────────────────────────────────────────────────
 shared:
   training_data: deep_qa            # training pool: deep_qa | trqa_validation (build_training_pool.py)
-  run_name: default                 # runs go to {output_root}/{training_data}/{run_name}
+  policy_model: glm                 # frozen agent (--policy-model): phase 1 runs it, phases 2-3 read its runs
+                                    # and write to {output_root}/{training_data}/{policy_model}
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
   seed: 0
-  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief settings of phase 1
+  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief/query scorer settings of phase 1; its `output` holds the runs
   retriever: qwen3_emb_4b
   num_gpus: 4                       # dra_inference workers (phase 1)
-  query_scorer_model: null          # frozen query targeting scorer (phase 1); null = trajectories.teacher_belief_model
+  gpu_ids: null                     # their GPUs, e.g. "0,1,2,3" (phase 1); null = gpu_ids of the inference config
   max_seq_len: 32768                # longest student sequence (prompt + reply) in SFT and RL
 
-# ── Phase 1: teacher trajectories (monitor mode, training pool) ──────────────
+# ── Phase 1: dra_inference on one pool split (sft, val: monitor; rl: off) ───
 trajectories:
-  policy_model: glm                                 # frozen agent (--policy-model)
+  split: sft                                        # sft | rl | val (build_training_pool.py split)
   teacher_belief_model: openrouter/qwen/qwen3.6-27b # belief model whose criteria (init) and updates are the SFT targets
-  require_verified_spans: true                      # SFT samples only from replies whose spans all occur in their passage
-  limit: null                                       # next N pool queries not run yet (null = all)
-  sft_share: 0.30                                   # share of the queries for SFT (by a hash of the query id)
-  val_share: 0.05                                   # share for validation; the rest is for RL
+  limit: null                                       # next N queries of the split not run yet (null = all)
 
 # ── Phase 2: SFT warm-up (LoRA, then merged) ─────────────────────────────────
-# Validation loss after every epoch on phase1_trajectories/sft_val.jsonl; the
-# checkpoint with the lowest one is merged.
+# Samples from the monitor runs of the sft (train) and val splits; validation
+# loss after every epoch on the val samples, the best checkpoint is merged.
 sft:
   student_belief_model: Qwen/Qwen3-4B-Instruct-2507
+  require_verified_spans: true      # samples only from replies whose spans all occur in their passage
   lora_r: 64
   lora_alpha: 128
   lora_dropout: 0.05
@@ -48,8 +47,8 @@ sft:
   warmup_ratio: 0.03
   logging_steps: 5
 
-# ── Phase 3: RL (GRPO on belief updates from the teacher's and the ───────────
-#    student's own chains; PPO update of Agent-BRACE, no critic, no KL)
+# ── Phase 3: RL (GRPO on belief updates from the student's own chain, rl ────
+#    split; PPO update of Agent-BRACE, no critic, no KL)
 rl:
   init_belief_model: null          # null = phase2_sft/merged
   num_iterations: 200
@@ -57,14 +56,12 @@ rl:
   group_size: 8                     # replies per prompt (GRPO group)
   gold_step_share: 0.5              # share of the batch from steps with new gold documents
   no_gold_share: 0.15               # at most this share from episodes without gold
-  student_state_share: 1.0          # share of prompts from the student's own belief chain (rest teacher-forced) ...
-  student_state_ramp: 0.5           # ... reached linearly over this share of the iterations (scheduled sampling)
   reward_weight_st: 1.0             # state tracking: F1 of cited support vs new gold
   reward_weight_sc: 1.0             # state correctness: 1 - (C_t - recall_so_far)^2
   reward_weight_ts: 1.0             # task success: 1 - (C_T - y)^2, last call of the student's chain
   adv_std_floor: 0.05               # GDPO: each term normalized in its group by max(std, floor)
-  val_every: 20                     # validation (greedy, val episodes) every N iterations
-  val_max_episodes: 50              # student's own chain (selects final/) and teacher-forced
+  val_every: 20                     # validation (greedy, student's own chain on val episodes; selects final/) every N iterations
+  val_max_episodes: 50
   learning_rate: 1.0e-5
   ppo_epochs: 1
   ppo_mini_batch_size: 32           # 256 replies / 32 = 8 optimizer steps per iteration

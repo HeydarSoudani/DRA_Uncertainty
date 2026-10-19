@@ -58,7 +58,6 @@ FILE_BACKED_DEFAULTS = {
     "rerank_top_k": 100,
     "retrieval_input": "subquery",
     "post_fusion_reranker_input": "original_query",
-    "ensure_novel_seen_docs": False,
     # Agent-specific
     "use_plan": False,
     "max_extend_steps": 5,
@@ -343,7 +342,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "query_scorer_model":          getattr(args, "query_scorer_model", ""),
         "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
         "judge_model":                   getattr(args, "judge_model", None),
-        "ensure_novel_seen_docs":        getattr(args, "ensure_novel_seen_docs", False),
         "quiet":                         getattr(args, "quiet", False),
     }
 

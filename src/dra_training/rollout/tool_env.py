@@ -61,13 +61,12 @@ class RetrievalToolEnv(ToolEnv):
                                       top_k=top_k)
 
 
-def build_retrieval_tool(data_cfg, retrieval_cfg, seen_top_k: int) -> RetrievalToolEnv:
+def build_retrieval_tool(data_cfg, retrieval_cfg) -> RetrievalToolEnv:
     """Build the retriever and search tool exactly as ``dra_inference.py`` does.
 
     Dataset paths left empty are filled by the inference defaults
-    (``utils.cli_setup.resolve_dataset_defaults``).  Rerankers and
-    ``ensure_novel_seen_docs`` are not supported: the tool is shared by
-    concurrent rollouts, and the latter keeps per-run state.
+    (``utils.cli_setup.resolve_dataset_defaults``).  Rerankers are not
+    supported.
     """
     from orchestration import setup_retriever_from_args
     from searcher_component.searcher import RetrievalSearchTool
@@ -78,7 +77,6 @@ def build_retrieval_tool(data_cfg, retrieval_cfg, seen_top_k: int) -> RetrievalT
         retriever=retriever,
         top_k=retrieval_cfg.top_k,
         retrieval_input=retrieval_cfg.retrieval_input,
-        seen_top_k=seen_top_k,
     )
     return RetrievalToolEnv(tool)
 

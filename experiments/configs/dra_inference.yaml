@@ -50,7 +50,6 @@ post_fusion_reranker: "null"             # Reranks the fused list against the or
 rerank_top_k: 100                        # Number of top docs to rerank (both rerankers)
 retrieval_input: "subquery"              # subquery | original_query+subquery | reasoning+subquery
 post_fusion_reranker_input: "original_query"  # original_query | original_query+subqueries | original_query+reasoning | reasoning+subqueries
-ensure_novel_seen_docs: false            # Filter docs seen in previous iterations before returning
 
 # ── Agent-specific ───────────────────────────────────────────────────────────
 use_plan: false                 # Enable planning in ReAct agent (only --policy-model=react)
@@ -75,7 +74,7 @@ fusion_methods: ["interleaving"]  # Subset of aggregation fusion methods to eval
 judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus accuracy and the Auto-ARGUE report evaluation of NeuCLIR / RAGTIME (OpenRouter; needs OPENROUTER_API_KEY). TRQA uses rule-based numeric match (no judge).
 
 # ── Execution & output ───────────────────────────────────────────────────────
-output: null                    # Root dir for results; null = experiments/run_outputs/
+output: null                    # Root dir for results; null = $DRA_OUTPUT_ROOT (layout.OUTPUT_ROOT, default run_outputs/)
 max_iteration: 100              # Max iterations/steps per query (all agents)
 max_retries: 3                  # Max retries when output format fails (all agents)
 verbose: true                   # Print detailed logs

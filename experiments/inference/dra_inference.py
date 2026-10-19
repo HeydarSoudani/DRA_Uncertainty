@@ -30,32 +30,7 @@ Agentic workflows:
         Query → Search → Init Plan → [Search → Write]* → [Extend Plan → [Search → Write]*]* → Report → Evaluate
 
 
-Output structure:
-    run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
-    e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/belief-monitor/
-    ├── run_config.json              full agent/searcher/belief-model settings
-    ├── retrieval/
-    │   ├── surfaced/
-    │   │   └── {query_id}.trec      per-query surfaced-doc TREC (all iters, col 6 = iter_N; raw retriever output)
-    │   ├── seen/
-    │   │   └── {query_id}.trec      per-query seen-doc TREC file (docs shown to the LLM)
-    │   ├── cited/
-    │   │   └── {query_id}.trec      per-query cited-doc TREC file (docs cited by the LLM)
-    │   └── fusion_{method}.trec     deduped fusion ranking, single aggregate over all queries
-    ├── generation/
-    │   └── {query_id}.md            per-query generation output
-    ├── trajectory/
-    │   ├── {query_id}.jsonl         per-query trajectory: one line per step + a trailing meta line
-    │   └── {query_id}.md            same trajectory, human-readable, written live (one block per step)
-    ├── belief/
-    │   └── {query_id}.jsonl         per-query belief-model signals: meta line + one line per iteration
-    ├── accuracy.jsonl               per-query answer correctness (datasets with answers)
-    ├── report_eval/                 Auto-ARGUE inputs, cached judgments and per-query scores.tsv
-    └── summary.json                 grouped run metrics:
-                                       num_queries,
-                                       retrieval  {seen, cited, fusion},
-                                       generation {correctness | nuggets, stats},
-                                       trajectory
+Output structure: see OUTPUT STRUCTURE at the end of this file.
 """
 
 import argparse
@@ -103,17 +78,17 @@ from utils.cli_setup import (
     apply_config_to_args,
     _sm_bool,
 )
-from utils.text_utils import build_references_section, _build_cited_docs_ranked_list
-from utils.trajectory_logger import TrajectoryLogger
 from utils.io_utils import (
     get_processed_queries,
+    scan_queries,
     setup_output_dirs,
     build_dataset_dir_name,
     build_run_name_for_pipeline,
     build_belief_config_name,
-    write_run_config,
+    build_run_config,
+    check_run_config,
 )
-from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results, save_query_outputs
+from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results
 from evaluation.retrieval.fusion import run_fusion_eval
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
@@ -215,6 +190,13 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         print(f"[OUTPUT] Loading/saving results from: {run_dir}")
         print(f"{'=' * 80}")
 
+        # Every query of the run directory runs with the same settings: a
+        # resume with other ones stops here, before any query is run.
+        if not kwargs.get("eval_only", False):
+            check_run_config(run_dir, build_run_config(
+                policy_model, llm_model, dataset=dataset, split=file_data_set, query_key=query_key, **kwargs,
+            ))
+
         processed = get_processed_queries(
             run_dir, require_belief=kwargs.get("belief_mode", "off") != "off",
         )
@@ -245,7 +227,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
         processed_all = get_processed_queries(run_dir)
         if not processed_all:
-            print(f"No retrieval data found in {_run_dir_str.rstrip('/')}/retrieval/surfaced. "
+            print(f"No finished query in {_run_dir_str.rstrip('/')}/trajectory. "
                   "Run the full pipeline first (without --eval-only).")
             return
 
@@ -273,6 +255,9 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     if worker_config is not None and _belief_mode != "off":
         worker_config["qrels"] = qrels
         worker_config["criteria_bank"] = criteria_bank
+    # The gold answers, for the header of each query's trajectory .md.
+    if worker_config is not None:
+        worker_config["answers"] = answers
 
     # ==================== Build search tool ====================
     from searcher_component.searcher import RetrievalSearchTool
@@ -288,8 +273,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             rerank_top_k=kwargs.get("rerank_top_k", 100),
             retrieval_input=kwargs.get("retrieval_input", "subquery"),
             post_fusion_reranker_input=kwargs.get("post_fusion_reranker_input", "original_query"),
-            ensure_novel_seen_docs=kwargs.get("ensure_novel_seen_docs", False),
-            seen_top_k=kwargs.get("seen_top_k", 5),
         )
 
     # ==================== Instantiate Agent + Belief model ====================
@@ -297,7 +280,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # process; each worker spawns its own instances on its assigned GPU (see
     # orchestration._init_worker).  Building them here would create unused LLM
     # clients that are immediately torn down.
-    from orchestration import build_agent, build_belief_model
+    from orchestration import build_agent, build_belief_model, run_query
 
     agent = None
     belief_model = None
@@ -336,7 +319,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             agent=agent if hasattr(agent, "belief_model") else None,
             policy_model=policy_model,
             dataset=dataset,
-            llm_model=llm_model,
             criteria_bank=criteria_bank,
         )
         if belief_model is not None and hasattr(agent, "belief_model"):
@@ -347,10 +329,8 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                                   dataset=dataset, graded_qrels=graded_qrels,
                                   data_path=data_path, split=file_data_set)
 
-    trajectory_dir = None
     if output_path:
-        trajectory_dir = setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)["trajectory"]
-        write_run_config(run_dir, policy_model=policy_model, llm_model=llm_model, **kwargs)
+        setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)
         print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
 
     # ==================== Loop: run + save per query ====================
@@ -476,35 +456,18 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     else:
         # ── Sequential path (default / single GPU) ──────────────────────────
         for idx, (query_id, query_text) in enumerate(query_items, 1):
-            if search_tool is not None:
-                search_tool.reset()
             _answer_line = f"\n  Answer: {answers[query_id]}" if answers.get(query_id) else ""
             print(f"\n[{idx}/{len(query_items)}] Processing query: {query_id}\n  Query text: {query_text}{_answer_line}")
-            # Streams each step to trajectory/{qid}.jsonl + .md as it happens,
-            # so an interrupted run still leaves this query's work on disk.
-            traj_logger = TrajectoryLogger(
-                trajectory_dir, query_id, query_text,
-                agent_name=policy_model, model=llm_model,
-                answer=answers.get(query_id),
-            ) if trajectory_dir else None
-            result = agent.run_single(
-                query_id=query_id,
-                query_text=query_text,
-                temperature=kwargs.get("temperature", 0.7),
-                trajectory_logger=traj_logger,
+            result = run_query(
+                agent, run_dir, query_id, query_text,
+                policy_model=policy_model, llm_model=llm_model,
+                answer=answers.get(query_id), temperature=kwargs.get("temperature", 0.7),
             )
             if result is None:
                 print(f"  ✗ Skipping {query_id} (error during processing)")
                 continue
-            result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
-            # Append a References section to the generation (skips CPMReport which already has one)
-            references = build_references_section(result)
-            if references:
-                result["generation"] = result["generation"].rstrip() + references
             results[query_id] = result
-
-            if output_path:
-                save_query_outputs(run_dir, query_id, query_text, result)
+            if run_dir:
                 print(f"  ✓ Saved: {query_id}")
 
         if agent:
@@ -517,7 +480,12 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # summary.json.  Without an output directory the in-memory results are
     # evaluated.
     if run_dir:
-        results = load_run_results(run_dir, get_processed_queries(run_dir))
+        finished, unfinished = scan_queries(run_dir, require_belief=_belief_mode != "off")
+        if unfinished:
+            print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl"
+                  f"{' or no belief file' if _belief_mode != 'off' else ''}); they are run again on resume: "
+                  f"{', '.join(sorted(unfinished)[:20])}{' ...' if len(unfinished) > 20 else ''}")
+        results = load_run_results(run_dir, finished)
 
     # ==================== Evaluate + Save ====================
     _vllm_mgr = kwargs.get("vllm_manager")
@@ -782,7 +750,6 @@ def main():
     pipeline_kwargs["post_fusion_reranker_input"] = args.post_fusion_reranker_input
     pipeline_kwargs["post_retrieval_reranker_name"] = args.post_retrieval_reranker
     pipeline_kwargs["post_fusion_reranker_name"] = args.post_fusion_reranker
-    pipeline_kwargs["ensure_novel_seen_docs"] = args.ensure_novel_seen_docs
 
     try:
         run_pipeline(
@@ -812,24 +779,26 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   run_outputs/{dataset}_{split}_{query_key}_{retriever}/{agent}_{backend}_{model}/{belief_config}/
-#   e.g. run_outputs/neuclir_2024_news_e5/oss_vllm_gpt-oss-20b/belief-monitor/
-#     ├── run_config.json          full agent/searcher/belief-model settings
+#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}/
+#   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default)
+#   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_vllm_gpt-oss-20b/belief-monitor/
+#
+#   One home per fact: each file below holds its facts only.
+#     ├── run_config.json       every resolved setting (dataset, agent, searcher, belief model,
+#     │                         evaluation); a resume with other settings is refused
 #     ├── retrieval/
-#     │   ├── surfaced/
-#     │   │   └── {query_id}.trec   per-query surfaced-doc TREC (raw retriever output, col 6 = iter_N)
-#     │   ├── seen/
-#     │   │   └── {query_id}.trec   per-query seen-doc TREC file (docs shown to the LLM)
-#     │   ├── cited/
-#     │   │   └── {query_id}.trec   per-query cited-doc TREC file (docs cited by the LLM)
-#     │   └── fusion_{method}.trec  deduped fusion ranking, single aggregate over all queries
-#     ├── generation/
-#     │   └── {query_id}.md     per-query generation output
+#     │   ├── surfaced/{qid}.trec   surfaced-doc TREC (raw retriever output, col 6 = iter_N)
+#     │   ├── seen/{qid}.trec       seen-doc TREC (docs shown to the LLM)
+#     │   ├── cited/{qid}.trec      cited-doc TREC (docs cited by the LLM)
+#     │   └── fusion_{method}.trec  deduped fusion ranking, one aggregate over all queries
+#     ├── generation/{qid}.md   the final generation (with its References section)
+#     ├── belief/{qid}.jsonl    belief-model signals (belief on only): meta line + one line
+#     │                         per search iteration (evaluation.belief.writer)
 #     ├── trajectory/
-#     │   ├── {query_id}.jsonl  per-query trajectory: one line per step + a trailing meta line
-#     │   └── {query_id}.md     same trajectory, human-readable, written live
-#     ├── belief/
-#     │   └── {query_id}.jsonl  per-query belief-model signals: meta line + one line per iteration
+#     │   ├── {qid}.jsonl       one line per step (queries, seen doc ids, <belief_state> tags,
+#     │   │                     per-turn diagnostics), then the meta line (counts, agent data);
+#     │   │                     written last: the meta line marks the query as finished
+#     │   └── {qid}.md          the same trajectory, human-readable, written live
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
 #     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},

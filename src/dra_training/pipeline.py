@@ -71,7 +71,7 @@ def _build_tool(cfg: TrainingConfig) -> ToolEnv:
     if cfg.rollout.tool == "retrieval":
         # READ-ONLY reuse of the finalized searcher, built exactly as inference does.
         from .rollout.tool_env import build_retrieval_tool
-        return build_retrieval_tool(cfg.data, cfg.retrieval, seen_top_k=cfg.rollout.top_k_docs)
+        return build_retrieval_tool(cfg.data, cfg.retrieval)
     raise ValueError(f"unknown rollout.tool '{cfg.rollout.tool}'")
 
 

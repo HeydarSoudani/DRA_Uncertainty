@@ -289,22 +289,13 @@ class AccuracyEvaluator:
         }
 
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
-        """Write ``accuracy.jsonl``: a ``{"record": "meta", ...}`` line with the
-        run-level aggregates and the judge model, then one line per query
-        (without the raw judge response)."""
+        """Write ``accuracy.jsonl``: one line per query, its verdict and the
+        cache ``key`` (without the raw judge response or the judged text,
+        which is ``generation/{qid}.md``).  The aggregates are in
+        ``summary.json``, the judge model in ``run_config.json``."""
         if not metrics:
             return
-        meta = {
-            "record": "meta",
-            "accuracy": metrics["accuracy"],
-            "num_correct": metrics["num_correct"],
-            "num_evaluated": metrics["num_evaluated"],
-            "num_judge_errors": metrics["num_judge_errors"],
-            "judge_model": self.judge_model,
-        }
-        fields = ("query_id", "key", "correct", "judge_error", "extracted_final_answer", "judge_input",
+        fields = ("query_id", "key", "correct", "judge_error", "extracted_final_answer",
                   "reasoning", "confidence")
-        write_jsonl(output_path, [meta] + [
-            {k: r.get(k) for k in fields} for r in metrics.get("per_query", [])
-        ])
+        write_jsonl(output_path, [{k: r.get(k) for k in fields} for r in metrics.get("per_query", [])])
         print(f"  Saved accuracy results: {output_path}")

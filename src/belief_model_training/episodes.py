@@ -1,14 +1,23 @@
-"""Episodes: the belief model's view of one agent run (phase 1 output).
+"""Episodes: the belief model's view of one agent run.
 
-An episode is one query of a monitor-mode inference run: the query, its
-criteria (the init call's output) and the model that wrote them, and per
-search iteration the documents the belief model observed (in the order it
-saw them) and the teacher updater's reply.  In monitor mode the belief never
-changes what the agent does, so these observations are fixed and any
-updater step can be rebuilt from the teacher's belief before it (phase 3).
+An episode is one query of an inference run (``experiments/inference/dra_inference.py``)
+on a training pool split, in ``monitor`` or ``off`` mode: the query and per
+search iteration the documents the agent was shown, in order
+(``trajectory/{qid}.jsonl``, ``read_episode``).  Its steps are numbered as
+the belief model numbers them (``iteration``, from 1, one per search
+iteration); ``agent_iteration`` is the agent's own counter, the key that
+joins a trajectory iteration to its belief step.  The belief never changes
+what the agent does, so these observations are fixed and any updater step
+can be rebuilt from any belief chain over the episode (phases 2 and 3).
 
-Document text is not saved in ``belief/{qid}.jsonl``; it is read back from
-the corpus (``CorpusLookup.contents``, the field the retrievers return).
+A monitor run also has the teacher belief model's view
+(``belief/{qid}.jsonl``, ``attach_teacher``): its criteria (the init call's
+output) and the model that wrote them, and per iteration the teacher
+updater's reply.  The belief file must have one step per search iteration
+of the trajectory, with the same documents.
+
+Document text is read back from the corpus (``CorpusLookup.contents``, the
+field the retrievers return).
 
 ``teacher_init_call`` rebuilds the init call (the criteria extraction
 prompt) with the episode's criteria as the reply.  ``replay_teacher`` re-runs the inference belief updater on the episode with
@@ -18,17 +27,14 @@ saved ``criteria_updates`` (statuses, cited passages and span checks, which
 depend on the passage text), so an episode whose documents or prompts
 cannot be rebuilt is caught.
 
-The episode also carries the gold the phase 3 rewards need, so that they read
-no qrels or run files: per step the gold documents first seen in it
-(``annotate_gold``), the passages its updater call showed (``replay_teacher``)
-and ``recall_so_far``, and the final correctness of the agent's answer.
-``Episode.shown_gold`` is the gold among a call's passages: a document of a
-failed or unparsed call stays unjudged and is shown again in a later call,
-so it counts in that call.  ``use`` (``assign_use``) puts each query in ``sft``, ``rl``
-or ``val`` by a hash of its id, so a query keeps its use when the pool grows.
+The episode also carries the gold of the rewards and scores
+(``annotate_gold``, from the qrels): per step the gold documents first
+seen in it and ``recall_so_far``, and the final correctness of the agent's
+answer.  The gold of an updater call is the gold among its passages
+(``Episode.gold_among``): a document of a failed or unparsed call stays
+unjudged and is shown again in a later call, so it counts in that call.
 """
 
-import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -45,26 +51,29 @@ from .config import Split
 
 logger = logging.getLogger(__name__)
 
-# Belief files written with the current statuses and updater prompts.
-MIN_SCHEMA_VERSION = 15
+# Belief files written with the current statuses, updater prompts and layout.
+MIN_SCHEMA_VERSION = 16
 
 
 @dataclass
 class EpisodeStep:
+    # The belief model's step number (from 1) and the agent's own iteration.
     iteration: int
-    # The documents observed in the iteration, in the order the belief model saw them.
+    agent_iteration: int
+    # The documents shown in the iteration, in order (all its searches).
     doc_ids: List[str]
-    # The teacher updater's reply (null when it was not called).
-    teacher_output: Optional[str]
-    # The updater call raised (no reply).
-    teacher_failed: bool
-    # The step's saved criteria_updates, for the replay check.
-    teacher_updates: List[Dict[str, Any]] = field(default_factory=list)
-    # Relevant documents seen up to and including the step / all relevant (saved).
-    recall_so_far: Optional[float] = None
-    # Relevant documents of the step not seen in an earlier step (annotate_gold).
+    # Relevant documents of the step not seen in an earlier step, and the
+    # share of the query's relevant documents seen up to the step (annotate_gold).
     new_gold_ids: List[str] = field(default_factory=list)
-    # The passages of the step's replayed updater call (null when it made none).
+    recall_so_far: Optional[float] = None
+    # Monitor runs (attach_teacher): the teacher updater's reply (null when
+    # it was not called), the call raised (no reply), the saved
+    # criteria_updates (replay check) and recall_so_far (gold check).
+    teacher_output: Optional[str] = None
+    teacher_failed: bool = False
+    teacher_updates: List[Dict[str, Any]] = field(default_factory=list)
+    saved_recall: Optional[float] = None
+    # The passages of the step's call in the teacher's replay (null when it made none).
     shown_doc_ids: Optional[List[str]] = None
 
     @property
@@ -78,17 +87,19 @@ class EpisodeStep:
 class Episode:
     qid: str
     dataset: str
+    # The training pool split (layout.POOL_SPLITS).
     subset: Optional[str]
     dataset_year: Optional[str]
     query: str
     query_shape: str
-    criteria: List[Dict[str, str]]
     steps: List[EpisodeStep]
     run_dir: str
-    # The criteria cap of the init prompt, and the model that wrote the criteria.
+    # Monitor runs: the teacher's criteria, the criteria cap of the init
+    # prompt (run_config.json) and the model that wrote the criteria.
+    criteria: List[Dict[str, str]] = field(default_factory=list)
     max_criteria: Optional[int] = None
     criteria_model: Optional[str] = None
-    # Steps whose replay matched the saved run (all of them when it matched).
+    # Steps whose teacher replay matched the saved run (all of them when it matched).
     replay_steps: Optional[int] = None
     replay_error: Optional[str] = None
     # The agent of the run, and the pool source of the query (its id prefix).
@@ -98,8 +109,6 @@ class Episode:
     # (null when it was not judged or the judge failed).
     num_relevant: Optional[int] = None
     correct: Optional[bool] = None
-    # sft, rl or val (assign_use).
-    use: Optional[str] = None
 
     @property
     def split(self) -> Split:
@@ -133,12 +142,6 @@ class Episode:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Episode":
-        data = dict(data)
-        data["steps"] = [EpisodeStep(**s) for s in data["steps"]]
-        return cls(**data)
-
 
 def _call_failed(errors: List[str]) -> bool:
     """The step's updater call raised (not a parse failure)."""
@@ -146,76 +149,100 @@ def _call_failed(errors: List[str]) -> bool:
                and "empty text for doc" not in e for e in errors)
 
 
+def _iteration(value: Any) -> int:
+    """The iteration of a trajectory step: ``"3"``, or ``"3.2"`` for the
+    second search of iteration 3."""
+    return int(str(value).split(".", 1)[0])
+
+
 def read_episode(path: Path, split: Split, run_dir: Path) -> Optional[Episode]:
-    """The episode of one ``belief/{qid}.jsonl`` file, or None when the file
-    is older than ``MIN_SCHEMA_VERSION`` or has no criteria."""
+    """The episode of one ``trajectory/{qid}.jsonl`` file: one step per
+    search iteration, in order, with its shown documents (those of all its
+    searches, first occurrence kept; none when its searches returned
+    nothing), or None when the run of the query did not finish (no meta
+    line)."""
     lines = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
     meta = next((r for r in lines if r.get("record") == "meta"), None)
-    if meta is None or (meta.get("schema_version") or 0) < MIN_SCHEMA_VERSION:
+    if meta is None:
         return None
-    if not meta.get("criteria"):
-        return None
-    steps = []
+    docs: Dict[int, List[str]] = {}
     for r in lines:
-        if r.get("record") != "step":
-            continue
-        steps.append(EpisodeStep(
-            iteration=r["iteration"],
-            doc_ids=[d["doc_id"] for d in r.get("docs") or []],
-            teacher_output=r.get("belief_updater_output"),
-            teacher_failed=_call_failed(r.get("errors") or []),
-            teacher_updates=r.get("criteria_updates") or [],
-            recall_so_far=r.get("recall_so_far"),
-        ))
-    qid = str(meta["query_id"])
+        if r.get("record") is None and r.get("search_query"):
+            docs.setdefault(_iteration(r["iter"]), []).extend(r.get("seen_docs") or [])
+    qid = str(meta["qid"])
     return Episode(
-        qid=qid, dataset=split.dataset, subset=split.subset,
-        dataset_year=split.dataset_year, query=meta["question"],
-        query_shape=meta.get("query_shape") or DATASET_SPECS[split.dataset].query_shape,
-        criteria=meta["criteria"], steps=steps, run_dir=str(run_dir),
-        max_criteria=meta.get("max_criteria"),
-        criteria_model=(meta.get("criteria_info") or {}).get("model") or meta.get("llm_criteria"),
-        policy_model=meta.get("agent"), source=qid.split("_", 1)[0] if "_" in qid else None,
-        num_relevant=meta.get("num_relevant"),
+        qid=qid, dataset=split.dataset, subset=split.subset, dataset_year=split.dataset_year,
+        query=meta["question"], query_shape=DATASET_SPECS[split.dataset].query_shape,
+        steps=[EpisodeStep(iteration=n, agent_iteration=i, doc_ids=list(dict.fromkeys(d)))
+               for n, (i, d) in enumerate(docs.items(), 1)],
+        run_dir=str(run_dir), source=qid.split("_", 1)[0] if "_" in qid else None,
     )
 
 
-def annotate_gold(episode: Episode, relevant_ids: Set[str]) -> Optional[str]:
-    """Set each step's ``new_gold_ids`` from the query's relevant documents
-    and check them against the saved recall: returns the first difference,
-    or None.  On a difference the gold is kept (it comes from the qrels) and
-    the saved ``recall_so_far`` is left as it is."""
-    seen: Set[str] = set()
-    for step in episode.steps:
-        step.new_gold_ids = [i for i in dict.fromkeys(step.doc_ids) if i in relevant_ids and i not in seen]
-        seen.update(step.new_gold_ids)
-    if episode.num_relevant is not None and episode.num_relevant != len(relevant_ids):
-        return f"num_relevant {episode.num_relevant} saved, {len(relevant_ids)} in the qrels"
-    found = 0
-    for step in episode.steps:
-        found += len(step.new_gold_ids)
-        if step.recall_so_far is None or not relevant_ids:
+def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
+    """Add the teacher's view of ``belief/{qid}.jsonl`` to *episode*;
+    returns why it cannot be used (old schema, no criteria, other question,
+    or belief steps that are not the trajectory's search iterations with
+    their documents), or None.
+
+    A belief step is joined to the trajectory iteration of its
+    ``agent_iteration``, and must have the episode step's number and
+    documents."""
+    lines = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    meta = next((r for r in lines if r.get("record") == "meta"), None)
+    if meta is None or (meta.get("schema_version") or 0) < MIN_SCHEMA_VERSION:
+        return f"belief file older than schema {MIN_SCHEMA_VERSION}"
+    if not meta.get("criteria"):
+        return "no criteria"
+    if meta.get("question") != episode.query:
+        return "belief file question differs from the trajectory's"
+    by_agent_iteration = {s.agent_iteration: s for s in episode.steps}
+    joined = set()
+    for r in lines:
+        if r.get("record") != "step":
             continue
-        recall = round(found / len(relevant_ids), 4)
-        if abs(recall - step.recall_so_far) > 1e-4:
-            return f"iteration {step.iteration}: recall_so_far {step.recall_so_far} saved, {recall} from the qrels"
+        step = by_agent_iteration.get(int(r["agent_iteration"]))
+        if step is None:
+            return f"belief step {r['iteration']}: agent iteration {r['agent_iteration']} has no search in the trajectory"
+        if int(r["iteration"]) != step.iteration:
+            return (f"belief step {r['iteration']}: agent iteration {r['agent_iteration']} is "
+                    f"search iteration {step.iteration} of the trajectory")
+        doc_ids = list(dict.fromkeys(d["doc_id"] for d in r.get("docs") or []))
+        if doc_ids != step.doc_ids:
+            return f"belief step {r['iteration']}: documents differ from the trajectory's"
+        step.teacher_output = r.get("belief_updater_output")
+        step.teacher_failed = _call_failed(r.get("errors") or [])
+        step.teacher_updates = r.get("criteria_updates") or []
+        step.saved_recall = r.get("recall_so_far")
+        joined.add(step.iteration)
+    missing = [s.agent_iteration for s in episode.steps if s.iteration not in joined]
+    if missing:
+        return f"agent iterations {missing} of the trajectory have no belief step"
+    episode.criteria = meta["criteria"]
+    episode.criteria_model = (meta.get("criteria_info") or {}).get("model")
+    episode.num_relevant = meta.get("num_relevant")
     return None
 
 
-def assign_use(qid: str, sft_share: float, val_share: float) -> str:
-    """``sft``, ``rl`` or ``val`` by a hash of *qid*: the shares of the pool
-    are ``sft_share``, ``val_share`` and the rest; a query's use depends on
-    its id only."""
-    u = int(hashlib.sha256(qid.encode("utf-8")).hexdigest()[:8], 16) / 0x100000000
-    if u < sft_share:
-        return "sft"
-    if u < sft_share + val_share:
-        return "val"
-    return "rl"
-
-
-def read_episodes(path: Path) -> List[Episode]:
-    return [Episode.from_dict(json.loads(line)) for line in Path(path).read_text().splitlines() if line.strip()]
+def annotate_gold(episode: Episode, relevant_ids: Set[str]) -> Optional[str]:
+    """Set each step's ``new_gold_ids`` and ``recall_so_far`` from the
+    query's relevant documents; on a monitor episode, check them against
+    the saved ones: returns the first difference, or None.  On a
+    difference the gold from the qrels is kept."""
+    seen: Set[str] = set()
+    for step in episode.steps:
+        step.new_gold_ids = [i for i in step.doc_ids if i in relevant_ids and i not in seen]
+        seen.update(step.new_gold_ids)
+        step.recall_so_far = round(len(seen) / len(relevant_ids), 4) if relevant_ids else None
+    saved = episode.num_relevant
+    episode.num_relevant = len(relevant_ids)
+    if saved is not None and saved != len(relevant_ids):
+        return f"num_relevant {saved} saved, {len(relevant_ids)} in the qrels"
+    for step in episode.steps:
+        if step.saved_recall is not None and step.recall_so_far is not None \
+                and abs(step.recall_so_far - step.saved_recall) > 1e-4:
+            return f"iteration {step.iteration}: recall_so_far {step.saved_recall} saved, {step.recall_so_far} from the qrels"
+    return None
 
 
 def write_jsonl(path: Path, rows: Iterator[Dict[str, Any]]) -> int:

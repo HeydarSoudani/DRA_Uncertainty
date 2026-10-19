@@ -224,17 +224,9 @@ class NumericMatchEvaluator:
         }
 
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
-        """Write ``accuracy.jsonl``: a ``{"record": "meta", ...}`` line with the
-        run-level aggregates, then one line per query."""
+        """Write ``accuracy.jsonl``: one line per query.  The aggregates are
+        in ``summary.json``."""
         if not metrics:
             return
-        meta = {
-            "record": "meta",
-            "exact_match": metrics.get("exact_match"),
-            "accuracy": metrics.get("accuracy"),
-            "soft_exact_match": metrics.get("soft_exact_match"),
-            "num_correct": metrics.get("num_correct"),
-            "num_evaluated": metrics.get("num_evaluated"),
-        }
-        write_jsonl(output_path, [meta] + metrics.get("per_query", []))
+        write_jsonl(output_path, metrics.get("per_query", []))
         print(f"  Saved numeric-match results: {output_path}")

@@ -6,7 +6,7 @@ markdown) and for resuming interrupted pipeline runs.
 
 import json as _json
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Tuple, Union
 
 from utils.config import AGENT_META_KEYS
 
@@ -40,35 +40,55 @@ def setup_output_dirs(
     return result
 
 
-def get_processed_queries(run_dir: Union[str, Path], require_belief: bool = False) -> set:
-    """Return query IDs that already have a saved retrieval TREC file.
+def _last_line(path: Path) -> bytes:
+    """The last non-empty line of *path*, read from the end of the file."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        end = f.tell()
+        size = 4096
+        while True:
+            start = max(0, end - size)
+            f.seek(start)
+            chunk = f.read(end - start).rstrip(b"\n")
+            cut = chunk.rfind(b"\n")
+            if cut >= 0 or start == 0:
+                return chunk[cut + 1:]
+            size *= 2
 
-    Enables resuming an interrupted pipeline run by skipping previously
-    completed queries.
 
-    Args:
-        run_dir: Root directory of the current run.
-            Results are expected under ``{run_dir}/retrieval/surfaced/*.trec``.
-        require_belief: Also require ``{run_dir}/belief/{qid}.jsonl``
-            (set when the belief model is on), so a query whose run
-            stopped between the two writes is run again.
-
-    Returns:
-        Set of query-ID strings (filename stems of existing ``.trec`` files),
-        or an empty set if the surfaced retrieval directory does not exist.
-    """
-    retrieval_dir = Path(run_dir) / "retrieval" / "surfaced"
-    if not retrieval_dir.exists():
-        return set()
+def is_finished(trajectory_file: Union[str, Path]) -> bool:
+    """The query's trajectory file ends with its meta line, which
+    ``evaluation.trajectory.save_trajectory`` writes after every other file
+    of the query."""
     try:
-        processed = {f.stem for f in retrieval_dir.glob("*.trec")}
-        if require_belief:
-            belief_dir = Path(run_dir) / "belief"
-            processed &= {f.stem for f in belief_dir.glob("*.jsonl")}
-        return processed
-    except Exception as e:
-        print(f"Warning: could not read existing results from {retrieval_dir}: {e}")
-        return set()
+        return _last_line(Path(trajectory_file)).startswith(b'{"record":"meta"')
+    except OSError:
+        return False
+
+
+def scan_queries(run_dir: Union[str, Path], require_belief: bool = False) -> Tuple[set, set]:
+    """``(finished, unfinished)`` query ids of the run.
+
+    A query is finished when ``trajectory/{qid}.jsonl`` ends with its meta
+    line (and, with *require_belief*, ``belief/{qid}.jsonl`` exists: the
+    belief model is on); a trajectory file without it is a query whose run
+    stopped, and it is run again on resume.
+    """
+    traj_dir = Path(run_dir) / "trajectory"
+    if not traj_dir.is_dir():
+        return set(), set()
+    belief_dir = Path(run_dir) / "belief"
+    finished, unfinished = set(), set()
+    for path in traj_dir.glob("*.jsonl"):
+        done = is_finished(path) and (not require_belief or (belief_dir / path.name).exists())
+        (finished if done else unfinished).add(path.stem)
+    return finished, unfinished
+
+
+def get_processed_queries(run_dir: Union[str, Path], require_belief: bool = False) -> set:
+    """The finished query ids of the run (:func:`scan_queries`), skipped
+    when an interrupted run is resumed."""
+    return scan_queries(run_dir, require_belief)[0]
 
 
 def load_result_from_trec(trec_file: Union[str, Path], query_id: str) -> dict:
@@ -121,20 +141,18 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
     ``--eval-only``, so both score the same result.  Sources:
 
     * ``trajectory/{qid}.jsonl``: the steps (seen doc ids, no doc text) and the
-      meta line (generation, counts, :data:`utils.config.AGENT_META_KEYS`);
-    * ``generation/{qid}.md`` when the meta line has no generation;
+      meta line (counts, :data:`utils.config.AGENT_META_KEYS`);
+    * ``generation/{qid}.md``: the final generation;
     * ``retrieval/cited``, ``seen`` and ``surfaced`` TRECs: the cited list and
       the per-step seen and surfaced lists.
-
-    A query without a trajectory file (its run stopped between the writes)
-    keeps its retrieval lists and an empty trajectory.
 
     Args:
         run_dir:  Root directory of the run.
         query_id: Query identifier.
 
     Returns:
-        Reconstructed result dict, or ``{}`` when the query has no file.
+        Reconstructed result dict, or ``{}`` when the query is not finished
+        (:func:`is_finished`).
     """
     run_dir_str = str(run_dir).rstrip("/")
 
@@ -144,60 +162,45 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
     def _read_text(subdir: str, filename: str) -> str:
         return Path(_file_path(subdir, filename)).read_text(encoding="utf-8")
 
-    result: dict = {}
-
     # ── 1. Trajectory JSONL ──────────────────────────────────────────────────
-    # One line per trajectory step plus a ``{"record": "meta", ...}`` line (last
-    # in files written online, first in older runs; position is irrelevant
-    # here).  The full surfaced ranking is not stored here (it lives in
-    # retrieval/surfaced/*.trec, reconstructed in step 5b); belief-model signals
-    # are under belief/{qid}.jsonl and are not reloaded (analysed offline).
+    # One line per trajectory step, then the ``{"record": "meta", ...}`` line.
+    # The full surfaced ranking is not stored here (it lives in
+    # retrieval/surfaced/*.trec, reconstructed in step 4b); belief-model
+    # signals are under belief/{qid}.jsonl and are not reloaded.
     try:
         content = _read_text("trajectory", f"{query_id}.jsonl")
-        meta: dict = {}
-        trajectory: list = []
-        for line in content.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            obj = _json_loads(line)
-            if obj.get("record") == "meta":
-                meta = obj
-            else:
-                trajectory.append(obj)
-        if meta or trajectory:
-            result = {
-                "trajectory":     trajectory,
-                "generation":     meta.get("generation", ""),
-                "num_steps":      meta.get("num_steps", 0),
-                "num_searches":   meta.get("num_searches", 0),
-                "num_iterations": meta.get("num_iterations"),
-            }
-            for key in AGENT_META_KEYS:
-                if meta.get(key):
-                    result[key] = meta[key]
-    except (FileNotFoundError, OSError):
-        pass
-    except Exception as e:
-        print(f"Warning: could not load trajectory JSONL for {query_id}: {e}")
-
-    # ── 2. No trajectory file: the retrieval lists only ──────────────────────
-    if not result:
-        if not Path(_file_path("retrieval/surfaced", f"{query_id}.trec")).exists():
-            return {}
-        result = {"trajectory": [], "generation": ""}
-
-    if not result:
+    except OSError:
         return {}
+    meta: dict = {}
+    trajectory: list = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = _json_loads(line)
+        if obj.get("record") == "meta":
+            meta = obj
+        else:
+            trajectory.append(obj)
+    if not meta:
+        return {}
+    result: dict = {
+        "trajectory":     trajectory,
+        "num_steps":      meta.get("num_steps", 0),
+        "num_searches":   meta.get("num_searches", 0),
+        "num_iterations": meta.get("num_iterations"),
+    }
+    for key in AGENT_META_KEYS:
+        if meta.get(key):
+            result[key] = meta[key]
 
-    # ── 3. Load generation from MD if not in trajectory JSON ─────────────────
-    if not result.get("generation"):
-        try:
-            result["generation"] = _read_text("generation", f"{query_id}.md")
-        except Exception:
-            pass
+    # ── 2. Generation ─────────────────────────────────────────────────────────
+    try:
+        result["generation"] = _read_text("generation", f"{query_id}.md")
+    except OSError:
+        result["generation"] = ""
 
-    # ── 4. Load cited docs from TREC if not already present ──────────────────
+    # ── 3. Load cited docs from TREC if not already present ──────────────────
     if not result.get("cited_docs_ranked_list"):
         try:
             content = _read_text("retrieval/cited", f"{query_id}.trec")
@@ -211,7 +214,7 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
         except Exception:
             pass
 
-    # ── 5. Load seen-doc iterations from TREC if not in trajectory ──────────
+    # ── 4. Load seen-doc iterations from TREC if not in trajectory ──────────
     if not result.get("seen_docs_iterations"):
         try:
             seen_trec_path = _file_path("retrieval/seen", f"{query_id}.trec")
@@ -226,7 +229,7 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
         except Exception:
             pass
 
-    # ── 5b. Reconstruct surfaced iterations from surfaced TREC ───────────────
+    # ── 4b. Reconstruct surfaced iterations from surfaced TREC ───────────────
     # The trajectory JSONL keeps only the seen (top-k) doc ids, not the full
     # surfaced ranking.  Rebuild the per-step surfaced lists from the surfaced
     # TREC so SurfacedDocEvaluator stays correct on resume.  (Fresh runs skip
@@ -289,59 +292,111 @@ def build_belief_config_name(**kwargs) -> str:
     Searcher/retrieval settings are fixed and recorded in run_config.json
     rather than the path.  Only the belief model mode is surfaced here.
 
-    Examples: ``belief-off``, ``belief-monitor``, ``belief-inform_novel``.
+    Examples: ``belief-off``, ``belief-monitor``, ``belief-inform``.
     """
-    mode = kwargs.get("belief_mode", "off")
-    name = f"belief-{mode}"
-    if kwargs.get("ensure_novel_seen_docs", False):
-        name += "_novel"
-    return name
+    return f"belief-{kwargs.get('belief_mode', 'off')}"
 
 
-def write_run_config(run_dir: Union[str, Path], policy_model: str,
-                     llm_model: str, **kwargs) -> None:
-    """Persist the full run configuration to ``run_dir/run_config.json``.
+#: Sections of ``run_config.json`` that the queries of one run directory
+#: share: a resume with other values is refused (``check_run_config``).
+#: ``evaluation`` may change between calls (it only re-judges).
+LOCKED_RUN_CONFIG_SECTIONS = ("dataset", "agent", "searcher", "belief_model")
 
-    Captures the fixed searcher/retrieval settings that used to live in the
-    folder name, plus agent/model/belief-model metadata, so nothing is lost when
-    the path is simplified.
+
+def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: str,
+                     query_key: str, **kwargs) -> Dict[str, Any]:
+    """The full resolved configuration of a run, saved as
+    ``run_dir/run_config.json`` (:func:`check_run_config`).
+
+    Every setting that changes what the agent does or what the belief model
+    writes is here, with defaults resolved (the criteria cap, the updater
+    and query scorer models), so the run directory's name stays short and
+    the per-query files carry no run settings.  With the belief model off,
+    ``belief_model`` holds the mode only.
     """
     from utils.config import resolve_agent_backend, model_display_name
+    from indexing_corpus_dataset.layout import DATASET_SPECS
 
     backend, slug = resolve_agent_backend(policy_model)
-    config = {
+    mode = kwargs.get("belief_mode", "off")
+    belief: Dict[str, Any] = {"mode": mode}
+    if mode != "off":
+        llm_criteria = kwargs.get("llm_criteria") or None
+        judge = (kwargs.get("belief_judge_model") or llm_criteria) if llm_criteria else None
+        max_criteria = kwargs.get("max_criteria")
+        belief.update({
+            "llm_criteria": llm_criteria,
+            "max_criteria": DATASET_SPECS[dataset].max_criteria if max_criteria is None else max_criteria,
+            "belief_judge_model": judge,
+            "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
+            "criteria_bank": bool(kwargs.get("criteria_bank", True)),
+            "add_intermediate_answer": bool(kwargs.get("add_intermediate_answer", True)),
+        })
+    return {
+        "dataset": {
+            "dataset": dataset,
+            "split": split,
+            "query_key": query_key,
+            "min_relevance_score": kwargs.get("min_relevance_score"),
+        },
         "agent": {
             "policy_model": policy_model,
             "backend": backend,
             "openrouter_slug": slug,
             "llm_model": llm_model,
             "model_display": model_display_name(llm_model),
+            "temperature": kwargs.get("temperature"),
             "use_plan": kwargs.get("use_plan", False),
             "max_iteration": kwargs.get("max_iteration"),
             "max_retries": kwargs.get("max_retries"),
             "max_passage_chars": kwargs.get("max_passage_chars"),
             "llm_max_tokens_per_call": kwargs.get("llm_max_tokens_per_call"),
+            "max_output_tokens_total": kwargs.get("max_output_tokens_total"),
+            "max_extend_steps": kwargs.get("max_extend_steps"),
+            "hard_mode": kwargs.get("hard_mode"),
         },
         "searcher": {
             "retriever_name": kwargs.get("retriever_name", "e5"),
-            "seen_top_k": kwargs.get("seen_top_k", 10),
-            "rerank_top_k": kwargs.get("rerank_top_k", 100),
+            "top_k": kwargs.get("top_k"),
+            "seen_top_k": kwargs.get("seen_top_k"),
+            "rerank_top_k": kwargs.get("rerank_top_k"),
             "post_retrieval_reranker_name": kwargs.get("post_retrieval_reranker_name", "null"),
             "post_fusion_reranker_name": kwargs.get("post_fusion_reranker_name", "null"),
             "retrieval_input": kwargs.get("retrieval_input", "subquery"),
             "post_fusion_reranker_input": kwargs.get("post_fusion_reranker_input", "original_query"),
-            "ensure_novel_seen_docs": kwargs.get("ensure_novel_seen_docs", False),
         },
-        "belief_model": {
-            "mode": kwargs.get("belief_mode", "off"),
-            "llm_criteria": kwargs.get("llm_criteria"),
-            "max_criteria": kwargs.get("max_criteria"),
-            "belief_judge_model": kwargs.get("belief_judge_model", ""),
-            "query_scorer_model": kwargs.get("query_scorer_model", ""),
-            "add_intermediate_answer": kwargs.get("add_intermediate_answer", True),
+        "belief_model": belief,
+        "evaluation": {
+            "judge_model": kwargs.get("judge_model"),
         },
     }
+
+
+def run_config_diffs(old: Dict[str, Any], new: Dict[str, Any],
+                     sections=LOCKED_RUN_CONFIG_SECTIONS) -> List[str]:
+    """``section.key: old -> new`` for every key of *sections* that differs."""
+    diffs = []
+    for section in sections:
+        a, b = old.get(section) or {}, new.get(section) or {}
+        diffs += [f"{section}.{k}: {a.get(k)!r} -> {b.get(k)!r}"
+                  for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)]
+    return diffs
+
+
+def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
+    """Write *config* to ``run_dir/run_config.json``; when the run directory
+    already has one (a resumed run), first check that the locked sections
+    (:data:`LOCKED_RUN_CONFIG_SECTIONS`) are unchanged, so every query of
+    the directory ran with the same settings.  Raises SystemExit with the
+    differences otherwise."""
     path = Path(run_dir) / "run_config.json"
+    if path.exists():
+        diffs = run_config_diffs(_json.loads(path.read_text()), config)
+        if diffs:
+            raise SystemExit(
+                f"{path} was written with other settings than this run's: {'; '.join(diffs)}. "
+                "Its queries would mix both; use the same settings, another --output, or remove the run directory."
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as fh:
         _json.dump(config, fh, indent=2)

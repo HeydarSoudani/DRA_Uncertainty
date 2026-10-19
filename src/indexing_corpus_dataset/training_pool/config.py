@@ -1,5 +1,5 @@
-"""Settings of the training pool build (``shared`` and the ``pages`` section
-of step 2) and its paths.  The sources and the dropped question types of step
+"""Settings of the training pool build (``shared``, the ``pages`` section
+of deep_qa step 2 and the ``split`` section) and its paths.  The sources and the dropped question types of step
 1 are fixed (``sources.py``, ``filters.py``).
 
 The YAML file (``experiments/configs/build_training_pool.yaml``) has the same
@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, TRAINING_POOL_ROOT, corpus_path, qrels_base, queries_base
+from indexing_corpus_dataset.layout import POOL_ALL_SPLIT, POOL_SPLITS, TRAINING_POOL_ROOT, corpus_path, qrels_base, queries_base
 
 
 @dataclass
@@ -53,9 +53,22 @@ class PagesConfig:
     min_page_share: float = 0.8
 
 
+@dataclass
+class SplitConfig:
+    """The shares of the pool's queries in the splits ``sft``, ``rl`` and
+    ``val`` (splits.py), summing to 1."""
+    sft: float = 0.3
+    rl: float = 0.6
+    val: float = 0.1
+
+    def shares(self) -> Dict[str, float]:
+        return {name: getattr(self, name) for name in POOL_SPLITS}
+
+
 SECTIONS = {
     "shared": SharedConfig,
     "pages": PagesConfig,
+    "split": SplitConfig,
 }
 
 
@@ -63,6 +76,7 @@ SECTIONS = {
 class PoolConfig:
     shared: SharedConfig = field(default_factory=SharedConfig)
     pages: PagesConfig = field(default_factory=PagesConfig)
+    split: SplitConfig = field(default_factory=SplitConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -86,22 +100,27 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
         setattr(obj, key, value)
     if not cfg.shared.contact:
         cfg.shared.contact = os.environ.get("DRA_CONTACT") or None
+    shares = cfg.split.shares()
+    if any(v < 0 for v in shares.values()) or abs(sum(shares.values()) - 1.0) > 1e-9:
+        raise ValueError(f"split: shares must be >= 0 and sum to 1, got {shares}")
     return cfg
 
 
-# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-3,
-# trqa_validation is merged from the TRQA validation files (trqa_validation.py).
+# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-4,
+# trqa_validation is merged from the TRQA validation files (trqa_validation.py);
+# both end with the split of their queries into sft / rl / val (splits.py).
 POOLS = ("deep_qa", "trqa_validation")
 
 
 class PoolPaths:
     """The files of a build under ``shared.output_dir`` (null =
     ``TRAINING_POOL_ROOT/{pool}``): the dataset in the canonical layout
-    (``layout.py``) and, next to it, the step files of deep_qa."""
+    (``layout.py``; ``queries``, ``qrels`` are split ``all``, every query of
+    the pool) and, next to it, the step files of deep_qa."""
 
     def __init__(self, cfg: PoolConfig, pool: str = "deep_qa"):
         self.root = Path(cfg.shared.output_dir) if cfg.shared.output_dir else TRAINING_POOL_ROOT / pool
-        self.split = DATASET_SPECS[pool].subset
+        self.split = POOL_ALL_SPLIT
 
     # ── Dataset (canonical layout) ──────────────────────────────────────────
 
@@ -112,6 +131,17 @@ class PoolPaths:
     @property
     def qrels(self) -> Path:
         return qrels_base(self.root, self.split).with_suffix(".txt")
+
+    def split_queries(self, split: str) -> Path:
+        return queries_base(self.root, split).with_suffix(".jsonl")
+
+    def split_info(self, split: str) -> Path:
+        """The intermediate info of *split* (trqa_validation only)."""
+        base = queries_base(self.root, split)
+        return base.with_name(f"{base.name}_intermediate_info.jsonl")
+
+    def split_qrels(self, split: str) -> Path:
+        return qrels_base(self.root, split).with_suffix(".txt")
 
     @property
     def corpus(self) -> Path:

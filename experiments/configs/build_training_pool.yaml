@@ -28,3 +28,9 @@ pages:
   wayback_timestamp: "20250601"     # closest snapshot to when WebShaper was built
   min_words: 50                     # fewer extracted words = dead page (soft 404)
   min_page_share: 0.8               # Filter A, questions with web gold pages: this share of all their gold pages (Wikipedia-only: all)
+
+# ── Split (deep_qa step 4, trqa_validation build): shares of the queries ────
+split:
+  sft: 0.3                          # SFT samples (monitor mode, teacher replies)
+  rl: 0.6                           # RL prompts (off mode)
+  val: 0.1                          # validation of SFT and RL (monitor mode)

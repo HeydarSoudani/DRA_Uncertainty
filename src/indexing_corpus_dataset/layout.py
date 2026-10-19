@@ -203,18 +203,18 @@ DATASET_SPECS = {
         report_chars=2000, report_eval="argue", title_key="title",
     ),
     # Training pools built by this project (experiments/training/build_training_pool.py),
-    # under TRAINING_POOL_ROOT; ``subset`` is the split.
+    # under TRAINING_POOL_ROOT; ``subset`` is the split (POOL_SPLITS, default sft).
     # deep_qa: BrowseComp-style questions (InfoSeek-Hard, WebShaper, FRAMES)
     # with their gold Wikipedia and web pages as binary qrels.  Lengths as
     # BrowseComp-Plus (long web pages and multi-clue questions).
     "deep_qa": DatasetSpec(
-        dataset_year=None, subset="train", query_key="text", min_relevance_score=1,
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
     # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
     # intermediate info merged; TRQA's settings, corpus and indices.
     "trqa_validation": DatasetSpec(
-        dataset_year=None, subset="val", query_key="text", min_relevance_score=1,
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
 }
@@ -222,6 +222,12 @@ DATASET_SPECS = {
 # Datasets built by this project, kept under ``TRAINING_POOL_ROOT`` (the
 # others are downloaded inputs under ``DATA_ROOT``).
 BUILT_DATASETS = frozenset({"deep_qa", "trqa_validation"})
+
+# Splits of a training pool: ``all`` holds every query of the pool as built;
+# ``sft``, ``rl`` and ``val`` split it by a hash of the query id
+# (training_pool/splits.py), for belief model training.
+POOL_ALL_SPLIT = "all"
+POOL_SPLITS = ("sft", "rl", "val")
 
 # Built datasets that search another dataset's corpus and indices.
 _SHARED_CORPUS = {"trqa_validation": "trqa"}
@@ -370,7 +376,7 @@ def resolve_split_id(
       trqa            -> "{subset}_{eval}"  (eval split carried in dataset_year)
       ragtime         -> "{year}"           (single task; subset unused)
       browsecomp_plus -> subset or "test"
-      training pools  -> subset or the pool's split (deep_qa "train", trqa_validation "val")
+      training pools  -> subset or the pool's default split ("sft"; POOL_SPLITS, POOL_ALL_SPLIT)
       other           -> subset or "set1"
     """
     if dataset == "neuclir":

@@ -1,27 +1,21 @@
-"""Phase 3 environment: belief update steps (GRPO groups) from the teacher's
-or the student's own belief chain.
+"""Phase 3 environment: belief update steps (GRPO groups) from the
+student's own belief chain.
 
-A step item is one updater call of a phase 1 episode (``rl`` or ``val``
-use): a step of the matched replay where the teacher was called and
-replied.  The agent ran in monitor mode, so the documents of every step do
-not depend on the belief, and a step's prompt can be built from any belief
-chain over the episode:
-
-    teacher-forced  from the teacher's belief b_{t-1}: the teacher's replies
-                    replayed up to the step (``build_prompts``)
-    student state   from the student's own b_{t-1}: the student's criteria
-                    (its init call) and its replies to the earlier steps,
-                    greedy as at inference (``student_prompts``, DAgger-style:
-                    the states the student meets when it runs alone)
+A step item is one search step of an episode of the ``rl`` split (off-mode
+run) whose documents include one not shown in an earlier step, so the
+updater is called there.  The belief never changes what the agent does, so
+the documents of every step are fixed and a step's prompt is built from
+the student's own b_{t-1}: its criteria (its init call) and its replies to
+the earlier steps, greedy as at inference (``student_prompts``,
+DAgger-style: the states the student meets when it runs alone).
 
 The student writes ``group_size`` replies to a prompt; each is applied to a
 copy of b_{t-1}, which gives its statuses and cited support for the reward.
-The gold of a prompt is the relevant documents among its call's passages,
-which differ between chains when a failed or unparsed call leaves documents
-unjudged.  r_ts applies to a prompt when it is ``final``: the last updater
-call of the student's chain (the step of the teacher's last call, a chain's
-calls following the same documents).  The init call is not trained here
-(the criteria stay as learned in SFT).
+The gold of a prompt is the relevant documents among its call's passages:
+a failed or unparsed earlier call leaves documents unjudged, and they are
+shown again.  r_ts applies to a prompt when it is ``final``: the last
+updater call of the episode.  The init call is not trained here (the
+criteria stay as learned in SFT).
 
 ``run_student_chains`` runs the student's chain over whole episodes for the
 free-running validation.
@@ -49,11 +43,10 @@ CRITERIA_MAX_TOKENS = 4096
 
 @dataclass
 class StepItem:
-    """One updater call of an episode: ``t`` indexes ``episode.steps``."""
+    """One updater step of an episode: ``t`` indexes ``episode.steps``."""
     episode: Episode
     t: int
-    # The call shows gold documents (Episode.shown_gold) / is the episode's last updater call
-    # (only when the whole episode replayed).
+    # The step shows relevant documents first seen in it / is the episode's last updater step.
     has_gold: bool
     last: bool
 
@@ -69,8 +62,6 @@ class StepPrompt:
     gold: Set[str]
     # r_ts applies: the last updater call of the chain.
     final: bool
-    # "teacher" (teacher-forced) or "student" (the student's own state).
-    state: str = "teacher"
 
 
 @dataclass
@@ -89,45 +80,22 @@ class StudentSample:
 
 
 def step_items(episodes: List[Episode]) -> List[StepItem]:
-    """The updater calls of *episodes* within their matched replay, the
-    teacher's failed calls left out."""
+    """The steps of *episodes* with a document not shown in an earlier step."""
     items: List[StepItem] = []
     for ep in episodes:
-        calls = [t for t, s in enumerate(ep.steps[:ep.replay_steps or 0]) if s.teacher_reply is not None]
-        complete = ep.replay_steps == len(ep.steps)
-        items += [StepItem(ep, t, bool(ep.shown_gold(t)), complete and t == calls[-1]) for t in calls]
+        seen: Set[str] = set()
+        steps = []
+        for t, step in enumerate(ep.steps):
+            if set(step.doc_ids) - seen:
+                steps.append(t)
+            seen.update(step.doc_ids)
+        items += [StepItem(ep, t, bool(ep.steps[t].new_gold_ids), t == steps[-1]) for t in steps]
     return items
 
 
-def _prompt(item: StepItem, call: UpdaterCall, signal: Any, final: bool, state: str) -> StepPrompt:
+def _prompt(item: StepItem, call: UpdaterCall, signal: Any, final: bool) -> StepPrompt:
     gold = item.episode.gold_among([d["doc_id"] for d in call.kept])
-    return StepPrompt(item, call, _snapshot(signal), gold, final, state)
-
-
-def build_prompts(items: List[StepItem], store: DocumentStore, *, final: bool = True) -> List[StepPrompt]:
-    """The teacher-forced prompts of *items*, in order; each episode is
-    replayed once, up to its last item.  *final* False: r_ts applies to
-    none (a teacher-forced final belief is mostly the teacher's).  An item
-    whose step needs no call in the replay is left out (not expected within
-    the matched replay)."""
-    by_episode: Dict[int, List[int]] = defaultdict(list)
-    for i, item in enumerate(items):
-        by_episode[id(item.episode)].append(i)
-    out: List[Optional[StepPrompt]] = [None] * len(items)
-    for idxs in by_episode.values():
-        ep = items[idxs[0]].episode
-        wanted: Dict[int, List[int]] = defaultdict(list)
-        for i in idxs:
-            wanted[items[i].t].append(i)
-        tracker = BeliefTracker(ep, store.docs(ep)[:ep.replay_steps])
-        for t in range(max(wanted) + 1):
-            call = tracker.open_step(t)
-            if call is None:
-                continue
-            for i in wanted.get(t, []):
-                out[i] = _prompt(items[i], call, tracker.signal, final and items[i].last, "teacher")
-            tracker.submit(ep.steps[t].teacher_reply)
-    return [p for p in out if p is not None]
+    return StepPrompt(item, call, _snapshot(signal), gold, final)
 
 
 def _snapshot(signal: Any) -> Any:
@@ -209,7 +177,7 @@ def run_student_chains(
                 call = tracker.open_step(t)
                 if call is None:
                     continue
-                cc = ChainCall(t, _prompt(StepItem(ep, t, False, False), call, tracker.signal, False, "student"))
+                cc = ChainCall(t, _prompt(StepItem(ep, t, False, False), call, tracker.signal, False))
                 cc.prompt.item.has_gold = bool(cc.prompt.gold)
                 calls[e].append(cc)
                 if t == targets[e] and not reply_at_target:
@@ -232,7 +200,7 @@ def student_prompts(items: List[StepItem], store: DocumentStore, engine: VLLMRol
     the student's criteria and its greedy chain up to the item's step.
     Returns ``(prompts, rest)``: *rest* are the items without a student
     prompt (no criteria parsed, or no call at the step in the student's
-    chain).  r_ts applies to an item that is the teacher's last call."""
+    chain).  r_ts applies to an item that is the episode's last step."""
     by_episode: Dict[int, List[StepItem]] = defaultdict(list)
     for item in items:
         by_episode[id(item.episode)].append(item)
@@ -253,7 +221,7 @@ def student_prompts(items: List[StepItem], store: DocumentStore, engine: VLLMRol
             if base is None:
                 rest.append(item)
                 continue
-            prompts.append(StepPrompt(item, base.call, base.signal, base.gold, item.last, "student"))
+            prompts.append(StepPrompt(item, base.call, base.signal, base.gold, item.last))
     return prompts, rest
 
 

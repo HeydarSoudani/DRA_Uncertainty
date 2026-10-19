@@ -1,46 +1,38 @@
 """Phase 3: RL of the student belief model (GRPO on belief updates from the
-teacher's and the student's own belief chains, PPO update from
-Agent-BRACE's BeliefStateLMTrainer, agent frozen).
+student's own belief chain, PPO update from Agent-BRACE's
+BeliefStateLMTrainer, agent frozen).
 
-Each iteration, on one GPU shared by the vLLM engine and the trainer:
+The prompts come from the off-mode run of phase 1 on the ``rl`` split, the
+validation from the monitor run on the ``val`` split (its trajectories
+only; ``runs.load_episodes``).  Each iteration, on one GPU shared by the
+vLLM engine and the trainer:
 
-    sample    prompts_per_batch updater steps of the ``rl`` episodes
-              (env.StepSampler); a share ``student_share(it)`` of them
-              from the student's own belief b_{t-1} (its criteria and
-              greedy chain, env.student_prompts), the rest teacher-forced
-              (env.build_prompts).  The share grows linearly to
-              ``student_state_share`` over the first ``student_state_ramp``
-              of the iterations (scheduled sampling / DAgger): the student
-              is trained on the states it meets when it runs alone.
+    sample    prompts_per_batch updater steps of the rl episodes
+              (env.StepSampler), each from the student's own belief
+              b_{t-1}: its criteria and greedy chain (env.student_prompts,
+              DAgger-style: the states the student meets when it runs
+              alone); a step without a prompt (no criteria parsed, or no
+              call there in the student's chain) is left out
     rollout   group_size student replies per prompt (temperature 1); a
               group whose replies all score alike gives no gradient and is
               replaced, up to REFILL_ROUNDS more rollouts (DAPO's dynamic
               sampling)
-    reward    per reply (rewards.Reward); r_ts only on the student's states
+    reward    per reply (rewards.Reward); r_ts on the episode's last step
     update    GDPO advantages (each term normalized within its group) ->
               engine.sleep -> trainer.onload -> PPO -> save to sync_dir ->
               trainer.offload -> engine.load_weights(sync_dir)
 
 Validation, before training and every ``val_every`` iterations, greedy, on
-a fixed sample of fully replayed ``val`` episodes:
-
-    free_running    the student's own chain over each whole episode (its
-                    criteria, then every call); r_ts on its last call.
-                    ``final/`` holds the checkpoint with the best
-                    free-running reward (the start model when none beats it)
-    teacher_forced  one reply per teacher call from the teacher's b_{t-1};
-                    the gap to free-running is the cost of the student's
-                    own earlier errors
-
-The teacher's replies to the same calls (its own chain) are scored once, as
-the bar to beat.  Each record holds the mean reward, its terms and
-``scoring.measures`` over its calls.
+a fixed sample of val episodes: the student's own chain over each whole
+episode (its criteria, then every call), scored against the gold; r_ts on
+its last call.  ``final/`` holds the checkpoint with the best validation
+reward (the start model when none beats it).  Each record holds the mean
+reward, its terms and ``scoring.measures`` over its calls.
 
 Outputs (``phase3_rl/``): ``metrics.jsonl`` (one line per iteration),
-``validation.jsonl`` (teacher, then the student's two modes per
-validation), ``step_{n}/`` every ``save_every`` iterations (the last
-``save_total_limit`` kept), ``final/``.  A run starts over: its earlier logs
-are removed.
+``validation.jsonl`` (one line per validation), ``step_{n}/`` every
+``save_every`` iterations (the last ``save_total_limit`` kept), ``final/``.
+A run starts over: its earlier logs are removed.
 """
 
 import json
@@ -50,14 +42,15 @@ import random
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .config import RLConfig, RunPaths, TrainingConfig
-from .env import (StepItem, StepPrompt, StepSampler, StudentSample, apply_reply, build_prompts, rollout_groups,
-                  run_student_chains, step_items, student_criteria, student_prompts)
-from .episodes import DocumentStore, Episode, read_episodes
+from .env import (StepPrompt, StepSampler, StudentSample, apply_reply, rollout_groups, run_student_chains,
+                  step_items, student_criteria, student_prompts)
+from .episodes import DocumentStore, Episode
 from .rewards import Reward
 from .rollout import VLLMRolloutEngine
+from .runs import check_same_settings, load_episodes
 from .scoring import measures, step_row
 from .trainer import BeliefPPOTrainer, group_advantages
 
@@ -103,24 +96,6 @@ def rollout_stats(samples: List[StudentSample]) -> Dict[str, Any]:
         "mean_response_tokens": sum(len(s.response_ids) for s in samples) / n,
         "mean_prompt_tokens": sum(len(s.prompt_ids) for s in samples) / n,
     }
-
-
-def student_share(rc: RLConfig, it: int) -> float:
-    """Share of the prompts from the student's own chain at iteration *it*."""
-    if rc.student_state_ramp <= 0:
-        return rc.student_state_share
-    return rc.student_state_share * min(1.0, it / (rc.student_state_ramp * rc.num_iterations))
-
-
-def batch_prompts(items: List[StepItem], share: float, store: DocumentStore, engine: VLLMRolloutEngine,
-                  rc: RLConfig) -> Tuple[List[StepPrompt], int]:
-    """The prompts of *items* (in random order): the first ``share`` from
-    the student's own chain, the others and those without a student prompt
-    teacher-forced (no r_ts).  Returns ``(prompts, fallbacks)``."""
-    n_student = int(round(share * len(items)))
-    student, rest = (student_prompts(items[:n_student], store, engine, max_new_tokens=rc.max_new_tokens)
-                     if n_student else ([], []))
-    return student + build_prompts(items[n_student:] + rest, store, final=False), len(rest)
 
 
 def _has_spread(scores: List[Dict[str, Any]]) -> bool:
@@ -169,31 +144,27 @@ def _save_checkpoint(sync_dir: Path, rl_dir: Path, it: int, keep: int) -> None:
 def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     rc = cfg.rl
     reward_fn = Reward(rc)
-    if not paths.episodes_file.exists():
-        raise FileNotFoundError(f"{paths.episodes_file} not found; run phase 1 first")
-    episodes = [ep for ep in read_episodes(paths.episodes_file) if ep.replay_steps]
-    items = step_items([ep for ep in episodes if ep.use == "rl"])
+    check_same_settings(cfg, ["rl", "val"])
+    items = step_items(load_episodes(cfg, "rl", teacher=False, tag="[phase 3]"))
     if not items:
         raise SystemExit("[phase 3] no updater steps in the rl episodes")
     rng = random.Random(cfg.shared.seed)
-    val_episodes = [ep for ep in episodes if ep.use == "val" and ep.replay_steps == len(ep.steps)]
+    val_episodes = [ep for ep in load_episodes(cfg, "val", teacher=False, tag="[phase 3]") if ep.steps]
     if len(val_episodes) > rc.val_max_episodes:
         val_episodes = random.Random(cfg.shared.seed).sample(val_episodes, rc.val_max_episodes)
     init = rc.init_belief_model or str(paths.sft_merged)
     print(f"[phase 3] {len(items)} rl steps ({sum(i.has_gold for i in items)} with new gold), "
           f"{len(val_episodes)} validation episodes; student {init}; {rc.num_iterations} iterations of "
-          f"{rc.prompts_per_batch} prompts x {rc.group_size} replies; student-state share up to "
-          f"{rc.student_state_share} by iteration {round(rc.student_state_ramp * rc.num_iterations)}")
+          f"{rc.prompts_per_batch} prompts x {rc.group_size} replies")
 
     store = DocumentStore()
     sampler = StepSampler(items, rc.gold_step_share, rc.no_gold_share, rng)
-    val_prompts = build_prompts(step_items(val_episodes), store)
     engine = VLLMRolloutEngine(
         init, gpu_memory_utilization=rc.vllm_gpu_memory_utilization,
         max_model_len=cfg.shared.max_seq_len, max_num_seqs=rc.vllm_max_num_seqs, seed=cfg.shared.seed,
     )
     trainer = BeliefPPOTrainer(init, rc, seed=cfg.shared.seed)
-    sync_dir = Path(rc.sync_dir) / cfg.shared.training_data / cfg.shared.run_name
+    sync_dir = Path(rc.sync_dir) / cfg.shared.training_data / cfg.shared.policy_model
     paths.rl_dir.mkdir(parents=True, exist_ok=True)
     for path in (paths.rl_metrics, paths.rl_validation):
         path.unlink(missing_ok=True)
@@ -201,23 +172,11 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     def validate(it: int) -> Optional[float]:
         if not val_episodes:
             return None
-        gens = [g[0] for g in engine.generate([p.call.messages for p in val_prompts], temperature=0.0,
-                                              max_new_tokens=rc.max_new_tokens)]
-        forced = {"model": "student", "mode": "teacher_forced", "iteration": it,
-                  **evaluate_replies(val_prompts, [g.text for g in gens], [g.finish_reason for g in gens], reward_fn)}
-        free = {"model": "student", "mode": "free_running", "iteration": it,
-                **free_running(val_episodes, store, engine, rc, reward_fn)}
-        for record in (forced, free):
-            _log(paths.rl_validation, record)
-            print(f"[phase 3] validation {json.dumps(_round(record))}", flush=True)
-        return free["reward"]
-
-    if val_prompts:
-        teacher = [p.item.episode.steps[p.item.t].teacher_reply for p in val_prompts]
-        record = {"model": "teacher", "mode": "own_chain", "iteration": None,
-                  **evaluate_replies(val_prompts, teacher, ["stop"] * len(teacher), reward_fn)}
+        record = {"iteration": it, **free_running(val_episodes, store, engine, rc, reward_fn)}
         _log(paths.rl_validation, record)
-        print(f"[phase 3] teacher on validation {json.dumps(_round(record))}", flush=True)
+        print(f"[phase 3] validation {json.dumps(_round(record))}", flush=True)
+        return record["reward"]
+
     best = validate(0)
     # The start model is final/ until a checkpoint beats it.
     shutil.rmtree(paths.rl_final, ignore_errors=True)
@@ -225,15 +184,15 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
 
     for it in range(1, rc.num_iterations + 1):
         started = time.monotonic()
-        share = student_share(rc, it)
         generated: List[StudentSample] = []
         all_scores: List[Dict[str, Any]] = []
         samples: List[StudentSample] = []
         scores: List[Dict[str, Any]] = []
-        n_groups = skipped = fallbacks = rounds = 0
+        n_groups = skipped = no_prompt = rounds = 0
         for rounds in range(1, REFILL_ROUNDS + 2):
-            prompts, fb = batch_prompts(sampler.sample(rc.prompts_per_batch - n_groups), share, store, engine, rc)
-            fallbacks += fb
+            prompts, rest = student_prompts(sampler.sample(rc.prompts_per_batch - n_groups), store, engine,
+                                            max_new_tokens=rc.max_new_tokens)
+            no_prompt += len(rest)
             new = rollout_groups(prompts, engine, group_size=rc.group_size, temperature=rc.temperature,
                                  max_new_tokens=rc.max_new_tokens)
             new_scores = [reward_fn(s.prompt, s.outcome, s.finish_reason) for s in new]
@@ -268,11 +227,9 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         engine.load_weights(str(sync_dir))
         sync_seconds = time.monotonic() - sync_started
 
-        student = [sc for s, sc in zip(generated, all_scores) if s.prompt.state == "student"]
-        record = {"iteration": it, "student_share": share, "groups": n_groups, "skipped_groups": skipped,
-                  "rollout_rounds": rounds, "student_fallbacks": fallbacks,
-                  **rollout_stats(generated), **score_stats(all_scores), **score_stats(student, "student_"),
-                  **metrics,
+        record = {"iteration": it, "groups": n_groups, "skipped_groups": skipped,
+                  "rollout_rounds": rounds, "no_prompt": no_prompt,
+                  **rollout_stats(generated), **score_stats(all_scores), **metrics,
                   "rollout_seconds": round(rollout_seconds, 1), "update_seconds": round(update_seconds, 1),
                   "sync_seconds": round(sync_seconds, 1), "seconds": round(time.monotonic() - started, 1)}
         _log(paths.rl_metrics, record)
@@ -286,8 +243,8 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
                 best = reward
                 shutil.rmtree(paths.rl_final, ignore_errors=True)
                 shutil.copytree(sync_dir, paths.rl_final)
-                print(f"[phase 3] best free-running validation reward {best:.4f} at iteration {it}", flush=True)
+                print(f"[phase 3] best validation reward {best:.4f} at iteration {it}", flush=True)
     if not val_episodes:
         shutil.rmtree(paths.rl_final, ignore_errors=True)
         shutil.copytree(sync_dir, paths.rl_final)
-    print(f"[phase 3] final model (best free-running validation reward {best}) saved to {paths.rl_final}")
+    print(f"[phase 3] final model (best validation reward {best}) saved to {paths.rl_final}")

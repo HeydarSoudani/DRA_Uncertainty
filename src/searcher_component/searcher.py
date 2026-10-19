@@ -86,8 +86,6 @@ class RetrievalSearchTool:
         rrf_k: int = 60,
         retrieval_input: str = "subquery",
         post_fusion_reranker_input: str = "original_query",
-        ensure_novel_seen_docs: bool = False,
-        seen_top_k: int = 5,
     ):
         self.retriever = retriever
         self.post_retrieval_reranker = post_retrieval_reranker
@@ -100,16 +98,6 @@ class RetrievalSearchTool:
         self.rrf_k = rrf_k
         self.retrieval_input = retrieval_input
         self.post_fusion_reranker_input = post_fusion_reranker_input
-        self.ensure_novel_seen_docs = ensure_novel_seen_docs
-        self.seen_top_k = seen_top_k
-        self._global_seen_ids: set = set()
-
-    def reset(self) -> None:
-        """Clear the cross-iteration memory bank of seen doc_ids.
-
-        Call this between queries so that the novelty filter is per-query.
-        """
-        self._global_seen_ids.clear()
 
     # ------------------------------------------------------------------
     # Query composition helpers
@@ -254,27 +242,5 @@ class RetrievalSearchTool:
                 deduped = reranked + rerank_tail
             except Exception as e:
                 logger.warning(f"Post-fusion reranking failed, returning fused order: {e}")
-
-        # 7. Optional cross-iteration novelty filter
-        #    When enabled, remove docs already seen in previous iterations
-        #    and register the top seen_top_k novel docs in the memory bank
-        #    (those are the ones the agent will consume via [:seen_top_k]).
-        if self.ensure_novel_seen_docs:
-            novel_docs: List[Dict[str, Any]] = []
-            for doc in deduped:
-                doc_id = doc.get("doc_id") or doc.get("id")
-                if doc_id and doc_id in self._global_seen_ids:
-                    continue
-                novel_docs.append(doc)
-            # Pre-register the first seen_top_k novel docs
-            registered = 0
-            for doc in novel_docs:
-                if registered >= self.seen_top_k:
-                    break
-                doc_id = doc.get("doc_id") or doc.get("id")
-                if doc_id:
-                    self._global_seen_ids.add(doc_id)
-                    registered += 1
-            return novel_docs
 
         return deduped

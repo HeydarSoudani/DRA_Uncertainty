@@ -23,8 +23,10 @@ see ``belief_model_component.belief_state`` for the tag layout.  The
 
 The run is one growing transcript in the user message, as in the SearchR1
 family.  ``run_single`` and retrieval come from :class:`BasicAgent`, the
-trajectory streams through the standard logger, and the per-turn records ride
-on the result under ``ua_*`` keys, which the trajectory meta line persists
+trajectory streams through the standard logger.  Each step carries the
+turn's diagnostics (format retries, warnings, native reasoning length, passage
+labels; ``utils.trajectory_logger.STEP_DIAGNOSTIC_KEYS``), and how the run ended
+rides on the result as ``ba_outcome``, which the trajectory meta line persists
 (``utils.config.AGENT_META_KEYS``).
 
 Settings are the shared ones of ``dra_inference.yaml``: ``max_iteration`` (turn
@@ -442,7 +444,6 @@ class BeliefAwareAgent(BasicAgent):
         system = render_system(inform=informs, task=self.task, report_chars=self.report_chars)
         registry = DocRegistry()
         blocks: List[SearchBlock] = []
-        records: List[Dict[str, Any]] = []
         reasoning_path: List[Dict[str, Any]] = []
         prediction = ""
         end = END_MAX_TURNS
@@ -464,17 +465,12 @@ class BeliefAwareAgent(BasicAgent):
                 })
                 break
             turns = t + 1
-            rec: Dict[str, Any] = {
-                "turn": t,
-                "valid": turn.ok,
-                "errors": turn.errors,
-                "warnings": turn.warnings,
+            # The turn's diagnostics, on its trajectory step.
+            diagnostics: Dict[str, Any] = {
                 "format_retries": attempts,
-                "action": turn.action,
-                "action_text": turn.action_text,
+                "warnings": turn.warnings,
                 "native_reasoning_chars": len(turn.native_reasoning),
             }
-            records.append(rec)
             if turn.warnings:
                 self._log_block("; ".join(turn.warnings), title=f"Turn {t}: warnings")
             if turn.think:
@@ -484,7 +480,7 @@ class BeliefAwareAgent(BasicAgent):
                 end = END_FORMAT
                 self._record_step(reasoning_path, {
                     "iteration": t, "action_type": END_FORMAT, "think": turn.think,
-                    "errors": "; ".join(turn.errors), "tokens": self._step_tokens(),
+                    "errors": "; ".join(turn.errors), "tokens": self._step_tokens(), **diagnostics,
                 })
                 break
 
@@ -496,7 +492,7 @@ class BeliefAwareAgent(BasicAgent):
                 self._record_step(reasoning_path, {
                     "iteration": t, "action_type": ACTION_ANSWER, "think": turn.think,
                     "prediction": prediction, "generation": prediction,
-                    "tokens": self._step_tokens(),
+                    "tokens": self._step_tokens(), **diagnostics,
                 })
                 break
 
@@ -515,7 +511,7 @@ class BeliefAwareAgent(BasicAgent):
                 "search_query": query, "docs": docs,
                 "component_doc_ids": [doc_id(d) for d in shown],
                 "labels": " ".join(labels),
-                "tokens": self._step_tokens(),
+                "tokens": self._step_tokens(), **diagnostics,
             }
 
             tag = self._observe_step(
@@ -527,7 +523,6 @@ class BeliefAwareAgent(BasicAgent):
                 block.belief_state = tag
                 step["belief_state"] = tag
             self._record_step(reasoning_path, step)
-            rec.update({"search": searches, "labels": labels, "belief_state": tag})
             searches += 1
 
         forced_by = end if end in (END_MAX_TURNS, END_CONTEXT_LIMIT) else None
@@ -544,29 +539,10 @@ class BeliefAwareAgent(BasicAgent):
             prediction, citation_to_doc_id = number_citations(
                 prediction, _LABEL_CITATION_RE, registry.doc_of.get)
 
+        # How the run ended; the rest is on the trajectory: the counts in its
+        # meta line, the per-turn diagnostics and passage labels on its steps.
         self._extras = {
             "citation_to_doc_id": citation_to_doc_id,
-            "ba_records": records,
-            "ba_doc_labels": dict(registry.doc_of),
-            "ba_outcome": {
-                "end": end,
-                "forced_by": forced_by,
-                "answer": prediction or None,
-                "num_turns": turns,
-                "num_searches": searches,
-                "format_retries": sum(r.get("format_retries", 0) for r in records),
-                # Inform mode only: searches without a tag (the belief model
-                # failed or had nothing to show).  None in monitor/off mode.
-                "missing_belief_state": sum(1 for r in records
-                                         if r.get("action") == ACTION_SEARCH and not r.get("belief_state"))
-                                     if informs else None,
-                "config": {
-                    "task": self.task,
-                    "report_chars": self.report_chars,
-                    "max_iteration": self.max_iteration,
-                    "max_retries": self.max_retries,
-                    "max_passage_chars": self.max_passage_chars,
-                },
-            },
+            "ba_outcome": {"end": end, "forced_by": forced_by},
         }
         return reasoning_path, prediction, turns

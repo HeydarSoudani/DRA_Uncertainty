@@ -39,28 +39,40 @@ Each status has a signed level $\ell_t(k)$:
 
 | Phase | Script | Does | Output |
 |---|---|---|---|
-| 0 | `build_training_pool.py --pool P` | builds a training pool: deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files) | `data/training_pool/{pool}/` |
-| 1 | `belief_model_training.py --phase 1` | runs the frozen agent with the teacher belief model on the training pool; writes episodes, SFT samples and teacher scores | `phase1_trajectories/` |
-| 2 | `belief_model_training.py --phase 2` | SFT of the student on the teacher's replies (LoRA, then merged) | `phase2_sft/merged/` |
-| 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on belief updates from the teacher's and the student's own belief chains) | `phase3_rl/final/` |
+| 0 | `build_training_pool.py --pool P` | builds a training pool, deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files), and splits it into `sft` / `rl` / `val` | `data/training_pool/{pool}/` |
+| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on one split: `sft` and `val` in monitor mode with the teacher belief model, `rl` in off mode | `run_outputs/` (dra_inference layout) |
+| 2 | `belief_model_training.py --phase 2` | SFT of the student on the teacher's replies of the `sft` run (LoRA, then merged), validated on the `val` run | `phase2_sft/merged/` |
+| 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on belief updates from its own belief chain) on the `rl` run, validated on the `val` run | `phase3_rl/final/` |
 
-The outputs of phases 1 to 3 go to `{output_root}/{training_data}/{run_name}/`; `--training-data` picks the pool
-(`deep_qa`, the default, or `trqa_validation`). Evaluation of the trained model:
-`dra_inference.py` (see [Evaluation](#evaluation-dra_inference)).
+`--training-data` picks the pool (`deep_qa`, the default, or `trqa_validation`) and `--policy-model` the agent.
+Phase 1 writes only the inference runs; phases 2 and 3 read the runs of that agent and write to
+`{output_root}/{training_data}/{policy_model}/`. Evaluation of the trained model: `dra_inference.py` (see
+[Evaluation](#evaluation-dra_inference)).
 
 ```bash
-python experiments/training/build_training_pool.py --step 1
-python experiments/training/build_training_pool.py --step 2
-python experiments/training/build_training_pool.py --step 3
 python experiments/training/build_training_pool.py --pool trqa_validation
-python experiments/training/belief_model_training.py --phase 1 --run-name pool_glm --policy-model glm
-torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phase 2 --run-name pool_glm
-CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --phase 3 --run-name pool_glm
+T="--training-data trqa_validation --policy-model glm"
+python experiments/training/belief_model_training.py --phase 1 $T --split val
+python experiments/training/belief_model_training.py --phase 1 $T --split sft --limit 200
+python experiments/training/belief_model_training.py --phase 1 $T --split rl --limit 500
+torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phase 2 $T
+CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --phase 3 $T
 ```
 
 ## Phase 0: Training pools
 
-Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`.
+Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`. Split `all` holds every query of
+the pool. The last build step splits it by a hash of the query id into three disjoint splits, with the shares of
+the `split` section of `experiments/configs/build_training_pool.yaml`:
+
+| Split | Share | Phase 1 mode | Used by |
+|---|---|---|---|
+| `sft` | 30% | monitor (teacher) | phase 2: SFT samples |
+| `rl` | 60% | off | phase 3: RL prompts |
+| `val` | 10% | monitor (teacher) | phase 2: validation loss; phase 3: validation |
+
+A query's split depends on its id only, so a query keeps its split when the pool grows, and `--limit` on one split
+never reaches the queries of another.
 
 ### deep_qa
 
@@ -81,15 +93,18 @@ Values are means, after step 1.
 python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
 python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A
 python experiments/training/build_training_pool.py --step 3                               # print the statistics per source
+python experiments/training/build_training_pool.py --step 4                               # split all -> sft / rl / val
 ```
+
+Step 4 can run again after every step 2 call.
 
 ### trqa_validation
 
-The trqa_validation pool (split `val`) merges the TRQA wiki1 and wiki2 validation files into
-`queries/queries_val.jsonl`, `queries/queries_val_intermediate_info.jsonl` and `qrels/qrels_val.txt`, and searches
-TRQA's `wiki_partial` corpus. 
+The trqa_validation pool merges the TRQA wiki1 and wiki2 validation files into
+`queries/queries_all.jsonl`, `queries/queries_all_intermediate_info.jsonl` and `qrels/qrels_all.txt`, then splits
+them (one call); it searches TRQA's `wiki_partial` corpus.
 
-Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels.
+Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels: 346 sft, 688 rl and 111 val.
 
 ```bash
 python experiments/training/build_training_pool.py --pool trqa_validation
@@ -97,53 +112,51 @@ python experiments/training/build_training_pool.py --pool trqa_validation
 
 ## Phase 1: Trajectory collection
 
-The frozen agent runs on the training pool with the teacher belief model (`openrouter/qwen/qwen3.6-27b`) in
-monitor mode, i.e. the agent never sees the belief. Each query gives one episode. Because the belief does not
-change what the agent does, the documents of every step are fixed, so one set of trajectories serves both later
-phases: SFT trains on the teacher's replies, and RL replays each step with the student in place of the teacher.
+Phase 1 runs `dra_inference.py` with the frozen agent on one split of the training pool, every query of the split
+or the next `--limit` not run yet (inference resume). The mode follows the split:
 
-Each episode in `episodes.jsonl` stores:
+| Split | Mode | Belief model |
+|---|---|---|
+| `sft`, `val` | monitor: the agent never sees the belief | teacher (`openrouter/qwen/qwen3.6-27b`): criteria and belief updates; frozen query scorer |
+| `rl` | off | none |
+
+The query scorer (criteria attempts) runs only in monitor mode; training does not read the attempts. The belief
+does not change what the agent does, so the documents of every step are fixed, and phase 3 can replay
+the steps of an off-mode run with the student. The runs go to dra_inference's output root in its usual layout
+(`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-{mode}/`), and phase 1 writes nothing else.
+
+**Episodes.** Phases 2 and 3 read a split's run at their start (`belief_model_training/runs.py`), one episode per
+finished query:
 
 | Level | Field | Source | Used by |
 |---|---|---|---|
-| step | `doc_ids`: documents observed in the step; `teacher_output`: the teacher's reply | belief file | SFT, RL replay |
-| step | `new_gold_ids`: relevant documents first seen in the step | qrels | recall check |
-| step | `shown_doc_ids`: passages shown in the step's updater call; their relevant ones form $N_t$ | replay | $r_{\mathrm{st}}$ |
-| step | `recall_so_far` ($\rho_t$) | belief file | $r_{\mathrm{sc}}$ |
-| episode | `correct` ($y$; null when the judge failed) | run's `accuracy.jsonl` | $r_{\mathrm{ts}}$ |
-| episode | `num_relevant`, `policy_model`, `source` | belief file, query id | checks, batch mixing |
-| episode | `use`: `sft` / `rl` / `val` | hash of the query id (30% / 65% / 5%) | phases 2, 3 |
+| step | `doc_ids`: documents shown in the search iteration (all its searches; none when they returned nothing); `iteration`, the belief model's step number (from 1), and `agent_iteration`, the agent's own (`iter`) | `trajectory/{qid}.jsonl` (`seen_docs`) | SFT replay, RL replay |
+| step | `new_gold_ids`: relevant documents first seen in the step; `recall_so_far` ($\rho_t$) | qrels | $r_{\mathrm{st}}$, $r_{\mathrm{sc}}$ |
+| step | `teacher_output`: the teacher's reply (monitor runs) | `belief/{qid}.jsonl` | SFT |
+| episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{ts}}$ |
+| episode | criteria and the model that wrote them (monitor runs) | `belief/{qid}.jsonl` | SFT init samples |
+| episode | the criteria cap of the init prompt (`belief_model.max_criteria`; the dataset's default in off runs) | `run_config.json` | SFT init samples, RL |
 
-The `new_gold_ids` are checked against the saved `recall_so_far`, and each teacher reply is replayed through the
-inference updater to rebuild its exact prompt and check it against the saved updates. The `sft` episodes give the
-SFT samples (`sft.jsonl`) and the `val` episodes the SFT validation samples (`sft_val.jsonl`). Phase 1 prints,
-per use: episodes, share with gold, correct / wrong, steps and teacher calls per episode, agents and sources.
-
-### Teacher scores
-
-SFT copies the teacher, errors included, so phase 1 scores the teacher on all episodes before any training
-(`teacher_scores.json`). A belief update is scored on three parts, each with a standard measure:
-
-| Part | Measure |
-|---|---|
-| which documents count as evidence | precision / recall / F1 of the documents cited as support (with a verified span) against $N_t$, pooled over steps |
-| how far the coverage moves | coverage $C_t$ against $\rho_t$: mean signed error (> 0 = ahead of recall), RMSE, Kendall τ-b over all steps |
-| where the coverage ends | final coverage $C_T$ against $y$: AUROC, Brier score, ECE (10 bins) |
-
-The phase 3 rewards are the per-sample forms of these measures (`belief_model_training/scoring.py`). Not measured
-yet: whether the right criterion moved by the right amount (this needs labels linking gold documents to criteria).
-
-**Sizes.** About 1,000 sft, 2,000 rl and 200 val episodes, so about 4,500 pool queries (pilot with `--limit 500`
-first). With several agents, there is one phase 1 run per agent.
+Only finished queries are episodes (the trajectory ends with its meta line). The runs a phase reads must share
+their agent and searcher settings (`run_config.json`, the temperature included): phase 2 checks the sft
+and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
+settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
+runs. For monitor runs, the loader also checks that the run's belief model is the teacher, that the belief file
+(schema 16) has one step per search iteration of the trajectory, joined on `agent_iteration`, with the same step
+number and documents, and that the saved `recall_so_far` matches the qrels. Episodes without a verdict in
+`accuracy.jsonl` (a run that stopped before its evaluation) are counted and reported; `--eval-only` judges them. It prints per split: episodes, share with gold, correct / wrong, steps (and teacher calls) per episode,
+sources.
 
 The cap on episodes without gold (about 15%) and the correct / wrong balance are applied when phase 3 samples its
-batches, not in phase 1.
+batches.
 
 ## Phase 2: SFT
 
-A sample is one teacher call: its prompt $x$ (masked from the loss) and the teacher's reply $z$ (trained). A
-trajectory with K search steps gives at most K + 1 samples: one init call ($q \to \mathcal{C}$) and one per step whose
-new documents the teacher judged. The agent's queries and final answer are never targets. The student learns the
+A sample is one teacher call of the `sft` monitor run: its prompt $x$ (masked from the loss) and the teacher's
+reply $z$ (trained). A trajectory with K search steps gives at most K + 1 samples: one init call
+($q \to \mathcal{C}$) and one per step whose new documents the teacher judged. Each teacher reply is replayed
+through the inference updater to rebuild its exact prompt and check it against the saved updates. The main
+process writes the samples to `phase2_sft/samples.jsonl` (`train`: sft split, `val`: val split). The agent's queries and final answer are never targets. The student learns the
 output format and the teacher's transitions, errors included; RL then corrects the transitions.
 
 **Loss.** Cross-entropy on the reply tokens and the end-of-turn token, averaged over all reply tokens of the batch
@@ -160,10 +173,24 @@ $$
 | learning rate | 1e-4 | usual LoRA rate (Agent-BRACE: 2e-5) |
 | epochs | at most 3 | a checkpoint per epoch; the one with the lowest validation loss is merged. A short SFT keeps sampling diverse for RL |
 | batch | 1 × 32 accumulation per GPU | same size as Agent-BRACE's 4 × 8, one sample per pass so samples up to 32,768 tokens fit |
-| validation | `sft_val.jsonl`: loss on all / init / update samples after each epoch | picks the epoch and shows whether the few init samples are learned |
+| validation | the `val` samples: loss on all / init / update samples after each epoch | picks the epoch and shows whether the few init samples are learned |
 
-**Sizes.** About 1,000 sft episodes × (1 + teacher calls per episode) samples, i.e. about 9k at 8 calls per
-episode.
+**Sizes.** On trqa_validation, about 346 sft episodes × (1 + teacher calls per episode) samples, i.e. about 3k at
+8 calls per episode.
+
+### Teacher scores
+
+SFT copies the teacher, errors included, so phase 2 scores the teacher on the sft and val episodes before training
+(`phase2_sft/teacher_scores.json`). A belief update is scored on three parts, each with a standard measure:
+
+| Part | Measure |
+|---|---|
+| which documents count as evidence | precision / recall / F1 of the documents cited as support (with a verified span) against $N_t$, pooled over steps |
+| how far the coverage moves | coverage $C_t$ against $\rho_t$: mean signed error (> 0 = ahead of recall), RMSE, Kendall τ-b over all steps |
+| where the coverage ends | final coverage $C_T$ against $y$: AUROC, Brier score, ECE (10 bins) |
+
+The phase 3 rewards are the per-sample forms of these measures (`belief_model_training/scoring.py`). Not measured
+yet: whether the right criterion moved by the right amount (this needs labels linking gold documents to criteria).
 
 Left for later, depending on the teacher scores: keep only teacher replies that score well (e.g. support F1 ≥ τ),
 or use a gold-guided teacher (the qrels labels of the new documents as a hint in the teacher's prompt, not in the
@@ -180,23 +207,12 @@ student's).
 - $C_t$: coverage after the reply (see [Goal](#goal-uncertainty-of-the-deep-research-agent));
 - $T$: the last updater call of the chain; $y \in \{0, 1\}$: the agent's final answer is correct.
 
-**Prompts.** A prompt $x_t$ is one updater step of an `rl` episode. The agent is frozen and ran in monitor mode,
-so the documents of every step are fixed and the prompt can be built from any belief chain:
-
-| State | $b_{t-1}$ from | r_ts |
-|---|---|---|
-| teacher-forced | the teacher's replies to steps $< t$ | no: the final belief is mostly the teacher's |
-| student state | the student's own criteria (greedy init call) and its greedy replies to steps $< t$, as at inference | on the step of the episode's last call |
-
-Training only on teacher-forced states would leave the student unprepared for its own earlier errors at
-inference (exposure bias; DAgger, Ross et al. 2011). The share of student-state prompts at iteration $i$ of $I$
-grows linearly (scheduled sampling, Bengio et al. 2015):
-
-$$
-s_i = s_{\max} \cdot \min\left(1, \frac{i}{\lambda I}\right), \qquad s_{\max} = 1, \ \lambda = 0.5 .
-$$
-
-An item without a student prompt (no criteria parsed) falls back to teacher-forced.
+**Prompts.** A prompt $x_t$ is one updater step of an `rl` episode: a step with a document not shown in an
+earlier step. The agent is frozen, so the documents of every step are fixed, and $b_{t-1}$ is the student's own:
+its criteria (greedy init call) and its greedy replies to steps $< t$, as at inference. Training on teacher states
+would leave the student unprepared for its own earlier errors at inference (exposure bias; DAgger, Ross et al.
+2011), and the `rl` run has no teacher. A step without a prompt (no criteria parsed, or no call there in the
+student's chain) is left out. $r_{\mathrm{ts}}$ applies on the episode's last updater step.
 
 **Groups.** The student samples $G = 8$ replies $o_1, \dots, o_G \sim \pi_{\phi_{\text{old}}}(\cdot \mid x_t)$ at
 temperature 1, and each is applied to a copy of $b_{t-1}$. A group whose replies all score alike gives no
@@ -223,7 +239,7 @@ $$
 | format $f_t \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each known criterion one valid status and all cited spans occur verbatim in their passage | always |
 | state tracking $r_{\mathrm{st}}$ | the cited support matches the relevant documents of the step; citing nothing on a step without gold scores 1 | always |
 | state correctness $r_{\mathrm{sc}}$ | the coverage follows recall | $\rho_t$ known |
-| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | student-state prompt at the episode's last call, $y$ known and the whole episode replayed |
+| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | the episode's last updater step, $y$ known |
 
 The squared errors are minimized by the expected target given the input, so they reward calibrated coverage.
 $R_t$ is the logged reward and the validation measure.
@@ -259,17 +275,11 @@ mini-batches of 32 replies. The mean token entropy of the replies is logged, to 
 most 15% from episodes without gold, the rest from other steps; last calls are balanced on $y$. 200 iterations ≈
 6,400 prompts.
 
-**Validation.** Greedy, on a fixed sample of at most 50 fully replayed `val` episodes, before training and every
-20 iterations, in two modes:
-
-| Mode | Replies |
-|---|---|
-| free-running | the student's own chain over each whole episode: its criteria, then every call; $r_{\mathrm{ts}}$ on its last call |
-| teacher-forced | one reply per teacher call, from the teacher's $b_{t-1}$ |
-
-Each gives the mean reward, each term and the teacher-score measures. The gap between the two is the cost of the
-student's own earlier errors. The teacher's own chain on the same episodes is the bar. `final/` is the checkpoint
-with the best free-running validation reward.
+**Validation.** Greedy, on a fixed sample of at most 50 episodes of the `val` run (their trajectories only),
+before training and every 20 iterations: the student's own chain over each whole episode, its criteria, then
+every call, with $r_{\mathrm{ts}}$ on its last call. Each validation gives the mean reward, each term and the
+teacher-score measures (compare with `phase2_sft/teacher_scores.json`). `final/` is the checkpoint with the best
+validation reward.
 
 **Open.** $r_{\mathrm{sc}}$ counts relevant documents ($\rho_t$), while a status means covered content; check
 `coverage_minus_recall` in the pilot's teacher scores before changing the weights. The training data is
@@ -280,7 +290,7 @@ short-answer QA only (the training pool), with no hard negatives yet.
 The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent with no,
 teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
 Scores are the run's `summary.json`: answer accuracy, Recall@N, GradedRecall@N. Belief quality itself is measured
-in phase 3 validation (free-running and teacher-forced).
+in phase 3 validation.
 
 ```bash
 # serve the student on a GPU the inference workers do not use

@@ -5,19 +5,17 @@ under ``belief/``: a ``meta`` line, then one ``step`` line per search
 iteration.  The files are the input of the offline analysis and of the
 scoring model g_phi.  Every line carries ``query_id``; correctness labels
 stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
-The per-iteration seen doc ids live in the trajectory file
+The run settings (agent, mode, criteria and updater models, criteria cap,
+encoder) are in the run's ``run_config.json``; the per-iteration seen doc
+ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 14::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 16::
 
-    line 1  {"record": "meta", "schema_version": 14, "query_id": "q1", "question": "...",
-             "agent": "react", "llm_model": "...", "dataset": "browsecomp_plus",
-             "llm_criteria": "...", "max_criteria": 8,
-             "criteria_source": "llm", "belief_updater": "llm:...",
-             "query_scorer": "llm:...", "encoder": "...",
+    line 1  {"record": "meta", "schema_version": 16, "query_id": "q1", "question": "...",
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
-             "criteria_info": {"model": ..., "query_shape": "set", "errors": []},
+             "criteria_info": {"model": ..., "query_shape": "set", "errors": [], "bank": "hit"},
              "final_belief": ["almost certain", "unknown", ...],
              "final_criteria_attempts": [2, 0, ...],
              "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "almost certain",
@@ -31,7 +29,6 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 14::
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
-             "subqueries": ["..."],
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [1.0, 0.5, ...]}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
@@ -80,6 +77,13 @@ criterion), unknown 0 (b_0), possible 1, probable 2, almost certain 3,
 certain 4 (was "confirmed"); the positive levels rate how much of the
 criterion the passages give, not how many passages give it, so a positive
 ``criteria_delta`` is more coverage and a negative one evidence against.
+schema_version 16 keeps one home per fact: the run settings leave the meta
+line (``agent``, ``llm_model``, ``dataset``, ``task``, ``query_shape``,
+``llm_criteria``, ``max_criteria``, ``add_intermediate_answer``, ``mode``,
+``criteria_source``, ``belief_updater``, ``query_scorer``, ``encoder``: see
+``run_config.json``), and the steps drop ``subqueries`` (the texts of
+``queries``) and ``belief_state_tag`` (the trajectory step's
+``belief_state``).
 ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
@@ -95,7 +99,10 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
+
+# Kept in memory for the agent, not saved (the trajectory step has it).
+_UNSAVED_STEP_KEYS = ("belief_state_tag",)
 
 
 def _clean(obj: Any) -> Any:
@@ -145,5 +152,6 @@ def save_belief(query_id: str, question: str, result: Dict[str, Any], output_dir
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(_dump(header) + "\n")
         for step in result.get("belief_steps") or []:
+            step = {k: v for k, v in step.items() if k not in _UNSAVED_STEP_KEYS}
             f.write(_dump({"record": "step", "query_id": query_id, **step}) + "\n")
     os.replace(tmp_path, path)

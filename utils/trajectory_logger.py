@@ -5,23 +5,24 @@ which meant an interrupted run — Ctrl-C, an OOM kill, a hung API call — left
 trace at all for the query that was in flight.  :class:`TrajectoryLogger` writes
 each step the moment it is recorded, to two files that live side by side:
 
-    trajectory/{qid}.jsonl   machine-readable, one line per step (unchanged
-                             schema; the ``{"record": "meta", ...}`` header line
-                             is appended *last*, once the result is known)
+    trajectory/{qid}.jsonl   machine-readable, one line per step; never the
+                             ``{"record": "meta", ...}`` line
     trajectory/{qid}.md      human-readable, one block per step, flushed after
                              every write
 
 Both are opened in truncate mode, so re-running a query after a crash replaces
 its partial log rather than appending to it.
 
-The ``meta`` line moving to the end of the JSONL needs no reader change:
-:func:`utils.io_utils.load_result_from_saved_files` dispatches on ``record ==
-"meta"`` per line, so its position is irrelevant.
+The JSONL of a finished query is rewritten by
+:func:`evaluation.trajectory.save_trajectory`, the last file
+:func:`evaluation.runner.save_query_outputs` writes, with the meta line at
+the end.  The meta line is the query's completion marker
+(:func:`utils.io_utils.get_processed_queries`): a streamed file without it is
+an unfinished query.
 
 The step-shaping helpers below are shared with
-:func:`evaluation.trajectory.save_trajectory`, which writes the same JSONL at the end
-of a query as a self-healing safety net.  Keeping one implementation is what
-stops the online and end-of-run files from drifting apart.
+:func:`evaluation.trajectory.save_trajectory`.  Keeping one implementation is
+what stops the online and end-of-run files from drifting apart.
 """
 
 import json
@@ -113,6 +114,9 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
     (``sub_iter`` is ``None`` or ``0``), mirroring how ``think`` appears only on
     the first subquery — the later subqueries (``1.2``, ``1.3``, …) share the
     same action and are left unannotated.
+
+    Any line also carries the agent's per-turn diagnostics
+    (:data:`STEP_DIAGNOSTIC_KEYS`) when the step has them.
     """
     search_query = step.get("search_query")
     if search_query:
@@ -130,7 +134,7 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
             line["tokens"] = step["tokens"]
         if step.get("belief_state"):
             line["belief_state"] = step["belief_state"]
-        return line
+        return _add_diagnostics(line, step)
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
     line = {"iter": label}
@@ -141,21 +145,36 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
         line["think"] = step["think"]
     if step.get("generation"):
         line["generation"] = step["generation"]
+    return _add_diagnostics(line, step)
+
+
+#: Per-turn diagnostics an agent may set on a step (BeliefAware): the
+#: passage labels shown, format retries and warnings of the turn, its
+#: errors, the length of the backbone's native reasoning, and whether a
+#: forced answer saw a windowed transcript.
+STEP_DIAGNOSTIC_KEYS = ("labels", "format_retries", "warnings", "errors", "native_reasoning_chars", "windowed")
+
+
+def _add_diagnostics(line: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
+    for key in STEP_DIAGNOSTIC_KEYS:
+        if step.get(key):
+            line[key] = step[key]
     return line
 
 
 def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the ``{"record": "meta", ...}`` JSONL header for a finished query.
+    """Build the ``{"record": "meta", ...}`` JSONL line of a finished query.
 
-    Carries what the trajectory steps themselves don't: the final generation,
-    the step/search/iteration counts, and the agent-specific resume payloads in
-    :data:`utils.config.AGENT_META_KEYS` that are persisted nowhere else.
+    Carries what the trajectory steps themselves don't: the step/search/iteration
+    counts and the agent-specific payloads in
+    :data:`utils.config.AGENT_META_KEYS` that are persisted nowhere else.  The
+    final generation is in ``generation/{qid}.md`` only.  Written last, it marks
+    the query as finished.
     """
     meta: Dict[str, Any] = {
         "record": "meta",
         "qid": query_id,
         "question": question,
-        "generation": result.get("generation", ""),
         "num_steps": result.get("num_steps", 0),
         "num_searches": result.get("num_searches", 0),
         "num_iterations": result.get("num_iterations"),
@@ -439,8 +458,8 @@ class TrajectoryLogger:
 
         For things that never enter the trajectory but explain it: phase
         banners, parse errors and retries.  Deliberately does not
-        touch the JSONL, which stays byte-identical to what the end-of-run
-        writer produces.
+        touch the JSONL, whose step lines stay identical to what the
+        end-of-run writer produces.
         """
         if self._disabled or self._md is None:
             return
@@ -448,15 +467,13 @@ class TrajectoryLogger:
         self._write_md(block)
 
     def finalize(self, result: Dict[str, Any]) -> None:
-        """Append the JSONL ``meta`` line and the markdown footer.
+        """Append the markdown footer.
 
-        The meta line goes last because its contents (generation, counts) are
-        only known now; ``load_result_from_saved_files`` dispatches on ``record``
-        per line, so its position does not matter.
+        The JSONL gets no meta line here: ``save_trajectory`` writes it once
+        every other file of the query is saved, so it marks a finished query.
         """
         if self._disabled or self._md is None:
             return
-        self._write_jsonl(build_meta_line(self.query_id, self.question, result))
 
         counts = [
             f"**Steps** {result.get('num_steps', 0)}",

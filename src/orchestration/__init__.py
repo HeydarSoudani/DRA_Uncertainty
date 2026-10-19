@@ -95,7 +95,6 @@ def build_belief_model(
     agent=None,
     policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
-    llm_model: Optional[str] = None,
     criteria_bank: Optional[str] = None,
 ):
     """Build the belief model, or None when *mode* is ``"off"``.
@@ -127,8 +126,6 @@ def build_belief_model(
         policy_model: Agent type name (answer format, intermediate answer
             gating).
         dataset: Dataset name; intermediate answers only for ``task == "qa"``.
-        llm_model: The agent's LLM; saved with the other run settings in
-            every meta line.
         criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
             a query's criteria are read from it, and extracted and added
             only when missing.  None: extracted for every sample.
@@ -163,7 +160,7 @@ def build_belief_model(
     else:
         logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
-    encode_fn, encoder_name = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
+    encode_fn, _ = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
     if encode_fn is None:
         logger.warning("Retriever has no local encoder; query_novelty is null")
 
@@ -196,21 +193,9 @@ def build_belief_model(
         belief_updater=belief_updater,
         query_scorer=query_scorer,
         encode_fn=encode_fn,
-        encoder_name=encoder_name,
         qrels=qrels or {},
         intermediate_answer_fn=intermediate_answer_fn,
         policy_model=policy_model or "",
-        run_info={
-            "agent": policy_model,
-            "llm_model": llm_model,
-            "dataset": dataset,
-            "task": DATASET_SPECS[dataset].task if dataset else None,
-            "query_shape": query_shape if dataset else None,
-            "llm_criteria": llm_criteria or None,
-            "max_criteria": max_criteria,
-            "add_intermediate_answer": add_intermediate_answer,
-            "mode": mode,
-        },
         inform=mode == "inform",
     )
 
@@ -501,8 +486,6 @@ def _init_worker(worker_id: int, worker_config: dict):
             rerank_top_k=worker_config.get("rerank_top_k", 100),
             retrieval_input=worker_config.get("retrieval_input", "subquery"),
             post_fusion_reranker_input=worker_config.get("post_fusion_reranker_input", "original_query"),
-            ensure_novel_seen_docs=worker_config.get("ensure_novel_seen_docs", False),
-            seen_top_k=worker_config.get("seen_top_k", 5),
         )
 
     print(f"[Worker {worker_id}] Creating agent ({policy_model})...", flush=True)
@@ -539,7 +522,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         agent=agent if hasattr(agent, "belief_model") else None,
         policy_model=policy_model,
         dataset=dataset,
-        llm_model=llm_model,
         criteria_bank=worker_config.get("criteria_bank"),
     )
     if belief_model is not None and hasattr(agent, "belief_model"):
@@ -547,6 +529,42 @@ def _init_worker(worker_id: int, worker_config: dict):
 
     print(f"[Worker {worker_id}] Initialisation complete", flush=True)
     return agent, search_tool, verbose
+
+
+def run_query(agent, run_dir, query_id: str, query_text: str, *, policy_model: str, llm_model: str,
+              answer: Optional[str] = None, temperature: float = 0.7, status_callback=None) -> Optional[dict]:
+    """Run one query and save its files under *run_dir* (None: nothing is
+    saved); the one per-query path of the sequential run and of the GPU
+    workers.  Returns the result, or None when the agent failed.
+
+    The trajectory is streamed to ``trajectory/{qid}.jsonl`` and ``.md`` as
+    it happens, so an interrupted query still leaves its work on disk; the
+    result gets its cited-doc list and a References section, then
+    ``evaluation.runner.save_query_outputs`` writes every file.
+    """
+    from evaluation.runner import save_query_outputs
+
+    traj_logger = TrajectoryLogger(
+        Path(run_dir) / "trajectory", query_id, query_text,
+        agent_name=policy_model, model=llm_model, answer=answer,
+    ) if run_dir else None
+    result = agent.run_single(
+        query_id=query_id,
+        query_text=query_text,
+        temperature=temperature,
+        status_callback=status_callback,
+        trajectory_logger=traj_logger,
+    )
+    if result is None:
+        return None
+    result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
+    # Append a References section to the generation (CPMReport already has one)
+    references = build_references_section(result)
+    if references:
+        result["generation"] = result["generation"].rstrip() + references
+    if run_dir:
+        save_query_outputs(run_dir, query_id, query_text, result)
+    return result
 
 
 def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_config: dict, progress_queue=None, init_lock=None) -> dict:
@@ -577,12 +595,11 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             if line.startswith("Belief model:"):
                 progress_queue.put(("log", line))
 
-    from evaluation.runner import QUERY_OUTPUT_DIRS, save_query_outputs
+    from evaluation.runner import QUERY_OUTPUT_DIRS
 
     temp_dir = Path(temp_dir_str)
     for _d in QUERY_OUTPUT_DIRS:
         (temp_dir / _d).mkdir(parents=True, exist_ok=True)
-    trajectory_dir = str(temp_dir / "trajectory")
 
     results     = {}
     temperature = worker_config.get("temperature", 0.7)
@@ -601,8 +618,6 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     for idx, (query_id, query_text) in enumerate(query_items, 1):
         _cb_state[0] = query_id
         _cb_state[1] = idx
-        if search_tool is not None:
-            search_tool.reset()
         if progress_queue is not None:
             progress_queue.put((worker_id, query_id, idx, total, "processing", None))
         if verbose:
@@ -610,19 +625,11 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
                 f"  [Worker {worker_id}] [{idx}/{len(query_items)}] Processing query: {query_id}\n    Query text: {query_text}",
                 flush=True,
             )
-        # Streams each step to trajectory/{qid}.jsonl + .md as it happens, so a
-        # worker that dies mid-query still leaves that query's work on disk.
-        traj_logger = TrajectoryLogger(
-            trajectory_dir, query_id, query_text,
-            agent_name=worker_config.get("policy_model", ""),
-            model=worker_config.get("llm_model", ""),
-        )
-        result = agent.run_single(
-            query_id=query_id,
-            query_text=query_text,
-            temperature=temperature,
+        result = run_query(
+            agent, temp_dir, query_id, query_text,
+            policy_model=worker_config.get("policy_model", ""), llm_model=worker_config.get("llm_model", ""),
+            answer=(worker_config.get("answers") or {}).get(query_id), temperature=temperature,
             status_callback=_status_cb if progress_queue is not None else None,
-            trajectory_logger=traj_logger,
         )
         if result is None:
             if verbose:
@@ -630,12 +637,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             if progress_queue is not None:
                 progress_queue.put((worker_id, query_id, idx, total, "skipped", None))
             continue
-        result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
-        references = build_references_section(result)
-        if references:
-            result["generation"] = result["generation"].rstrip() + references
         results[query_id] = result
-        save_query_outputs(temp_dir, query_id, query_text, result)
         if progress_queue is not None:
             num_iters = result.get("num_iterations", "?")
             progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))

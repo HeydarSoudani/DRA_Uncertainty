@@ -68,13 +68,13 @@ POLICY_MODEL_TO_LLM: Dict[str, str] = {
 }
 
 # Result keys carried in the trajectory meta line: they are persisted nowhere
-# else (WebWeaver's memory bank / query outputs, the belief-aware agent's
-# per-turn records, every agent's token usage and citation numbering), so
+# else (WebWeaver's memory bank / query outputs, how the belief-aware agent's
+# run ended, every agent's token usage and citation numbering), so
 # dropping them there loses them for good.  The evaluation reads the run back
 # from its files, so a key an evaluator reads must be here or in its own file.
 AGENT_META_KEYS: Tuple[str, ...] = (
     "memory_bank", "query_outputs",
-    "ba_records", "ba_doc_labels", "ba_outcome",
+    "ba_outcome",
     "token_usage", "citation_to_doc_id",
 )
 

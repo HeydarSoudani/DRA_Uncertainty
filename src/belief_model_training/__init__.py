@@ -8,12 +8,13 @@ Entry point: ``experiments/training/belief_model_training.py --phase N``.
 
 Module layout:
     config        settings per phase, Split, RunPaths
-    episodes      episodes from monitor runs, BeliefTracker, teacher replay
-    trajectories  phase 1: teacher trajectories and SFT samples (training pool)
-    sft           phase 2: SFT warm-up (LoRA, merged)
+    episodes      episodes from trajectories (+ the teacher's belief files), BeliefTracker, teacher replay
+    runs          the phase 1 runs of a pool split, read back as episodes (phases 2, 3)
+    trajectories  phase 1: dra_inference on a pool split (sft, val: monitor; rl: off)
+    sft           phase 2: SFT samples and teacher scores, SFT warm-up (LoRA, merged)
     rollout       vLLM generation with log-probs, sleep / weight reload
     scoring       measures of a belief model against the gold (teacher scores, validation)
-    env           phase 3 environment: updater steps from the teacher's or the student's own chain,
+    env           phase 3 environment: updater steps from the student's own chain,
                   GRPO groups, batch sampler
     rewards       phase 3 reward of one belief update
     ppo           PPO losses (from veRL)

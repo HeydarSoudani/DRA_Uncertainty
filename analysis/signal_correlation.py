@@ -154,9 +154,14 @@ SURFACE = "#fcfcfb"
 
 def read_belief(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
     """``(query_id, step records)`` per belief file of the run with
-    schema_version >= ``MIN_SCHEMA_VERSION`` and the given *mode*."""
+    schema_version >= ``MIN_SCHEMA_VERSION``; empty when the run's belief
+    model (``run_config.json``) is not in the given *mode*."""
+    run_mode = (json.loads((run_dir / "run_config.json").read_text()).get("belief_model") or {}).get("mode")
+    if run_mode != mode:
+        logger.warning("%s: belief model mode %s in run_config.json, not %s; no belief file read", run_dir, run_mode, mode)
+        return []
     samples: List[Tuple[str, List[Dict[str, Any]]]] = []
-    skipped_schema, skipped_mode = 0, 0
+    skipped_schema = 0
     for path in sorted((run_dir / "belief").glob("*.jsonl")):
         with open(path) as f:
             lines = [json.loads(line) for line in f if line.strip()]
@@ -167,14 +172,9 @@ def read_belief(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]
         if (meta.get("schema_version") or 0) < MIN_SCHEMA_VERSION:
             skipped_schema += 1
             continue
-        if meta.get("mode") != mode:
-            skipped_mode += 1
-            continue
         samples.append((str(meta["query_id"]), [s for s in lines[1:] if s.get("record") == "step"]))
     if skipped_schema:
         logger.warning("%s: %d files with schema_version < %d skipped", run_dir, skipped_schema, MIN_SCHEMA_VERSION)
-    if skipped_mode:
-        logger.warning("%s: %d files with mode other than %s skipped", run_dir, skipped_mode, mode)
     return samples
 
 
@@ -617,10 +617,7 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
         policy_model=args.policy_model, llm_model=args.llm_model, use_plan=args.use_plan,
     )
     dataset_dir = build_dataset_dir_name(args.dataset, file_data_set, args.query_key, args.retriever)
-    belief_config = build_belief_config_name(
-        belief_mode=args.belief_mode,
-        ensure_novel_seen_docs=args.ensure_novel_seen_docs,
-    )
+    belief_config = build_belief_config_name(belief_mode=args.belief_mode)
     return Path(args.output) / dataset_dir / run_name / belief_config
 
 
