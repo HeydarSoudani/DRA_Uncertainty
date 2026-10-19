@@ -24,7 +24,7 @@ import sys
 from typing import List
 
 from .config import REPO_ROOT, TrainingConfig
-from .runs import SPLIT_MODE, split_gold
+from .runs import SPLIT_MODE
 
 
 def inference_command(cfg: TrainingConfig) -> List[str]:
@@ -61,7 +61,7 @@ def run_trajectories(cfg: TrainingConfig) -> None:
     split = cfg.pool_split(tc.split)
     mode = SPLIT_MODE[tc.split]
     teacher = f", teacher {tc.teacher_belief_model}" if mode == "monitor" else ""
-    print(f"[phase 1] {len(split_gold(split))} queries in {split.name}; {mode} mode; "
+    print(f"[phase 1] {split.name}; {mode} mode; "
           f"policy model {cfg.shared.policy_model}{teacher}")
     cmd = inference_command(cfg)
     print(f"[phase 1] {' '.join(cmd)}", flush=True)

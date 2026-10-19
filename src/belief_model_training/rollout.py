@@ -13,13 +13,10 @@ Prompts are built with the model's chat template exactly as the inference
 server builds them (``sft.chat_prompt``).
 """
 
-import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from .sft import chat_prompt
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass

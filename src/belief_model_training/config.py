@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from utils.sectioned_config import load_sectioned
 from indexing_corpus_dataset.layout import BUILT_DATASETS, OUTPUT_ROOT, POOL_SPLITS, resolve_split_id
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -175,47 +176,17 @@ class TrainingConfig:
     @property
     def inference_output(self) -> Path:
         """The root of the inference runs: ``output`` of
-        ``shared.inference_config`` (null = OUTPUT_ROOT)."""
+        ``shared.inference_config`` (null = OUTPUT_ROOT), a relative path
+        taken from the repo root, where phase 1 runs dra_inference."""
         path = Path(self.shared.inference_config)
         data = yaml.safe_load((path if path.is_absolute() else REPO_ROOT / path).read_text()) or {}
-        return Path(data["output"]) if data.get("output") else OUTPUT_ROOT
-
-
-def _coerce(value: Any, current: Any, key: str) -> Any:
-    """A YAML string (PyYAML reads e.g. ``5e-6`` as one) as the type of the key's current value."""
-    if not isinstance(value, str):
-        return value
-    if value.lower() in ("null", "none"):
-        return None
-    if isinstance(current, bool):
-        if value.lower() not in ("true", "false", "1", "0", "yes", "no"):
-            raise ValueError(f"{key}: expected a boolean, got {value!r}")
-        return value.lower() in ("true", "1", "yes")
-    if isinstance(current, int):
-        return int(value)
-    if isinstance(current, float):
-        return float(value)
-    if isinstance(current, list):
-        return [v.strip() for v in value.split(",") if v.strip()]
-    return value
+        return REPO_ROOT / data["output"] if data.get("output") else OUTPUT_ROOT
 
 
 def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> TrainingConfig:
     """The config of *path* (YAML; None = the defaults) with *overrides*
     (``{"section.key": value}``) applied."""
-    cfg = TrainingConfig()
-    data = yaml.safe_load(Path(path).read_text()) if path else {}
-    items = [(f"{section}.{key}", value)
-             for section, values in (data or {}).items() for key, value in (values or {}).items()]
-    items += list((overrides or {}).items())
-    for dotted, value in items:
-        section, _, key = dotted.partition(".")
-        if section not in SECTIONS:
-            raise ValueError(f"unknown config section {section!r}; expected one of {list(SECTIONS)}")
-        obj = getattr(cfg, section)
-        if key not in {f.name for f in dataclasses.fields(obj)}:
-            raise ValueError(f"unknown config key {dotted!r}")
-        setattr(obj, key, _coerce(value, getattr(obj, key), dotted))
+    cfg = load_sectioned(TrainingConfig(), SECTIONS, path, overrides)
     if cfg.shared.training_data not in BUILT_DATASETS:
         raise ValueError(f"shared.training_data: expected one of {sorted(BUILT_DATASETS)}, got {cfg.shared.training_data!r}")
     if cfg.trajectories.split not in POOL_SPLITS:

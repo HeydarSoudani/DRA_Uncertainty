@@ -80,7 +80,6 @@ Usage::
 import argparse
 import json
 import logging
-import math
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -111,7 +110,7 @@ from utils.cli_setup import (
     resolve_dataset_defaults,
 )
 from belief_model_component.types import STATUS_LEVEL
-from utils.config import POLICY_MODEL_ALIAS, POLICY_MODEL_TO_LLM
+from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
 logger = logging.getLogger(__name__)
@@ -133,8 +132,9 @@ SIGNALS = [
     {"key": "query_novelty", "name": "Query novelty (nu^q)", "discrete": False, "range": (0.0, 1.0)},
 ]
 
-# The final-state score, one value per query.
-BELIEF = {"key": "belief", "name": "Final belief", "discrete": False, "range": (0.0, 1.0)}
+# The final-state score, one value per query: -0.5 (every criterion
+# "doubtful") to 1 (every criterion "certain"), see ``_final_belief``.
+BELIEF = {"key": "belief", "name": "Final belief", "discrete": False, "range": (-0.5, 1.0)}
 # Per-query correctness field of ``accuracy.jsonl``, by answer evaluator.
 CORRECTNESS_KEYS = ("correct", "exact_match")
 
@@ -418,7 +418,9 @@ def _recall_panel(ax, df: pd.DataFrame, res: Dict[str, Any]) -> None:
     _style(ax)
     ax.grid(axis="x", color=GRID, linewidth=0.8)
     ax.set_title(_title("Final belief vs Recall@N", res), fontsize=9, color=TEXT_PRIMARY, loc="left")
-    ax.set_xlim(-0.03, 1.03)
+    lo, hi = BELIEF["range"]
+    pad = 0.02 * (hi - lo)
+    ax.set_xlim(lo - pad, hi + pad)
     ax.set_ylim(-0.03, 1.03)
     if df.empty:
         ax.text(0.5, 0.5, "no queries", transform=ax.transAxes, ha="center", color=TEXT_SECONDARY)
@@ -602,7 +604,6 @@ def _parse_args() -> argparse.Namespace:
 
     # ── Derive --llm-model from --policy-model ────────────────────────────-
     args.llm_model = POLICY_MODEL_TO_LLM[args.policy_model]
-    args.policy_model = POLICY_MODEL_ALIAS.get(args.policy_model, args.policy_model)
 
     if args.output is None:
         args.output = _OUTPUT_PREFIX

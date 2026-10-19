@@ -36,23 +36,20 @@ unjudged and is shown again in a later call, so it counts in that call.
 """
 
 import json
-import logging
-from dataclasses import asdict, dataclass, field
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from belief_model_component import BeliefUpdateSignal, Criterion, LLMCriteriaSource, build_belief_judges
 from belief_model_component.belief_model import unique_docs
+from evaluation.belief import SCHEMA_VERSION
 from evaluation.belief.writer import _clean
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path
+from utils.io_utils import read_jsonl
 
 from .config import Split
-
-logger = logging.getLogger(__name__)
-
-# Belief files written with the current statuses, updater prompts and layout.
-MIN_SCHEMA_VERSION = 16
 
 
 @dataclass
@@ -139,8 +136,12 @@ class Episode:
         cap = self.max_criteria or DATASET_SPECS[self.dataset].max_criteria
         return LLMCriteriaSource(_NoLLM(), max_criteria=cap, query_shape=self.query_shape)
 
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+
+def span_verified(entry: Dict[str, Any]) -> bool:
+    """A cited passage of a ``criteria_updates`` record has spans and all of
+    them occur in it (``span_verified``); one with no spans is not verified."""
+    spans = entry.get("span_verified") or []
+    return bool(spans) and all(spans)
 
 
 def _call_failed(errors: List[str]) -> bool:
@@ -161,7 +162,7 @@ def read_episode(path: Path, split: Split, run_dir: Path) -> Optional[Episode]:
     searches, first occurrence kept; none when its searches returned
     nothing), or None when the run of the query did not finish (no meta
     line)."""
-    lines = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    lines = read_jsonl(path)
     meta = next((r for r in lines if r.get("record") == "meta"), None)
     if meta is None:
         return None
@@ -181,17 +182,17 @@ def read_episode(path: Path, split: Split, run_dir: Path) -> Optional[Episode]:
 
 def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     """Add the teacher's view of ``belief/{qid}.jsonl`` to *episode*;
-    returns why it cannot be used (old schema, no criteria, other question,
+    returns why it cannot be used (other schema, no criteria, other question,
     or belief steps that are not the trajectory's search iterations with
     their documents), or None.
 
     A belief step is joined to the trajectory iteration of its
     ``agent_iteration``, and must have the episode step's number and
     documents."""
-    lines = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    lines = read_jsonl(path)
     meta = next((r for r in lines if r.get("record") == "meta"), None)
-    if meta is None or (meta.get("schema_version") or 0) < MIN_SCHEMA_VERSION:
-        return f"belief file older than schema {MIN_SCHEMA_VERSION}"
+    if meta is None or meta.get("schema_version") != SCHEMA_VERSION:
+        return f"belief file of schema {meta and meta.get('schema_version')}, not {SCHEMA_VERSION}"
     if not meta.get("criteria"):
         return "no criteria"
     if meta.get("question") != episode.query:
@@ -201,6 +202,8 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     for r in lines:
         if r.get("record") != "step":
             continue
+        if r.get("agent_iteration") is None:
+            return f"belief step {r.get('iteration')}: no agent iteration"
         step = by_agent_iteration.get(int(r["agent_iteration"]))
         if step is None:
             return f"belief step {r['iteration']}: agent iteration {r['agent_iteration']} has no search in the trajectory"
@@ -245,36 +248,36 @@ def annotate_gold(episode: Episode, relevant_ids: Set[str]) -> Optional[str]:
     return None
 
 
-def write_jsonl(path: Path, rows: Iterator[Dict[str, Any]]) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    n = 0
-    tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            n += 1
-    tmp.replace(path)
-    return n
-
-
 # ---------------------------------------------------------------------------
 # Documents
 # ---------------------------------------------------------------------------
 
 class DocumentStore:
-    """Document text by id, one ``CorpusLookup`` per corpus."""
+    """Document text by id, one ``CorpusLookup`` per corpus; the documents
+    of the last *max_episodes* episodes asked for are kept in memory."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_episodes: int = 1024) -> None:
         self._lookups: Dict[Path, CorpusLookup] = {}
+        self._cache: "OrderedDict[Tuple[str, str], List[List[Dict[str, str]]]]" = OrderedDict()
+        self.max_episodes = max_episodes
 
     def docs(self, episode: Episode) -> List[List[Dict[str, str]]]:
         """Per step, its documents as the retrievers return them (``doc_id``
         and the corpus ``contents`` as ``relevant_text``); a document missing
-        from the corpus has no text."""
+        from the corpus has no text.  The lists are shared between calls:
+        callers do not change them."""
+        key = (episode.run_dir, episode.qid)
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
         path = default_corpus_path(episode.dataset, episode.subset)
         lookup = self._lookups.setdefault(path, CorpusLookup(path))
         contents = lookup.contents({i for s in episode.steps for i in s.doc_ids})
-        return [[{"doc_id": i, "relevant_text": contents.get(i, "")} for i in s.doc_ids] for s in episode.steps]
+        docs = [[{"doc_id": i, "relevant_text": contents.get(i, "")} for i in s.doc_ids] for s in episode.steps]
+        self._cache[key] = docs
+        if len(self._cache) > self.max_episodes:
+            self._cache.popitem(last=False)
+        return docs
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +398,6 @@ def replay_teacher(
             calls.append({
                 "iteration": step.iteration, "messages": call.messages, "output": step.teacher_output,
                 "parsed": outcome["parsed"],
-                "spans_verified": all(all(e["span_verified"]) for e in cited),
+                "spans_verified": all(span_verified(e) for e in cited),
             })
     return calls, len(episode.steps), None

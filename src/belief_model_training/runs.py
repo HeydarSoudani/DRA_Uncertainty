@@ -27,11 +27,12 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.layout import DATASET_SPECS, dataset_root
-from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs
+from utils.config import POLICY_MODEL_TO_LLM
+from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
 from .config import Split, TrainingConfig
 from .episodes import Episode, annotate_gold, attach_teacher, read_episode
@@ -50,33 +51,42 @@ def run_config(run_dir: Path) -> Dict:
     return json.loads((run_dir / "run_config.json").read_text())
 
 
-def _run_agent(config: Dict) -> Optional[str]:
-    """The --policy-model of a run."""
-    return (config.get("agent") or {}).get("policy_model")
+def _is_agent_run(config: Dict, policy_model: str) -> bool:
+    """The run's agent is *policy_model* (the --policy-model of
+    dra_inference, e.g. ``oss_20b``, as ``run_config.json`` records it)
+    with its LLM."""
+    agent = config.get("agent") or {}
+    return agent.get("policy_model") == policy_model and agent.get("llm_model") == POLICY_MODEL_TO_LLM.get(policy_model)
 
 
-def find_run_dir(cfg: TrainingConfig, split: Split) -> Path:
+# find_run's result per (split root, belief dir, agent): run_config.json is parsed once.
+_RUNS: Dict[Tuple[Path, str, str], Tuple[Path, Dict]] = {}
+
+
+def find_run(cfg: TrainingConfig, split: Split) -> Tuple[Path, Dict]:
     """The run directory of *split* for the agent ``shared.policy_model``
     (``run_config.json``'s agent) in the split's mode, named as
-    dra_inference names it."""
+    dra_inference names it, and its ``run_config.json``."""
     dataset_dir = build_dataset_dir_name(
         split.dataset, split.split_id, DATASET_SPECS[split.dataset].query_key, cfg.shared.retriever,
     )
     root = cfg.inference_output / dataset_dir
     belief_dir = build_belief_config_name(belief_mode=SPLIT_MODE[split.subset])
-    found = [d for d in sorted(root.glob(f"*/{belief_dir}"))
-             if (d / "run_config.json").exists() and _run_agent(run_config(d)) == cfg.shared.policy_model]
-    if len(found) != 1:
-        raise FileNotFoundError(f"expected one {belief_dir} run of {cfg.shared.policy_model} under {root}, "
-                                f"found {found}; run phase 1 with --split {split.subset}")
-    return found[0]
+    key = (root, belief_dir, cfg.shared.policy_model)
+    if key not in _RUNS:
+        configs = [(d, run_config(d)) for d in sorted(root.glob(f"*/{belief_dir}")) if (d / "run_config.json").exists()]
+        found = [(d, c) for d, c in configs if _is_agent_run(c, cfg.shared.policy_model)]
+        if len(found) != 1:
+            raise FileNotFoundError(f"expected one {belief_dir} run of {cfg.shared.policy_model} under {root}, "
+                                    f"found {[d for d, _ in found]}; run phase 1 with --split {split.subset}")
+        _RUNS[key] = found[0]
+    return _RUNS[key]
 
 
 def check_same_settings(cfg: TrainingConfig, names: List[str]) -> None:
     """The runs of splits *names* have the same agent and searcher
     settings; raises with the keys that differ."""
-    runs = {name: find_run_dir(cfg, cfg.pool_split(name)) for name in names}
-    configs = {name: run_config(d) for name, d in runs.items()}
+    configs = {name: find_run(cfg, cfg.pool_split(name))[1] for name in names}
     first = names[0]
     diffs = [f"{first} -> {name}: {d}" for name in names[1:]
              for d in run_config_diffs(configs[first], configs[name], SAME_SETTINGS)]
@@ -85,9 +95,22 @@ def check_same_settings(cfg: TrainingConfig, names: List[str]) -> None:
                          f"(run_config.json): {'; '.join(diffs)}; rerun phase 1 with the same inference config")
 
 
-def check_teacher(run_dir: Path, teacher: str) -> None:
+def criteria_cap(cfg: TrainingConfig, split: Split) -> Optional[int]:
+    """The criteria cap of the init prompt for the episodes of *split*: the
+    ``belief_model.max_criteria`` of the teacher's monitor run (the split's
+    own, the val run's for rl, which has no belief model), so every split
+    uses the same; None (the dataset's default) when no monitor run has it."""
+    name = split.subset if SPLIT_MODE[split.subset] == "monitor" else "val"
+    try:
+        config = find_run(cfg, cfg.pool_split(name))[1]
+    except FileNotFoundError:
+        return None
+    return (config.get("belief_model") or {}).get("max_criteria")
+
+
+def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
     """The run's criteria and updater model is *teacher*."""
-    belief = run_config(run_dir)["belief_model"]
+    belief = config["belief_model"]
     criteria = belief.get("llm_criteria")
     judge = belief.get("belief_judge_model")
     if criteria != teacher or judge != teacher:
@@ -95,12 +118,17 @@ def check_teacher(run_dir: Path, teacher: str) -> None:
                          f"expected the teacher {teacher!r} (trajectories.teacher_belief_model)")
 
 
-def split_gold(split: Split) -> Dict[str, Set[str]]:
+def split_gold(split: Split, config: Dict) -> Dict[str, Set[str]]:
     """The queries of *split* that dra_inference runs (those with qrels, in
-    file order) and their relevant documents, as dra_inference reads them."""
+    file order) and their relevant documents, as dra_inference read them
+    with the relevance threshold of its ``run_config.json`` *config*
+    (the dataset's default when absent)."""
+    dataset = config.get("dataset") or {}
+    min_score = (dataset["min_relevance_score"] if "min_relevance_score" in dataset
+                 else DATASET_SPECS[split.dataset].min_relevance_score)
     queries, qrels, _ = load_split(
         dataset_root(split.dataset), split.split_id, query_key=DATASET_SPECS[split.dataset].query_key,
-        min_relevance_score=DATASET_SPECS[split.dataset].min_relevance_score, only_with_qrels=True,
+        min_relevance_score=min_score, only_with_qrels=True,
     )
     return {qid: {d for d, r in qrels[qid].items() if float(r) > 0} for qid in queries}
 
@@ -128,25 +156,26 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
     *teacher* (a monitor run), each also has the teacher's view; an episode
     whose belief file cannot be used is left out."""
     split = cfg.pool_split(name)
-    run_dir = find_run_dir(cfg, split)
+    run_dir, config = find_run(cfg, split)
+    mode = SPLIT_MODE[split.subset]
     if teacher:
-        check_teacher(run_dir, cfg.trajectories.teacher_belief_model)
-    max_criteria = run_config(run_dir)["belief_model"].get("max_criteria")
-    gold = split_gold(split)
+        check_teacher(run_dir, config, cfg.trajectories.teacher_belief_model)
+    max_criteria = criteria_cap(cfg, split)
+    gold = split_gold(split, config)
     correctness = read_correctness(run_dir)
+    # Finished as dra_inference counts them (with the belief file when the belief model is on).
+    finished, _ = scan_queries(run_dir, require_belief=mode != "off")
     episodes: List[Episode] = []
     counts: Counter = Counter()
     for qid in gold:
-        path = run_dir / "trajectory" / f"{qid}.jsonl"
-        episode = read_episode(path, split, run_dir) if path.exists() else None
+        episode = read_episode(run_dir / "trajectory" / f"{qid}.jsonl", split, run_dir) if qid in finished else None
         if episode is None:
             counts["not_run"] += 1
             continue
         episode.policy_model = cfg.shared.policy_model
         episode.max_criteria = max_criteria
         if teacher:
-            belief = run_dir / "belief" / f"{qid}.jsonl"
-            reason = attach_teacher(episode, belief) if belief.exists() else "no belief file"
+            reason = attach_teacher(episode, run_dir / "belief" / f"{qid}.jsonl")
             if reason is not None:
                 counts["teacher_unusable"] += 1
                 logger.warning("%s %s %s: %s", tag, split.name, qid, reason)

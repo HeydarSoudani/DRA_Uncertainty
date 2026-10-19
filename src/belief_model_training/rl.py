@@ -32,11 +32,11 @@ reward, its terms and ``scoring.measures`` over its calls.
 Outputs (``phase3_rl/``): ``metrics.jsonl`` (one line per iteration),
 ``validation.jsonl`` (one line per validation), ``step_{n}/`` every
 ``save_every`` iterations (the last ``save_total_limit`` kept), ``final/``.
-A run starts over: its earlier logs are removed.
+A run starts over: its earlier logs and ``step_{n}/`` checkpoints are
+removed.  An iteration where no group has spread makes no update.
 """
 
 import json
-import logging
 import math
 import random
 import shutil
@@ -53,8 +53,6 @@ from .rollout import VLLMRolloutEngine
 from .runs import check_same_settings, load_episodes
 from .scoring import measures, step_row
 from .trainer import BeliefPPOTrainer, group_advantages
-
-logger = logging.getLogger(__name__)
 
 TERMS = ("format", "st", "sc", "ts")
 # Extra rollouts per iteration to replace the groups without spread.
@@ -141,6 +139,18 @@ def _save_checkpoint(sync_dir: Path, rl_dir: Path, it: int, keep: int) -> None:
         shutil.rmtree(old, ignore_errors=True)
 
 
+def start_over(paths: RunPaths, sync_dir: Path) -> None:
+    """Remove the logs, ``step_{n}/`` checkpoints and synced weights of an
+    earlier run (the checkpoint rotation keeps the highest step numbers)."""
+    paths.rl_dir.mkdir(parents=True, exist_ok=True)
+    for path in (paths.rl_metrics, paths.rl_validation):
+        path.unlink(missing_ok=True)
+    for old in paths.rl_dir.glob("step_*"):
+        shutil.rmtree(old, ignore_errors=True)
+    # The weights of the last update; written by the first update.
+    shutil.rmtree(sync_dir, ignore_errors=True)
+
+
 def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     rc = cfg.rl
     reward_fn = Reward(rc)
@@ -165,9 +175,9 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     )
     trainer = BeliefPPOTrainer(init, rc, seed=cfg.shared.seed)
     sync_dir = Path(rc.sync_dir) / cfg.shared.training_data / cfg.shared.policy_model
-    paths.rl_dir.mkdir(parents=True, exist_ok=True)
-    for path in (paths.rl_metrics, paths.rl_validation):
-        path.unlink(missing_ok=True)
+    start_over(paths, sync_dir)
+    # The student's criteria per rl episode, until the next weight sync.
+    criteria_cache: Dict[int, Any] = {}
 
     def validate(it: int) -> Optional[float]:
         if not val_episodes:
@@ -191,7 +201,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         n_groups = skipped = no_prompt = rounds = 0
         for rounds in range(1, REFILL_ROUNDS + 2):
             prompts, rest = student_prompts(sampler.sample(rc.prompts_per_batch - n_groups), store, engine,
-                                            max_new_tokens=rc.max_new_tokens)
+                                            max_new_tokens=rc.max_new_tokens, criteria_cache=criteria_cache)
             no_prompt += len(rest)
             new = rollout_groups(prompts, engine, group_size=rc.group_size, temperature=rc.temperature,
                                  max_new_tokens=rc.max_new_tokens)
@@ -215,17 +225,23 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         rewards = [s["reward"] for s in scores]
         rollout_seconds = time.monotonic() - started
 
-        engine.sleep()
-        trainer.onload()
-        update_started = time.monotonic()
-        metrics = trainer.update([s.prompt_ids for s in samples], [s.response_ids for s in samples],
-                                 [s.rollout_log_probs for s in samples], advantages, rewards)
-        update_seconds = time.monotonic() - update_started
-        sync_started = time.monotonic()
-        trainer.save(str(sync_dir), engine.tokenizer)
-        trainer.offload()
-        engine.load_weights(str(sync_dir))
-        sync_seconds = time.monotonic() - sync_started
+        update_seconds = sync_seconds = 0.0
+        if samples:
+            engine.sleep()
+            trainer.onload()
+            update_started = time.monotonic()
+            metrics = trainer.update([s.prompt_ids for s in samples], [s.response_ids for s in samples],
+                                     [s.rollout_log_probs for s in samples], advantages, rewards)
+            update_seconds = time.monotonic() - update_started
+            sync_started = time.monotonic()
+            trainer.save(str(sync_dir), engine.tokenizer)
+            trainer.offload()
+            engine.load_weights(str(sync_dir))
+            criteria_cache.clear()
+            sync_seconds = time.monotonic() - sync_started
+        else:
+            # No group with spread: no gradient, the weights stay.
+            metrics = {"n_samples": 0}
 
         record = {"iteration": it, "groups": n_groups, "skipped_groups": skipped,
                   "rollout_rounds": rounds, "no_prompt": no_prompt,
@@ -235,6 +251,9 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         _log(paths.rl_metrics, record)
         print(f"[phase 3] {json.dumps(_round(record))}", flush=True)
 
+        if not sync_dir.exists():
+            # No update yet: the start model, saved as final/, is the current one.
+            continue
         if it % rc.save_every == 0:
             _save_checkpoint(sync_dir, paths.rl_dir, it, rc.save_total_limit)
         if it % rc.val_every == 0 or it == rc.num_iterations:
@@ -244,7 +263,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
                 shutil.rmtree(paths.rl_final, ignore_errors=True)
                 shutil.copytree(sync_dir, paths.rl_final)
                 print(f"[phase 3] best validation reward {best:.4f} at iteration {it}", flush=True)
-    if not val_episodes:
+    if not val_episodes and sync_dir.exists():
         shutil.rmtree(paths.rl_final, ignore_errors=True)
         shutil.copytree(sync_dir, paths.rl_final)
     print(f"[phase 3] final model (best validation reward {best}) saved to {paths.rl_final}")

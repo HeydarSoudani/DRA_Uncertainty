@@ -32,20 +32,23 @@ so its quality is known: SFT copies its errors.
 
 Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, qid,
 dataset, split, call, iteration, messages, completion}),
-``teacher_scores.json``, ``checkpoints/`` (LoRA), ``adapter/`` and
-``merged/`` (full weights, the RL start).
+``teacher_scores.json``, ``checkpoints/`` (LoRA; removed at the start of
+a run), ``adapter/`` and ``merged/`` (full weights, the RL start).
 """
 
 import json
 import logging
 import random
+import shutil
 from collections import Counter
 from typing import Dict, List
 
 import torch
 
+from utils.io_utils import read_jsonl, write_jsonl
+
 from .config import RunPaths, TrainingConfig
-from .episodes import DocumentStore, Episode, replay_teacher, teacher_init_call, write_jsonl
+from .episodes import DocumentStore, Episode, replay_teacher, teacher_init_call
 from .runs import check_same_settings, load_episodes
 from .scoring import assess
 
@@ -134,7 +137,7 @@ def build_samples(cfg: TrainingConfig, paths: RunPaths) -> None:
             rows += [{"set": set_name, **r} for r in samples]
             episodes.append(episode)
         print(f"[phase 2] {name}: {dict(counts)}")
-    write_jsonl(paths.sft_samples, iter(rows))
+    write_jsonl(paths.sft_samples, rows)
     scores = assess(episodes)
     paths.teacher_scores_file.write_text(json.dumps(scores, indent=2) + "\n")
     print(f"[phase 2] teacher on {len(episodes)} sft + val episodes: "
@@ -169,11 +172,14 @@ def run_sft(cfg: TrainingConfig, paths: RunPaths) -> None:
     sc = cfg.sft
     state = PartialState()
     # The main process builds the samples, the others then read them.
+    checkpoints = paths.sft_dir / "checkpoints"
     with state.main_process_first():
         if state.is_main_process:
             paths.sft_dir.mkdir(parents=True, exist_ok=True)
+            # A run starts over: the Trainer's rotation would count the checkpoints of an earlier run.
+            shutil.rmtree(checkpoints, ignore_errors=True)
             build_samples(cfg, paths)
-        rows = [json.loads(line) for line in paths.sft_samples.read_text().splitlines() if line.strip()]
+        rows = read_jsonl(paths.sft_samples)
     tokenizer = AutoTokenizer.from_pretrained(sc.student_belief_model)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -194,7 +200,7 @@ def run_sft(cfg: TrainingConfig, paths: RunPaths) -> None:
     ))
 
     args = TrainingArguments(
-        output_dir=str(paths.sft_dir / "checkpoints"),
+        output_dir=str(checkpoints),
         num_train_epochs=sc.num_epochs,
         per_device_train_batch_size=sc.per_device_batch_size,
         gradient_accumulation_steps=sc.gradient_accumulation_steps,

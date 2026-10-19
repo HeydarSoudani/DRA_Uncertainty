@@ -3,8 +3,9 @@
     R_t = f_t · (Σ_i w_i r_i / Σ_i w_i)   over the terms available at the step
 
     f_t   format gate: 1 when the reply was not cut off, parses, gives every
-          listed criterion a valid status, names known criteria once, and
-          every cited passage has spans that all occur in it; else 0
+          criterion it lists a valid status, names known criteria once, and
+          every cited passage has spans that all occur in it
+          (``episodes.span_verified``); else 0
     r_st  what moves: F1 of the documents cited as support against the gold
           documents among the call's passages (``StepPrompt.gold``); 1 when
           both are empty (nothing cited on a step without gold), 0 when only
@@ -28,6 +29,7 @@ from typing import Any, Dict, Optional
 
 from .config import RLConfig
 from .env import StepPrompt
+from .episodes import span_verified
 from .scoring import cited_support, coverage, support_f1
 
 # Notes of BeliefState.update that mean an invalid reply.
@@ -40,9 +42,8 @@ def format_ok(outcome: Dict[str, Any], finish_reason: Optional[str]) -> bool:
     for r in outcome["records"]:
         if any(n in (r.get("note") or "") for n in _INVALID_NOTES):
             return False
-        for e in (r.get("support") or []) + (r.get("contradict") or []):
-            if not e.get("span_verified") or not all(e["span_verified"]):
-                return False
+        if not all(span_verified(e) for e in (r.get("support") or []) + (r.get("contradict") or [])):
+            return False
     return True
 
 

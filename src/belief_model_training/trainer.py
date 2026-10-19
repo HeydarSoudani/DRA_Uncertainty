@@ -33,17 +33,17 @@ The model and its optimizer state sit on the GPU only during ``update``
 """
 
 import gc
-import logging
 import random
 from typing import Dict, List, Tuple
 
 import torch
-import torch.nn.functional as F
 
 from .config import RLConfig
 from .ppo import kl_penalty, policy_loss_vanilla
 
-logger = logging.getLogger(__name__)
+# Reply tokens per chunk of the log-prob and entropy computation: a reply of
+# thousands of tokens over the whole vocabulary would not fit at once in fp32.
+LOGIT_CHUNK = 1024
 
 
 def group_advantages(terms: List[Dict[str, float]], groups: List[int], weights: Dict[str, float],
@@ -120,7 +120,8 @@ class StochasticRoundingAdamW(torch.optim.Optimizer):
 
 def _sample_weight(mode: str, n_tokens: int, mb_tokens: int, mb_size: int) -> float:
     """Scale of one sample's summed token loss such that the mini-batch's
-    loss is ``ppo.agg_loss`` with *mode* over all its samples."""
+    loss aggregates its samples' token losses with *mode* (veRL's
+    ``loss_agg_mode``)."""
     if mode == "token-mean":
         return 1.0 / mb_tokens
     if mode == "seq-mean-token-mean":
@@ -128,6 +129,31 @@ def _sample_weight(mode: str, n_tokens: int, mb_tokens: int, mb_size: int) -> fl
     if mode == "seq-mean-token-sum":
         return 1.0 / mb_size
     raise ValueError(f"invalid loss_agg_mode: {mode}")
+
+
+def _chunk_log_probs(logits: torch.Tensor, labels: torch.Tensor, temperature: float):
+    """Log-prob of *labels* and entropy for one chunk of tokens, in fp32."""
+    z = logits.float() / temperature
+    lse = torch.logsumexp(z, dim=-1)
+    lp = z.gather(-1, labels.unsqueeze(-1)).squeeze(-1) - lse
+    p = torch.softmax(z, dim=-1)
+    return lp, lse - (p * z).sum(-1)
+
+
+def token_log_probs(logits: torch.Tensor, labels: torch.Tensor, temperature: float, entropy: bool = False):
+    """log softmax(logits / temperature) at *labels*, per token, as
+    ``logit[label] - logsumexp(logits)`` in fp32 chunks of ``LOGIT_CHUNK``
+    tokens (no full fp32 log-softmax over the vocabulary); with *entropy*,
+    also the entropy of each token's distribution: ``(log_probs,
+    entropies)``.  The chunks keep the autograd graph."""
+    if not entropy:
+        lps = []
+        for c, y in zip(logits.split(LOGIT_CHUNK), labels.split(LOGIT_CHUNK)):
+            z = c.float() / temperature
+            lps.append(z.gather(-1, y.unsqueeze(-1)).squeeze(-1) - torch.logsumexp(z, dim=-1))
+        return torch.cat(lps)
+    parts = [_chunk_log_probs(c, y, temperature) for c, y in zip(logits.split(LOGIT_CHUNK), labels.split(LOGIT_CHUNK))]
+    return torch.cat([lp for lp, _ in parts]), torch.cat([e for _, e in parts])
 
 
 class BeliefPPOTrainer:
@@ -179,15 +205,8 @@ class BeliefPPOTrainer:
         token's distribution: ``(log_probs, entropies)``."""
         ids = torch.tensor([prompt_ids + response_ids], dtype=torch.long, device=self.device)
         L = len(response_ids)
-        logits = model(ids, logits_to_keep=L + 1).logits[0, :-1, :].float() / self.cfg.temperature
-        labels = ids[0, -L:]
-        log_p = F.log_softmax(logits, dim=-1)
-        lp = log_p.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
-        if not entropy:
-            return lp
-        # In chunks of tokens: a reply of thousands of tokens over the whole vocabulary.
-        ent = torch.cat([-(c.exp() * c).sum(-1) for c in log_p.split(1024)])
-        return lp, ent
+        logits = model(ids, logits_to_keep=L + 1).logits[0, :-1, :]
+        return token_log_probs(logits, ids[0, -L:], self.cfg.temperature, entropy)
 
     @torch.no_grad()
     def _log_probs(self, model, prompt_ids: List[List[int]], response_ids: List[List[int]],
@@ -247,7 +266,6 @@ class BeliefPPOTrainer:
                     # The summed token loss of the sample (one sequence).
                     pg_sum, clipfrac, ppo_kl = policy_loss_vanilla(
                         old_lp, new_lp, a, mask, cfg.clip_ratio_low, cfg.clip_ratio_high, cfg.clip_ratio_c,
-                        "seq-mean-token-sum",
                     )
                     loss = pg_sum
                     if self.ref_model is not None:

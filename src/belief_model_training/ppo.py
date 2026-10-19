@@ -3,8 +3,10 @@
 # (meow_tea_train/verl), licensed under the Apache License, Version 2.0
 # (http://www.apache.org/licenses/LICENSE-2.0).
 """PPO losses of the belief updater update: the ``vanilla`` dual-clip
-policy loss, its aggregation and the KL penalty that Agent-BRACE's
-BeliefStateLMTrainer takes from veRL.  The ratio is clipped to
+policy loss and the KL penalty that Agent-BRACE's BeliefStateLMTrainer
+takes from veRL.  The trainer passes one sequence at a time and scales its
+summed token loss (``trainer._sample_weight``), so the policy loss is
+aggregated as veRL's ``seq-mean-token-sum``.  The ratio is clipped to
 ``[1 - clip_ratio_low, 1 + clip_ratio_high]`` (veRL's
 ``cliprange_low`` / ``cliprange_high``; DAPO's clip-higher when high > low)."""
 
@@ -17,18 +19,11 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return (values * mask).sum() / (mask.sum() + 1e-8)
 
 
-def agg_loss(loss_mat: torch.Tensor, loss_mask: torch.Tensor, loss_agg_mode: str) -> torch.Tensor:
-    """Aggregate a ``(batch, response_length)`` loss matrix into a scalar."""
-    if loss_agg_mode == "token-mean":
-        return masked_mean(loss_mat, loss_mask)
-    if loss_agg_mode == "seq-mean-token-sum":
-        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)
-        return masked_mean(seq_losses, (torch.sum(loss_mask, dim=-1) > 0).float())
-    if loss_agg_mode == "seq-mean-token-mean":
-        seq_len = torch.sum(loss_mask, dim=-1)
-        seq_losses = torch.sum(loss_mat * loss_mask, dim=-1) / (seq_len + 1e-8)
-        return masked_mean(seq_losses, (seq_len > 0).float())
-    raise ValueError(f"invalid loss_agg_mode: {loss_agg_mode}")
+def seq_mean_token_sum(loss_mat: torch.Tensor, loss_mask: torch.Tensor) -> torch.Tensor:
+    """A ``(batch, response_length)`` loss matrix as the mean over the
+    sequences of their summed token losses (veRL's ``seq-mean-token-sum``)."""
+    seq_losses = torch.sum(loss_mat * loss_mask, dim=-1)
+    return masked_mean(seq_losses, (torch.sum(loss_mask, dim=-1) > 0).float())
 
 
 def policy_loss_vanilla(
@@ -39,9 +34,9 @@ def policy_loss_vanilla(
     clip_ratio_low: float,
     clip_ratio_high: float,
     clip_ratio_c: float = 3.0,
-    loss_agg_mode: str = "token-mean",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Dual-clip PPO policy loss; returns ``(pg_loss, pg_clipfrac, ppo_kl)``."""
+    """Dual-clip PPO policy loss; returns ``(pg_loss, pg_clipfrac, ppo_kl)``,
+    ``pg_loss`` aggregated with ``seq_mean_token_sum``."""
     if clip_ratio_c <= 1.0:
         raise ValueError(f"clip_ratio_c must be > 1.0, got {clip_ratio_c}")
     negative_approx_kl = torch.clamp(log_prob - old_log_prob, min=-20.0, max=20.0)
@@ -56,7 +51,7 @@ def policy_loss_vanilla(
     pg_losses3 = -advantages * clip_ratio_c
     clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
     pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
-    return agg_loss(pg_losses, response_mask, loss_agg_mode), pg_clipfrac, ppo_kl
+    return seq_mean_token_sum(pg_losses, response_mask), pg_clipfrac, ppo_kl
 
 
 def kl_penalty(log_prob: torch.Tensor, ref_log_prob: torch.Tensor, kind: str) -> torch.Tensor:

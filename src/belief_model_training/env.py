@@ -14,8 +14,10 @@ copy of b_{t-1}, which gives its statuses and cited support for the reward.
 The gold of a prompt is the relevant documents among its call's passages:
 a failed or unparsed earlier call leaves documents unjudged, and they are
 shown again.  r_ts applies to a prompt when it is ``final``: the last
-updater call of the episode.  The init call is not trained here (the
-criteria stay as learned in SFT).
+updater call of the student's chain, when its reply parses (no later step
+then shows a document not judged yet; ``_last_call``), as in the
+validation.  The init call is not trained here (the criteria stay as
+learned in SFT).
 
 ``run_student_chains`` runs the student's chain over whole episodes for the
 free-running validation.
@@ -33,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from belief_model_component import Criterion
+from belief_model_component.belief_model import unique_docs
 
 from .episodes import BeliefTracker, DocumentStore, Episode, UpdaterCall
 from .rollout import VLLMRolloutEngine
@@ -46,7 +49,8 @@ class StepItem:
     """One updater step of an episode: ``t`` indexes ``episode.steps``."""
     episode: Episode
     t: int
-    # The step shows relevant documents first seen in it / is the episode's last updater step.
+    # The step shows relevant documents first seen in it / is the episode's
+    # last step with a document not shown before (batch balance only).
     has_gold: bool
     last: bool
 
@@ -73,7 +77,6 @@ class StudentSample:
     response_ids: List[int]
     # vLLM's log-probs of the reply tokens (compared with the trainer's).
     rollout_log_probs: List[float]
-    text: Optional[str]
     finish_reason: Optional[str]
     # apply_reply: parsed, then records and statuses.
     outcome: Dict[str, Any] = field(default_factory=dict)
@@ -125,7 +128,7 @@ def rollout_groups(prompts: List[StepPrompt], engine: VLLMRolloutEngine, *, grou
     return [
         StudentSample(
             prompt=prompt, group=g, prompt_ids=gen.prompt_ids, response_ids=gen.response_ids,
-            rollout_log_probs=gen.logprobs, text=gen.text, finish_reason=gen.finish_reason,
+            rollout_log_probs=gen.logprobs, finish_reason=gen.finish_reason,
             outcome=apply_reply(prompt, gen.text),
         )
         for g, (prompt, gens) in enumerate(zip(prompts, groups)) for gen in gens
@@ -194,19 +197,43 @@ def run_student_chains(
             trackers[e].submit(cc.text)
 
 
+def _last_call(prompt: StepPrompt, docs: List[List[Dict[str, Any]]]) -> bool:
+    """No later step of the episode makes an updater call once the reply
+    to *prompt* parses (its documents are then judged): every later
+    document was judged before or has no text."""
+    signal = _snapshot(prompt.signal)
+    signal.apply(prompt.call.docs, [], None)
+    episode = prompt.item.episode
+    for t in range(prompt.item.t + 1, len(episode.steps)):
+        new = signal.unjudged(unique_docs(docs[t]))
+        if not new:
+            continue
+        if signal.updater.prompt(episode.query, signal.state, new)[0] is not None:
+            return False
+        signal.apply(new, [], None)
+    return True
+
+
 def student_prompts(items: List[StepItem], store: DocumentStore, engine: VLLMRolloutEngine, *,
-                    max_new_tokens: int) -> Tuple[List[StepPrompt], List[StepItem]]:
+                    max_new_tokens: int, criteria_cache: Optional[Dict[int, List[Criterion]]] = None,
+                    ) -> Tuple[List[StepPrompt], List[StepItem]]:
     """The prompts of *items* from the student's own belief: per episode,
     the student's criteria and its greedy chain up to the item's step.
     Returns ``(prompts, rest)``: *rest* are the items without a student
     prompt (no criteria parsed, or no call at the step in the student's
-    chain).  r_ts applies to an item that is the episode's last step."""
+    chain).  r_ts applies to the chain's last call (``_last_call``).
+    *criteria_cache* keeps the student's criteria by episode (``id``) for
+    the caller to clear when the weights change."""
     by_episode: Dict[int, List[StepItem]] = defaultdict(list)
     for item in items:
         by_episode[id(item.episode)].append(item)
     groups = list(by_episode.values())
     episodes = [g[0].episode for g in groups]
-    criteria = student_criteria(episodes, engine)
+    cache = {} if criteria_cache is None else criteria_cache
+    missing = [ep for ep in episodes if id(ep) not in cache]
+    if missing:
+        cache.update(zip(map(id, missing), student_criteria(missing, engine)))
+    criteria = [cache[id(ep)] for ep in episodes]
     keep = [e for e, c in enumerate(criteria) if c]
     rest = [item for e, g in enumerate(groups) if not criteria[e] for item in g]
     chains = run_student_chains(
@@ -221,7 +248,9 @@ def student_prompts(items: List[StepItem], store: DocumentStore, engine: VLLMRol
             if base is None:
                 rest.append(item)
                 continue
-            prompts.append(StepPrompt(item, base.call, base.signal, base.gold, item.last))
+            prompt = StepPrompt(item, base.call, base.signal, base.gold, False)
+            prompt.final = _last_call(prompt, store.docs(item.episode))
+            prompts.append(prompt)
     return prompts, rest
 
 

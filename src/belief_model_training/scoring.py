@@ -42,8 +42,11 @@ def coverage(statuses: Sequence[str]) -> float:
 
 def cited_support(records: List[Dict[str, Any]]) -> Set[str]:
     """Documents cited as support, with at least one verified span, in a
-    step's ``criteria_updates``."""
-    return {e["doc_id"] for r in records for e in r.get("support") or [] if any(e.get("span_verified") or [])}
+    step's ``criteria_updates``; the records of invalid updates (``from``
+    null: unknown criterion id, duplicate update) are not applied and are
+    left out."""
+    return {e["doc_id"] for r in records if r.get("from") is not None
+            for e in r.get("support") or [] if any(e.get("span_verified") or [])}
 
 
 def support_f1(cited: Set[str], gold: Set[str]) -> float:

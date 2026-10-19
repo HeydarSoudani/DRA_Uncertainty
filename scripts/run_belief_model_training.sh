@@ -12,6 +12,7 @@
 #   sbatch --export=ALL,PHASE=1,SPLIT=sft,EXTRA="--limit 200" scripts/run_belief_model_training.sh
 #   sbatch --export=ALL,PHASE=1,SPLIT=rl,EXTRA="--limit 500" scripts/run_belief_model_training.sh
 #   sbatch --export=ALL,PHASE=2,POLICY_MODEL=glm scripts/run_belief_model_training.sh
+#   sbatch --export=ALL,PHASE=1,SPLIT=val,TRAINING_DATA=trqa_validation scripts/run_belief_model_training.sh
 #
 # GPU use per phase:
 #   1  dra_inference workers on all 4 GPUs (agent and teacher via OpenRouter);
@@ -28,10 +29,13 @@ export OMP_NUM_THREADS=16
 
 PHASE=${PHASE:-1}
 NUM_GPUS=${NUM_GPUS:-4}
-TRAINING_DATA=${TRAINING_DATA:-trqa_validation}
 POLICY_MODEL=${POLICY_MODEL:-glm}
 
-ARGS=(--phase "$PHASE" --training-data "$TRAINING_DATA" --policy-model "$POLICY_MODEL")
+ARGS=(--phase "$PHASE" --policy-model "$POLICY_MODEL")
+# Training pool: shared.training_data of the YAML (deep_qa) unless TRAINING_DATA is set.
+if [[ -n "${TRAINING_DATA:-}" ]]; then
+    ARGS+=(--training-data "$TRAINING_DATA")
+fi
 
 if [[ "$PHASE" == "2" ]]; then
     torchrun --standalone --nproc_per_node "$NUM_GPUS" experiments/training/belief_model_training.py "${ARGS[@]}" ${EXTRA:-}
