@@ -46,18 +46,20 @@ def cited_support(records: List[Dict[str, Any]]) -> Set[str]:
     return {e["doc_id"] for r in records for e in r.get("support") or [] if any(e.get("span_verified") or [])}
 
 
-def support_f1(cited: Set[str], gold: Set[str]) -> Optional[float]:
+def support_f1(cited: Set[str], gold: Set[str]) -> float:
     """F1 of the cited support documents against the new gold documents of
-    a step; None when both are empty (nothing to score)."""
+    a step; 1 when both are empty (nothing cited on a step without gold)."""
     if not cited and not gold:
-        return None
+        return 1.0
     tp = len(cited & gold)
     return 2 * tp / (len(cited) + len(gold))
 
 
-def step_row(episode: Episode, t: int, cited: Set[str], coverage: float, final: bool) -> Dict[str, Any]:
-    """The ``measures`` row of one scored belief update at step *t*."""
-    return {"cited": cited, "coverage": coverage, "gold": episode.shown_gold(t),
+def step_row(episode: Episode, t: int, cited: Set[str], coverage: float, final: bool,
+             gold: Optional[Set[str]] = None) -> Dict[str, Any]:
+    """The ``measures`` row of one scored belief update at step *t*; *gold*
+    defaults to the gold of the teacher's call (``Episode.shown_gold``)."""
+    return {"cited": cited, "coverage": coverage, "gold": episode.shown_gold(t) if gold is None else gold,
             "recall": episode.steps[t].recall_so_far, "final": final, "correct": episode.correct}
 
 

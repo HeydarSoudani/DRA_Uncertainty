@@ -2,15 +2,20 @@
 ``BeliefStateLMTrainer.update`` (meow_tea_train/agentic_menu/sync_textworld/
 belief_state_lm_trainer.py), in the setting of its recipes: no value
 function, no KL to a reference by default.  The advantages are GRPO's
-(computed by the caller, ``group_advantages``).
+with each reward term normalized apart (computed by the caller,
+``group_advantages``).
 
 - Full-parameter HF model in bf16 with ``StochasticRoundingAdamW``: fp32
   moments and an fp32 update, written into the bf16 weights with
   stochastic rounding, so that updates below bf16's resolution are kept on
   average (an fp32 master copy does not fit next to vLLM on one GPU).
-- Advantage (GRPO): each reward normalized within its group, the replies
-  to the same prompt (``(r - mean) / std``; 0 for a group with zero
-  spread), broadcast to every reply token.
+- Advantage (GRPO with GDPO's per-term normalization, arXiv 2601.05242):
+  each reward term normalized within its group, the replies to the same
+  prompt (``(r - mean) / max(std, std_floor)``; 0 for a term with zero
+  spread), the weighted sum divided by its standard deviation over the
+  batch, broadcast to every reply token.
+- The mean token entropy of the replies (at the sampling temperature) is
+  reported (``entropy``), to watch for entropy collapse.
 - ``log pi_old`` is recomputed by the trainer before the first optimizer
   step (as veRL), so the first ratio is exactly 1; the gap to vLLM's
   log-probs is reported (``rollout_logprob_gap``).  Log-probs are those of
@@ -30,7 +35,7 @@ The model and its optimizer state sit on the GPU only during ``update``
 import gc
 import logging
 import random
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -41,18 +46,35 @@ from .ppo import kl_penalty, policy_loss_vanilla
 logger = logging.getLogger(__name__)
 
 
-def group_advantages(rewards: List[float], groups: List[int]) -> List[float]:
-    """GRPO advantages: each reward minus its group's mean, divided by the
-    group's standard deviation; 0 in a group whose rewards are all equal."""
-    by_group: Dict[int, List[float]] = {}
-    for r, g in zip(rewards, groups):
-        by_group.setdefault(g, []).append(r)
-    stats = {}
-    for g, rs in by_group.items():
-        t = torch.tensor(rs, dtype=torch.float32)
-        stats[g] = (t.mean().item(), t.std(unbiased=False).item())
-    return [0.0 if stats[g][1] < 1e-8 else (r - stats[g][0]) / (stats[g][1] + 1e-8)
-            for r, g in zip(rewards, groups)]
+def group_advantages(terms: List[Dict[str, float]], groups: List[int], weights: Dict[str, float],
+                     std_floor: float) -> List[float]:
+    """GDPO advantages: per group (the replies to one prompt, which share
+    their available terms) and term, the term minus its group mean divided
+    by ``max(std, std_floor)`` (0 when the term has zero spread); the
+    weighted sum over the terms, divided by its standard deviation over the
+    replies of groups with spread (its batch mean is 0).  A group with no
+    spread in any term gets 0."""
+    by_group: Dict[int, List[int]] = {}
+    for i, g in enumerate(groups):
+        by_group.setdefault(g, []).append(i)
+    adv = [0.0] * len(terms)
+    spread: List[int] = []
+    for idxs in by_group.values():
+        for k in terms[idxs[0]]:
+            t = torch.tensor([terms[i][k] for i in idxs], dtype=torch.float32)
+            std = t.std(unbiased=False).item()
+            if std < 1e-8:
+                continue
+            z = (t - t.mean()) / max(std, std_floor)
+            for i, v in zip(idxs, z.tolist()):
+                adv[i] += weights[k] * v
+        if any(adv[i] != 0.0 for i in idxs):
+            spread += idxs
+    if len(spread) > 1:
+        scale = torch.tensor([adv[i] for i in spread]).std(unbiased=False).item()
+        if scale > 1e-8:
+            adv = [a / scale for a in adv]
+    return adv
 
 
 def _stochastic_round_bf16(x: torch.Tensor) -> torch.Tensor:
@@ -150,19 +172,38 @@ class BeliefPPOTrainer:
 
     # -- update --
 
-    def _response_log_probs(self, model, prompt_ids: List[int], response_ids: List[int]) -> torch.Tensor:
+    def _response_log_probs(self, model, prompt_ids: List[int], response_ids: List[int],
+                            entropy: bool = False):
         """log pi(response token | prefix) for every reply token, at the
-        sampling temperature."""
+        sampling temperature; with *entropy*, also the entropy of each
+        token's distribution: ``(log_probs, entropies)``."""
         ids = torch.tensor([prompt_ids + response_ids], dtype=torch.long, device=self.device)
         L = len(response_ids)
         logits = model(ids, logits_to_keep=L + 1).logits[0, :-1, :].float() / self.cfg.temperature
         labels = ids[0, -L:]
-        return F.log_softmax(logits, dim=-1).gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+        log_p = F.log_softmax(logits, dim=-1)
+        lp = log_p.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+        if not entropy:
+            return lp
+        # In chunks of tokens: a reply of thousands of tokens over the whole vocabulary.
+        ent = torch.cat([-(c.exp() * c).sum(-1) for c in log_p.split(1024)])
+        return lp, ent
 
     @torch.no_grad()
     def _log_probs(self, model, prompt_ids: List[List[int]], response_ids: List[List[int]],
                    batch: List[int]) -> Dict[int, torch.Tensor]:
         return {i: self._response_log_probs(model, prompt_ids[i], response_ids[i]) for i in batch}
+
+    @torch.no_grad()
+    def _log_probs_entropy(self, prompt_ids: List[List[int]], response_ids: List[List[int]],
+                           batch: List[int]) -> Tuple[Dict[int, torch.Tensor], torch.Tensor]:
+        """The policy's log-probs of *batch* and the mean token entropy over their replies."""
+        lps, total, n = {}, 0.0, 0
+        for i in batch:
+            lps[i], ent = self._response_log_probs(self.model, prompt_ids[i], response_ids[i], entropy=True)
+            total += float(ent.sum())
+            n += ent.numel()
+        return lps, torch.tensor(total / max(n, 1))
 
     def update(self, prompt_ids: List[List[int]], response_ids: List[List[int]],
                rollout_log_probs: List[List[float]], advantages: List[float],
@@ -178,7 +219,7 @@ class BeliefPPOTrainer:
             return {"n_samples": 0, "reward_mean": float(r.mean()), "reward_std": float(r.std(unbiased=False))}
 
         self.model.eval()
-        old_lps = self._log_probs(self.model, prompt_ids, response_ids, batch)
+        old_lps, entropy = self._log_probs_entropy(prompt_ids, response_ids, batch)
         gap = torch.cat([(torch.tensor(rollout_log_probs[i], device=self.device) - old_lps[i]).abs() for i in batch])
         ref_lps: Dict[int, torch.Tensor] = {}
         if self.ref_model is not None:
@@ -205,7 +246,8 @@ class BeliefPPOTrainer:
                     a = torch.full_like(old_lp, float(advantages[i]))
                     # The summed token loss of the sample (one sequence).
                     pg_sum, clipfrac, ppo_kl = policy_loss_vanilla(
-                        old_lp, new_lp, a, mask, cfg.clip_ratio, cfg.clip_ratio_c, "seq-mean-token-sum",
+                        old_lp, new_lp, a, mask, cfg.clip_ratio_low, cfg.clip_ratio_high, cfg.clip_ratio_c,
+                        "seq-mean-token-sum",
                     )
                     loss = pg_sum
                     if self.ref_model is not None:
@@ -223,5 +265,5 @@ class BeliefPPOTrainer:
 
         out = {k: sum(v) / len(v) for k, v in stats.items() if v}
         out.update(n_samples=len(batch), reward_mean=float(r.mean()), reward_std=float(r.std(unbiased=False)),
-                   rollout_logprob_gap=float(gap.mean()))
+                   rollout_logprob_gap=float(gap.mean()), entropy=float(entropy))
         return out

@@ -102,38 +102,53 @@ merged into full weights (the last one without validation samples).
 
 ### Phase 3: RL
 
-GRPO on teacher-forced belief updates, with the PPO update of Agent-BRACE's `BeliefStateLMTrainer`, outside
-veRL. The init call is not trained; the criteria stay as learned in SFT.
+GRPO on belief updates from the teacher's and the student's own belief chains, with the PPO update of
+Agent-BRACE's `BeliefStateLMTrainer`, outside veRL. The init call is not trained; the criteria stay as learned in
+SFT.
 
-- **Prompts.** A step item is one updater call of an `rl` episode, within its matched replay. Its prompt is
-  built from the teacher's belief b_{t-1} (the teacher's replies replayed up to the step); the agent ran in
-  monitor mode, so the documents do not depend on the belief. Each batch draws `rl.prompts_per_batch` items:
-  `rl.gold_step_share` from calls that show gold documents, at most `rl.no_gold_share` from episodes without
-  gold, the rest from the other steps; the last updater calls of episodes are balanced on correctness.
+- **Prompts.** A step item is one updater call of an `rl` episode, within its matched replay; the agent ran in
+  monitor mode, so the documents do not depend on the belief and a prompt can be built from any belief chain.
+  Each batch draws `rl.prompts_per_batch` items: `rl.gold_step_share` from calls that show gold documents, at
+  most `rl.no_gold_share` from episodes without gold, the rest from the other steps; the last updater calls of
+  episodes are balanced on correctness. A share of the prompts is built from the **student's own** b_{t-1} (its
+  greedy init call, then its greedy replies to the earlier steps, as at inference; DAgger-style), the rest from
+  the teacher's b_{t-1} (teacher-forced). The share grows linearly to `rl.student_state_share` over the first
+  `rl.student_state_ramp` of the iterations (scheduled sampling), so the student is trained on the states it
+  meets when it runs alone. An item without a student prompt (no criteria parsed) falls back to teacher-forced.
 - **Groups.** `rl.group_size` replies per prompt from vLLM at temperature 1.0 (one request with `n`), at most
   `rl.max_new_tokens` = 8192 tokens (the inference updater's budget).
-  Each reply is applied to a copy of b_{t-1}, which gives its statuses and cited support.
+  Each reply is applied to a copy of b_{t-1}, which gives its statuses and cited support. A group whose replies
+  all score alike gives no gradient; it is replaced by new prompts, up to two more rollouts (DAPO's dynamic
+  sampling).
 - **Reward** (`rewards.py`): R_t = f_t times the weighted mean of the terms available at the step. f_t: the
   reply was not cut off, parses, gives valid statuses to known criteria once, and all cited spans occur in their
-  passage. r_st: F1 of the documents cited as support against the gold documents among the call's passages
-  (`Episode.shown_gold`: a document of a failed or unparsed call stays unjudged and counts in the call that shows
-  it again; only when either is non-empty). r_sc: 1 - (C_t - recall_so_far)^2. r_ts: 1 - (C_T - y)^2 on the episode's last
-  updater call, when y is known and the whole episode replayed. Equal weights (`rl.reward_weight_*`).
-- **Update.** GRPO advantage: each reward normalized within its group (0 when the group's rewards are equal),
-  given to every reply token; log pi_old recomputed by the trainer before the update (vLLM's log-probs only
-  checked against it, `rollout_logprob_gap`), at the sampling temperature; dual-clip PPO (clip 0.2, clip_c 3.0),
-  token-mean over each mini-batch's reply tokens, mini-batches of 32 (8 optimizer steps per iteration), one epoch,
-  grad clip 1.0, lr 1e-5, full parameters in bf16 with an AdamW of fp32 moments and stochastic rounding into the
-  bf16 weights (plain bf16 AdamW drops updates below bf16's resolution). No critic, no KL to a reference (KL can
-  be switched on).
+  passage. r_st: F1 of the documents cited as support against the gold documents among the call's passages (a
+  document of a failed or unparsed call stays unjudged and counts in the call that shows it again); 1 when both
+  are empty. r_sc: 1 - (C_t - recall_so_far)^2. r_ts: 1 - (C_T - y)^2 on the last updater call of the student's
+  own chain, when y is known and the whole episode replayed; not on teacher-forced prompts, whose final belief
+  is mostly the teacher's. Equal weights (`rl.reward_weight_*`).
+- **Update.** Advantage (GDPO, arXiv 2601.05242): each term normalized within its group by
+  max(std, `rl.adv_std_floor`) (a tiny spread is not blown up), a reply failing the format gate scoring 0 on
+  each; the weighted sum divided by its standard deviation over the batch, given to every reply token. log
+  pi_old recomputed by the trainer before the update (vLLM's log-probs only checked against it,
+  `rollout_logprob_gap`), at the sampling temperature; dual-clip PPO with clip-higher (ratio clipped to
+  [1 - 0.2, 1 + 0.28], DAPO; clip_c 3.0), token-mean over each mini-batch's reply tokens, mini-batches of 32 (8
+  optimizer steps per iteration), one epoch, grad clip 1.0, lr 1e-5, full parameters in bf16 with an AdamW of
+  fp32 moments and stochastic rounding into the bf16 weights (plain bf16 AdamW drops updates below bf16's
+  resolution). No critic, no KL to a reference (KL can be switched on). The mean token entropy of the replies is
+  logged, to watch for entropy collapse.
 - **One GPU.** vLLM sleeps during the update; the new weights go through `/dev/shm` and are reloaded in place.
-- **Validation.** Before training and every `rl.val_every` iterations: one greedy reply per step of the `val`
-  episodes (at most `rl.val_max_prompts`), its mean reward and terms and the measures of `scoring.measures`.
-  The teacher's replies to the same steps are scored once, as the bar. `final/` is the checkpoint with the best
-  validation reward.
+- **Validation.** Before training and every `rl.val_every` iterations, greedy, on a fixed sample of fully
+  replayed `val` episodes (at most `rl.val_max_episodes`): **free-running**, the student's own chain over each
+  whole episode (its criteria, then every call; r_ts on its last call), and **teacher-forced**, one reply per
+  teacher call from the teacher's b_{t-1}. Each gives the mean reward and terms and the measures of
+  `scoring.measures`; the gap between the two is the cost of the student's own earlier errors. The teacher's
+  own chain on the same episodes is scored once, as the bar. `final/` is the checkpoint with the best
+  free-running validation reward.
 
-`metrics.jsonl` has one line per iteration (parse and truncation rates, reply lengths, reward and each term,
-groups with zero spread, PPO statistics); `validation.jsonl` the teacher, then one line per validation.
+`metrics.jsonl` has one line per iteration (student-state share, groups kept and skipped, rollout rounds, parse
+and truncation rates, reply lengths, reward and each term, also over the student-state prompts, PPO statistics,
+entropy); `validation.jsonl` the teacher, then two lines (teacher-forced, free-running) per validation.
 
 ### Evaluation
 

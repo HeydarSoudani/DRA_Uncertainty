@@ -1,4 +1,4 @@
-"""Phase 3 reward of one student belief update (teacher-forced step).
+"""Phase 3 reward of one student belief update.
 
     R_t = f_t · (Σ_i w_i r_i / Σ_i w_i)   over the terms available at the step
 
@@ -6,16 +6,22 @@
           listed criterion a valid status, names known criteria once, and
           every cited passage has spans that all occur in it; else 0
     r_st  what moves: F1 of the documents cited as support against the gold
-          documents among the call's passages (``Episode.shown_gold``);
-          only when either is non-empty
-    r_sc  how far: 1 - (C_t - recall_so_far)^2
-    r_ts  where it ends: 1 - (C_T - y)^2, on the episode's last updater
-          call, when the correctness y of the final answer is known
+          documents among the call's passages (``StepPrompt.gold``); 1 when
+          both are empty (nothing cited on a step without gold), 0 when only
+          one is
+    r_sc  how far: 1 - (C_t - recall_so_far)^2, when recall_so_far is known
+    r_ts  where it ends: 1 - (C_T - y)^2, when the prompt is ``final`` and
+          the correctness y of the final answer is known
 
 C_t is the coverage after the reply (``scoring.coverage``).  The squared
 errors are minimized by the expected target given the input, so they
 reward calibrated coverage.  The terms are the per-sample forms of
 ``scoring.measures``.
+
+R is the logged reward and the validation measure.  The GRPO advantage is
+computed from the terms (``trainer.group_advantages``): ``terms`` holds
+every available term, 0 when the format gate fails, so a reply with a bad
+format ranks last on each term.
 """
 
 from typing import Any, Dict, Optional
@@ -44,25 +50,32 @@ class Reward:
     def __init__(self, cfg: RLConfig) -> None:
         self.weights = {"st": cfg.reward_weight_st, "sc": cfg.reward_weight_sc, "ts": cfg.reward_weight_ts}
 
+    def available(self, prompt: StepPrompt) -> list:
+        """The terms of *prompt*'s replies (weight > 0)."""
+        episode = prompt.item.episode
+        have = {"st": True, "sc": episode.steps[prompt.item.t].recall_so_far is not None,
+                "ts": prompt.final and episode.correct is not None}
+        return [k for k, w in self.weights.items() if w > 0 and have[k]]
+
     def __call__(self, prompt: StepPrompt, outcome: Dict[str, Any], finish_reason: Optional[str]) -> Dict[str, Any]:
-        """``{reward, format, st, sc, ts, coverage, cited}``; the terms are
-        None when not available or when the format gate fails."""
+        """``{reward, format, st, sc, ts, terms, coverage, cited}``; ``st``,
+        ``sc``, ``ts`` are None when not available or when the format gate
+        fails, ``terms`` the available ones (0 on a failed gate)."""
+        keys = self.available(prompt)
         out: Dict[str, Any] = {"reward": 0.0, "format": 0.0, "st": None, "sc": None, "ts": None,
-                               "coverage": None, "cited": set()}
+                               "terms": {k: 0.0 for k in keys}, "coverage": None, "cited": set()}
         if not format_ok(outcome, finish_reason):
             return out
-        item = prompt.item
-        recall = item.episode.steps[item.t].recall_so_far
+        episode = prompt.item.episode
         c = coverage(outcome["statuses"])
         cited = cited_support(outcome["records"])
-        terms = {
-            "st": support_f1(cited, item.episode.shown_gold(item.t)),
-            "sc": None if recall is None else 1.0 - (c - recall) ** 2,
-            "ts": (1.0 - (c - float(item.episode.correct)) ** 2
-                   if item.last and item.episode.correct is not None else None),
+        values = {
+            "st": lambda: support_f1(cited, prompt.gold),
+            "sc": lambda: 1.0 - (c - episode.steps[prompt.item.t].recall_so_far) ** 2,
+            "ts": lambda: 1.0 - (c - float(episode.correct)) ** 2,
         }
-        used = {k: v for k, v in terms.items() if v is not None and self.weights[k] > 0}
-        total = sum(self.weights[k] for k in used)
-        out.update(terms, format=1.0, coverage=c, cited=cited,
-                   reward=sum(self.weights[k] * v for k, v in used.items()) / total if total else 1.0)
+        terms = {k: values[k]() for k in keys}
+        total = sum(self.weights[k] for k in terms)
+        out.update(terms, terms=terms, format=1.0, coverage=c, cited=cited,
+                   reward=sum(self.weights[k] * v for k, v in terms.items()) / total if total else 1.0)
         return out

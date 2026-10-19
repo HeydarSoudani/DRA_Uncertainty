@@ -13,7 +13,8 @@ Module layout:
     sft           phase 2: SFT warm-up (LoRA, merged)
     rollout       vLLM generation with log-probs, sleep / weight reload
     scoring       measures of a belief model against the gold (teacher scores, validation)
-    env           phase 3 environment: teacher-forced updater steps, GRPO groups, batch sampler
+    env           phase 3 environment: updater steps from the teacher's or the student's own chain,
+                  GRPO groups, batch sampler
     rewards       phase 3 reward of one belief update
     ppo           PPO losses (from veRL)
     trainer       PPO update (from Agent-BRACE's BeliefStateLMTrainer)

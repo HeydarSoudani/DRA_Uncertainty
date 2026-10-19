@@ -4,7 +4,9 @@
 # (http://www.apache.org/licenses/LICENSE-2.0).
 """PPO losses of the belief updater update: the ``vanilla`` dual-clip
 policy loss, its aggregation and the KL penalty that Agent-BRACE's
-BeliefStateLMTrainer takes from veRL."""
+BeliefStateLMTrainer takes from veRL.  The ratio is clipped to
+``[1 - clip_ratio_low, 1 + clip_ratio_high]`` (veRL's
+``cliprange_low`` / ``cliprange_high``; DAPO's clip-higher when high > low)."""
 
 from typing import Tuple
 
@@ -34,7 +36,8 @@ def policy_loss_vanilla(
     log_prob: torch.Tensor,
     advantages: torch.Tensor,
     response_mask: torch.Tensor,
-    clip_ratio: float,
+    clip_ratio_low: float,
+    clip_ratio_high: float,
     clip_ratio_c: float = 3.0,
     loss_agg_mode: str = "token-mean",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -46,7 +49,7 @@ def policy_loss_vanilla(
     ppo_kl = masked_mean(-negative_approx_kl, response_mask)
 
     pg_losses1 = -advantages * ratio
-    pg_losses2 = -advantages * torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio)
+    pg_losses2 = -advantages * torch.clamp(ratio, 1 - clip_ratio_low, 1 + clip_ratio_high)
     clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
     pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
 

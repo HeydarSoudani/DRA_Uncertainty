@@ -110,11 +110,17 @@ class Episode:
         """Some step found a relevant document."""
         return any(s.new_gold_ids for s in self.steps)
 
+    def gold_among(self, doc_ids: List[str]) -> Set[str]:
+        """The relevant documents among *doc_ids* (the passages of one
+        updater call, of any belief chain over the episode)."""
+        gold = {i for s in self.steps for i in s.new_gold_ids}
+        return gold.intersection(doc_ids)
+
     def shown_gold(self, t: int) -> Set[str]:
         """The relevant documents among the passages of step *t*'s updater
-        call, which the updater judges there for the first time."""
-        gold = {i for s in self.steps for i in s.new_gold_ids}
-        return gold.intersection(self.steps[t].shown_doc_ids or [])
+        call in the teacher's replay, which the updater judges there for the
+        first time."""
+        return self.gold_among(self.steps[t].shown_doc_ids or [])
 
     def criteria_list(self) -> List[Criterion]:
         return [Criterion(**c) for c in self.criteria]
@@ -282,20 +288,21 @@ def teacher_init_call(episode: Episode) -> Dict[str, Any]:
 class BeliefTracker:
     """The inference belief model (``BeliefUpdateSignal`` with the
     ``LLMBeliefUpdater`` of the query shape) over the fixed steps of an
-    episode, from the episode's criteria, with the LLM calls made by the
-    caller.
+    episode, from *criteria* (default: the episode's, the teacher's), with
+    the LLM calls made by the caller.
 
     ``open_step(t)`` starts step *t* and returns its updater call, or None
     when its documents need none (all judged before, or none with text; the
     step is then applied at once); ``submit`` applies the reply to the open
     call."""
 
-    def __init__(self, episode: Episode, docs: List[List[Dict[str, Any]]]) -> None:
+    def __init__(self, episode: Episode, docs: List[List[Dict[str, Any]]],
+                 criteria: Optional[List[Criterion]] = None) -> None:
         self.episode = episode
         self._docs = docs
         self.updater = build_belief_judges(_NoLLM(), model="trained", query_shape=episode.query_shape)[0]
         self.signal = BeliefUpdateSignal(self.updater)
-        self.signal.reset(episode.query, episode.criteria_list())
+        self.signal.reset(episode.query, episode.criteria_list() if criteria is None else criteria)
         self._pending: Optional[UpdaterCall] = None
 
     def open_step(self, t: int) -> Optional[UpdaterCall]:

@@ -42,7 +42,7 @@ Each status has a signed level $\ell_t(k)$:
 | 0 | `build_training_pool.py --step N` | builds the training pool: questions, gold pages, qrels | `data/training_pool/` |
 | 1 | `belief_model_training.py --phase 1` | runs the frozen agent with the teacher belief model on the training pool; writes episodes, SFT samples and teacher scores | `phase1_trajectories/` |
 | 2 | `belief_model_training.py --phase 2` | SFT of the student on the teacher's replies (LoRA, then merged) | `phase2_sft/merged/` |
-| 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on belief updates replayed from the teacher's trajectories) | `phase3_rl/final/` |
+| 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on belief updates from the teacher's and the student's own belief chains) | `phase3_rl/final/` |
 
 The outputs of phases 1 to 3 go to `{output_root}/{run_name}/`. Evaluation of the trained model:
 `dra_inference.py` (see [Evaluation](#evaluation-dra_inference)).
@@ -62,15 +62,20 @@ The training pool (dataset `training_pool`, split `train`) holds deep-research q
 several documents, from InfoSeek-Hard, WebShaper and FRAMES. Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA,
 MuSiQue, TriviaQA) are not used: they need too little search.
 
-| Step | Does | Output |
-|---|---|---|
-| 1 | merges the sources, drops duplicates and two FRAMES question types (tabular reasoning, post processing); 19,124 questions kept | `questions.jsonl` |
-| 2 | fetches the gold pages (Wikipedia API; other web pages with a Wayback Machine fallback) and applies Filter A: a question is kept when all its gold pages are fetched, or at least 80% of them when it has web gold pages | `queries/`, `qrels/`, `corpus/`, `pages/` |
-| 3 | prints the statistics per source (queries, documents per query, lengths, checks) | log table |
+| Source | Questions | Gold pages / question | Gold pages: wiki / web | Question words | Answer words |
+|---|---|---|---|---|---|
+| InfoSeek-Hard | 18,110 | 3.9 | all wiki | 42 | 2.9 |
+| WebShaper | 500 | 8.1 | 22% / 78% | 65 | 3.4 |
+| FRAMES | 514 | 3.1 | all wiki | 26 | 5.1 |
+| all | 19,124 | 4.0 | 96% / 4% | 43 | 3.0 |
 
-Every step writes its section of `stats.json`; steps 1 and 2 write their dropped questions to `dropped.jsonl`.
-Step 2 is incremental: it skips the questions already processed, and `--limit N` takes the next N. The corpus
-holds the gold pages only (no distractors yet).
+Values are means, after step 1.
+
+```bash
+python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
+python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A
+python experiments/training/build_training_pool.py --step 3                               # print the statistics per source
+```
 
 ## Phase 1: Trajectory collection
 
@@ -155,19 +160,30 @@ student's).
 - $S_t$: documents the reply cites as support, with a verified span;
 - $\rho_t$: `recall_so_far`, the share of the query's relevant documents seen up to step t;
 - $C_t$: coverage after the reply (see [Goal](#goal-uncertainty-of-the-deep-research-agent));
-- $T$: the episode's last updater call; $y \in \{0, 1\}$: the agent's final answer is correct.
+- $T$: the last updater call of the chain; $y \in \{0, 1\}$: the agent's final answer is correct.
 
-**Prompts and groups.** A prompt $x_t$ is one updater step of an `rl` episode, built from the **teacher's**
-belief $b_{t-1}$. The student samples $G = 8$ replies $o_1, \dots, o_G \sim \pi_{\phi_{\text{old}}}(\cdot \mid x_t)$,
-and each is applied to a copy of $b_{t-1}$. The advantage of a reply compares it with the other replies to the
-same prompt:
+**Prompts.** A prompt $x_t$ is one updater step of an `rl` episode. The agent is frozen and ran in monitor mode,
+so the documents of every step are fixed and the prompt can be built from any belief chain:
+
+| State | $b_{t-1}$ from | r_ts |
+|---|---|---|
+| teacher-forced | the teacher's replies to steps $< t$ | no: the final belief is mostly the teacher's |
+| student state | the student's own criteria (greedy init call) and its greedy replies to steps $< t$, as at inference | on the step of the episode's last call |
+
+Training only on teacher-forced states would leave the student unprepared for its own earlier errors at
+inference (exposure bias; DAgger, Ross et al. 2011). The share of student-state prompts at iteration $i$ of $I$
+grows linearly (scheduled sampling, Bengio et al. 2015):
 
 $$
-\hat{A}_i = \frac{R_i - \operatorname{mean}\left(\{R_k\}_{k=1}^{G}\right)}{\operatorname{std}\left(\{R_k\}_{k=1}^{G}\right)}, \qquad \hat{A}_i = 0 \text{ when all } R_k \text{ are equal}.
+s_i = s_{\max} \cdot \min\left(1, \frac{i}{\lambda I}\right), \qquad s_{\max} = 1, \ \lambda = 0.5 .
 $$
 
-A reply is thus judged against other replies to the same step, not against easier or harder steps. The init call
-is not trained in RL.
+An item without a student prompt (no criteria parsed) falls back to teacher-forced.
+
+**Groups.** The student samples $G = 8$ replies $o_1, \dots, o_G \sim \pi_{\phi_{\text{old}}}(\cdot \mid x_t)$ at
+temperature 1, and each is applied to a copy of $b_{t-1}$. A group whose replies all score alike gives no
+gradient and is replaced by new prompts, with up to two more rollouts per iteration (DAPO's dynamic sampling).
+The init call is not trained in RL.
 
 **Reward.** The reward of a reply (`belief_model_training/rewards.py`) is a format gate times the weighted mean of
 the terms available at the step, $\mathcal{T}_t \subseteq \{\mathrm{st}, \mathrm{sc}, \mathrm{ts}\}$:
@@ -176,10 +192,10 @@ $$
 R_t = f_t \cdot \frac{\sum_{k \in \mathcal{T}_t} w_k\, r_k}{\sum_{k \in \mathcal{T}_t} w_k}, \qquad w_{\mathrm{st}} = w_{\mathrm{sc}} = w_{\mathrm{ts}} = 1,
 $$
 
-with $R_t = f_t$ when no term is available. The terms are
+with
 
 $$
-r_{\mathrm{st}} = \mathrm{F1}(S_t, N_t) = \frac{2\,|S_t \cap N_t|}{|S_t| + |N_t|}, \qquad
+r_{\mathrm{st}} = \mathrm{F1}(S_t, N_t) = \frac{2\,|S_t \cap N_t|}{|S_t| + |N_t|} \ \ (1 \text{ when } S_t = N_t = \emptyset), \qquad
 r_{\mathrm{sc}} = 1 - (C_t - \rho_t)^2, \qquad
 r_{\mathrm{ts}} = 1 - (C_T - y)^2 .
 $$
@@ -187,45 +203,66 @@ $$
 | Term | Measures | Available when |
 |---|---|---|
 | format $f_t \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each known criterion one valid status and all cited spans occur verbatim in their passage | always |
-| state tracking $r_{\mathrm{st}}$ | the cited support matches the relevant documents of the step | $N_t$ or $S_t$ non-empty (an empty step does not pay) |
+| state tracking $r_{\mathrm{st}}$ | the cited support matches the relevant documents of the step; citing nothing on a step without gold scores 1 | always |
 | state correctness $r_{\mathrm{sc}}$ | the coverage follows recall | $\rho_t$ known |
-| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | last updater call, $y$ known and the whole episode replayed |
+| task success $r_{\mathrm{ts}}$ | the final coverage predicts correctness | student-state prompt at the episode's last call, $y$ known and the whole episode replayed |
 
 The squared errors are minimized by the expected target given the input, so they reward calibrated coverage.
+$R_t$ is the logged reward and the validation measure.
+
+**Advantage.** Each term is normalized within the group (GDPO, arXiv 2601.05242), so a term with a small
+spread, such as the squared errors near 1, is not drowned by F1, and a tiny spread is not blown up by the floor
+$\sigma_{\min} = 0.05$. A reply that fails the format gate scores 0 on each available term:
+
+$$
+\hat{A}_i = \frac{\sum_{k} w_k\, \dfrac{r_{k,i} - \operatorname{mean}_k}{\max(\operatorname{std}_k, \sigma_{\min})}}{\operatorname{std}_{\text{batch}}\left(\sum_{k} w_k\, \cdots\right)},
+$$
+
+with mean and std over the $G$ replies of the group, a term with zero spread counting 0. A reply is thus judged
+against the other replies to the same step, not against easier or harder steps.
 
 **Objective.** The PPO update of Agent-BRACE with dual clipping, no critic and no KL term, averaged over all reply
-tokens of the batch. With the importance ratio
+tokens of the batch, with DAPO's clip-higher. With the importance ratio
 $\eta_{i,j} = \pi_\phi(o_{i,j} \mid x, o_{i,<j}) / \pi_{\phi_{\text{old}}}(o_{i,j} \mid x, o_{i,<j})$:
 
 $$
 \mathcal{L}_{\mathrm{RL}}(\phi) = -\frac{1}{\sum_i |o_i|} \sum_i \sum_{j=1}^{|o_i|} \ell_{i,j}, \qquad
 \ell_{i,j} =
 \begin{cases}
-\min\left(\eta_{i,j}\hat{A}_i,\ \operatorname{clip}(\eta_{i,j}, 1-\epsilon, 1+\epsilon)\,\hat{A}_i\right) & \hat{A}_i \ge 0 \\
-\max\left(\min\left(\eta_{i,j}\hat{A}_i,\ \operatorname{clip}(\eta_{i,j}, 1-\epsilon, 1+\epsilon)\,\hat{A}_i\right),\ c\,\hat{A}_i\right) & \hat{A}_i < 0
+\min\left(\eta_{i,j}\hat{A}_i,\ \operatorname{clip}(\eta_{i,j}, 1-\epsilon_{\text{low}}, 1+\epsilon_{\text{high}})\,\hat{A}_i\right) & \hat{A}_i \ge 0 \\
+\max\left(\min\left(\eta_{i,j}\hat{A}_i,\ \operatorname{clip}(\eta_{i,j}, 1-\epsilon_{\text{low}}, 1+\epsilon_{\text{high}})\,\hat{A}_i\right),\ c\,\hat{A}_i\right) & \hat{A}_i < 0
 \end{cases}
 $$
 
-with $\epsilon = 0.2$, $c = 3$, learning rate 1e-5 and one PPO epoch in mini-batches of 32 replies.
+with $\epsilon_{\text{low}} = 0.2$, $\epsilon_{\text{high}} = 0.28$, $c = 3$, learning rate 1e-5 and one PPO epoch in
+mini-batches of 32 replies. The mean token entropy of the replies is logged, to watch for entropy collapse.
 
 **Batch.** 32 prompts × 8 replies = 256 replies per iteration: half of the prompts from steps with new gold, at
 most 15% from episodes without gold, the rest from other steps; last calls are balanced on $y$. 200 iterations ≈
 6,400 prompts.
 
-**Validation.** Greedy replies on the `val` steps (at most 400) before training and every 20 iterations: mean
-reward, each term and the teacher-score measures, next to the teacher's replies on the same steps. `final/` is the
-checkpoint with the best validation reward.
+**Validation.** Greedy, on a fixed sample of at most 50 fully replayed `val` episodes, before training and every
+20 iterations, in two modes:
+
+| Mode | Replies |
+|---|---|
+| free-running | the student's own chain over each whole episode: its criteria, then every call; $r_{\mathrm{ts}}$ on its last call |
+| teacher-forced | one reply per teacher call, from the teacher's $b_{t-1}$ |
+
+Each gives the mean reward, each term and the teacher-score measures. The gap between the two is the cost of the
+student's own earlier errors. The teacher's own chain on the same episodes is the bar. `final/` is the checkpoint
+with the best free-running validation reward.
 
 **Open.** $r_{\mathrm{sc}}$ counts relevant documents ($\rho_t$), while a status means covered content; check
 `coverage_minus_recall` in the pilot's teacher scores before changing the weights. The training data is
-short-answer QA only (the training pool).
+short-answer QA only (the training pool), with no hard negatives yet.
 
 ## Evaluation (dra_inference)
 
 The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent with no,
 teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
 Scores are the run's `summary.json`: answer accuracy, Recall@N, GradedRecall@N. Belief quality itself is measured
-in phase 3 validation.
+in phase 3 validation (free-running and teacher-forced).
 
 ```bash
 # serve the student on a GPU the inference workers do not use

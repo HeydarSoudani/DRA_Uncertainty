@@ -95,9 +95,9 @@ class SFTConfig:
 
 @dataclass
 class RLConfig:
-    """Phase 3: GRPO on teacher-forced belief updates (env, rewards), with the
-    PPO update of Agent-BRACE's BeliefStateLMTrainer (no critic, no KL by
-    default)."""
+    """Phase 3: GRPO on belief updates from the teacher's and the student's
+    own belief chains (env, rewards), with the PPO update of Agent-BRACE's
+    BeliefStateLMTrainer (no critic, no KL by default)."""
     # Start checkpoint of the student belief model; null = the merged phase 2 model.
     init_belief_model: Optional[str] = None
     num_iterations: int = 200
@@ -107,18 +107,28 @@ class RLConfig:
     # Batch mix: share of steps with new gold; at most this share from episodes without gold.
     gold_step_share: float = 0.5
     no_gold_share: float = 0.15
+    # Share of the prompts from the student's own belief chain (the rest
+    # teacher-forced), reached linearly over the first student_state_ramp of
+    # the iterations (scheduled sampling; 0 = from the first iteration).
+    student_state_share: float = 1.0
+    student_state_ramp: float = 0.5
     # Weights of the reward terms (rewards.py): state tracking, state correctness, task success.
     reward_weight_st: float = 1.0
     reward_weight_sc: float = 1.0
     reward_weight_ts: float = 1.0
-    # Validation every val_every iterations on at most val_max_prompts steps of the val episodes.
+    # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
+    adv_std_floor: float = 0.05
+    # Validation every val_every iterations on at most val_max_episodes val episodes
+    # (fully replayed): the student's own chain, and teacher-forced.
     val_every: int = 20
-    val_max_prompts: int = 400
+    val_max_episodes: int = 50
     learning_rate: float = 1e-5
     ppo_epochs: int = 1
     # 256 replies per iteration / 32 = 8 optimizer steps per iteration.
     ppo_mini_batch_size: int = 32
-    clip_ratio: float = 0.2
+    # Ratio clipped to [1 - clip_ratio_low, 1 + clip_ratio_high] (DAPO's clip-higher).
+    clip_ratio_low: float = 0.2
+    clip_ratio_high: float = 0.28
     clip_ratio_c: float = 3.0
     loss_agg_mode: str = "token-mean"
     grad_clip: float = 1.0
