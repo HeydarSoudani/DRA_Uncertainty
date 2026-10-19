@@ -58,8 +58,7 @@ _RESOLVE_BATCH = 50
 _LINE_EVERY_SHARE = 0.01
 _LINE_EVERY_SECONDS = 60.0
 # The ``pages`` settings that decide a page's status or a question's verdict:
-# an incremental run must use those of the earlier runs (``--force`` to
-# override).  The worker counts and rates may change between runs.
+# an incremental run must use those of the earlier runs.  The worker counts and rates may change between runs.
 PAGE_SETTINGS = ("wiki_lang", "min_words", "min_page_share", "wayback", "wayback_timestamp")
 
 
@@ -420,29 +419,28 @@ def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths
     return len(offsets)
 
 
-def _check_settings(cfg: PoolConfig, paths: PoolPaths, force: bool) -> None:
+def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> None:
     """Refuse page settings (``PAGE_SETTINGS``) other than those of the
-    earlier step 2 runs, and split shares other than the recorded ones,
-    unless *force*."""
+    earlier step 2 runs, and split shares other than the recorded ones."""
     recorded = read_stats(paths.stats).get("step2", {}).get("config", {}).get("pages", {})
     pages = cfg.to_dict()["pages"]
     diffs = [f"pages.{k}: {recorded[k]!r} -> {pages[k]!r}" for k in PAGE_SETTINGS
              if k in recorded and recorded[k] != pages[k]]
-    if diffs and not force:
+    if diffs:
         raise SystemExit(f"{paths.root}: the earlier step 2 runs used other page settings ({'; '.join(diffs)}); "
                          "their pages and verdicts would mix with this run's. "
-                         "Restore the settings, or pass --force")
-    check_shares(paths, cfg.split, force)
+                         "Restore the settings, or rebuild the pool from step 1")
+    check_shares(paths, cfg.split)
 
 
 def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
-              sources: Optional[List[str]] = None, force: bool = False) -> None:
+              sources: Optional[List[str]] = None) -> None:
     if not cfg.shared.contact:
         raise SystemExit("step 2 needs shared.contact (e-mail or URL for the User-Agent, "
                          "as the Wikimedia User-Agent policy asks): DRA_CONTACT in .env or shared.contact in the config")
     if not paths.questions.exists():
         raise SystemExit(f"{paths.questions} not found: run step 1 first")
-    _check_settings(cfg, paths, force)
+    _check_settings(cfg, paths)
     config = cfg.to_dict()
     del config["shared"]["contact"]  # personal: stays in .env
     # The settings first, so a run that stops before its stats still records them.
@@ -526,7 +524,7 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     print(f"[step 2] dataset: {len(kept)} kept of {len(done)} processed questions "
           f"({len(partial)} with failed gold pages, {len(records) - len(done)} remaining), "
           f"{n_docs} gold pages -> {paths.root}")
-    write_splits(paths, cfg.split, force)
+    write_splits(paths, cfg.split)
 
 
 # ── Step 3 ──────────────────────────────────────────────────────────────────

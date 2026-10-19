@@ -12,7 +12,6 @@
 #   sbatch --export=ALL,STEP=2 scripts/run_build_training_pool.sh
 #   sbatch --export=ALL,STEP=2,LIMIT=200 scripts/run_build_training_pool.sh   (the next 200 questions)
 #   sbatch --export=ALL,STEP=2,SOURCE=infoseek,LIMIT=200 scripts/run_build_training_pool.sh   (the next 200 InfoSeek ones)
-#   sbatch --export=ALL,STEP=2,FORCE=1 scripts/run_build_training_pool.sh   (re-split after a share change)
 # Step 2 reads the User-Agent contact from DRA_CONTACT in .env and ends with
 # the sft / rl / val split.  One build of a pool runs at a time (lock file).
 # Step 2 (~73k Wikipedia pages at 180/min, ~7 h, plus web pages) is
@@ -27,6 +26,5 @@ ARGS=(--pool "$POOL")
 [ "$POOL" = deep_qa ] && ARGS+=(--step "${STEP:-1}")
 [ -n "$LIMIT" ] && ARGS+=(--limit "$LIMIT")
 [ -n "$SOURCE" ] && ARGS+=(--source "$SOURCE")
-[ -n "$FORCE" ] && ARGS+=(--force)
 
 python experiments/training/build_training_pool.py "${ARGS[@]}"

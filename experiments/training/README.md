@@ -98,7 +98,8 @@ python experiments/training/build_training_pool.py --step 3                     
 Step 2 ends with the split, so the split files always match the pool. The shares and per-split counts are recorded
 in the `split` section of `stats.json`. Other shares (they would move queries between splits) and other page
 settings than the earlier step 2 runs' (`wiki_lang`, `min_words`, `min_page_share`, `wayback`, `wayback_timestamp`)
-are refused unless `--force` (`--step 2 --force` re-splits). One build of a pool runs at a time (`.build.lock` in
+are refused: to change the shares, remove the `split` section of `stats.json` and the next build re-splits; to
+change the page settings, rebuild the pool from step 1. One build of a pool runs at a time (`.build.lock` in
 its directory).
 
 ### trqa_validation

@@ -13,8 +13,7 @@ queries, rows copied unchanged.
 
 The shares and the per-split counts are recorded in the ``split`` section of
 ``stats.json``; a split with other shares than the recorded ones (it would
-move queries between splits, e.g. from rl into val) is refused unless
-forced.
+move queries between splits, e.g. from rl into val) is refused.
 """
 
 import hashlib
@@ -49,23 +48,23 @@ def read_lines(path: Path) -> List[str]:
         return [line if line.endswith("\n") else line + "\n" for line in fh if line.strip()]
 
 
-def check_shares(paths: PoolPaths, cfg: SplitConfig, force: bool = False) -> None:
-    """Refuse *cfg*'s shares when ``stats.json`` records other ones, unless
-    *force*: other shares move queries between splits."""
+def check_shares(paths: PoolPaths, cfg: SplitConfig) -> None:
+    """Refuse *cfg*'s shares when ``stats.json`` records other ones: other
+    shares move queries between splits."""
     recorded = read_stats(paths.stats).get("split", {}).get("shares")
-    if recorded is not None and recorded != cfg.shares() and not force:
+    if recorded is not None and recorded != cfg.shares():
         raise SystemExit(f"{paths.root} was split with the shares {recorded}, the config has {cfg.shares()}: "
                          "other shares move queries between splits (e.g. from rl into val). "
-                         "Restore the shares, or pass --force to re-split")
+                         f"Restore the shares, or remove the 'split' section of {paths.stats} to re-split")
 
 
-def write_splits(paths: PoolPaths, cfg: SplitConfig, force: bool = False) -> None:
+def write_splits(paths: PoolPaths, cfg: SplitConfig) -> None:
     """Write the splits ``sft``, ``rl`` and ``val`` of the pool's split
     ``all`` and record them in the ``split`` section of ``stats.json``."""
     for path in (paths.queries, paths.qrels):
         if not path.exists():
             raise SystemExit(f"{path} not found: build the pool first")
-    check_shares(paths, cfg, force)
+    check_shares(paths, cfg)
     shares = cfg.shares()
     queries = read_lines(paths.queries)
     rows = [json.loads(line) for line in queries]

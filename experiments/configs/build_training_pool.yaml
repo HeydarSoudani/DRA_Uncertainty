@@ -6,7 +6,7 @@
 #
 # Precedence (lowest -> highest):
 #   dataclass defaults  <  this file
-# --limit, --source and --force are CLI flags only (step 2 is incremental: the
+# --limit and --source are CLI flags only (step 2 is incremental: the
 # next N questions, of the given sources when --source is set).  The pool is
 # built under data/training_pool/{pool} of the repo.
 # ============================================================================
@@ -29,11 +29,13 @@ pages:
   min_words: 50                     # fewer extracted words = dead page (soft 404)
   min_page_share: 0.8               # Filter A, questions with web gold pages: this share of all their gold pages (Wikipedia-only: all)
 # wiki_lang, min_words, min_page_share, wayback, wayback_timestamp must stay
-# those of the earlier step 2 runs of the pool (recorded in stats.json); --force overrides.
+# those of the earlier step 2 runs of the pool (recorded in stats.json); to change
+# them, rebuild the pool from step 1.
 
 # ── Split (end of deep_qa step 2, trqa_validation build): shares of the queries
 # Recorded in stats.json; other shares move queries between splits and are
-# refused unless --force (step 2 --force re-splits).
+# refused; to change them, remove the 'split' section of stats.json (the next
+# step 2 run or trqa_validation build re-splits).
 split:
   sft: 0.3                          # SFT samples (monitor mode, teacher replies)
   rl: 0.6                           # RL prompts (off mode)

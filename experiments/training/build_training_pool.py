@@ -33,7 +33,7 @@ keeps the questions of the given sources only; without it, step 1 order);
 the dataset files cover every processed question, and a query keeps its
 split when the pool grows.  Other page settings than the earlier runs'
 (``steps.PAGE_SETTINGS``) or other split shares than the recorded ones are
-refused, unless ``--force``.  One build of a pool runs at a time (a lock
+refused.  One build of a pool runs at a time (a lock
 file in its directory).
 """
 
@@ -73,7 +73,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, sections 'shared', 'pages' and 'split'.")
     parser.add_argument("--limit", type=_positive_int, default=None, help="Step 2: the next N unprocessed questions (None = all).")
     parser.add_argument("--source", type=str, default=None, help="Step 2: only these sources, comma-separated (webshaper, frames, infoseek; None = all).")
-    parser.add_argument("--force", action="store_true", help="Step 2 and trqa_validation: accept other page settings than the earlier step 2 runs' and re-split with other shares than the recorded ones.")
     return parser.parse_args()
 
 
@@ -96,8 +95,6 @@ def main() -> None:
         raise SystemExit("--step is required for deep_qa and not used for trqa_validation")
     if args.step != 2 and (args.limit is not None or args.source is not None):
         raise SystemExit("--limit and --source apply to step 2 only")
-    if args.force and args.step not in (2, None):
-        raise SystemExit("--force applies to step 2 and trqa_validation only")
 
     cfg = load_config(args.config)
     paths = PoolPaths(args.pool)
@@ -106,7 +103,7 @@ def main() -> None:
     if args.pool == "trqa_validation":
         print(f"[build_training_pool] trqa_validation, dataset {paths.root}")
         trqa_validation.build(paths)
-        write_splits(paths, cfg.split, args.force)
+        write_splits(paths, cfg.split)
         return
     print(f"[build_training_pool] deep_qa step {args.step}, dataset {paths.root}")
 
@@ -114,7 +111,7 @@ def main() -> None:
         run_step1(paths)
     elif args.step == 2:
         sources = [s.strip() for s in args.source.split(",") if s.strip()] if args.source else None
-        run_step2(cfg, paths, args.limit, sources, args.force)
+        run_step2(cfg, paths, args.limit, sources)
     else:
         run_step3(paths)
 
@@ -127,5 +124,4 @@ if __name__ == "__main__":
 # python experiments/training/build_training_pool.py --step 2 --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source frames --limit 10
-# python experiments/training/build_training_pool.py --step 2 --force      (re-split after a share change)
 # python experiments/training/build_training_pool.py --step 3
