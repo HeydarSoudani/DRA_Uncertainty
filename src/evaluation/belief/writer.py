@@ -6,7 +6,8 @@ iteration.  The files are the input of the offline analysis and of the
 scoring model g_phi.  Every line carries ``query_id``; correctness labels
 stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
 The run settings (agent, mode, criteria and updater models, criteria cap,
-encoder) are in the run's ``run_config.json``; the per-iteration seen doc
+retriever, whose encoder gives the novelty embeddings) are in the run's
+``run_config.json``; the per-iteration seen doc
 ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
@@ -80,8 +81,9 @@ criterion the passages give, not how many passages give it, so a positive
 schema_version 16 keeps one home per fact: the run settings leave the meta
 line (``agent``, ``llm_model``, ``dataset``, ``task``, ``query_shape``,
 ``llm_criteria``, ``max_criteria``, ``add_intermediate_answer``, ``mode``,
-``criteria_source``, ``belief_updater``, ``query_scorer``, ``encoder``: see
-``run_config.json``), and the steps drop ``subqueries`` (the texts of
+``criteria_source``, ``belief_updater``, ``query_scorer``: see
+``run_config.json``; ``encoder``: the retriever's, ``searcher.retriever_name``
+there), and the steps drop ``subqueries`` (the texts of
 ``queries``) and ``belief_state_tag`` (the trajectory step's
 ``belief_state``).
 ``iteration`` counts from 1 for

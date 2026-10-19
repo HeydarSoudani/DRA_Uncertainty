@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path
 import json
-import csv
 import pandas as pd
 from datetime import datetime, timezone
 
@@ -84,19 +83,8 @@ class RankingResults:
         """Add a single ranking result."""
         self.results.append(result)
 
-    def get_results_for_query(
-        self, query_id: str, top_k: int = -1
-    ) -> List[RankingResult]:
-        """Get all results for a specific query."""
-        results = sorted(
-            [r for r in self.results if r.query_id == query_id],
-            key=lambda r: (r.rank, -r.rank_score),
-        )
-        return results[:top_k] if top_k >= 0 else results
-
     def by_query(self) -> Dict[str, List[RankingResult]]:
-        """Every query's results in rank order, grouped in one pass (calling
-        :meth:`get_results_for_query` per query scans all results each time)."""
+        """Every query's results in rank order, grouped in one pass."""
         grouped: Dict[str, List[RankingResult]] = {}
         for r in self.results:
             grouped.setdefault(r.query_id, []).append(r)
@@ -107,10 +95,6 @@ class RankingResults:
     def get_unique_queries(self) -> List[str]:
         """Get list of unique query IDs."""
         return list(set(r.query_id for r in self.results))
-
-    def get_unique_documents(self) -> List[str]:
-        """Get list of unique document IDs."""
-        return list(set(r.doc_id for r in self.results))
 
     def to_dataframe(self) -> pd.DataFrame:
         """Convert to pandas DataFrame for analysis."""
@@ -123,16 +107,6 @@ class RankingResults:
             data.append(row)
 
         return pd.DataFrame(data)
-
-    @staticmethod
-    def from_ranking_results(
-        results: "List[RankingResult]",
-    ) -> "RankingResults":
-        """Create RankingResults from another RankingResults instance."""
-        return RankingResults(
-            results=results.copy(),
-            experiment_info={},
-        )
 
     @classmethod
     def from_dataframe(
@@ -293,36 +267,6 @@ class RankingResults:
             experiment_info = {}
 
         return cls(results=results, experiment_info=experiment_info)
-
-
-def load_ranking_results(file_path: Union[str, Path]) -> RankingResults:
-    """Load ranking results from file, auto-detecting format."""
-    file_path_str = str(file_path)
-
-    file_path = Path(file_path)
-    if not file_path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    # Auto-detect format based on file extension
-    suffix = file_path_str.rsplit(".", 1)[-1].lower() if "." in file_path_str else ""
-
-    if suffix == "json":
-        return RankingResults.from_json(content)
-    elif suffix == "csv":
-        return RankingResults.from_csv(content)
-    elif suffix in ["trec", "txt"]:
-        return RankingResults.from_trec(content)
-    else:
-        # Try to auto-detect from content
-        content_stripped = content.strip()
-        if content_stripped.startswith("{") or content_stripped.startswith("["):
-            return RankingResults.from_json(content)
-        elif "," in content_stripped.split("\n")[0]:  # Likely CSV
-            return RankingResults.from_csv(content)
-        else:  # Assume TREC format
-            return RankingResults.from_trec(content)
 
 
 def save_ranking_results(

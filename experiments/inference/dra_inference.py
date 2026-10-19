@@ -42,8 +42,9 @@ import sys
 import concurrent.futures
 import multiprocessing
 import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 from tqdm import tqdm
 
@@ -64,8 +65,8 @@ from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
 from orchestration import (
     gpu_worker,
+    quiet_logging,
     setup_retriever_from_args,
-    _silence_hf_progress_bars,
 )
 from utils.llm_client import setup_llm
 from utils.cli_setup import (
@@ -87,6 +88,7 @@ from utils.io_utils import (
     build_belief_config_name,
     build_run_config,
     check_run_config,
+    update_run_config_evaluation,
 )
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results
 from evaluation.retrieval.fusion import run_fusion_eval
@@ -98,11 +100,34 @@ _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inf
 # ============================================================================
 # Pipeline
 # ============================================================================
-def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Optional[str] = None, query_key: Optional[str] = None, output_path: Optional[str] = None, policy_model: str = "cpm_report", limit: Optional[int] = None, verbose: bool = True, num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
-    """Execute the deep research agents pipeline on a dataset.
+@dataclass
+class RunPlan:
+    """What a run works on, settled before any model is loaded (see
+    :func:`prepare_run`)."""
+    dataset: str
+    split: str                      # file-level split id, e.g. "wiki2_test"
+    query_key: str
+    queries: Dict[str, str]         # the queries still to run (resume and --limit applied)
+    all_questions: Dict[str, str]   # every query of the split, for accuracy evaluation
+    qrels: Dict[str, Dict[str, int]]         # at min_relevance_score
+    graded_qrels: Dict[str, Dict[str, int]]  # every official level with its gain
+    answers: Dict[str, str]
+    run_dir: str
+    criteria_bank: Optional[str]
+
+
+def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Optional[str] = None,
+                dataset_year: Optional[str] = None, query_key: Optional[str] = None,
+                limit: Optional[int] = None, **kwargs) -> RunPlan:
+    """Load the split, name the run directory and find the queries left to run.
+
+    Done before any model, retriever or vLLM server is set up, so a run with
+    nothing left to do only evaluates.
 
     Args:
         data_path:     Path to dataset directory.
+        output_path:   Root path for saving results.
+        policy_model:  Agent to use (internal name); one of ALL_AGENTS.
         subset:        Dataset subset identifier, e.g. "news" or "technical"
                        for neuclir, "wiki2" for trqa.
         dataset_year:  Dataset year (neuclir "2024", ragtime "2025"); trqa
@@ -111,26 +136,20 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                        None = the dataset's default (layout.DATASET_SPECS),
                        e.g. "request" for neuclir.  Records without the key
                        are not run.
-        output_path:   Root path for saving results (optional).
-        policy_model: Agent to use; one of ALL_AGENTS.
-        limit:         Cap the number of queries (for quick tests).
-        verbose:       Whether to print detailed logs.
-        num_gpus:      Number of GPU workers for query-level parallelism.
-                       1 = sequential (default). >1 = spawn one process per GPU,
-                       split queries across workers, merge temp files at the end.
-        worker_config: Serialisable config dict passed to each GPU worker so it
-                       can rebuild the agent stack.  Required when num_gpus > 1.
-        **kwargs:      Agent-specific and evaluation parameters.
+        limit:         Cap the number of queries (for quick tests), applied
+                       to the queries left to run.
+        **kwargs:      The pipeline kwargs (``assemble_pipeline_kwargs``).
     """
     if policy_model not in ALL_AGENTS:
         raise ValueError(
             f"Unknown policy_model '{policy_model}'. Choose from: {', '.join(ALL_AGENTS)}"
         )
+    kwargs = dict(kwargs)
 
     # ==================== Resolve file-level dataset identifier ====================
     # Build the split string used to locate queries/qrels files on disk
     # (e.g. "2024_news", "2025", "wiki2_test"); see resolve_split_id.
-    dataset = kwargs.pop("dataset", "trqa")
+    dataset = kwargs.pop("dataset")
     qrels_data_path = kwargs.pop("qrels_data_path", None) or data_path
     file_data_set = resolve_split_id(dataset, dataset_year, subset)
 
@@ -138,26 +157,25 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         query_key = DATASET_SPECS[dataset].query_key
 
     # ==================== Load Dataset ====================
-    # Single-pass load of queries + qrels + answers; filter to queries with qrels.
+    # The qrels are read once, with every grade: GradedRecall@N and NDCG use
+    # every official level with its gain; the other metrics and the belief
+    # model use the grades at min_relevance_score.  Only queries with a
+    # relevant doc are run.
+    queries, all_qrels, answers = load_split(data_path, file_data_set, query_key=query_key)
+    if qrels_data_path != data_path:
+        all_qrels = load_qrels(qrels_data_path, file_data_set)
     min_rel_score = kwargs.get("min_relevance_score")
-    same_qrels_path = qrels_data_path == data_path
-    queries, qrels, answers = load_split(
-        data_path, file_data_set, query_key=query_key,
-        min_relevance_score=min_rel_score, only_with_qrels=same_qrels_path,
-    )
-    if not same_qrels_path:
-        # qrels live in a separate directory; reload and re-filter against them.
-        qrels = load_qrels(qrels_data_path, file_data_set, min_relevance_score=min_rel_score)
-        queries = {qid: q for qid, q in queries.items() if qid in qrels}
-    # GradedRecall@N and NDCG use every official level with its gain, not the threshold.
-    graded_qrels = to_graded_qrels(
-        load_qrels(qrels_data_path, file_data_set), DATASET_SPECS[dataset].relevance_gains,
-    )
+    qrels = {}
+    for qid, docs in all_qrels.items():
+        kept = {did: rel for did, rel in docs.items() if min_rel_score is None or rel >= min_rel_score}
+        if kept:
+            qrels[qid] = kept
+    queries = {qid: q for qid, q in queries.items() if qid in qrels}
+    graded_qrels = to_graded_qrels(all_qrels, DATASET_SPECS[dataset].relevance_gains)
     if answers:
         print(f"Loaded {len(answers)} ground-truth answers (accuracy evaluation available)")
 
-    # Only the queries listed in the file (one id per line), e.g. the training
-    # queries of experiments/training/belief_model_training.py.
+    # Only the queries listed in the file (one id per line).
     query_ids_file = kwargs.pop("query_ids_file", None)
     if query_ids_file:
         wanted = {line.strip() for line in Path(query_ids_file).read_text().splitlines() if line.strip()}
@@ -167,94 +185,132 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
-    _belief_mode = kwargs.get("belief_mode", "off")
+    belief_mode = kwargs["belief_mode"]
     # Criteria bank of the split: criteria are read from it, extracted only when missing.
     criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
-                     if _belief_mode != "off" and kwargs.get("criteria_bank", True) else None)
+                     if belief_mode != "off" and kwargs["criteria_bank"] else None)
 
     # ==================== Resume: skip already-processed queries ====================
-    llm_model = kwargs.pop("llm_model", "claude-sonnet-4-5")
-    run_name = None
-    run_dir  = None
-    processed: set = set()
+    # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
+    llm_model = kwargs.pop("llm_model")
+    policy_model_cli = kwargs.pop("policy_model_cli")
+    run_name = build_run_name_for_pipeline(policy_model=policy_model_cli, llm_model=llm_model, **kwargs)
+    dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, kwargs["retriever_name"])
+    run_dir = str(Path(output_path) / dataset_dir / run_name / build_belief_config_name(**kwargs))
 
-    if output_path:
-        run_name = build_run_name_for_pipeline(policy_model=policy_model, llm_model=llm_model, **kwargs)
-        retriever_label = kwargs.get("retriever_name", "e5")
-        dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, retriever_label)
-        belief_config_name = build_belief_config_name(**kwargs)
+    print(f"\n{'=' * 80}")
+    print(f"[OUTPUT] Loading/saving results from: {run_dir}")
+    print(f"{'=' * 80}")
 
-        run_dir = str(Path(output_path) / dataset_dir / run_name / belief_config_name)
-
-        print(f"\n{'=' * 80}")
-        print(f"[OUTPUT] Loading/saving results from: {run_dir}")
-        print(f"{'=' * 80}")
-
+    run_config = build_run_config(
+        policy_model_cli, llm_model, dataset=dataset, split=file_data_set, query_key=query_key, **kwargs,
+    )
+    if kwargs["eval_only"]:
+        # Only the evaluation settings (e.g. the judge) may change.
+        update_run_config_evaluation(run_dir, run_config)
+    else:
         # Every query of the run directory runs with the same settings: a
         # resume with other ones stops here, before any query is run.
-        if not kwargs.get("eval_only", False):
-            check_run_config(run_dir, build_run_config(
-                policy_model, llm_model, dataset=dataset, split=file_data_set, query_key=query_key, **kwargs,
-            ))
+        check_run_config(run_dir, run_config)
 
-        processed = get_processed_queries(
-            run_dir, require_belief=kwargs.get("belief_mode", "off") != "off",
-        )
-        if processed:
-            print(f"Found {len(processed)} already processed queries — skipping them")
-            original_count = len(queries)
-            queries = {qid: q for qid, q in queries.items() if qid not in processed}
-            print(f"Remaining: {len(queries)} queries (skipped {original_count - len(queries)})")
-
-        if not queries:
-            print("All queries already processed — loading results from disk for evaluation")
+    processed = get_processed_queries(run_dir, require_belief=belief_mode != "off")
+    if processed:
+        print(f"Found {len(processed)} already processed queries — skipping them")
+        original_count = len(queries)
+        queries = {qid: q for qid, q in queries.items() if qid not in processed}
+        print(f"Remaining: {len(queries)} queries (skipped {original_count - len(queries)})")
 
     # ==================== Limit ====================
     if limit is not None and limit > 0:
         queries = dict(list(queries.items())[:limit])
         print(f"Limited to {len(queries)} queries for testing")
 
-    # ==================== Eval-only mode ====================
-    eval_only = kwargs.get("eval_only", False)
-    if eval_only:
-        if not run_dir:
-            print("--eval-only requires a valid --output directory with existing results.")
-            return
-        _run_dir_str = str(run_dir)
-        if not Path(_run_dir_str).exists():
-            print(f"--eval-only: run_dir does not exist: {run_dir}")
-            return
+    if not queries and not kwargs["eval_only"]:
+        print("All queries already processed — loading results from disk for evaluation")
 
-        processed_all = get_processed_queries(run_dir)
-        if not processed_all:
-            print(f"No finished query in {_run_dir_str.rstrip('/')}/trajectory. "
-                  "Run the full pipeline first (without --eval-only).")
-            return
+    return RunPlan(
+        dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
+        all_questions=all_questions, qrels=qrels, graded_qrels=graded_qrels, answers=answers,
+        run_dir=run_dir, criteria_bank=criteria_bank,
+    )
 
-        results = load_run_results(run_dir, processed_all)
-        if not results:
-            print(f"Could not load any results from {_run_dir_str}.")
-            return
-        print(f"Loaded {len(results)} queries for evaluation")
 
-        evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
-                                      dataset=dataset, graded_qrels=graded_qrels,
-                                      data_path=data_path, split=file_data_set)
+def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report", verbose: bool = True,
+                 num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
+    """Run the agent on the plan's queries, then evaluate the whole run.
 
-        # Fusion runs first so its per-method surfaced-doc metrics can be folded
-        # into the single summary.json written by evaluate_and_save.
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, gain_qrels=graded_qrels)
+    Args:
+        plan:          From :func:`prepare_run`.
+        data_path:     Path to dataset directory (nuggets of the report datasets).
+        policy_model:  Agent to use (internal name); one of ALL_AGENTS.
+        verbose:       Whether to print detailed logs.
+        num_gpus:      Number of GPU workers for query-level parallelism.
+                       1 = sequential (default). >1 = spawn one process per GPU,
+                       split queries across workers; each worker saves its
+                       queries' files straight to the run directory.
+        worker_config: Serialisable config dict passed to each GPU worker so it
+                       can rebuild the agent stack.  Required when num_gpus > 1.
+        **kwargs:      Agent-specific and evaluation parameters.
+    """
+    dataset, run_dir, answers = plan.dataset, plan.run_dir, plan.answers
+    belief_mode = kwargs["belief_mode"]
+    llm_model = kwargs["llm_model"]
+    eval_only = kwargs["eval_only"]
 
-        # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE
-        # reports) call the OpenRouter-hosted judge directly and reuse the
-        # verdicts saved in the run directory; no local server to start.
-        evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
+    evaluators = build_evaluators(plan.qrels, kwargs, answers=answers, questions=plan.all_questions,
+                                  dataset=dataset, graded_qrels=plan.graded_qrels,
+                                  data_path=data_path, split=plan.split)
+
+    if not eval_only and plan.queries:
+        _run_queries(plan, policy_model, llm_model, verbose, num_gpus, worker_config, kwargs)
+
+    # ==================== Read the run back from disk ====================
+    # Every query of the run (this batch and earlier ones) is evaluated from
+    # its saved files, at the end of a run as with --eval-only, so both write
+    # the same summary.json.
+    finished, unfinished = scan_queries(run_dir, require_belief=belief_mode != "off")
+    if unfinished:
+        print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl"
+              f"{' or no belief file' if belief_mode != 'off' else ''}); they are run again on resume: "
+              f"{', '.join(sorted(unfinished)[:20])}{' ...' if len(unfinished) > 20 else ''}")
+    if eval_only and not finished:
+        print(f"No finished query in {run_dir.rstrip('/')}/trajectory. "
+              "Run the full pipeline first (without --eval-only).")
+        return
+    results = load_run_results(run_dir, finished)
+    if eval_only and not results:
+        print(f"Could not load any results from {run_dir}.")
         return
 
+    # ==================== Multi-fusion evaluation ====================
+    # Fusion runs first so its per-method surfaced-doc metrics can be folded
+    # into the single summary.json written by evaluate_and_save.
+    fusion_metrics = {}
+    if results:
+        fusion_metrics = run_fusion_eval(results, plan.qrels, kwargs, run_dir, gain_qrels=plan.graded_qrels)
+
+    # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE reports)
+    # call the OpenRouter-hosted judge directly and reuse the verdicts saved in
+    # the run directory; no local server to start.
+    evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
+
+    # ==================== Final status ==========================================
+    print(f"\n{'=' * 80}")
+    print(f"[OUTPUT] All results saved to: {run_dir}")
+    print(f"{'=' * 80}")
+
+
+def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool, num_gpus: int,
+                 worker_config: Optional[dict], kwargs: dict) -> None:
+    """Run the agent on ``plan.queries`` and save each query's files under
+    ``plan.run_dir``, then release every GPU the run held."""
+    run_dir, answers, qrels = plan.run_dir, plan.answers, plan.qrels
+    belief_mode = kwargs["belief_mode"]
+
     # ==================== Inject qrels into worker_config for the multi-GPU belief model ======
-    if worker_config is not None and _belief_mode != "off":
+    if worker_config is not None and belief_mode != "off":
         worker_config["qrels"] = qrels
-        worker_config["criteria_bank"] = criteria_bank
+        worker_config["criteria_bank"] = plan.criteria_bank
     # The gold answers, for the header of each query's trajectory .md.
     if worker_config is not None:
         worker_config["answers"] = answers
@@ -269,10 +325,9 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             retriever=_retriever,
             post_retrieval_reranker=kwargs.get("post_retrieval_reranker"),
             post_fusion_reranker=kwargs.get("post_fusion_reranker"),
-            top_k=kwargs.get("top_k", 100),
-            rerank_top_k=kwargs.get("rerank_top_k", 100),
-            retrieval_input=kwargs.get("retrieval_input", "subquery"),
-            post_fusion_reranker_input=kwargs.get("post_fusion_reranker_input", "original_query"),
+            rerank_top_k=kwargs["rerank_top_k"],
+            retrieval_input=kwargs["retrieval_input"],
+            post_fusion_reranker_input=kwargs["post_fusion_reranker_input"],
         )
 
     # ==================== Instantiate Agent + Belief model ====================
@@ -284,64 +339,61 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
 
     agent = None
     belief_model = None
-    if num_gpus <= 1 and queries:
+    if num_gpus <= 1:
         agent = build_agent(
             policy_model=policy_model,
-            policy_model_cli=kwargs.get("policy_model_cli", policy_model),
-            dataset=dataset,
+            policy_model_cli=kwargs["policy_model_cli"],
+            dataset=plan.dataset,
             llm_model=llm_model,
             llm_client=kwargs.get("llm_client"),
             retriever=_retriever,
-            max_iteration=kwargs.get("max_iteration", 100),
-            seen_top_k=kwargs.get("seen_top_k", 5),
+            max_iteration=kwargs["max_iteration"],
+            seen_top_k=kwargs["seen_top_k"],
             verbose=verbose,
             search_tool=search_tool,
-            use_plan=kwargs.get("use_plan", False),
-            max_output_tokens_total=kwargs.get("max_output_tokens_total", 40000),
-            temperature=kwargs.get("temperature", 0.0),
-            max_extend_steps=kwargs.get("max_extend_steps", 5),
-            max_retries=kwargs.get("max_retries", 3),
-            hard_mode=kwargs.get("hard_mode", True),
-            max_passage_chars=kwargs.get("max_passage_chars", 4000),
+            use_plan=kwargs["use_plan"],
+            max_output_tokens_total=kwargs["max_output_tokens_total"],
+            temperature=kwargs["temperature"],
+            max_extend_steps=kwargs["max_extend_steps"],
+            max_retries=kwargs["max_retries"],
+            hard_mode=kwargs["hard_mode"],
+            max_passage_chars=kwargs["max_passage_chars"],
         )
 
         # Build the belief model AFTER the agent so it can take the agent's
         # intermediate-answer hook.
         belief_model = build_belief_model(
-            mode=_belief_mode,
+            mode=belief_mode,
             retriever=_retriever,
             qrels=qrels,
-            llm_criteria=kwargs.get("llm_criteria"),
-            max_criteria=kwargs.get("max_criteria"),
-            belief_judge_model=kwargs.get("belief_judge_model", ""),
-            query_scorer_model=kwargs.get("query_scorer_model", ""),
-            add_intermediate_answer=kwargs.get("add_intermediate_answer", True),
+            llm_criteria=kwargs["llm_criteria"],
+            max_criteria=kwargs["max_criteria"],
+            belief_judge_model=kwargs["belief_judge_model"],
+            query_scorer_model=kwargs["query_scorer_model"],
+            add_intermediate_answer=kwargs["add_intermediate_answer"],
             agent=agent if hasattr(agent, "belief_model") else None,
             policy_model=policy_model,
-            dataset=dataset,
-            criteria_bank=criteria_bank,
+            dataset=plan.dataset,
+            criteria_bank=plan.criteria_bank,
         )
         if belief_model is not None and hasattr(agent, "belief_model"):
             agent.belief_model = belief_model
 
-    # ==================== Setup output dirs + evaluators ====================
-    evaluators = build_evaluators(qrels, kwargs, answers=answers, questions=all_questions,
-                                  dataset=dataset, graded_qrels=graded_qrels,
-                                  data_path=data_path, split=file_data_set)
-
-    if output_path:
-        setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)
-        print(f"\nProcessing {len(queries)} queries, saving results to {run_dir}/...")
+    setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)
+    print(f"\nProcessing {len(plan.queries)} queries, saving results to {run_dir}/...")
 
     # ==================== Loop: run + save per query ====================
-    results     = {}
-    query_items = list(queries.items())
+    # Only the number of finished queries is kept: the evaluation reads the
+    # results back from their files.
+    n_done = 0
+    query_items = list(plan.queries.items())
 
-    if num_gpus > 1 and output_path and worker_config is not None:
+    if num_gpus > 1 and worker_config is not None:
         # ── Multi-GPU path ──────────────────────────────────────────────────
         # Split queries round-robin across GPU workers so load is balanced even
-        # when queries vary in difficulty.
-        chunks = [query_items[i::num_gpus] for i in range(num_gpus)]
+        # when queries vary in difficulty; never more workers than queries.
+        num_workers = min(num_gpus, len(query_items))
+        chunks = [query_items[i::num_workers] for i in range(num_workers)]
 
         # The live bars redraw in place on every progress event.  That is what
         # you want on a terminal (with or without --quiet) and useless in an
@@ -351,7 +403,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         live_bars = sys.stdout.isatty()
         worker_config = {**worker_config, "live_bars": live_bars}
 
-        print(f"\nParallel mode: {num_gpus} workers")
+        print(f"\nParallel mode: {num_workers} workers")
         for i, chunk in enumerate(chunks):
             print(f"  Worker {i}: {len(chunk)} queries")
 
@@ -368,7 +420,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                 dynamic_ncols=True,
                 disable=not live_bars,
             )
-            for i in range(num_gpus)
+            for i in range(num_workers)
         ]
         if live_bars:
             for bar in bars:
@@ -387,7 +439,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
                     continue
                 if item is None:
                     done_count += 1
-                    if done_count >= num_gpus:
+                    if done_count >= num_workers:
                         break
                     continue
                 if item[0] == "log":
@@ -427,19 +479,19 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         drain_thread.start()
 
         with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_gpus, mp_context=mp_ctx
+            max_workers=num_workers, mp_context=mp_ctx
         ) as executor:
             futures = {
-                executor.submit(gpu_worker, i, chunks[i], str(run_dir), worker_config, progress_queue, None): i
-                for i in range(num_gpus)
+                executor.submit(gpu_worker, i, chunks[i], run_dir, worker_config, progress_queue): i
+                for i in range(num_workers)
             }
             for future in concurrent.futures.as_completed(futures):
                 worker_id = futures[future]
                 try:
-                    worker_results = future.result()
-                    results.update(worker_results)
+                    worker_done = future.result()
+                    n_done += len(worker_done)
                     tqdm.write(
-                        f"[Worker {worker_id}] Completed {len(worker_results)}/{len(chunks[worker_id])} queries"
+                        f"[Worker {worker_id}] Completed {len(worker_done)}/{len(chunks[worker_id])} queries"
                     )
                 except Exception as e:
                     tqdm.write(f"  Worker {worker_id} failed: {e}")
@@ -451,7 +503,7 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
         for bar in bars:
             bar.close()
 
-        print(f"\nCompleted {len(results)} queries (parallel)")
+        print(f"\nCompleted {n_done} queries (parallel)")
 
     else:
         # ── Sequential path (default / single GPU) ──────────────────────────
@@ -461,33 +513,19 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
             result = run_query(
                 agent, run_dir, query_id, query_text,
                 policy_model=policy_model, llm_model=llm_model,
-                answer=answers.get(query_id), temperature=kwargs.get("temperature", 0.7),
+                answer=answers.get(query_id), temperature=kwargs["temperature"],
             )
             if result is None:
                 print(f"  ✗ Skipping {query_id} (error during processing)")
                 continue
-            results[query_id] = result
-            if run_dir:
-                print(f"  ✓ Saved: {query_id}")
+            n_done += 1
+            print(f"  ✓ Saved: {query_id}")
 
         if agent:
             agent.cleanup()
-        print(f"\nCompleted {len(results)} queries")
+        print(f"\nCompleted {n_done} queries")
 
-    # ==================== Read the run back from disk ====================
-    # Every query of the run (this batch and earlier ones) is evaluated from
-    # its saved files, exactly as --eval-only does, so both write the same
-    # summary.json.  Without an output directory the in-memory results are
-    # evaluated.
-    if run_dir:
-        finished, unfinished = scan_queries(run_dir, require_belief=_belief_mode != "off")
-        if unfinished:
-            print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl"
-                  f"{' or no belief file' if _belief_mode != 'off' else ''}); they are run again on resume: "
-                  f"{', '.join(sorted(unfinished)[:20])}{' ...' if len(unfinished) > 20 else ''}")
-        results = load_run_results(run_dir, finished)
-
-    # ==================== Evaluate + Save ====================
+    # ==================== Release the GPUs ====================
     _vllm_mgr = kwargs.get("vllm_manager")
     _total_gpus = kwargs.get("total_gpus_on_machine", 8)
 
@@ -538,23 +576,6 @@ def run_pipeline(data_path: str, subset: Optional[str] = None, dataset_year: Opt
     if _vllm_mgr is not None:
         _vllm_mgr.shutdown_and_release_gpus(_total_gpus)
 
-    # ==================== Multi-fusion evaluation ====================
-    # Fusion runs first so its per-method surfaced-doc metrics can be folded
-    # into the single summary.json written by evaluate_and_save.
-    fusion_metrics = {}
-    if results:
-        fusion_metrics = run_fusion_eval(results, qrels, kwargs, run_dir, gain_qrels=graded_qrels)
-
-    # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE reports)
-    # call the OpenRouter-hosted judge directly; no local server to start.
-    evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
-
-    # ==================== Final status ==========================================
-    if output_path and run_dir:
-        print(f"\n{'=' * 80}")
-        print(f"[OUTPUT] All results saved to: {run_dir}")
-        print(f"{'=' * 80}")
-
 
 # ============================================================================
 # CLI
@@ -585,7 +606,7 @@ def _parse_args():
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--policy-model", type=str, default="glm", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
-    parser.add_argument("--subset", type=_none_if_null, default="test", help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (one belief status per criterion) and the per-step signals (doc_novelty, criteria_delta, query_novelty, criteria attempts, new-item precision, recall so far, intermediate answers) to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its belief status and attempts, then doc_novelty, criteria_delta, query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
 
@@ -618,12 +639,13 @@ def _parse_args():
     _explicit_temp = args.llm_temperature
     args.llm_temperature = resolve_temperature(args.policy_model, _explicit_temp)
     if _explicit_temp is None:
-        print(f"Auto-selected temperature: {args.llm_temperature} (from --policy-model {args.policy_model})")
+        print(f"Auto-selected temperature: {args.llm_temperature} (from --policy-model {args.policy_model_cli})")
 
     if args.output is None:
         args.output = _OUTPUT_PREFIX
 
     return args
+
 
 def main():
     """Main entry point."""
@@ -632,13 +654,9 @@ def main():
     verbose = args.verbose and not args.quiet
 
     if args.quiet:
-        logging.getLogger("agents").setLevel(logging.ERROR)
-        logging.getLogger("agent_tools").setLevel(logging.ERROR)
-        logging.getLogger("utils").setLevel(logging.ERROR)
-        logging.getLogger("prompts").setLevel(logging.ERROR)
         # Same treatment the workers get in _init_worker: no HF/datasets tqdm
         # bars, which single-GPU runs would otherwise draw in this process.
-        _silence_hf_progress_bars()
+        quiet_logging()
 
     resolve_dataset_defaults(args)
 
@@ -650,7 +668,6 @@ def main():
             args.num_gpus = len(gpu_ids)
     num_gpus            = detect_num_gpus(args.num_gpus)
 
-    # ── Auto-start vLLM servers if needed ─────────────────────────────────
     from utils.vllm_manager import VLLMServerManager
     vllm_manager = VLLMServerManager()
 
@@ -662,104 +679,103 @@ def main():
     except ImportError:
         total_gpus_on_machine = num_gpus
 
-    # ── GPU plan: retriever first (fixed footprint), then agent ──────────
-    from utils.config import resolve_agent_backend, RETRIEVER_VRAM_GB
-    _agent_backend, _agent_slug = resolve_agent_backend(args.policy_model_cli)
-    print(f"[GPU Plan] total GPUs : {total_gpus_on_machine}")
-    print(f"[GPU Plan] retriever  : {args.retriever} "
-          f"(~{RETRIEVER_VRAM_GB} GB fp16, FAISS on CPU — shares a worker GPU)")
-    if _agent_backend == "api":
-        print(f"[GPU Plan] agent      : {args.policy_model} → "
-              f"OpenRouter '{_agent_slug}' (0 local GPU)")
-    else:
-        print(f"[GPU Plan] agent      : {args.policy_model} → "
-              f"local vLLM (reserves leftmost GPUs)")
-
-    if args.eval_only:
-        # Eval-only: skip LLM/reranker vLLM servers.  The LLM-as-judge
-        # evaluators use the OpenRouter-hosted judge, so no GPU is needed for it.
-        if num_gpus > 1:
-            gpu_ids = gpu_ids or list(range(min(num_gpus, total_gpus_on_machine)))
-    elif gpu_ids is None:
-        # Let the manager allocate GPUs: vLLM servers get leftmost GPUs,
-        # remaining GPUs go to pipeline workers.
-        worker_gpu_ids = vllm_manager.auto_start(args, total_gpus=total_gpus_on_machine)
-        if worker_gpu_ids is not None:
-            gpu_ids = worker_gpu_ids
-            num_gpus = len(worker_gpu_ids)
-            args.num_gpus = num_gpus
-        elif num_gpus > 1:
-            gpu_ids = list(range(min(num_gpus, total_gpus_on_machine)))
-    else:
-        # User specified --gpu-ids explicitly; still check whether vLLM
-        # servers need to be started and adjust the worker set accordingly.
-        worker_gpu_ids = vllm_manager.auto_start(args, total_gpus=total_gpus_on_machine)
-        if worker_gpu_ids is not None:
-            gpu_ids = worker_gpu_ids
-            num_gpus = len(worker_gpu_ids)
-            args.num_gpus = num_gpus
-
-    # ── Restrict main process to pipeline GPUs before any CUDA init ───────
-    # When --gpu-ids is specified the main process must not touch vLLM's
-    # GPUs (typically 0..3).  Setting CUDA_VISIBLE_DEVICES early prevents
-    # accidental CUDA context creation on those devices.
-    if gpu_ids is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
-
-    if args.eval_only:
-        pipeline_kwargs = assemble_pipeline_kwargs(args, llm_client=None, retriever=None, num_gpus=num_gpus, verbose=verbose, gpu_ids=gpu_ids)
-    elif num_gpus > 1:
-        # Multi-GPU: each worker loads its own retriever on its assigned GPU.
-        # Skip loading in the main process to avoid OOM on shared GPUs.
-        llm_client = setup_llm(args, num_gpus)
-        pipeline_kwargs = assemble_pipeline_kwargs(args, llm_client, retriever=None, num_gpus=num_gpus, verbose=verbose, gpu_ids=gpu_ids)
-    else:
-        llm_client  = setup_llm(args, num_gpus)
-        retriever   = setup_retriever_from_args(args)
-        pipeline_kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus, verbose, gpu_ids=gpu_ids)
-
-    # ── Deep-research-pipeline-specific kwargs ────────────────────────
-    pipeline_kwargs.update({
-        "fusion_k": args.fusion_k,
-        "fusion_methods": args.fusion_methods,
-        "eval_only": args.eval_only,
-        "vllm_manager": vllm_manager,
-        "total_gpus_on_machine": total_gpus_on_machine,
-        "judge_model": args.judge_model,
-        "query_ids_file": args.query_ids_file,
-    })
-
-    # ── Optional post-retrieval & post-fusion rerankers ─────────────────
-    # In multi-GPU mode each worker builds its own reranker on its assigned
-    # GPU (see _init_worker).  Loading one in the main process would waste
-    # GPU memory on a device that a worker needs (e.g. rankllama = ~14 GB).
-    if num_gpus <= 1 and not args.eval_only:
-        from utils.config import get_reranker_configs
-        _reranker_configs = get_reranker_configs(args.rerank_top_k)
-        from searcher_component.rerankers import build_reranker_from_config
-        if args.post_retrieval_reranker != "null":
-            pipeline_kwargs["post_retrieval_reranker"] = build_reranker_from_config(
-                args.post_retrieval_reranker, _reranker_configs,
-            )
-        if args.post_fusion_reranker != "null":
-            pipeline_kwargs["post_fusion_reranker"] = build_reranker_from_config(
-                args.post_fusion_reranker, _reranker_configs,
-            )
-    pipeline_kwargs["rerank_top_k"] = args.rerank_top_k
-    pipeline_kwargs["retrieval_input"] = args.retrieval_input
-    pipeline_kwargs["post_fusion_reranker_input"] = args.post_fusion_reranker_input
-    pipeline_kwargs["post_retrieval_reranker_name"] = args.post_retrieval_reranker
-    pipeline_kwargs["post_fusion_reranker_name"] = args.post_fusion_reranker
+    def _pipeline_kwargs(llm_client=None, retriever=None) -> dict:
+        kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus, verbose, gpu_ids=gpu_ids)
+        # ── Deep-research-pipeline-specific kwargs ────────────────────────
+        kwargs.update({
+            "fusion_k": args.fusion_k,
+            "fusion_methods": args.fusion_methods,
+            "eval_only": args.eval_only,
+            "vllm_manager": vllm_manager,
+            "total_gpus_on_machine": total_gpus_on_machine,
+            "judge_model": args.judge_model,
+            "query_ids_file": args.query_ids_file,
+            "rerank_top_k": args.rerank_top_k,
+            "retrieval_input": args.retrieval_input,
+            "post_fusion_reranker_input": args.post_fusion_reranker_input,
+            "post_retrieval_reranker_name": args.post_retrieval_reranker,
+            "post_fusion_reranker_name": args.post_fusion_reranker,
+        })
+        return kwargs
 
     try:
-        run_pipeline(
+        # ── Queries left to run, before any model is set up ──────────────
+        pipeline_kwargs = _pipeline_kwargs()
+        plan = prepare_run(
             data_path=args.data_path,
+            output_path=args.output,
+            policy_model=args.policy_model,
             subset=args.subset,
             dataset_year=args.dataset_year,
             query_key=args.query_key,
-            output_path=args.output,
-            policy_model=args.policy_model,
             limit=args.limit,
+            **pipeline_kwargs,
+        )
+
+        # With nothing to run (--eval-only, or every query finished) no vLLM
+        # server, LLM client, retriever or reranker is set up: the run is
+        # only evaluated.  The LLM-as-judge evaluators use the
+        # OpenRouter-hosted judge, so no GPU is needed for them.
+        if plan.queries and not args.eval_only:
+            # ── GPU plan: retriever first (fixed footprint), then agent ──────────
+            from utils.config import resolve_agent_backend, RETRIEVER_VRAM_GB
+            _agent_backend, _agent_slug = resolve_agent_backend(args.policy_model_cli)
+            print(f"[GPU Plan] total GPUs : {total_gpus_on_machine}")
+            print(f"[GPU Plan] retriever  : {args.retriever} "
+                  f"(~{RETRIEVER_VRAM_GB} GB fp16, FAISS on CPU — shares a worker GPU)")
+            if _agent_backend == "api":
+                print(f"[GPU Plan] agent      : {args.policy_model_cli} → "
+                      f"OpenRouter '{_agent_slug}' (0 local GPU)")
+            else:
+                print(f"[GPU Plan] agent      : {args.policy_model_cli} → "
+                      f"local vLLM (reserves leftmost GPUs)")
+
+            # ── Auto-start vLLM servers if needed ─────────────────────────────────
+            # The manager allocates GPUs: vLLM servers get the leftmost GPUs, the
+            # remaining ones (or those of --gpu-ids) go to pipeline workers.
+            worker_gpu_ids = vllm_manager.auto_start(args, total_gpus=total_gpus_on_machine)
+            if worker_gpu_ids is not None:
+                gpu_ids = worker_gpu_ids
+                num_gpus = len(worker_gpu_ids)
+            elif gpu_ids is None and num_gpus > 1:
+                gpu_ids = list(range(min(num_gpus, total_gpus_on_machine)))
+            # Never more workers than queries.
+            num_gpus = min(num_gpus, len(plan.queries))
+            if gpu_ids is not None:
+                gpu_ids = gpu_ids[:max(num_gpus, 1)]
+            args.num_gpus = num_gpus
+
+            # ── Restrict main process to pipeline GPUs before any CUDA init ───────
+            # When --gpu-ids is specified the main process must not touch vLLM's
+            # GPUs (typically 0..3).  Setting CUDA_VISIBLE_DEVICES early prevents
+            # accidental CUDA context creation on those devices.
+            if gpu_ids is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
+
+            if num_gpus > 1:
+                # Multi-GPU: each worker builds its own LLM client, retriever and
+                # rerankers on its assigned GPU.  Skip them in the main process to
+                # avoid OOM on shared GPUs.
+                pipeline_kwargs = _pipeline_kwargs()
+            else:
+                pipeline_kwargs = _pipeline_kwargs(setup_llm(args, num_gpus), setup_retriever_from_args(args))
+                # ── Optional post-retrieval & post-fusion rerankers ─────────────────
+                from utils.config import get_reranker_configs
+                from searcher_component.rerankers import build_reranker_from_config
+                _reranker_configs = get_reranker_configs(args.rerank_top_k)
+                if args.post_retrieval_reranker != "null":
+                    pipeline_kwargs["post_retrieval_reranker"] = build_reranker_from_config(
+                        args.post_retrieval_reranker, _reranker_configs,
+                    )
+                if args.post_fusion_reranker != "null":
+                    pipeline_kwargs["post_fusion_reranker"] = build_reranker_from_config(
+                        args.post_fusion_reranker, _reranker_configs,
+                    )
+
+        run_pipeline(
+            plan,
+            data_path=args.data_path,
+            policy_model=args.policy_model,
             verbose=verbose,
             **pipeline_kwargs,
         )
@@ -781,7 +797,8 @@ if __name__ == "__main__":
 # ============================================================================
 #   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}/
 #   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default)
-#   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_vllm_gpt-oss-20b/belief-monitor/
+#   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_20b_vllm_gpt-oss-20b/belief-monitor/
+#   ({agent} = the --policy-model name)
 #
 #   One home per fact: each file below holds its facts only.
 #     ├── run_config.json       every resolved setting (dataset, agent, searcher, belief model,

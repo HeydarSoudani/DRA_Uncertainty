@@ -9,8 +9,8 @@ Leaf-level helpers (LLM-client factory, CLI arg resolution, output naming) live
 in ``utils`` so this module is the only place that depends on the heavy
 component packages — keeping ``utils`` a true leaf layer.
 
-The worker functions (_build_components_from_config, _init_worker, gpu_worker)
-must stay at module level to be picklable by multiprocessing.spawn.
+The worker functions (_init_worker, gpu_worker) must stay at module level to
+be picklable by multiprocessing.spawn.
 """
 
 import contextlib
@@ -20,18 +20,19 @@ import os
 import sys
 import traceback
 from pathlib import Path
-from typing import Optional
+from types import SimpleNamespace
+from typing import List, Optional
 
 from indexing_corpus_dataset.layout import DATASET_SPECS, query_max_length
 from utils.config import (
     OPENROUTER_BASE_URL,
-    SELF_MANAGED_LLM_AGENTS,
     _RetrieverConfig,
+    effective_max_output_tokens,
     get_reranker_configs,
-    is_local_finetuned,
     resolve_agent_backend,
 )
 from reasoner_component import create_generator, disable_native_thinking
+from reasoner_component.setup import setup_llm
 from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
 from utils.trajectory_logger import TrajectoryLogger
 
@@ -85,13 +86,14 @@ def _belief_llm(model: str):
 
 def build_belief_model(
     mode: str,
+    *,
+    max_criteria: int,
+    add_intermediate_answer: bool,
     retriever=None,
     qrels=None,
     llm_criteria: Optional[str] = None,
-    max_criteria: Optional[int] = None,
     belief_judge_model: str = "",
     query_scorer_model: str = "",
-    add_intermediate_answer: bool = True,
     agent=None,
     policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
@@ -112,8 +114,7 @@ def build_belief_model(
             it the criteria-based signals are null.
         max_criteria: Cap on the number of criteria per query (for a report
             request, the number the extractor may add, asked in the prompt);
-            None = the
-            dataset's ``max_criteria`` (layout.DATASET_SPECS).
+            resolved from the dataset by ``resolve_dataset_defaults``.
         belief_judge_model: LLM behind the belief state and criteria_delta
             (belief updater); "" = *llm_criteria*.  A ``vllm/`` model is
             served locally (``_belief_llm``), e.g. a trained belief model.
@@ -139,9 +140,6 @@ def build_belief_model(
         BankedCriteriaSource, LLMCriteriaSource, LLMQueryScorer, BeliefModel, build_belief_judges,
         encode_fn_from_retriever,
     )
-
-    if max_criteria is None:
-        max_criteria = DATASET_SPECS[dataset].max_criteria if dataset else 8
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
     criteria_source = None
@@ -217,8 +215,8 @@ def build_agent(
     verbose: bool = False,
     search_tool=None,
     use_plan: bool = False,
-    max_output_tokens_total: int = 40000,
-    temperature: float = 0.0,
+    max_output_tokens_total: int,
+    temperature: float,
     max_extend_steps: int = 5,
     max_retries: int = 3,
     hard_mode: bool = True,
@@ -240,11 +238,13 @@ def build_agent(
     # OpenRouter registry distinguishes oss_20b / oss_120b, which both collapse
     # to the internal agent name "oss".
     _cli_name = policy_model_cli or policy_model
+    # The capped value (utils.config.OUTPUT_TOKEN_CAPS); run_config.json records the same.
+    max_output_tokens = effective_max_output_tokens(policy_model, max_output_tokens_total)
     _reasoning_extra: dict = {}
     if use_plan and policy_model == "react":
         _reasoning_extra["use_plan"] = True
     if policy_model == "glm":
-        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 20000)
+        _reasoning_extra["max_output_tokens"] = max_output_tokens
         # Prefer OpenRouter when the agent is in the registry (0 local GPU);
         # otherwise fall through to the agent's vLLM defaults (localhost:6008).
         _backend, _slug = resolve_agent_backend(_cli_name)
@@ -257,7 +257,7 @@ def build_agent(
         # the 131072-token vLLM window (gpt-oss native max = OpenRouter's max).
         # On the OpenRouter Responses path truncation:"auto" reclaims the full
         # window regardless of this ceiling.
-        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 20000)
+        _reasoning_extra["max_output_tokens"] = max_output_tokens
         # Prefer OpenRouter (Responses API) when oss_20b / oss_120b is in the
         # registry; otherwise use the agent's local vLLM defaults (localhost:6008).
         _backend, _slug = resolve_agent_backend(_cli_name)
@@ -268,9 +268,9 @@ def build_agent(
         else:
             _reasoning_extra["model_name"] = f"openai/{llm_model}"
     elif policy_model == "tongyi":
-        _reasoning_extra["max_tokens_per_step"] = min(max_output_tokens_total, 20000)
+        _reasoning_extra["max_tokens_per_step"] = max_output_tokens
     elif policy_model == "cpm_explore":
-        _reasoning_extra["max_output_tokens"] = min(max_output_tokens_total, 16384)
+        _reasoning_extra["max_output_tokens"] = max_output_tokens
         # The run's resolved temperature (utils.config.resolve_temperature),
         # not a falsy-guarded default: 0.0 is a temperature a user can ask for.
         _reasoning_extra["temperature"] = temperature
@@ -311,76 +311,22 @@ def build_agent(
 # ===========================================================================
 
 def _build_components_from_config(worker_config: dict):
-    """Rebuild LLM client and retriever from a serializable config dict.
-
-    Called inside spawned worker processes to avoid pickling live objects.
+    """Rebuild LLM client and retriever from a serializable config dict, with
+    the main process's ``setup_llm`` and :func:`setup_retriever_from_args`
+    (the worker config carries their argument names).
 
     Returns:
         (llm_client, retriever)  — llm_client may be None for self-managed agents.
     """
-    policy_model = worker_config["policy_model"]
-    llm_model     = worker_config["llm_model"]
-    dataset       = worker_config["dataset"]
-
-    llm_client = None
-
-    if policy_model in SELF_MANAGED_LLM_AGENTS:
-        pass
-    elif is_local_finetuned(policy_model, llm_model):
-        hf_model = llm_model
-        api_base = os.getenv("VLLM_API_BASE", "http://127.0.0.1:6008/v1")
-        llm_client = create_generator(
-            hf_model,
-            backend="vllm",
-            api_base=api_base,
-            api_key="EMPTY",
-            litellm_prefix="openai",  # preserve model string "openai/<hf_model>"
-            temperature=worker_config["llm_temperature"],
-            max_tokens=worker_config["llm_max_tokens_per_call"],
-            request_timeout=worker_config.get("request_timeout", 300),
-        )
-    else:
-        # Let create_generator infer the backend from the model name: an
-        # ``hf/``-prefixed (or registered) model routes to HFGenerator, ordinary
-        # slugs route to APIGenerator.
-        llm_client = create_generator(
-            llm_model,
-            temperature=worker_config["llm_temperature"],
-            top_p=worker_config["llm_top_p"],
-            max_completion_tokens=worker_config["llm_max_tokens_per_call"],
-            metadata={"model": llm_model},
-            request_timeout=worker_config.get("request_timeout"),
-        )
-
-    from searcher_component.retriever import (
-        BM25Retriever, RerankRetriever, DenseRetriever, SPLADERetriever,
-    )
-
-    cfg = _RetrieverConfig(
-        retriever_name=worker_config["retriever_type"],
-        index_dir=worker_config.get("index_dir"),
-        corpus_path=worker_config.get("corpus_path"),
-        topk=worker_config["top_k"],
-    )
-    cfg.retrieval_query_max_length = query_max_length(dataset, worker_config["retriever_type"])
-    retriever_type = worker_config["retriever_type"]
-    if retriever_type == "bm25":
-        retriever = BM25Retriever(cfg)
-    elif retriever_type in ("spladepp", "spladev3"):
-        retriever = SPLADERetriever(cfg)
-    elif retriever_type in ["rerank_l6", "rerank_l12"]:
-        retriever = RerankRetriever(cfg)
-    else:
-        retriever = DenseRetriever(cfg)
-
-    return llm_client, retriever
+    args = SimpleNamespace(**worker_config)
+    return setup_llm(args, num_gpus=1), setup_retriever_from_args(args)
 
 
 def _silence_hf_progress_bars() -> None:
     """Turn off HuggingFace/datasets tqdm bars and downgrade their loggers.
 
-    Called from the quiet path of :func:`_init_worker` (and from the main
-    process) so model/corpus loading stays silent in non-interactive runs.
+    Called from :func:`quiet_logging` so model/corpus loading stays silent in
+    non-interactive runs.
     Each import is guarded: the helper must never be the reason a worker dies.
     """
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
@@ -398,24 +344,27 @@ def _silence_hf_progress_bars() -> None:
         logging.getLogger(name).setLevel(logging.ERROR)
 
 
+def quiet_logging() -> None:
+    """The ``--quiet`` setup of a process (the main one and each GPU worker):
+    agent and utils loggers at ERROR, no HF/datasets progress bars."""
+    for name in ("agents", "agent_tools", "utils", "prompts"):
+        logging.getLogger(name).setLevel(logging.ERROR)
+    # The retriever's from_pretrained() draws a 398-step "Loading weights"
+    # tqdm bar per process.  Under sbatch stdout is not a TTY, so every
+    # redraw is appended verbatim to the .out file.
+    _silence_hf_progress_bars()
+
+
 def _init_worker(worker_id: int, worker_config: dict):
     """Initialise a GPU worker: pin GPU, load models, build agent.
 
     Returns:
         (agent, search_tool, verbose)
     """
-    gpu_ids = worker_config.get("gpu_ids", [])
-    verbose  = worker_config.get("verbose", False)
-    if worker_config.get("quiet", False):
-        logging.getLogger("agents").setLevel(logging.ERROR)
-        logging.getLogger("agent_tools").setLevel(logging.ERROR)
-        logging.getLogger("utils").setLevel(logging.ERROR)
-        logging.getLogger("prompts").setLevel(logging.ERROR)
-        # The retriever's from_pretrained() draws a 398-step "Loading weights"
-        # tqdm bar per worker.  Under sbatch stdout is not a TTY, so every
-        # redraw is appended verbatim and four workers alone add ~1 MB of
-        # carriage-return noise to the .out file.
-        _silence_hf_progress_bars()
+    gpu_ids = worker_config["gpu_ids"]
+    verbose  = worker_config["verbose"]
+    if worker_config["quiet"]:
+        quiet_logging()
     if gpu_ids and worker_id < len(gpu_ids):
         physical_gpu = gpu_ids[worker_id]
         os.environ["CUDA_VISIBLE_DEVICES"] = str(physical_gpu)
@@ -469,10 +418,10 @@ def _init_worker(worker_id: int, worker_config: dict):
     from searcher_component import RetrievalSearchTool
     from searcher_component.rerankers import build_reranker_from_config
 
-    _reranker_configs = get_reranker_configs(worker_config.get("rerank_top_k", 100))
+    _reranker_configs = get_reranker_configs(worker_config["rerank_top_k"])
 
-    _post_ret_type = worker_config.get("post_retrieval_reranker_type", "null")
-    _post_fus_type = worker_config.get("post_fusion_reranker_type", "null")
+    _post_ret_type = worker_config["post_retrieval_reranker_type"]
+    _post_fus_type = worker_config["post_fusion_reranker_type"]
     _post_ret_reranker = build_reranker_from_config(_post_ret_type, _reranker_configs) if _post_ret_type != "null" else None
     _post_fus_reranker = build_reranker_from_config(_post_fus_type, _reranker_configs) if _post_fus_type != "null" else None
 
@@ -482,43 +431,42 @@ def _init_worker(worker_id: int, worker_config: dict):
             retriever=retriever,
             post_retrieval_reranker=_post_ret_reranker,
             post_fusion_reranker=_post_fus_reranker,
-            top_k=worker_config.get("top_k", 100),
-            rerank_top_k=worker_config.get("rerank_top_k", 100),
-            retrieval_input=worker_config.get("retrieval_input", "subquery"),
-            post_fusion_reranker_input=worker_config.get("post_fusion_reranker_input", "original_query"),
+            rerank_top_k=worker_config["rerank_top_k"],
+            retrieval_input=worker_config["retrieval_input"],
+            post_fusion_reranker_input=worker_config["post_fusion_reranker_input"],
         )
 
     print(f"[Worker {worker_id}] Creating agent ({policy_model})...", flush=True)
     llm_model = worker_config["llm_model"]
     agent = build_agent(
         policy_model=policy_model,
-        policy_model_cli=worker_config.get("policy_model_cli", policy_model),
-        dataset=worker_config["dataset"],
+        policy_model_cli=worker_config["policy_model_cli"],
+        dataset=dataset,
         llm_model=llm_model,
         llm_client=llm_client,
         retriever=retriever,
-        max_iteration=worker_config.get("max_iteration", 100),
-        seen_top_k=worker_config.get("seen_top_k", 5),
+        max_iteration=worker_config["max_iteration"],
+        seen_top_k=worker_config["seen_top_k"],
         verbose=verbose,
         search_tool=search_tool,
-        use_plan=worker_config.get("use_plan", False),
-        max_output_tokens_total=worker_config.get("max_output_tokens_total", 40000),
-        temperature=worker_config.get("temperature", 0.7),
-        max_extend_steps=worker_config.get("max_extend_steps", 5),
-        max_retries=worker_config.get("max_retries", 3),
-        hard_mode=worker_config.get("hard_mode", True),
-        max_passage_chars=worker_config.get("max_passage_chars", 4000),
+        use_plan=worker_config["use_plan"],
+        max_output_tokens_total=worker_config["max_output_tokens_total"],
+        temperature=worker_config["llm_temperature"],
+        max_extend_steps=worker_config["max_extend_steps"],
+        max_retries=worker_config["max_retries"],
+        hard_mode=worker_config["hard_mode"],
+        max_passage_chars=worker_config["max_passage_chars"],
     )
 
     belief_model = build_belief_model(
-        mode=worker_config.get("belief_mode", "off"),
+        mode=worker_config["belief_mode"],
         retriever=retriever,
         qrels=worker_config.get("qrels"),
-        llm_criteria=worker_config.get("llm_criteria"),
-        max_criteria=worker_config.get("max_criteria"),
-        belief_judge_model=worker_config.get("belief_judge_model", ""),
-        query_scorer_model=worker_config.get("query_scorer_model", ""),
-        add_intermediate_answer=worker_config.get("add_intermediate_answer", True),
+        llm_criteria=worker_config["llm_criteria"],
+        max_criteria=worker_config["max_criteria"],
+        belief_judge_model=worker_config["belief_judge_model"],
+        query_scorer_model=worker_config["query_scorer_model"],
+        add_intermediate_answer=worker_config["add_intermediate_answer"],
         agent=agent if hasattr(agent, "belief_model") else None,
         policy_model=policy_model,
         dataset=dataset,
@@ -535,42 +483,53 @@ def run_query(agent, run_dir, query_id: str, query_text: str, *, policy_model: s
               answer: Optional[str] = None, temperature: float = 0.7, status_callback=None) -> Optional[dict]:
     """Run one query and save its files under *run_dir* (None: nothing is
     saved); the one per-query path of the sequential run and of the GPU
-    workers.  Returns the result, or None when the agent failed.
+    workers.  Returns the result, or None when the query failed: the error
+    is logged and the caller goes on with its next query.
 
     The trajectory is streamed to ``trajectory/{qid}.jsonl`` and ``.md`` as
     it happens, so an interrupted query still leaves its work on disk; the
     result gets its cited-doc list and a References section, then
-    ``evaluation.runner.save_query_outputs`` writes every file.
+    ``evaluation.runner.save_query_outputs`` writes every file.  A query
+    that fails before the trajectory meta line is written stays unfinished
+    and is run again on resume.
     """
     from evaluation.runner import save_query_outputs
 
-    traj_logger = TrajectoryLogger(
-        Path(run_dir) / "trajectory", query_id, query_text,
-        agent_name=policy_model, model=llm_model, answer=answer,
-    ) if run_dir else None
-    result = agent.run_single(
-        query_id=query_id,
-        query_text=query_text,
-        temperature=temperature,
-        status_callback=status_callback,
-        trajectory_logger=traj_logger,
-    )
-    if result is None:
+    try:
+        traj_logger = TrajectoryLogger(
+            Path(run_dir) / "trajectory", query_id, query_text,
+            agent_name=policy_model, model=llm_model, answer=answer,
+        ) if run_dir else None
+        result = agent.run_single(
+            query_id=query_id,
+            query_text=query_text,
+            temperature=temperature,
+            status_callback=status_callback,
+            trajectory_logger=traj_logger,
+        )
+        if result is None:
+            return None
+        result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
+        # Append a References section to the generation (CPMReport already has one)
+        references = build_references_section(result)
+        if references:
+            result["generation"] = result["generation"].rstrip() + references
+        if run_dir:
+            save_query_outputs(run_dir, query_id, query_text, result)
+        return result
+    except Exception as exc:
+        logger.error("Query %s failed: %s", query_id, exc)
+        traceback.print_exc()
         return None
-    result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
-    # Append a References section to the generation (CPMReport already has one)
-    references = build_references_section(result)
-    if references:
-        result["generation"] = result["generation"].rstrip() + references
-    if run_dir:
-        save_query_outputs(run_dir, query_id, query_text, result)
-    return result
 
 
-def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_config: dict, progress_queue=None, init_lock=None) -> dict:
-    """Worker process: pin to one GPU, rebuild the agent, process queries, save files."""
-    _lock_ctx = init_lock if init_lock is not None else contextlib.nullcontext()
+def gpu_worker(worker_id: int, query_items: list, run_dir: str, worker_config: dict, progress_queue=None) -> List[str]:
+    """Worker process: pin to one GPU, rebuild the agent, process queries and
+    save their files straight to *run_dir*.
 
+    Returns the ids of the queries it finished; the parent reads the results
+    back from their files.
+    """
     # With live progress bars in the parent, this process's init prints would
     # land between the bars' in-place redraws and scramble them.  Hold them
     # back; on failure they go to stderr, otherwise worker 0 forwards the
@@ -578,7 +537,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
     live_bars = bool(worker_config.get("live_bars", False))
     init_out = io.StringIO()
     try:
-        with _lock_ctx, (contextlib.redirect_stdout(init_out) if live_bars else contextlib.nullcontext()):
+        with (contextlib.redirect_stdout(init_out) if live_bars else contextlib.nullcontext()):
             agent, search_tool, verbose = _init_worker(
                 worker_id, worker_config,
             )
@@ -589,7 +548,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         traceback.print_exc()
         if progress_queue is not None:
             progress_queue.put(None)
-        return {}
+        return []
     if live_bars and worker_id == 0 and progress_queue is not None:
         for line in init_out.getvalue().splitlines():
             if line.startswith("Belief model:"):
@@ -597,14 +556,14 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
 
     from evaluation.runner import QUERY_OUTPUT_DIRS
 
-    temp_dir = Path(temp_dir_str)
+    run_path = Path(run_dir)
     for _d in QUERY_OUTPUT_DIRS:
-        (temp_dir / _d).mkdir(parents=True, exist_ok=True)
+        (run_path / _d).mkdir(parents=True, exist_ok=True)
 
-    results     = {}
-    temperature = worker_config.get("temperature", 0.7)
+    finished: List[str] = []
+    temperature = worker_config["llm_temperature"]
     total       = len(query_items)
-    max_iteration = worker_config.get("max_iteration", "?")
+    max_iteration = worker_config["max_iteration"]
 
     _cb_state = [None, 0]
 
@@ -626,8 +585,8 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
                 flush=True,
             )
         result = run_query(
-            agent, temp_dir, query_id, query_text,
-            policy_model=worker_config.get("policy_model", ""), llm_model=worker_config.get("llm_model", ""),
+            agent, run_path, query_id, query_text,
+            policy_model=worker_config["policy_model"], llm_model=worker_config["llm_model"],
             answer=(worker_config.get("answers") or {}).get(query_id), temperature=temperature,
             status_callback=_status_cb if progress_queue is not None else None,
         )
@@ -637,7 +596,7 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
             if progress_queue is not None:
                 progress_queue.put((worker_id, query_id, idx, total, "skipped", None))
             continue
-        results[query_id] = result
+        finished.append(query_id)
         if progress_queue is not None:
             num_iters = result.get("num_iterations", "?")
             progress_queue.put((worker_id, query_id, idx, total, "done", f"{num_iters}/{max_iteration}"))
@@ -651,9 +610,9 @@ def gpu_worker(worker_id: int, query_items: list, temp_dir_str: str, worker_conf
         belief_model.close()
     if verbose:
         print(
-            f"[Worker {worker_id}] Completed {len(results)}/{len(query_items)} queries",
+            f"[Worker {worker_id}] Completed {len(finished)}/{len(query_items)} queries",
             flush=True,
         )
     if progress_queue is not None:
         progress_queue.put(None)
-    return results
+    return finished

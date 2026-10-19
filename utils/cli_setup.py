@@ -35,9 +35,9 @@ FILE_BACKED_DEFAULTS = {
     # LLM
     # None = auto: resolved per agent by utils.config.resolve_temperature.
     "llm_temperature": None,
-    "llm_max_tokens_per_call": 10000,
+    "llm_max_tokens_per_call": 2000,
     "llm_top_p": 1.0,
-    "max_output_tokens_total": 20000,
+    "max_output_tokens_total": 120000,
     "request_timeout": 300,
     # Dataset (null -> auto-resolved from --dataset)
     "data_path": None,
@@ -69,7 +69,7 @@ FILE_BACKED_DEFAULTS = {
     "belief_judge_model": "",
     "query_scorer_model": "",
     "criteria_bank": True,
-    "add_intermediate_answer": True,
+    "add_intermediate_answer": False,
     # Evaluation
     "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
     "interleaving_window": 3,
@@ -289,35 +289,38 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "retriever_name":             args.retriever,
     }
 
-    pipeline_kwargs["qrels_data_path"] = getattr(args, "qrels_data_path", None)
-    pipeline_kwargs["corpus_path"] = getattr(args, "corpus_path", None)
+    pipeline_kwargs["qrels_data_path"] = args.qrels_data_path
+    pipeline_kwargs["corpus_path"] = args.corpus_path
     pipeline_kwargs["temperature"] = args.llm_temperature
+    pipeline_kwargs["llm_top_p"] = args.llm_top_p
     pipeline_kwargs["max_output_tokens_total"] = args.max_output_tokens_total
-    pipeline_kwargs["use_plan"] = getattr(args, "use_plan", False)
+    pipeline_kwargs["use_plan"] = args.use_plan
     pipeline_kwargs["max_extend_steps"] = args.max_extend_steps
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_chars"] = args.max_passage_chars
 
-    pipeline_kwargs["belief_mode"] = getattr(args, "belief_mode", "off")
-    pipeline_kwargs["llm_criteria"] = getattr(args, "llm_criteria", None)
-    pipeline_kwargs["max_criteria"] = getattr(args, "max_criteria", None)
-    pipeline_kwargs["belief_judge_model"] = getattr(args, "belief_judge_model", "")
-    pipeline_kwargs["query_scorer_model"] = getattr(args, "query_scorer_model", "")
-    pipeline_kwargs["criteria_bank"] = getattr(args, "criteria_bank", True)
-    pipeline_kwargs["add_intermediate_answer"] = getattr(args, "add_intermediate_answer", True)
+    pipeline_kwargs["belief_mode"] = args.belief_mode
+    pipeline_kwargs["llm_criteria"] = args.llm_criteria
+    pipeline_kwargs["max_criteria"] = args.max_criteria
+    pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
+    pipeline_kwargs["query_scorer_model"] = args.query_scorer_model
+    pipeline_kwargs["criteria_bank"] = args.criteria_bank
+    pipeline_kwargs["add_intermediate_answer"] = args.add_intermediate_answer
 
+    # Keys named as the CLI args: a worker rebuilds its LLM client and
+    # retriever with setup_llm / setup_retriever_from_args on this dict.
     worker_config = {
         "policy_model":            args.policy_model,
-        "policy_model_cli":        getattr(args, "policy_model_cli", args.policy_model),
+        "policy_model_cli":        args.policy_model_cli,
         "llm_model":               args.llm_model,
         "llm_temperature":         args.llm_temperature,
-        "llm_max_tokens_per_call":          args.llm_max_tokens_per_call,
+        "llm_max_tokens_per_call": args.llm_max_tokens_per_call,
         "llm_top_p":               args.llm_top_p,
         "request_timeout":         args.request_timeout,
         "dataset":                 args.dataset,
-        "retriever_type":          args.retriever,
-        "index_dir":               getattr(args, "index_dir", None),
-        "corpus_path":             getattr(args, "corpus_path", None),
+        "retriever":               args.retriever,
+        "index_dir":               args.index_dir,
+        "corpus_path":             args.corpus_path,
         "top_k":                   args.top_k,
         "seen_top_k":              args.seen_top_k,
         "max_iteration":           args.max_iteration,
@@ -325,7 +328,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_retries":             args.max_retries,
         "hard_mode":               args.hard_mode,
         "max_passage_chars":       args.max_passage_chars,
-        "temperature":             args.llm_temperature,
         "verbose":                 verbose,
         "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),
         "post_retrieval_reranker_type": args.post_retrieval_reranker,
@@ -333,21 +335,20 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "rerank_top_k":                 args.rerank_top_k,
         "retrieval_input":              args.retrieval_input,
         "post_fusion_reranker_input":   args.post_fusion_reranker_input,
-        "max_output_tokens_total":       getattr(args, "max_output_tokens_total", 40000),
-        "use_plan":                      getattr(args, "use_plan", False),
-        "belief_mode":    getattr(args, "belief_mode", "off"),
-        "llm_criteria":                  getattr(args, "llm_criteria", None),
-        "max_criteria":                  getattr(args, "max_criteria", None),
-        "belief_judge_model":          getattr(args, "belief_judge_model", ""),
-        "query_scorer_model":          getattr(args, "query_scorer_model", ""),
-        "add_intermediate_answer":       getattr(args, "add_intermediate_answer", True),
-        "judge_model":                   getattr(args, "judge_model", None),
-        "quiet":                         getattr(args, "quiet", False),
+        "max_output_tokens_total":       args.max_output_tokens_total,
+        "use_plan":                      args.use_plan,
+        "belief_mode":                   args.belief_mode,
+        "llm_criteria":                  args.llm_criteria,
+        "max_criteria":                  args.max_criteria,
+        "belief_judge_model":            args.belief_judge_model,
+        "query_scorer_model":            args.query_scorer_model,
+        "add_intermediate_answer":       args.add_intermediate_answer,
+        "quiet":                         args.quiet,
     }
 
     pipeline_kwargs["num_gpus"]      = num_gpus
     pipeline_kwargs["worker_config"] = worker_config
-    pipeline_kwargs["policy_model_cli"] = getattr(args, "policy_model_cli", args.policy_model)
+    pipeline_kwargs["policy_model_cli"] = args.policy_model_cli
     return pipeline_kwargs
 
 

@@ -310,7 +310,8 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 └── summary.json                    grouped metrics (retrieval / generation / trajectory)
 ```
 
-`_{query_key}` is in the name only when it is not the dataset's default. Each fact has one file: the run settings are
+`{agent}` is the `--policy-model` name (`oss_20b`, not the internal agent `oss`), as is `agent.policy_model` in
+`run_config.json`. `_{query_key}` is in the name only when it is not the dataset's default. Each fact has one file: the run settings are
 in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `summary.json` only.
 
 A query is finished when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other file

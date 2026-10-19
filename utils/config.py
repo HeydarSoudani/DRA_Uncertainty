@@ -7,7 +7,7 @@ without triggering circular dependencies.
 import functools
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 
@@ -119,6 +119,24 @@ def resolve_temperature(policy_model: str, explicit: Optional[float] = None) -> 
         return float(explicit)
     internal = POLICY_MODEL_ALIAS.get(policy_model, policy_model)
     return AGENT_TEMPERATURE.get(internal, DEFAULT_AGENT_TEMPERATURE)
+
+
+# Ceiling on ``max_output_tokens_total`` for the agents that read it, keyed by
+# the internal agent name: the prompt and history must still fit the 131072-token
+# vLLM window (cpm_explore: its own lower limit).  Other agents ignore the value.
+OUTPUT_TOKEN_CAPS: Dict[str, int] = {
+    "glm":         20000,
+    "oss":         20000,
+    "tongyi":      20000,
+    "cpm_explore": 16384,
+}
+
+
+def effective_max_output_tokens(policy_model: str, value: int) -> int:
+    """``max_output_tokens_total`` as the agent of ``policy_model`` (CLI or
+    internal name) uses it: capped by :data:`OUTPUT_TOKEN_CAPS`."""
+    cap = OUTPUT_TOKEN_CAPS.get(POLICY_MODEL_ALIAS.get(policy_model, policy_model))
+    return value if cap is None else min(value, cap)
 
 
 # Agents that manage their own LLM connection (direct vLLM/OpenAI clients)

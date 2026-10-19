@@ -5,8 +5,9 @@ markdown) and for resuming interrupted pipeline runs.
 """
 
 import json as _json
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Tuple, Union
 
 from utils.config import AGENT_META_KEYS
 
@@ -14,6 +15,41 @@ try:
     from orjson import loads as _json_loads
 except ImportError:
     _json_loads = _json.loads
+
+
+def atomic_write_text(path: Union[str, Path], text: str) -> None:
+    """Write *text* to *path* through a temp file and ``os.replace``, so a
+    crash never leaves a truncated file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def iter_jsonl(path: Union[str, Path]) -> Iterator[Dict[str, Any]]:
+    """The rows of a JSONL file; blank lines are skipped."""
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                yield _json_loads(line)
+
+
+def read_jsonl(path: Union[str, Path]) -> List[Dict[str, Any]]:
+    """All rows of a JSONL file (:func:`iter_jsonl`)."""
+    return list(iter_jsonl(path))
+
+
+def write_jsonl(path: Union[str, Path], rows: Iterable[Dict[str, Any]]) -> None:
+    """Write *rows* as JSONL, atomically (temp file + ``os.replace``)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
 
 
 def setup_output_dirs(
@@ -115,7 +151,7 @@ def load_result_from_trec(trec_file: Union[str, Path], query_id: str) -> dict:
                 parts = line.split()
                 if len(parts) < 6:
                     continue
-                doc_id, rank, score, run_tag = parts[2], int(parts[3]), float(parts[4]), parts[5]
+                doc_id, score, run_tag = parts[2], float(parts[4]), parts[5]
                 try:
                     iter_idx = int(run_tag.split("_")[1])
                 except (IndexError, ValueError):
@@ -200,54 +236,31 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> di
     except OSError:
         result["generation"] = ""
 
-    # ── 3. Load cited docs from TREC if not already present ──────────────────
-    if not result.get("cited_docs_ranked_list"):
-        try:
-            content = _read_text("retrieval/cited", f"{query_id}.trec")
-            doc_ids = []
-            for line in content.splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 3 and parts[2]:
-                    doc_ids.append({"doc_id": parts[2]})
-            if doc_ids:
-                result["cited_docs_ranked_list"] = doc_ids
-        except Exception:
-            pass
+    # ── 3. Cited docs from the cited TREC ────────────────────────────────────
+    try:
+        content = _read_text("retrieval/cited", f"{query_id}.trec")
+    except OSError:
+        content = ""
+    doc_ids = [{"doc_id": parts[2]} for parts in (line.split() for line in content.splitlines())
+               if len(parts) >= 3]
+    if doc_ids:
+        result["cited_docs_ranked_list"] = doc_ids
 
-    # ── 4. Load seen-doc iterations from TREC if not in trajectory ──────────
-    if not result.get("seen_docs_iterations"):
-        try:
-            seen_trec_path = _file_path("retrieval/seen", f"{query_id}.trec")
-            seen_parsed = load_result_from_trec(seen_trec_path, query_id)
-            if seen_parsed:
-                seen_iters = []
-                for step in seen_parsed.get("trajectory", []):
-                    docs = step.get("docs", [])
-                    seen_iters.append([{"doc_id": d["doc_id"]} for d in docs if d.get("doc_id")])
-                if seen_iters:
-                    result["seen_docs_iterations"] = seen_iters
-        except Exception:
-            pass
+    # ── 4. Seen-doc iterations from the seen TREC, when the trajectory has none
+    if not any(step.get("seen_docs") for step in trajectory):
+        seen_parsed = load_result_from_trec(_file_path("retrieval/seen", f"{query_id}.trec"), query_id)
+        seen_iters = [[{"doc_id": d["doc_id"]} for d in step["docs"] if d.get("doc_id")]
+                      for step in seen_parsed.get("trajectory", [])]
+        if seen_iters:
+            result["seen_docs_iterations"] = seen_iters
 
-    # ── 4b. Reconstruct surfaced iterations from surfaced TREC ───────────────
+    # ── 4b. Surfaced iterations from the surfaced TREC ───────────────────────
     # The trajectory JSONL keeps only the seen (top-k) doc ids, not the full
-    # surfaced ranking.  Rebuild the per-step surfaced lists from the surfaced
-    # TREC so SurfacedDocEvaluator stays correct on resume.  (Fresh runs skip
-    # this: their in-memory trajectory still holds the full ``docs`` lists.)
-    has_surfaced = any(step.get("docs") for step in result.get("trajectory", []))
-    if not has_surfaced and not result.get("surfaced_docs_iterations"):
-        try:
-            surf_trec_path = _file_path("retrieval/surfaced", f"{query_id}.trec")
-            surf_parsed = load_result_from_trec(surf_trec_path, query_id)
-            surf_iters = [
-                step["docs"]
-                for step in surf_parsed.get("trajectory", [])
-                if step.get("docs")
-            ]
-            if surf_iters:
-                result["surfaced_docs_iterations"] = surf_iters
-        except (FileNotFoundError, OSError):
-            pass
+    # surfaced ranking: the per-step surfaced lists come from the surfaced TREC.
+    surf_parsed = load_result_from_trec(_file_path("retrieval/surfaced", f"{query_id}.trec"), query_id)
+    surf_iters = [step["docs"] for step in surf_parsed.get("trajectory", []) if step.get("docs")]
+    if surf_iters:
+        result["surfaced_docs_iterations"] = surf_iters
 
     return result
 
@@ -273,7 +286,9 @@ def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> 
     """Build a consistent output directory name for the current pipeline run.
 
     Template: {agent_name}_{backend}_{model}
-    e.g. ``glm_api_glm-4.7-flash`` or ``react_wo_plan_vllm_claude-sonnet-4-6``.
+    e.g. ``glm_api_glm-4.7-flash``, ``oss_20b_vllm_gpt-oss-20b`` or
+    ``react_wo_plan_vllm_claude-sonnet-4-6``.  *policy_model* is the CLI
+    ``--policy-model`` name (``oss_20b``, not the internal alias ``oss``).
     Dataset/retriever/query_key info lives in the parent dataset_dir; the
     fixed searcher config lives in the run_config.json sidecar.
     """
@@ -312,13 +327,16 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
     writes is here, with defaults resolved (the criteria cap, the updater
     and query scorer models), so the run directory's name stays short and
     the per-query files carry no run settings.  With the belief model off,
-    ``belief_model`` holds the mode only.
+    ``belief_model`` holds the mode only.  *policy_model* is the CLI
+    ``--policy-model`` name (``oss_20b``, not the internal alias ``oss``);
+    ``max_output_tokens_total`` is the value the agent uses
+    (:func:`utils.config.effective_max_output_tokens`).
     """
-    from utils.config import resolve_agent_backend, model_display_name
+    from utils.config import effective_max_output_tokens, model_display_name, resolve_agent_backend
     from indexing_corpus_dataset.layout import DATASET_SPECS
 
     backend, slug = resolve_agent_backend(policy_model)
-    mode = kwargs.get("belief_mode", "off")
+    mode = kwargs["belief_mode"]
     belief: Dict[str, Any] = {"mode": mode}
     if mode != "off":
         llm_criteria = kwargs.get("llm_criteria") or None
@@ -329,8 +347,8 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "max_criteria": DATASET_SPECS[dataset].max_criteria if max_criteria is None else max_criteria,
             "belief_judge_model": judge,
             "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
-            "criteria_bank": bool(kwargs.get("criteria_bank", True)),
-            "add_intermediate_answer": bool(kwargs.get("add_intermediate_answer", True)),
+            "criteria_bank": bool(kwargs["criteria_bank"]),
+            "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
         })
     return {
         "dataset": {
@@ -346,12 +364,13 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "llm_model": llm_model,
             "model_display": model_display_name(llm_model),
             "temperature": kwargs.get("temperature"),
+            "llm_top_p": kwargs.get("llm_top_p"),
             "use_plan": kwargs.get("use_plan", False),
             "max_iteration": kwargs.get("max_iteration"),
             "max_retries": kwargs.get("max_retries"),
             "max_passage_chars": kwargs.get("max_passage_chars"),
             "llm_max_tokens_per_call": kwargs.get("llm_max_tokens_per_call"),
-            "max_output_tokens_total": kwargs.get("max_output_tokens_total"),
+            "max_output_tokens_total": effective_max_output_tokens(policy_model, kwargs["max_output_tokens_total"]),
             "max_extend_steps": kwargs.get("max_extend_steps"),
             "hard_mode": kwargs.get("hard_mode"),
         },
@@ -397,6 +416,18 @@ def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
                 f"{path} was written with other settings than this run's: {'; '.join(diffs)}. "
                 "Its queries would mix both; use the same settings, another --output, or remove the run directory."
             )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fh:
-        _json.dump(config, fh, indent=2)
+    atomic_write_text(path, _json.dumps(config, indent=2))
+
+
+def update_run_config_evaluation(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
+    """Set the ``evaluation`` section of the run's ``run_config.json`` to
+    *config*'s (``--eval-only``: the section that may change between calls);
+    the locked sections are left as they are.  A run without the file is
+    left alone."""
+    path = Path(run_dir) / "run_config.json"
+    if not path.exists():
+        return
+    saved = _json.loads(path.read_text())
+    if saved.get("evaluation") != config["evaluation"]:
+        saved["evaluation"] = config["evaluation"]
+        atomic_write_text(path, _json.dumps(saved, indent=2))

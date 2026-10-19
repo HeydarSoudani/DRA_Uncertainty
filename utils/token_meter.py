@@ -77,10 +77,3 @@ class TokenMeter:
             "num_calls": self.num_calls,
         }
         return delta
-
-    def reset(self) -> None:
-        """Zero all counters and the step cursor (e.g. between queries)."""
-        self.input_tokens = 0
-        self.output_tokens = 0
-        self.num_calls = 0
-        self._step_cursor = {"input_tokens": 0, "output_tokens": 0, "num_calls": 0}

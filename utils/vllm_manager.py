@@ -271,13 +271,13 @@ class VLLMServerManager:
         if vllm_gpus_needed > total_gpus:
             print(f"\n[vLLM Manager] ERROR: Need {vllm_gpus_needed} GPUs for vLLM "
                   f"servers but only {total_gpus} available.")
-            print(f"  Servers requested:")
+            print("  Servers requested:")
             for s in specs:
                 print(f"    - {s.label}: TP={s.tp_size} on port {s.port}")
-            print(f"\n  Options:")
-            print(f"    - Use an H100 node (94 GB) — 30B models fit at TP=1")
-            print(f"    - Route the agent via OpenRouter (set OPENROUTER_API_KEY)")
-            print(f"    - Remove the vLLM reranker (--post-retrieval-reranker null)")
+            print("\n  Options:")
+            print("    - Use an H100 node (94 GB) — 30B models fit at TP=1")
+            print("    - Route the agent via OpenRouter (set OPENROUTER_API_KEY)")
+            print("    - Remove the vLLM reranker (--post-retrieval-reranker null)")
             sys.exit(1)
 
         # Allocate GPUs: vLLM servers get leftmost, workers get the rest
@@ -518,7 +518,7 @@ class VLLMServerManager:
         from utils.config import resolve_agent_backend
         if resolve_agent_backend(policy_model_cli)[0] == "api":
             print(f"[vLLM Manager] '{policy_model_cli}' routed to OpenRouter — "
-                  f"no vLLM server needed.")
+                  "no vLLM server needed.")
             return None
 
         # Self-managed agents always need their own vLLM server
@@ -669,7 +669,7 @@ class VLLMServerManager:
                         full_log = log_path.read_text()
                         print(f"  === Full vLLM log ({len(full_log.splitlines())} lines) ===")
                         print(full_log)
-                        print(f"  === End of vLLM log ===")
+                        print("  === End of vLLM log ===")
                     sys.exit(1)
 
             try:

@@ -108,7 +108,8 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
 
     Search steps carry ``search_query`` + ``seen_docs`` (+ ``think`` only when
     present, i.e. on the first subquery of an iteration).  Terminal steps carry
-    ``action_type`` + ``generation``.  The full surfaced doc list is dropped.
+    ``action_type`` (``answer`` for a step with only a ``prediction``) +
+    ``generation``.  The full surfaced doc list is dropped.
 
     ``action_type`` is emitted on the first subquery of an iteration only
     (``sub_iter`` is ``None`` or ``0``), mirroring how ``think`` appears only on
@@ -137,14 +138,21 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
         return _add_diagnostics(line, step)
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
+    # An answer step without an action (base_agent, selfask, searcho1: only
+    # ``prediction``) is written as ``answer``: the line keeps no
+    # ``prediction``, so without it a finished query reads as unterminated.
     line = {"iter": label}
     atype = step.get("action_type") or step.get("action")
+    if not atype and "prediction" in step:
+        atype = "answer"
     if atype:
         line["action_type"] = atype
     if step.get("think"):
         line["think"] = step["think"]
     if step.get("generation"):
         line["generation"] = step["generation"]
+    if step.get("tokens") is not None:
+        line["tokens"] = step["tokens"]
     return _add_diagnostics(line, step)
 
 

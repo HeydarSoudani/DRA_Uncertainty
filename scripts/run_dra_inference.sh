@@ -52,8 +52,9 @@ python experiments/inference/dra_inference.py \
 # worker split, one "[Worker i] n/m done" line per finished query, and the eval summary.
 #
 # Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/belief_aware_api_qwen3.6-27b/belief-off/
-# Resume is automatic: queries that already have retrieval/surfaced/{qid}.trec are skipped,
-# and --limit is applied to what REMAINS, so a re-submit continues rather than restarts.
+# Resume is automatic: queries whose trajectory/{qid}.jsonl ends with its meta line (and,
+# with the belief model on, that have belief/{qid}.jsonl) are skipped, and --limit is
+# applied to what REMAINS, so a re-submit continues rather than restarts.
 #
 # PRE-FLIGHT (recommended before the full run): same code path, 1 query per worker,
 # ~15 min of node time.  It exercises exactly what the full run does — worker spawn,

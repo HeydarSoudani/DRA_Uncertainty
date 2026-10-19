@@ -34,10 +34,12 @@ class CitedDocEvaluator(BaseDocRetrievalEvaluator):
 
         The run_tag column keeps each doc's originating step (``iter_N``)
         rather than the single list's ``iter_1``.  Nothing is written when
-        the report cites nothing.
+        the report cites nothing, and the file of an earlier attempt of the
+        query is removed.
         """
         docs = resolve_cited_docs(result)
         if not docs:
+            (Path(output_dir) / f"{query_id}.trec").unlink(missing_ok=True)
             return
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         lines: List[str] = [
