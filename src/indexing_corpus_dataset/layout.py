@@ -206,7 +206,8 @@ DATASET_SPECS = {
     # Training pools built by this project (experiments/training/build_training_pool.py),
     # under TRAINING_POOL_ROOT; ``subset`` is the split (POOL_SPLITS, default sft).
     # deep_qa: BrowseComp-style questions (InfoSeek-Hard, WebShaper, FRAMES)
-    # with their gold Wikipedia and web pages as binary qrels.  Lengths as
+    # with their gold Wikipedia and web pages as binary qrels; the corpus adds
+    # hard negatives of the Wikipedia gold pages (build step 3).  Lengths as
     # BrowseComp-Plus (long web pages and multi-clue questions).
     "deep_qa": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,

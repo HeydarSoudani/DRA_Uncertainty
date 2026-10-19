@@ -1,12 +1,13 @@
 """Counts written to ``stats.json``, one section per step: questions per
 source, gold pages per question, drop reasons, and (step 2) page fetch
-outcomes and lengths, (step 3) the dataset as written."""
+outcomes and lengths, (step 3) the hard negatives, (step 4) the dataset as
+written."""
 
 import json
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from utils.io_utils import atomic_write_text
 
@@ -84,21 +85,45 @@ def read_stats(path: Path) -> dict:
 
 
 def write_stats(path: Path, section: str, stats: dict) -> None:
-    """Set *section* (``step1``, ``step2``, ``step3``, ``split``) of *path*,
+    """Set *section* (``step1`` ... ``step4``, ``split``) of *path*,
     the other sections kept."""
     sections = read_stats(path)
     sections[section] = stats
     atomic_write_text(path, json.dumps(dict(sorted(sections.items())), indent=2, ensure_ascii=False) + "\n")
 
 
+def negative_stats(memory: Dict[str, dict], max_per_gold: Optional[int] = None) -> dict:
+    """The hard negatives of the gold pages in *memory* (step 3 rows, gold
+    page id -> row): their number, per gold page, per source, the pages
+    shared by several gold pages, and their word counts.  With
+    *max_per_gold*, the gold pages that got fewer."""
+    rows = list(memory.values())
+    uses = Counter(n["id"] for r in rows for n in r["negatives"])
+    words = {n["id"]: n["words"] for r in rows for n in r["negatives"]}
+    out = {
+        "gold_pages": len(rows),
+        "hard_negatives": len(uses),
+        "per_gold": distribution([len(r["negatives"]) for r in rows]),
+        "by_source": dict(Counter(n["source"] for r in rows for n in r["negatives"]).most_common()),
+        "shared": sum(n >= 2 for n in uses.values()),
+        "words": distribution(list(words.values())),
+    }
+    if max_per_gold is not None:
+        out["gold_pages_short"] = sum(len(r["negatives"]) < max_per_gold for r in rows)
+    return out
+
+
 def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, List[str]],
-                  doc_words: Dict[str, int], dropped: List[dict]) -> dict:
-    """Step 3: the dataset as written (queries, qrels, corpus), per source
-    (and ``all``), plus consistency checks between the three files.
+                  doc_words: Dict[str, int], dropped: List[dict], hard_negatives: List[str],
+                  memory: Dict[str, dict]) -> dict:
+    """Step 4: the dataset as written (queries, qrels, corpus), per source
+    (and ``all``), the hard negatives, and consistency checks between the
+    files.
 
     *candidates* are the step 1 questions, *qrels* maps a query id to its doc
-    ids, *doc_words* maps a corpus doc id to its word count and *dropped* are
-    the step 2 drops.
+    ids, *doc_words* maps a corpus doc id to its word count, *dropped* are
+    the step 2 drops, *hard_negatives* the ids of ``ids_hard_negative.txt``
+    and *memory* the step 3 rows (gold page id -> row).
     """
     groups: Dict[str, List[dict]] = defaultdict(list)
     for query in queries:
@@ -131,14 +156,22 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
 
     query_ids = {q["id"] for q in queries}
     qrel_docs = {d for docs in qrels.values() for d in docs}
+    negatives = set(hard_negatives)
+    wiki_gold = {d for d in qrel_docs if d.startswith("wiki_")}
+    memory = {g: r for g, r in memory.items() if g in wiki_gold}
     checks = {
         "duplicate_query_ids": len(queries) - len(query_ids),
         "queries_without_qrels": sum(not qrels.get(q) for q in query_ids),
         "qrels_unknown_query": sum(q not in query_ids for q in qrels),
         "qrels_docs_missing_from_corpus": len(qrel_docs - set(doc_words)),
-        "corpus_docs_without_qrels": len(set(doc_words) - qrel_docs),
+        "hard_negatives_missing_from_corpus": len(negatives - set(doc_words)),
+        "hard_negatives_in_qrels": len(negatives & qrel_docs),
+        "corpus_docs_neither_gold_nor_negative": len(set(doc_words) - qrel_docs - negatives),
     }
-    return {"corpus_docs": len(doc_words), "per_source": per_source, "checks": checks}
+    hard = negative_stats(memory)
+    hard["wiki_gold_pages"] = len(wiki_gold)
+    hard["words_in_corpus"] = distribution([doc_words[d] for d in negatives if d in doc_words])
+    return {"corpus_docs": len(doc_words), "per_source": per_source, "hard_negatives": hard, "checks": checks}
 
 
 def _fmt(value: float) -> str:
@@ -150,8 +183,9 @@ def _dist(d: dict, keys: Tuple[str, ...]) -> str:
 
 
 def format_dataset_table(stats: dict) -> str:
-    """The step 3 stats as a plain-text table: one row per measure, one
-    column per source (``all`` last), then the corpus size and the checks."""
+    """The step 4 stats as a plain-text table: one row per measure, one
+    column per source (``all`` last), then the corpus size, the hard
+    negatives and the checks."""
     per_source = stats["per_source"]
     sources = [s for s in per_source if s != "all"] + ["all"]
     rows = [
@@ -176,6 +210,13 @@ def format_dataset_table(stats: dict) -> str:
     lines.insert(1, "-" * len(lines[0]))
     lines.append("")
     lines.append(f"corpus docs: {stats['corpus_docs']}")
+    hard = stats["hard_negatives"]
+    lines.append(f"hard negatives: {hard['hard_negatives']} for {hard['gold_pages']} of {hard['wiki_gold_pages']} "
+                 f"wiki gold pages; per gold page mean/med/min/max "
+                 f"{_dist(hard['per_gold'], ('mean', 'median', 'min', 'max'))}; "
+                 f"by source {', '.join(f'{k} {v}' for k, v in hard['by_source'].items()) or '-'}; "
+                 f"shared by >=2 gold pages {hard['shared']}; "
+                 f"words mean/med/p95 {_dist(hard['words_in_corpus'], ('mean', 'median', 'p95'))}")
     lines.append("checks (all 0 = consistent): "
                  + ", ".join(f"{k} {v}" for k, v in stats["checks"].items()))
     return "\n".join(lines)

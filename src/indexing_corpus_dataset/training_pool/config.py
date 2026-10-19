@@ -1,5 +1,6 @@
 """Settings of the training pool build (``shared``, the ``pages`` section
-of deep_qa step 2 and the ``split`` section) and its paths.  The sources and the dropped question types of step
+of deep_qa step 2, the ``negatives`` section of step 3 and the ``split``
+section) and its paths.  The sources and the dropped question types of step
 1 are fixed (``sources.py``, ``filters.py``).
 
 The YAML file (``experiments/configs/build_training_pool.yaml``) has the same
@@ -11,7 +12,7 @@ import dataclasses
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from utils.sectioned_config import load_sectioned
 from indexing_corpus_dataset.layout import (BUILT_DATASETS, POOL_ALL_SPLIT, POOL_SPLITS, TRAINING_POOL_ROOT, corpus_path,
@@ -52,6 +53,22 @@ class PagesConfig:
 
 
 @dataclass
+class NegativesConfig:
+    """Step 3: hard negatives of each Wikipedia gold page, from the
+    Wikipedia API (``negatives.py``); the request rate and workers are those
+    of ``pages``."""
+    # Hard negatives kept per Wikipedia gold page.
+    max_per_gold: int = 10
+    # The candidate sources, in the order they fill the slots of a gold page:
+    # ``morelike`` (pages of the most similar text, CirrusSearch) and
+    # ``category`` (pages of the gold page's most specific categories).
+    sources: List[str] = field(default_factory=lambda: ["morelike", "category"])
+    # Candidates asked from each source per slot (filtered or failed
+    # candidates leave slots to the next ones).
+    candidate_factor: int = 3
+
+
+@dataclass
 class SplitConfig:
     """The shares of the pool's queries in the splits ``sft``, ``rl`` and
     ``val`` (splits.py), summing to 1."""
@@ -63,9 +80,14 @@ class SplitConfig:
         return {name: getattr(self, name) for name in POOL_SPLITS}
 
 
+# The candidate sources of step 3 (``negatives.sources``).
+NEGATIVE_SOURCES = ("morelike", "category")
+
+
 SECTIONS = {
     "shared": SharedConfig,
     "pages": PagesConfig,
+    "negatives": NegativesConfig,
     "split": SplitConfig,
 }
 
@@ -74,6 +96,7 @@ SECTIONS = {
 class PoolConfig:
     shared: SharedConfig = field(default_factory=SharedConfig)
     pages: PagesConfig = field(default_factory=PagesConfig)
+    negatives: NegativesConfig = field(default_factory=NegativesConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -89,10 +112,16 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
     shares = cfg.split.shares()
     if any(v < 0 for v in shares.values()) or abs(sum(shares.values()) - 1.0) > 1e-9:
         raise ValueError(f"split: shares must be >= 0 and sum to 1, got {shares}")
+    neg = cfg.negatives
+    unknown = sorted(set(neg.sources) - set(NEGATIVE_SOURCES))
+    if unknown or not neg.sources or len(set(neg.sources)) != len(neg.sources):
+        raise ValueError(f"negatives.sources: distinct names of {list(NEGATIVE_SOURCES)}, got {neg.sources}")
+    if neg.max_per_gold < 1 or neg.candidate_factor < 1:
+        raise ValueError("negatives: max_per_gold and candidate_factor must be >= 1")
     return cfg
 
 
-# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-3,
+# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-4,
 # trqa_validation is merged from the TRQA validation files (trqa_validation.py);
 # both end with the split of their queries into sft / rl / val (splits.py).
 POOLS = tuple(sorted(BUILT_DATASETS))
@@ -131,8 +160,21 @@ class PoolPaths:
 
     @property
     def corpus(self) -> Path:
-        """The gold pages of the kept questions."""
+        """The gold pages of the kept questions and their hard negatives
+        (step 3), with their text."""
         return corpus_path(self.root)
+
+    @property
+    def ids_gold(self) -> Path:
+        """The ids of the corpus documents that are gold for a query, one per
+        line (``.txt``: the index builder reads every ``corpus/*.jsonl``)."""
+        return self.root / "corpus" / "ids_gold.txt"
+
+    @property
+    def ids_hard_negative(self) -> Path:
+        """The ids of the hard negatives of the corpus (gold for no query),
+        one per line."""
+        return self.root / "corpus" / "ids_hard_negative.txt"
 
     # ── Step files ──────────────────────────────────────────────────────────
 
@@ -149,7 +191,7 @@ class PoolPaths:
 
     @property
     def stats(self) -> Path:
-        """One section per step (``step1``, ``step2``, ``step3``) and the
+        """One section per step (``step1`` ... ``step4``) and the
         ``split`` section (shares and per-split counts, ``splits.py``)."""
         return self.root / "stats.json"
 
@@ -161,5 +203,12 @@ class PoolPaths:
     @property
     def page_text(self) -> Path:
         """The extracted text of the fetched pages (``{"id", "text"}``, one row
-        per corpus document), appended as pages are fetched."""
+        per corpus document: gold pages and hard negatives), appended as pages
+        are fetched."""
         return self.root / "pages" / "text.jsonl"
+
+    @property
+    def negatives(self) -> Path:
+        """The memory of step 3: one row per processed Wikipedia gold page
+        with its hard negatives, appended as gold pages finish."""
+        return self.root / "negatives" / "index.jsonl"

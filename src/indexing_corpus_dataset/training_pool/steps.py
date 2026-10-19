@@ -6,9 +6,11 @@
        Wayback Machine), then Filter A (``filters.py``): keep a question when
        every gold page was fetched or, with web gold pages, at least
        ``pages.min_page_share`` of them; write the kept questions, the qrels
-       of their fetched gold pages and those pages in the canonical layout
-    3  stats of the dataset as written (queries, qrels, corpus) per source,
-       and consistency checks between the three files
+       of their fetched gold pages in the canonical layout, and the corpus
+       (``corpus.py``: those pages and the hard negatives of step 3)
+    3  hard negatives of the Wikipedia gold pages (``negatives.py``)
+    4  stats of the dataset as written (queries, qrels, corpus) per source,
+       the hard negatives, and consistency checks between the files
 
 Step 2 is incremental, like ``dra_inference.py``: a question is processed
 once Filter A has a final verdict (``filters.verdict``) from the rows of its
@@ -25,7 +27,6 @@ verdict (``PAGE_SETTINGS``) must stay those of the earlier runs.
 import hashlib
 import json
 import logging
-import os
 import re
 import sys
 import threading
@@ -40,6 +41,7 @@ from tqdm.contrib.logging import logging_redirect_tqdm
 from utils.io_utils import atomic_write_text, iter_jsonl, read_jsonl, write_jsonl
 
 from .config import PoolConfig, PoolPaths
+from .corpus import drop_partial_line, read_negatives, write_corpus
 from .filters import failed_pages, failed_transiently, filter_a, is_transient, type_filter, verdict
 from .http_client import HttpClient, error_text, failure_status
 from .sources import LOADERS
@@ -60,30 +62,6 @@ _LINE_EVERY_SECONDS = 60.0
 # The ``pages`` settings that decide a page's status or a question's verdict:
 # an incremental run must use those of the earlier runs.  The worker counts and rates may change between runs.
 PAGE_SETTINGS = ("wiki_lang", "min_words", "min_page_share", "wayback", "wayback_timestamp")
-
-
-def _drop_partial_line(path: Path) -> None:
-    """Cut a last line left unfinished by a killed run, so that appended
-    rows start on a line of their own (the file is read from its end)."""
-    if not path.exists() or path.stat().st_size == 0:
-        return
-    with open(path, "rb+") as fh:
-        end = fh.seek(0, 2)
-        fh.seek(end - 1)
-        if fh.read(1) == b"\n":
-            return
-        pos, size = end, 1 << 16
-        while pos > 0:
-            start = max(0, pos - size)
-            fh.seek(start)
-            cut = fh.read(pos - start).rfind(b"\n")
-            if cut >= 0:
-                fh.truncate(start + cut + 1)
-                break
-            pos = start
-        else:
-            fh.truncate(0)
-    log.warning("%s: removed an unfinished last line", path)
 
 
 def _write_dropped(paths: PoolPaths, step: int, dropped: List[dict]) -> None:
@@ -130,7 +108,7 @@ def run_step1(paths: PoolPaths) -> None:
 
 # ── Step 2 ──────────────────────────────────────────────────────────────────
 
-class _PageStore:
+class PageStore:
     """``pages/index.jsonl`` (append, latest row per key wins) and
     ``pages/text.jsonl`` (the text of each fetched document, latest row per
     id wins).  A transient failure row counts the fetches of its page in
@@ -143,7 +121,7 @@ class _PageStore:
         self.wiki_docs: Dict[int, dict] = {}
         paths.page_index.parent.mkdir(parents=True, exist_ok=True)
         for path in (paths.page_index, paths.page_text):
-            _drop_partial_line(path)
+            drop_partial_line(path)
         if paths.page_index.exists():
             for row in iter_jsonl(paths.page_index):
                 self._remember(row)
@@ -189,7 +167,7 @@ class _Progress:
     is known (``_verdict``).  A bar on a terminal; otherwise a status line
     every 1% of the questions or every minute."""
 
-    def __init__(self, records: List[dict], store: _PageStore, pending: Iterable[str], wiki_http: HttpClient,
+    def __init__(self, records: List[dict], store: PageStore, pending: Iterable[str], wiki_http: HttpClient,
                  min_page_share: float):
         self._store = store
         self._min_page_share = min_page_share
@@ -271,7 +249,7 @@ class _Progress:
         self._bar.close()
 
 
-def _resolve_wiki(golds: List[dict], store: _PageStore, wiki: WikipediaClient, workers: int,
+def _resolve_wiki(golds: List[dict], store: PageStore, wiki: WikipediaClient, workers: int,
                   progress: _Progress) -> Dict[int, List[dict]]:
     """Resolve the titles, 50 per call; a row for each title that is missing,
     invalid or could not be resolved; the resolved golds grouped by page id
@@ -303,7 +281,7 @@ def _resolve_wiki(golds: List[dict], store: _PageStore, wiki: WikipediaClient, w
     return by_page
 
 
-def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: _PageStore, wiki: WikipediaClient,
+def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: PageStore, wiki: WikipediaClient,
                  fetcher: WebFetcher, cfg: PoolConfig, progress: _Progress) -> None:
     """The Wikipedia pages and the web pages, two thread pools at once.  A
     Wikipedia page fetched by an earlier run under another title (a redirect)
@@ -362,61 +340,23 @@ def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: _
             future.result()
 
 
-_ID_PREFIX = b'{"id": "'
-
-
-def _row_id(line: bytes) -> Optional[str]:
-    """The id of a ``pages/text.jsonl`` row, read from its prefix as
-    ``add_text`` writes it, without parsing the text (the full row otherwise)."""
-    if line.startswith(_ID_PREFIX):
-        end = line.find(b'"', len(_ID_PREFIX))
-        if end > 0 and b"\\" not in line[len(_ID_PREFIX):end]:
-            return line[len(_ID_PREFIX):end].decode("utf-8")
-    return json.loads(line)["id"] if line.strip() else None
-
-
-def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths) -> int:
-    """The kept questions (queries), their fetched gold pages (binary qrels)
-    and the text of those pages (corpus) in the canonical layout, each file
-    replaced atomically; returns the number of documents.  A document's text
-    is its last row in ``pages/text.jsonl`` (a page fetched again after a
-    crash between its text and its index rows has two)."""
+def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths) -> Tuple[int, int]:
+    """The kept questions (queries) and their fetched gold pages (binary
+    qrels) in the canonical layout, each file replaced atomically, then the
+    corpus (``corpus.write_corpus``: those pages and their hard negatives);
+    returns the numbers of gold pages and hard negatives in the corpus."""
     write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
                                 for r in records))
-    docs: Dict[str, dict] = {}
+    gold_urls: Dict[str, str] = {}
     qrels = []
     for record in records:
         fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
         for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
             qrels.append(f"{record['id']} 0 {doc_id} 1\n")
         for page in fetched:
-            docs.setdefault(page["doc_id"], page)
+            gold_urls.setdefault(page["doc_id"], page["url"])
     atomic_write_text(paths.qrels, "".join(qrels))
-
-    # Byte offset of the last text row of each document, then those rows only.
-    offsets: Dict[str, int] = {}
-    if paths.page_text.exists():
-        with open(paths.page_text, "rb") as fh:
-            offset = 0
-            for line in fh:
-                doc_id = _row_id(line)
-                if doc_id in docs:
-                    offsets[doc_id] = offset
-                offset += len(line)
-    paths.corpus.parent.mkdir(parents=True, exist_ok=True)
-    tmp = paths.corpus.with_name(f".{paths.corpus.name}.tmp")
-    with open(tmp, "w", encoding="utf-8", errors="replace") as out:
-        if offsets:
-            with open(paths.page_text, "rb") as fh:
-                for doc_id, offset in sorted(offsets.items(), key=lambda item: item[1]):
-                    fh.seek(offset)
-                    item = json.loads(fh.readline())
-                    # {id, contents} as the other corpora (layout.py), plus the
-                    # page url; a wiki page's title is the first line of its text.
-                    out.write(json.dumps({"id": doc_id, "contents": item["text"], "url": docs[doc_id]["url"]},
-                                         ensure_ascii=False) + "\n")
-    os.replace(tmp, paths.corpus)
-    return len(offsets)
+    return write_corpus(paths, gold_urls)
 
 
 def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> None:
@@ -446,7 +386,7 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     # The settings first, so a run that stops before its stats still records them.
     write_stats(paths.stats, "step2", {**read_stats(paths.stats).get("step2", {}), "config": config})
     records = read_jsonl(paths.questions)
-    store = _PageStore(paths)
+    store = PageStore(paths)
     min_page_share = cfg.pages.min_page_share
 
     def processed(record: dict) -> bool:
@@ -456,9 +396,6 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     todo = [r for r in records if not processed(r)]
     print(f"[step 2] {len(records)} questions: {len(records) - len(todo)} already processed, {len(todo)} remaining")
     if sources:
-        unknown = sorted(set(sources) - set(LOADERS))
-        if unknown:
-            raise SystemExit(f"unknown source(s) {unknown}; expected some of {list(LOADERS)}")
         todo = [r for r in todo if r["source"] in sources]
         print(f"[step 2] this run: sources {', '.join(sources)}, {len(todo)} remaining")
     if limit is not None:
@@ -510,28 +447,37 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     kept, dropped = filter_a(done, pages, min_page_share)
     partial = [{"id": r["id"], "source": r["source"], "reasons": failed_pages(r, pages)} for r in kept]
     partial = [p for p in partial if p["reasons"]]
-    n_docs = _write_dataset(kept, pages, paths)
+    n_docs, n_negatives = _write_dataset(kept, pages, paths)
     _write_dropped(paths, 2, dropped)
     write_stats(paths.stats, "step2", {
         "config": config,
         "questions": {"candidates": len(records), "processed": len(done),
                       "remaining": len(records) - len(done)},
         "pages": page_stats(pages.values()), "kept": question_stats(kept), "corpus_docs": n_docs,
+        "corpus_hard_negatives": n_negatives,
         # Kept questions with failed gold pages (no qrels for those), per reason.
         "kept_with_failed_pages": drop_stats(partial),
         "dropped": drop_stats(dropped),
     })
     print(f"[step 2] dataset: {len(kept)} kept of {len(done)} processed questions "
           f"({len(partial)} with failed gold pages, {len(records) - len(done)} remaining), "
-          f"{n_docs} gold pages -> {paths.root}")
+          f"{n_docs} gold pages + {n_negatives} hard negatives (step 3) in the corpus -> {paths.root}")
     write_splits(paths, cfg.split)
 
 
-# ── Step 3 ──────────────────────────────────────────────────────────────────
+# ── Step 4 ──────────────────────────────────────────────────────────────────
 
-def run_step3(paths: PoolPaths) -> None:
-    """Stats of the dataset as written by step 2 (queries, qrels, corpus):
-    printed as a table and saved as the ``step3`` section of ``stats.json``."""
+def _read_ids(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [line.strip() for line in fh if line.strip()]
+
+
+def run_step4(paths: PoolPaths) -> None:
+    """Stats of the dataset as written by steps 2 and 3 (queries, qrels,
+    corpus, hard negatives): printed as a table and saved as the ``step4``
+    section of ``stats.json``."""
     for path in (paths.questions, paths.queries, paths.qrels, paths.corpus):
         if not path.exists():
             raise SystemExit(f"{path} not found: run steps 1 and 2 first")
@@ -543,6 +489,7 @@ def run_step3(paths: PoolPaths) -> None:
                 qrels.setdefault(qid, []).append(doc_id)
     doc_words = {row["id"]: len(row["contents"].split()) for row in iter_jsonl(paths.corpus)}
     dropped = [r for r in iter_jsonl(paths.dropped) if r["step"] == 2] if paths.dropped.exists() else []
-    stats = dataset_stats(read_jsonl(paths.questions), read_jsonl(paths.queries), qrels, doc_words, dropped)
-    write_stats(paths.stats, "step3", stats)
-    print(f"[step 3] dataset {paths.root}\n\n{format_dataset_table(stats)}\n")
+    stats = dataset_stats(read_jsonl(paths.questions), read_jsonl(paths.queries), qrels, doc_words, dropped,
+                          _read_ids(paths.ids_hard_negative), read_negatives(paths))
+    write_stats(paths.stats, "step4", stats)
+    print(f"[step 4] dataset {paths.root}\n\n{format_dataset_table(stats)}\n")

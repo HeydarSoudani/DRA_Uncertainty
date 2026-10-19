@@ -92,14 +92,26 @@ Values are means, after step 1.
 ```bash
 python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
 python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A, split all -> sft / rl / val
-python experiments/training/build_training_pool.py --step 3                               # print the statistics per source
+python experiments/training/build_training_pool.py --step 3 --limit 500                   # hard negatives of the next 500 wiki gold pages
+python experiments/training/build_training_pool.py --step 4                               # print the statistics per source
 ```
+
+Step 3 adds hard negatives to the corpus, which otherwise holds only gold pages. For each Wikipedia gold page it
+asks the Wikipedia API for candidates: first `morelike` (the articles with the most similar text), then category
+siblings (articles in the page's most specific categories). It keeps at most `negatives.max_per_gold` (10) per gold
+page, skipping pages that are gold for any query, disambiguation and list pages, pages titled with the answer, and
+pages under `min_words`. Web gold pages get none. Negatives are fetched like the gold pages (Parsoid HTML, same text
+extraction). `negatives/index.jsonl` remembers the processed gold pages: a run continues with the next ones in qrels
+order, and `--limit N` counts gold pages. `corpus/corpus.jsonl` holds gold pages and hard negatives with their text;
+`corpus/ids_gold.txt` and `corpus/ids_hard_negative.txt` list the ids of each. qrels are unchanged. Steps 2 and 3
+write the corpus the same way, so a later step 2 run keeps the negatives.
 
 Step 2 ends with the split, so the split files always match the pool. The shares and per-split counts are recorded
 in the `split` section of `stats.json`. Other shares (they would move queries between splits) and other page
 settings than the earlier step 2 runs' (`wiki_lang`, `min_words`, `min_page_share`, `wayback`, `wayback_timestamp`)
 are refused: to change the shares, remove the `split` section of `stats.json` and the next build re-splits; to
-change the page settings, rebuild the pool from step 1. One build of a pool runs at a time (`.build.lock` in
+change the page settings, rebuild the pool from step 1. Other step 3 settings than the earlier runs' are refused too:
+to change them, remove `negatives/index.jsonl` and the `step3` section of `stats.json`. One build of a pool runs at a time (`.build.lock` in
 its directory).
 
 ### trqa_validation
