@@ -15,12 +15,12 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from indexing_corpus_dataset.layout import REPO_DATA_ROOT, corpus_path, qrels_base, queries_base
+from indexing_corpus_dataset.layout import DATASET_SPECS, TRAINING_POOL_ROOT, corpus_path, qrels_base, queries_base
 
 
 @dataclass
 class SharedConfig:
-    # Root of the build; null = REPO_DATA_ROOT/training_pool (the repo's data/).
+    # Root of the build; null = TRAINING_POOL_ROOT/{pool} (data/training_pool/{pool} of the repo).
     output_dir: Optional[str] = None
     # Contact (e-mail or URL) put in the User-Agent of every request, as the
     # Wikimedia User-Agent policy asks; null = the DRA_CONTACT env var (.env).
@@ -89,25 +89,29 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
     return cfg
 
 
-SPLIT = "train"
+# The training pools (layout.BUILT_DATASETS): deep_qa is built in steps 1-3,
+# trqa_validation is merged from the TRQA validation files (trqa_validation.py).
+POOLS = ("deep_qa", "trqa_validation")
 
 
 class PoolPaths:
-    """The files of a build under ``shared.output_dir``: the dataset in the
-    canonical layout (``layout.py``) and, next to it, the step files."""
+    """The files of a build under ``shared.output_dir`` (null =
+    ``TRAINING_POOL_ROOT/{pool}``): the dataset in the canonical layout
+    (``layout.py``) and, next to it, the step files of deep_qa."""
 
-    def __init__(self, cfg: PoolConfig):
-        self.root = Path(cfg.shared.output_dir) if cfg.shared.output_dir else REPO_DATA_ROOT / "training_pool"
+    def __init__(self, cfg: PoolConfig, pool: str = "deep_qa"):
+        self.root = Path(cfg.shared.output_dir) if cfg.shared.output_dir else TRAINING_POOL_ROOT / pool
+        self.split = DATASET_SPECS[pool].subset
 
     # ── Dataset (canonical layout) ──────────────────────────────────────────
 
     @property
     def queries(self) -> Path:
-        return queries_base(self.root, SPLIT).with_suffix(".jsonl")
+        return queries_base(self.root, self.split).with_suffix(".jsonl")
 
     @property
     def qrels(self) -> Path:
-        return qrels_base(self.root, SPLIT).with_suffix(".txt")
+        return qrels_base(self.root, self.split).with_suffix(".txt")
 
     @property
     def corpus(self) -> Path:

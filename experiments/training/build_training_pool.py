@@ -1,8 +1,13 @@
-"""Build the training pool: deep-research questions from InfoSeek-Hard,
-WebShaper and FRAMES with their gold pages fetched from the source.
+"""Build a training pool (``--pool``) under its dataset directory
+(``shared.output_dir``, default data/training_pool/{pool} of the repo).
 
-One step per call (``--step N``) under the dataset directory
-(``shared.output_dir``, default data/training_pool of the repo):
+trqa_validation: the TRQA wiki1 + wiki2 validation queries, intermediate
+info and qrels merged into split ``val`` (one call, no ``--step``); it
+searches TRQA's wiki_partial corpus and indices.
+
+deep_qa: deep-research questions from InfoSeek-Hard, WebShaper and FRAMES
+with their gold pages fetched from the source, one step per call
+(``--step N``):
 
     1  merge the sources, drop duplicates and the     questions.jsonl
        fixed question types (filters.py)
@@ -32,7 +37,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from indexing_corpus_dataset.training_pool.config import PoolPaths, load_config
+from indexing_corpus_dataset.training_pool import trqa_validation
+from indexing_corpus_dataset.training_pool.config import POOLS, PoolPaths, load_config
 from indexing_corpus_dataset.training_pool.steps import run_step1, run_step2, run_step3
 
 _HERE = Path(__file__).resolve().parent
@@ -50,9 +56,10 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         allow_abbrev=False,
     )
-    parser.add_argument("--step", type=int, required=True, choices=[1, 2, 3], help="1 questions, 2 gold pages + Filter A, 3 dataset stats.")
+    parser.add_argument("--pool", type=str, default="deep_qa", choices=POOLS, help="Training pool to build.")
+    parser.add_argument("--step", type=int, default=None, choices=[1, 2, 3], help="deep_qa only (required): 1 questions, 2 gold pages + Filter A, 3 dataset stats.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, sections 'shared' and 'pages'.")
-    parser.add_argument("--output-dir", type=str, default=None, help="Dataset directory (None = data/training_pool of the repo).")
+    parser.add_argument("--output-dir", type=str, default=None, help="Dataset directory (None = data/training_pool/{pool} of the repo).")
     parser.add_argument("--limit", type=int, default=None, help="Step 2: the next N unprocessed questions (None = all).")
     parser.add_argument("--source", type=str, default=None, help="Step 2: only these sources, comma-separated (webshaper, frames, infoseek; None = all).")
     return parser.parse_args()
@@ -61,16 +68,22 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = _parse_args()
+    if (args.pool == "deep_qa") != (args.step is not None):
+        raise SystemExit("--step is required for deep_qa and not used for trqa_validation")
     if args.step != 2 and (args.limit is not None or args.source is not None):
         raise SystemExit("--limit and --source apply to step 2 only")
 
     # Only the flags given on the command line override the --config file.
     overrides = {key: getattr(args, dest) for dest, key in _FLAGS.items() if getattr(args, dest) is not None}
     cfg = load_config(args.config, overrides)
-    paths = PoolPaths(cfg)
+    paths = PoolPaths(cfg, args.pool)
 
     paths.root.mkdir(parents=True, exist_ok=True)
-    print(f"[build_training_pool] step {args.step}, dataset {paths.root}")
+    if args.pool == "trqa_validation":
+        print(f"[build_training_pool] trqa_validation, dataset {paths.root}")
+        trqa_validation.build(paths)
+        return
+    print(f"[build_training_pool] deep_qa step {args.step}, dataset {paths.root}")
 
     if args.step == 1:
         run_step1(paths)
@@ -84,6 +97,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+# python experiments/training/build_training_pool.py --pool trqa_validation
 # python experiments/training/build_training_pool.py --step 1
 # python experiments/training/build_training_pool.py --step 2 --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10

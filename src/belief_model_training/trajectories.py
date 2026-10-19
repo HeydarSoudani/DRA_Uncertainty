@@ -2,8 +2,9 @@
 
 ``experiments/inference/dra_inference.py`` runs the frozen agent with the teacher belief
 model in ``monitor`` mode (the agent never sees the belief) on the training
-pool (``experiments/training/build_training_pool.py``; dataset ``training_pool``, split
-``train``): every pool query with qrels, or the next ``limit`` of them.
+pool ``shared.training_data`` (``experiments/training/build_training_pool.py``:
+deep_qa, split ``train``, or trqa_validation, split ``val``): every pool query
+with qrels, or the next ``limit`` of them.
 The teacher writes the criteria (init, read from the criteria bank when
 banked) and the belief updates; the query scorer is the frozen
 ``query_scorer_model``.  Inference resume applies: queries already run are
@@ -58,17 +59,13 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The training data: the pool of experiments/training/build_training_pool.py.
-TRAINING_SPLIT = Split("training_pool", "train")
-
-
 def inference_command(cfg: TrainingConfig, output: Path) -> List[str]:
     """The ``experiments/inference/dra_inference.py`` command of phase 1 on
     the training pool (all its queries, or the next ``trajectories.limit``
     unprocessed ones), in monitor mode: the teacher belief model writes the
     criteria and the belief updates, the query scorer is the frozen
     ``cfg.query_scorer_model``."""
-    tc, split = cfg.trajectories, TRAINING_SPLIT
+    tc, split = cfg.trajectories, cfg.training_split
     cmd = [
         sys.executable, str(REPO_ROOT / "experiments" / "inference" / "dra_inference.py"),
         "--config", cfg.shared.inference_config,
@@ -93,10 +90,9 @@ def inference_command(cfg: TrainingConfig, output: Path) -> List[str]:
     return cmd
 
 
-def find_run_dir(output: Path, retriever: str) -> Path:
+def find_run_dir(split: Split, output: Path, retriever: str) -> Path:
     """The monitor-mode run directory dra_inference wrote for the training
     pool under *output* (one agent per output root)."""
-    split = TRAINING_SPLIT
     dataset_dir = build_dataset_dir_name(
         split.dataset, split.split_id, DATASET_SPECS[split.dataset].query_key, retriever,
     )
@@ -106,10 +102,9 @@ def find_run_dir(output: Path, retriever: str) -> Path:
     return found[0]
 
 
-def training_gold() -> Dict[str, Set[str]]:
+def training_gold(split: Split) -> Dict[str, Set[str]]:
     """The pool queries dra_inference runs (those with qrels, in file order)
     and their relevant documents, as dra_inference reads them."""
-    split = TRAINING_SPLIT
     queries, qrels, _ = load_split(
         dataset_root(split.dataset), split.split_id, query_key=DATASET_SPECS[split.dataset].query_key,
         min_relevance_score=DATASET_SPECS[split.dataset].min_relevance_score, only_with_qrels=True,
@@ -136,8 +131,8 @@ def read_correctness(run_dir: Path) -> Dict[str, Optional[bool]]:
 
 def run_trajectories(cfg: TrainingConfig, paths: RunPaths) -> None:
     tc = cfg.trajectories
-    split = TRAINING_SPLIT
-    gold = training_gold()
+    split = cfg.training_split
+    gold = training_gold(split)
     qids = list(gold)
     print(f"[phase 1] {len(qids)} training queries in {split.name}; policy model {tc.policy_model}, "
           f"teacher {tc.teacher_belief_model}, query scorer {cfg.query_scorer_model}")
@@ -145,7 +140,7 @@ def run_trajectories(cfg: TrainingConfig, paths: RunPaths) -> None:
     cmd = inference_command(cfg, paths.inference_runs)
     print(f"[phase 1] {' '.join(cmd)}", flush=True)
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
-    run_dir = find_run_dir(paths.inference_runs, cfg.shared.retriever)
+    run_dir = find_run_dir(split, paths.inference_runs, cfg.shared.retriever)
 
     collect_episodes(cfg, paths, split, gold, run_dir)
 

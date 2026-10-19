@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from indexing_corpus_dataset.layout import OUTPUT_ROOT, resolve_split_id
+from indexing_corpus_dataset.layout import BUILT_DATASETS, DATASET_SPECS, OUTPUT_ROOT, resolve_split_id
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,10 @@ class Split:
 
 @dataclass
 class SharedConfig:
+    # Training pool of experiments/training/build_training_pool.py: deep_qa
+    # (InfoSeek-Hard, WebShaper, FRAMES) or trqa_validation (TRQA wiki1 +
+    # wiki2 validation).
+    training_data: str = "deep_qa"
     run_name: str = "default"
     # Root of the training runs; null = OUTPUT_ROOT/belief_model_training.
     output_root: Optional[str] = None
@@ -58,7 +62,7 @@ class SharedConfig:
 @dataclass
 class TrajectoriesConfig:
     """Phase 1: frozen agent + teacher belief model in monitor mode, on the
-    training pool (experiments/training/build_training_pool.py)."""
+    training pool ``shared.training_data``."""
     policy_model: str = "glm"
     # Teacher belief model: its criteria (init) and belief updates are the SFT targets.
     teacher_belief_model: str = "openrouter/qwen/qwen3.6-27b"
@@ -166,6 +170,11 @@ class TrainingConfig:
         return dataclasses.asdict(self)
 
     @property
+    def training_split(self) -> Split:
+        """The split of ``shared.training_data`` that dra_inference runs."""
+        return Split(self.shared.training_data, DATASET_SPECS[self.shared.training_data].subset)
+
+    @property
     def query_scorer_model(self) -> str:
         return self.shared.query_scorer_model or self.trajectories.teacher_belief_model
 
@@ -205,15 +214,17 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
         if key not in {f.name for f in dataclasses.fields(obj)}:
             raise ValueError(f"unknown config key {dotted!r}")
         setattr(obj, key, _coerce(value, getattr(obj, key), dotted))
+    if cfg.shared.training_data not in BUILT_DATASETS:
+        raise ValueError(f"shared.training_data: expected one of {sorted(BUILT_DATASETS)}, got {cfg.shared.training_data!r}")
     return cfg
 
 
 class RunPaths:
-    """Files of one training run under ``{output_root}/{run_name}``."""
+    """Files of one training run under ``{output_root}/{training_data}/{run_name}``."""
 
     def __init__(self, cfg: TrainingConfig) -> None:
         root = Path(cfg.shared.output_root) if cfg.shared.output_root else OUTPUT_ROOT / "belief_model_training"
-        self.root = root / cfg.shared.run_name
+        self.root = root / cfg.shared.training_data / cfg.shared.run_name
         # Phase 1
         self.trajectories_dir = self.root / "phase1_trajectories"
         self.inference_runs = self.trajectories_dir / "runs"

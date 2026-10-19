@@ -1,10 +1,12 @@
-"""Training pool: deep-research questions with several gold pages each,
-merged from InfoSeek-Hard, WebShaper and FRAMES, with their gold pages
-fetched from the source.  Shared by the trainings that need such questions
-(first the belief model, phase 0).
+"""Training pools, one folder each under ``{TRAINING_POOL_ROOT}/{pool}``
+(data/training_pool/ of the repo); each pool is a dataset of dra_inference.
 
-Steps (``experiments/training/build_training_pool.py --step N``) under
-``{REPO_DATA_ROOT}/training_pool/`` (the repo's data/):
+trqa_validation (``build_training_pool.py --pool trqa_validation``): the
+TRQA wiki1 + wiki2 validation files merged (``trqa_validation.py``).
+
+deep_qa: deep-research questions with several gold pages each, merged from
+InfoSeek-Hard, WebShaper and FRAMES, with their gold pages fetched from the
+source.  Steps (``experiments/training/build_training_pool.py --step N``):
 
     1  questions      merge the sources, drop duplicates and the fixed
                       question types: questions.jsonl
@@ -33,4 +35,5 @@ Modules:
     filters        type filter (step 1), Filter A (step 2)
     stats          the step statistics
     steps          run_step1 / run_step2 (resume, progress) / run_step3
+    trqa_validation  the merged TRQA validation pool
 """

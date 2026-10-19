@@ -39,26 +39,32 @@ Each status has a signed level $\ell_t(k)$:
 
 | Phase | Script | Does | Output |
 |---|---|---|---|
-| 0 | `build_training_pool.py --step N` | builds the training pool: questions, gold pages, qrels | `data/training_pool/` |
+| 0 | `build_training_pool.py --pool P` | builds a training pool: deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files) | `data/training_pool/{pool}/` |
 | 1 | `belief_model_training.py --phase 1` | runs the frozen agent with the teacher belief model on the training pool; writes episodes, SFT samples and teacher scores | `phase1_trajectories/` |
 | 2 | `belief_model_training.py --phase 2` | SFT of the student on the teacher's replies (LoRA, then merged) | `phase2_sft/merged/` |
 | 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on belief updates from the teacher's and the student's own belief chains) | `phase3_rl/final/` |
 
-The outputs of phases 1 to 3 go to `{output_root}/{run_name}/`. Evaluation of the trained model:
+The outputs of phases 1 to 3 go to `{output_root}/{training_data}/{run_name}/`; `--training-data` picks the pool
+(`deep_qa`, the default, or `trqa_validation`). Evaluation of the trained model:
 `dra_inference.py` (see [Evaluation](#evaluation-dra_inference)).
 
 ```bash
 python experiments/training/build_training_pool.py --step 1
 python experiments/training/build_training_pool.py --step 2
 python experiments/training/build_training_pool.py --step 3
+python experiments/training/build_training_pool.py --pool trqa_validation
 python experiments/training/belief_model_training.py --phase 1 --run-name pool_glm --policy-model glm
 torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phase 2 --run-name pool_glm
 CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --phase 3 --run-name pool_glm
 ```
 
-## Phase 0: Training pool
+## Phase 0: Training pools
 
-The training pool (dataset `training_pool`, split `train`) holds deep-research questions whose gold evidence spans
+Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`.
+
+### deep_qa
+
+The deep_qa pool (split `train`) holds deep-research questions whose gold evidence spans
 several documents, from InfoSeek-Hard, WebShaper and FRAMES. Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA,
 MuSiQue, TriviaQA) are not used: they need too little search.
 
@@ -75,6 +81,18 @@ Values are means, after step 1.
 python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
 python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A
 python experiments/training/build_training_pool.py --step 3                               # print the statistics per source
+```
+
+### trqa_validation
+
+The trqa_validation pool (split `val`) merges the TRQA wiki1 and wiki2 validation files into
+`queries/queries_val.jsonl`, `queries/queries_val_intermediate_info.jsonl` and `qrels/qrels_val.txt`, and searches
+TRQA's `wiki_partial` corpus. 
+
+Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels.
+
+```bash
+python experiments/training/build_training_pool.py --pool trqa_validation
 ```
 
 ## Phase 1: Trajectory collection

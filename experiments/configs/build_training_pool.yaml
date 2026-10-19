@@ -1,6 +1,6 @@
 # ============================================================================
-# Settings of experiments/training/build_training_pool.py (training pool: questions of
-# InfoSeek-Hard, WebShaper and FRAMES with their gold pages).  The sources and
+# Settings of experiments/training/build_training_pool.py (deep_qa pool: questions of
+# InfoSeek-Hard, WebShaper and FRAMES with their gold pages; trqa_validation needs none).  The sources and
 # the dropped question types of step 1 are fixed in code; the keys below are
 # the dataclass fields of src/indexing_corpus_dataset/training_pool/config.py.
 #
@@ -12,7 +12,7 @@
 
 # ── Shared ───────────────────────────────────────────────────────────────────
 shared:
-  output_dir: null                  # null = data/training_pool of the repo
+  output_dir: null                  # null = data/training_pool/{pool} of the repo
   contact: null                     # e-mail or URL in the User-Agent (required by step 2); null = DRA_CONTACT in .env
   timeout: 30.0                     # seconds per request
   max_retries: 4                    # retries on transport errors and HTTP 429 / 5xx

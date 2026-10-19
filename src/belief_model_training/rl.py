@@ -193,7 +193,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         max_model_len=cfg.shared.max_seq_len, max_num_seqs=rc.vllm_max_num_seqs, seed=cfg.shared.seed,
     )
     trainer = BeliefPPOTrainer(init, rc, seed=cfg.shared.seed)
-    sync_dir = Path(rc.sync_dir) / cfg.shared.run_name
+    sync_dir = Path(rc.sync_dir) / cfg.shared.training_data / cfg.shared.run_name
     paths.rl_dir.mkdir(parents=True, exist_ok=True)
     for path in (paths.rl_metrics, paths.rl_validation):
         path.unlink(missing_ok=True)

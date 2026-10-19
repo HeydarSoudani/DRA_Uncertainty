@@ -5,7 +5,7 @@ trained, here with the agent frozen.  It is one model with two calls: init
 f(query) -> the criteria, then every step the update
 b_t = f(query, b_{t-1}, o_t) -> their statuses.  One
 phase per call (``--phase N``); each phase reads the previous one's output
-from the run directory ``{output_root}/{run_name}/``:
+from the run directory ``{output_root}/{training_data}/{run_name}/``:
 
     1  frozen agent + teacher belief model in     phase1_trajectories/
        monitor mode on the training pool
@@ -24,9 +24,11 @@ inference run (phase 1) come from ``shared.inference_config``
 (experiments/configs/dra_inference.yaml) and are never repeated here.
 The merged settings of each phase are saved as ``phase{N}_config.yaml``.
 
-The training data is the training pool (``data/training_pool``, dataset
-``training_pool`` of dra_inference), built by experiments/training/build_training_pool.py
-with its index under ``data/training_pool/indices``.
+The training data is a training pool (``--training-data``), built by
+experiments/training/build_training_pool.py under ``data/training_pool/{pool}``
+and run by dra_inference as dataset ``{pool}``: deep_qa (split ``train``, its
+index under ``data/training_pool/deep_qa/indices``) or trqa_validation (split
+``val``, TRQA's wiki_partial corpus and indices).
 
 Examples:
     python experiments/training/belief_model_training.py --phase 1 --run-name pool_glm --policy-model glm
@@ -58,6 +60,7 @@ _CONFIG_DEFAULT = str(_HERE.parent / "configs" / "belief_model_training.yaml")
 # CLI flag (dest) -> config key.
 _FLAGS = {
     # shared
+    "training_data": "shared.training_data",
     "run_name": "shared.run_name",
     "output_root": "shared.output_root",
     "seed": "shared.seed",
@@ -87,7 +90,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE", help="Override any config key; repeatable; lists comma-separated.")
 
     # ── Shared ──────────────────────────────────────────────────────────────
-    parser.add_argument("--run-name", type=str, default="default", help="Run directory name under the output root.")
+    parser.add_argument("--training-data", type=str, default="deep_qa", choices=["deep_qa", "trqa_validation"], help="Training pool (dataset of dra_inference).")
+    parser.add_argument("--run-name", type=str, default="default", help="Run directory name under {output root}/{training data}.")
     parser.add_argument("--output-root", type=str, default=None, help="Root of the training runs (None = OUTPUT_ROOT/belief_model_training).")
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phase 1).")

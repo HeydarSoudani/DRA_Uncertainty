@@ -6,7 +6,8 @@
 #SBATCH --time=12:00:00
 #SBATCH --mem=32GB
 #SBATCH --output=script_logging/slurm_%A.out
-# Build the training pool, one step per job (CPU only; step 2 is network-bound).
+# Build a training pool, one step per job (CPU only; step 2 is network-bound).
+#   sbatch --export=ALL,POOL=trqa_validation scripts/run_build_training_pool.sh   (no steps)
 #   sbatch --export=ALL,STEP=1 scripts/run_build_training_pool.sh
 #   sbatch --export=ALL,STEP=2 scripts/run_build_training_pool.sh
 #   sbatch --export=ALL,STEP=2,LIMIT=200 scripts/run_build_training_pool.sh   (the next 200 questions)
@@ -19,8 +20,9 @@
 source scripts/_activate.sh
 mkdir -p script_logging
 
-STEP=${STEP:-1}
-ARGS=(--step "$STEP")
+POOL=${POOL:-deep_qa}
+ARGS=(--pool "$POOL")
+[ "$POOL" = deep_qa ] && ARGS+=(--step "${STEP:-1}")
 [ -n "$LIMIT" ] && ARGS+=(--limit "$LIMIT")
 [ -n "$SOURCE" ] && ARGS+=(--source "$SOURCE")
 

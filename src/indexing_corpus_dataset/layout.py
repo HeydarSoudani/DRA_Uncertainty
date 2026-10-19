@@ -25,7 +25,7 @@ Record schemas:
               (``aggregator`` and ``answer_docs``, the supporting documents of
               each answer, where the source gives them: NeuCLIR)
     corpus  : {"id": str, "contents": str}   (the title, if any, is the first
-              line of ``contents``; the training pool adds ``url``)
+              line of ``contents``; the deep_qa pool adds ``url``)
 
 Per-dataset defaults (split, query key, relevance threshold, task type, encoder
 lengths) live in :data:`DATASET_SPECS`, read by the inference CLI, the index
@@ -85,6 +85,9 @@ OUTPUT_ROOT = Path(os.environ.get(
 # The repo's data folder: the data built by this project (not DATA_ROOT,
 # which only holds downloaded inputs).
 REPO_DATA_ROOT = Path("/home/hsoudani/DRA_Uncertainty/data")
+
+# The training pools, one folder per pool (``{TRAINING_POOL_ROOT}/{pool}``).
+TRAINING_POOL_ROOT = REPO_DATA_ROOT / "training_pool"
 
 # Root of the criteria banks, in the repo's data folder; ``DRA_CRITERIA_ROOT``
 # overrides it.
@@ -199,19 +202,29 @@ DATASET_SPECS = {
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="title",
     ),
-    # Built by this project (experiments/training/build_training_pool.py), under
-    # REPO_DATA_ROOT: BrowseComp-style questions (WebShaper, ...) with their
-    # gold Wikipedia and web pages as binary qrels; the split is "train".
-    # Lengths as BrowseComp-Plus (long web pages and multi-clue questions).
-    "training_pool": DatasetSpec(
+    # Training pools built by this project (experiments/training/build_training_pool.py),
+    # under TRAINING_POOL_ROOT; ``subset`` is the split.
+    # deep_qa: BrowseComp-style questions (InfoSeek-Hard, WebShaper, FRAMES)
+    # with their gold Wikipedia and web pages as binary qrels.  Lengths as
+    # BrowseComp-Plus (long web pages and multi-clue questions).
+    "deep_qa": DatasetSpec(
         dataset_year=None, subset="train", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
+    # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
+    # intermediate info merged; TRQA's settings, corpus and indices.
+    "trqa_validation": DatasetSpec(
+        dataset_year=None, subset="val", query_key="text", min_relevance_score=1,
+        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+    ),
 }
 
-# Datasets built by this project, kept under ``REPO_DATA_ROOT`` (the others
-# are downloaded inputs under ``DATA_ROOT``).
-BUILT_DATASETS = frozenset({"training_pool"})
+# Datasets built by this project, kept under ``TRAINING_POOL_ROOT`` (the
+# others are downloaded inputs under ``DATA_ROOT``).
+BUILT_DATASETS = frozenset({"deep_qa", "trqa_validation"})
+
+# Built datasets that search another dataset's corpus and indices.
+_SHARED_CORPUS = {"trqa_validation": "trqa"}
 
 # Datasets with a local corpus + index under ``DATA_ROOT/{dataset}``.
 DATASETS = tuple(DATASET_SPECS)
@@ -274,9 +287,9 @@ _TRQA_CORPUS_NAMES = {
 # ===========================================================================
 
 def dataset_root(dataset: str) -> Path:
-    """Root folder of a dataset: ``REPO_DATA_ROOT/{dataset}`` for the built
-    datasets, ``DATA_ROOT/{dataset}`` for the downloaded ones."""
-    return (REPO_DATA_ROOT if dataset in BUILT_DATASETS else DATA_ROOT) / dataset
+    """Root folder of a dataset: ``TRAINING_POOL_ROOT/{dataset}`` for the
+    built datasets, ``DATA_ROOT/{dataset}`` for the downloaded ones."""
+    return (TRAINING_POOL_ROOT if dataset in BUILT_DATASETS else DATA_ROOT) / dataset
 
 
 def queries_base(data_path: Path | str, split: str) -> Path:
@@ -295,8 +308,10 @@ def nuggets_base(data_path: Path | str, split: str) -> Path:
 
 
 def criteria_bank_path(dataset: str, split: str) -> Path:
-    """Return the criteria bank of a split, e.g. ``CRITERIA_ROOT/ragtime/criteria_bank/criteria_2025.jsonl``."""
-    return CRITERIA_ROOT / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
+    """Return the criteria bank of a split, e.g. ``CRITERIA_ROOT/ragtime/criteria_bank/criteria_2025.jsonl``
+    (a training pool: ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/...``)."""
+    root = CRITERIA_ROOT / "training_pool" if dataset in BUILT_DATASETS else CRITERIA_ROOT
+    return root / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
 
 
 def criteria_reachability_dir(dataset: str, split: str) -> Path:
@@ -355,7 +370,7 @@ def resolve_split_id(
       trqa            -> "{subset}_{eval}"  (eval split carried in dataset_year)
       ragtime         -> "{year}"           (single task; subset unused)
       browsecomp_plus -> subset or "test"
-      training_pool   -> subset or "train"
+      training pools  -> subset or the pool's split (deep_qa "train", trqa_validation "val")
       other           -> subset or "set1"
     """
     if dataset == "neuclir":
@@ -373,8 +388,8 @@ def resolve_split_id(
         return dataset_year or "2025"
     if dataset == "browsecomp_plus":
         return subset or "test"
-    if dataset == "training_pool":
-        return subset or "train"
+    if dataset in BUILT_DATASETS:
+        return subset or DATASET_SPECS[dataset].subset
     return subset or "set1"
 
 
@@ -407,19 +422,22 @@ def default_corpus_path(
     """
     if dataset == "neuclir":
         return DATA_ROOT / "neuclir" / "corpus" / f"{corpus_name(subset)}.jsonl"
+    if dataset in _SHARED_CORPUS:
+        return default_corpus_path(_SHARED_CORPUS[dataset], DATASET_SPECS[_SHARED_CORPUS[dataset]].subset, partial=partial)
     if dataset == "trqa":
         return DATA_ROOT / "trqa" / "corpus" / f"{trqa_corpus_name(subset, partial)}.jsonl"
     if dataset == "ragtime":
         return DATA_ROOT / "ragtime" / "corpus" / f"{RAGTIME_CORPUS_NAME}.jsonl"
     if dataset == "browsecomp_plus":
         return DATA_ROOT / "browsecomp_plus" / "corpus" / "corpus.jsonl"
-    # training_pool, or an unknown dataset (best-effort canonical location).
+    # deep_qa, or an unknown dataset (best-effort canonical location).
     return corpus_path(dataset_root(dataset))
 
 
 def default_index_dir(dataset: str) -> Path:
     """Canonical index output directory for a dataset, ``{dataset_root}/indices``.
 
-    Sibling of the ``corpus/`` directory, matching the production layout.
+    Sibling of the ``corpus/`` directory, matching the production layout.  A
+    pool that searches another dataset's corpus uses that dataset's indices.
     """
-    return dataset_root(dataset) / "indices"
+    return dataset_root(_SHARED_CORPUS.get(dataset, dataset)) / "indices"

@@ -13,7 +13,8 @@
 
 # ── Shared ───────────────────────────────────────────────────────────────────
 shared:
-  run_name: default
+  training_data: deep_qa            # training pool: deep_qa | trqa_validation (build_training_pool.py)
+  run_name: default                 # runs go to {output_root}/{training_data}/{run_name}
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
   seed: 0
   inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief settings of phase 1
