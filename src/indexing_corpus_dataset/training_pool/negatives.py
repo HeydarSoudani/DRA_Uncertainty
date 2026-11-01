@@ -33,7 +33,6 @@ those of the earlier runs.
 import dataclasses
 import json
 import logging
-import re
 import sys
 import threading
 import time
@@ -45,13 +44,14 @@ import requests
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from utils.io_utils import read_jsonl
+from utils.io_utils import drop_partial_line, read_jsonl
 
-from .config import PoolConfig, PoolPaths
-from .corpus import drop_partial_line, read_negatives, write_corpus
+from .annotations import normalize, strip_parenthetical
+from .config import PoolConfig, PoolPaths, require_contact
+from .corpus import read_negatives, write_corpus
 from .http_client import HttpClient, error_text, failure_status, is_permanent
 from .stats import negative_stats, read_stats, write_stats
-from .steps import PageStore
+from .steps import LINE_EVERY_SECONDS, LINE_EVERY_SHARE, PageStore
 from .wikipedia_api import WikipediaClient, html_to_text
 
 log = logging.getLogger(__name__)
@@ -60,19 +60,6 @@ log = logging.getLogger(__name__)
 _MAX_CATEGORIES = 5
 # Titles of list-like pages (an index of entities, not an entity).
 _LIST_PREFIXES = ("list of ", "lists of ", "index of ", "outline of ")
-# Off a terminal: one status line per this share of the gold pages, or after
-# this many seconds without one.
-_LINE_EVERY_SHARE = 0.01
-_LINE_EVERY_SECONDS = 60.0
-
-
-def _norm(text) -> str:
-    return re.sub(r"\s+", " ", str(text)).strip().lower()
-
-
-def _bare(title: str) -> str:
-    """*title* without a trailing parenthetical: ``Paris (band)`` -> ``Paris``."""
-    return re.sub(r"\s*\([^()]*\)$", "", title)
 
 
 def _transient(exc: Exception) -> bool:
@@ -135,7 +122,7 @@ def _gold_pages(paths: PoolPaths, store: PageStore) -> List[dict]:
                 golds[doc_id] = {"gold": doc_id, "pageid": page["pageid"], "title": page["canonical_title"],
                                  "answers": set(), "sources": set()}
             query = queries[qid]
-            golds[doc_id]["answers"].add(_norm(query["answer"]))
+            golds[doc_id]["answers"].add(normalize(str(query["answer"])))
             golds[doc_id]["sources"].add(query["source"])
     return list(golds.values())
 
@@ -184,14 +171,14 @@ class _Finder:
 
     def _skip(self, candidate: dict, gold: dict) -> Optional[str]:
         """Why *candidate* cannot be a negative of *gold*, or None."""
-        title = _norm(candidate["title"])
+        title = normalize(candidate["title"])
         if f"wiki_{candidate['pageid']}" in self.gold_ids:
             return "gold"
         if candidate["disambiguation"]:
             return "disambiguation"
         if title.startswith(_LIST_PREFIXES):
             return "list"
-        if title in gold["answers"] or _norm(_bare(candidate["title"])) in gold["answers"]:
+        if title in gold["answers"] or normalize(strip_parenthetical(candidate["title"])) in gold["answers"]:
             return "answer"
         return None
 
@@ -274,7 +261,7 @@ class _Progress:
         self.done = self.retry = self.negatives = self.short = 0
         self.by_source: Counter = Counter()
         self.start = self.last_line = time.monotonic()
-        self.line_every = max(1, int(total * _LINE_EVERY_SHARE))
+        self.line_every = max(1, int(total * LINE_EVERY_SHARE))
         self.tty = sys.stderr.isatty()
         self.bars = []
         if self.tty:
@@ -321,7 +308,7 @@ class _Progress:
             self._refresh()
             return
         n, now = self.done + self.retry, time.monotonic()
-        if n % self.line_every == 0 or now - self.last_line >= _LINE_EVERY_SECONDS or n == self.total:
+        if n % self.line_every == 0 or now - self.last_line >= LINE_EVERY_SECONDS or n == self.total:
             self.last_line = now
             eta = tqdm.format_interval((now - self.start) / n * (self.total - n))
             print(f"[step 3] {n}/{self.total} gold pages ({100 * n / max(self.total, 1):.0f}%) "
@@ -355,9 +342,7 @@ def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> dict:
 
 def run_step3(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
               sources: Optional[List[str]] = None) -> None:
-    if not cfg.shared.contact:
-        raise SystemExit("step 3 needs shared.contact (e-mail or URL for the User-Agent, "
-                         "as the Wikimedia User-Agent policy asks): DRA_CONTACT in .env or shared.contact in the config")
+    require_contact(cfg, 3)
     for path in (paths.queries, paths.qrels, paths.page_index):
         if not path.exists():
             raise SystemExit(f"{path} not found: run step 2 first")

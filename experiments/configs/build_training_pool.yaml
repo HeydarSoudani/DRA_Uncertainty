@@ -1,14 +1,15 @@
 # ============================================================================
 # Settings of experiments/training/build_training_pool.py (deep_qa pool: questions of
 # InfoSeek-Hard, WebShaper and FRAMES with their gold pages and hard negatives;
-# trqa_validation needs none).  The sources and
+# trqa_validation uses gold_criteria and split only).  The sources and
 # the dropped question types of step 1 are fixed in code; the keys below are
 # the dataclass fields of src/indexing_corpus_dataset/training_pool/config.py.
 #
 # Precedence (lowest -> highest):
 #   dataclass defaults  <  this file
 # --limit and --source are CLI flags only (step 2 is incremental: the
-# next N questions, of the given sources when --source is set).  The pool is
+# next N questions, of the given sources when --source is set; --limit 0
+# rewrites the dataset files without fetching).  The pool is
 # built under data/training_pool/{pool} of the repo.
 # ============================================================================
 
@@ -51,3 +52,15 @@ split:
   sft: 0.3                          # SFT samples (monitor mode, teacher replies)
   rl: 0.6                           # RL prompts (off mode)
   val: 0.1                          # validation of SFT and RL (monitor mode)
+
+# ── Criterion texts of the gold annotation (end of deep_qa step 2 and of the
+# trqa_validation build) ─────────────────────────────────────────────────────
+# An LLM writes the criterion texts from the question and the criteria's
+# source structure; the gold answers, documents and level come from the
+# source.  Needs OPENROUTER_API_KEY; earlier texts are kept (gold/texts.jsonl
+# of the pool).  model (and the prompts) must stay those of the kept texts;
+# to change them, remove gold/texts.jsonl (every text is written again).
+gold_criteria:
+  model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model of training)
+  workers: 8                        # concurrent LLM calls
+  max_tokens: 4096

@@ -5,11 +5,14 @@ markdown) and for resuming interrupted pipeline runs.
 """
 
 import json as _json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Tuple, Union
 
 from utils.config import AGENT_META_KEYS
+
+_log = logging.getLogger(__name__)
 
 try:
     from orjson import loads as _json_loads
@@ -50,6 +53,31 @@ def write_jsonl(path: Union[str, Path], rows: Iterable[Dict[str, Any]]) -> None:
         for row in rows:
             f.write(_json.dumps(row, ensure_ascii=False) + "\n")
     os.replace(tmp, path)
+
+
+def drop_partial_line(path: Union[str, Path]) -> None:
+    """Cut a last line left unfinished by a killed run, so that appended
+    rows start on a line of their own (the file is read from its end)."""
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with open(path, "rb+") as fh:
+        end = fh.seek(0, 2)
+        fh.seek(end - 1)
+        if fh.read(1) == b"\n":
+            return
+        pos, size = end, 1 << 16
+        while pos > 0:
+            start = max(0, pos - size)
+            fh.seek(start)
+            cut = fh.read(pos - start).rfind(b"\n")
+            if cut >= 0:
+                fh.truncate(start + cut + 1)
+                break
+            pos = start
+        else:
+            fh.truncate(0)
+    _log.warning("%s: removed an unfinished last line", path)
 
 
 def setup_output_dirs(
@@ -348,6 +376,7 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "belief_judge_model": judge,
             "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
             "criteria_bank": bool(kwargs["criteria_bank"]),
+            "gold_criteria": bool(kwargs.get("gold_criteria")),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
         })
     return {

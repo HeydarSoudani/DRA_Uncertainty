@@ -1,7 +1,7 @@
 """Counts written to ``stats.json``, one section per step: questions per
 source, gold pages per question, drop reasons, and (step 2) page fetch
-outcomes and lengths, (step 3) the hard negatives, (step 4) the dataset as
-written."""
+outcomes and lengths and the gold annotation, (step 3) the hard negatives,
+(step 4) the dataset as written."""
 
 import json
 import statistics
@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from utils.io_utils import atomic_write_text
+
+from .annotations import LEVELS, problems
 
 
 def distribution(values: List[float]) -> dict:
@@ -23,8 +25,8 @@ def distribution(values: List[float]) -> dict:
 
 
 def question_stats(records: List[dict]) -> dict:
-    """Per source (and ``all``): questions, gold pages and facts per question,
-    gold pages by kind."""
+    """Per source (and ``all``): questions, gold pages per question, gold
+    pages by kind."""
     groups: Dict[str, List[dict]] = defaultdict(list)
     for record in records:
         groups[record["source"]].append(record)
@@ -33,7 +35,6 @@ def question_stats(records: List[dict]) -> dict:
         source: {
             "questions": len(group),
             "gold_per_question": distribution([len(r["gold"]) for r in group]),
-            "facts_per_question": distribution([len(r["facts"]) for r in group]),
             "gold_by_kind": dict(Counter(_gold_kind(g) for r in group for g in r["gold"])),
             "ignored_urls": sum(r["meta"].get("ignored_urls", 0) for r in group),
         }
@@ -85,7 +86,7 @@ def read_stats(path: Path) -> dict:
 
 
 def write_stats(path: Path, section: str, stats: dict) -> None:
-    """Set *section* (``step1`` ... ``step4``, ``split``) of *path*,
+    """Set *section* (``step1`` ... ``step4``, ``build``, ``split``) of *path*,
     the other sections kept."""
     sections = read_stats(path)
     sections[section] = stats
@@ -174,6 +175,76 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
     return {"corpus_docs": len(doc_words), "per_source": per_source, "hard_negatives": hard, "checks": checks}
 
 
+def annotation_stats(rows: List[dict], query_ids: Optional[List[str]] = None) -> dict:
+    """The gold annotation (``annotations.py``) per source (and ``all``):
+    queries per level and per state of the criterion texts (``texts_ok``),
+    criteria per query, and the criteria with answers, with documents and
+    with both; the rows that break the row format
+    (``annotations.problems``) and, with *query_ids*, the queries without a
+    row and the rows of no query."""
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for row in rows:
+        groups[row["source"]].append(row)
+        groups["all"].append(row)
+    per_source = {}
+    for source, group in sorted(groups.items()):
+        criteria = [c for r in group for c in r["criteria"]]
+        levels = Counter(r["level"] for r in group)
+        per_source[source] = {
+            "queries": len(group),
+            "levels": {lv: levels[lv] for lv in LEVELS},
+            "texts": {k: sum(r["texts_ok"] is v for r in group)
+                      for k, v in (("ok", True), ("failed", False), ("retry", None))},
+            "criteria_per_query": distribution([len(r["criteria"]) for r in group]),
+            "criteria": len(criteria),
+            "with_answers": sum(bool(c["answers"]) for c in criteria),
+            "with_docs": sum(bool(c["doc_ids"]) for c in criteria),
+            "with_both": sum(bool(c["answers"] and c["doc_ids"]) for c in criteria),
+        }
+    checks = {"rows_breaking_format": sum(bool(problems(r)) for r in rows),
+              "duplicate_ids": len(rows) - len({r["id"] for r in rows})}
+    if query_ids is not None:
+        ids = {r["id"] for r in rows}
+        checks["queries_without_row"] = len(set(query_ids) - ids)
+        checks["rows_of_no_query"] = len(ids - set(query_ids))
+    return {"per_source": per_source, "checks": checks}
+
+
+def format_annotation_table(stats: dict) -> str:
+    """The annotation stats as a plain-text table: one row per measure, one
+    column per source (``all`` last), then the checks."""
+    per_source = stats["per_source"]
+    sources = [s for s in per_source if s != "all"] + ["all"] if per_source else []
+
+    def share(n: int, s: dict) -> str:
+        return f"{n} ({n / s['criteria']:.0%})" if s["criteria"] else "0"
+
+    rows = [("queries", lambda s: s["queries"])]
+    rows += [(f"  level {lv}", lambda s, lv=lv: s["levels"][lv]) for lv in ("full", "partial", "query")]
+    rows += [(f"  texts {k}", lambda s, k=k: s["texts"][k]) for k in ("ok", "failed", "retry")]
+    rows += [
+        ("criteria/query mean/med/max", lambda s: _dist(s["criteria_per_query"], ("mean", "median", "max"))),
+        ("criteria", lambda s: s["criteria"]),
+        ("  with answers", lambda s: share(s["with_answers"], s)),
+        ("  with docs", lambda s: share(s["with_docs"], s)),
+        ("  with both", lambda s: share(s["with_both"], s)),
+    ]
+    lines = _table(sources, per_source, rows)
+    lines.append("")
+    lines.append("annotation checks (all 0 = consistent): "
+                 + ", ".join(f"{k} {v}" for k, v in stats["checks"].items()))
+    return "\n".join(lines)
+
+
+def _table(sources: List[str], per_source: Dict[str, dict], rows) -> List[str]:
+    table = [[""] + sources] + [[label] + [_fmt(get(per_source[s])) for s in sources] for label, get in rows]
+    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
+    lines = ["  ".join(cell.ljust(w) if i == 0 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))
+             for row in table]
+    lines.insert(1, "-" * len(lines[0]))
+    return lines
+
+
 def _fmt(value: float) -> str:
     return f"{value:g}" if isinstance(value, (int, float)) else str(value)
 
@@ -203,11 +274,7 @@ def format_dataset_table(stats: dict) -> str:
         ("query words mean/med/max", lambda s: _dist(s["query_words"], ("mean", "median", "max"))),
         ("answer words mean/med", lambda s: _dist(s["answer_words"], ("mean", "median"))),
     ]
-    table = [[""] + sources] + [[label] + [_fmt(get(per_source[s])) for s in sources] for label, get in rows]
-    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
-    lines = ["  ".join(cell.ljust(w) if i == 0 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))
-             for row in table]
-    lines.insert(1, "-" * len(lines[0]))
+    lines = _table(sources, per_source, rows)
     lines.append("")
     lines.append(f"corpus docs: {stats['corpus_docs']}")
     hard = stats["hard_negatives"]

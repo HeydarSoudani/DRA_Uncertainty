@@ -8,8 +8,10 @@ the shares of the ``split`` config section:
 
 A query's split depends on its id only, so a rerun after the pool has grown
 (deep_qa step 2) keeps every earlier query in its split.  Each split gets the
-queries, the intermediate info (when the pool has it) and the qrels of its
-queries, rows copied unchanged.
+queries, the intermediate info (when the pool has it), the qrels and the
+gold annotation (``annotations.py``) of its queries, rows copied unchanged,
+and the ids of its queries with criteria and their texts (``texts_ok``,
+``gold/ids_{split}.txt``).
 
 The shares and the per-split counts are recorded in the ``split`` section of
 ``stats.json``; a split with other shares than the recorded ones (it would
@@ -80,6 +82,10 @@ def write_splits(paths: PoolPaths, cfg: SplitConfig) -> None:
     if info_all.exists():
         info = read_lines(info_all)
         files.append((info_all, info, [str(json.loads(line)["qid"]) for line in info], paths.split_info))
+    gold_all = paths.annotations(paths.split)
+    if gold_all.exists():
+        gold = read_lines(gold_all)
+        files.append((gold_all, gold, [str(json.loads(line)["id"]) for line in gold], paths.annotations))
     for source, lines, qids, target in files:
         out: Dict[str, List[str]] = {name: [] for name in POOL_SPLITS}
         for line, qid in zip(lines, qids):
@@ -88,14 +94,25 @@ def write_splits(paths: PoolPaths, cfg: SplitConfig) -> None:
             out[split_of[qid][0]].append(line)
         for name, split_lines in out.items():
             atomic_write_text(target(name), "".join(split_lines))
+    with_texts: Dict[str, List[str]] = {name: [] for name in POOL_SPLITS}
+    if gold_all.exists():
+        for row in map(json.loads, gold):
+            # The annotation's source (trqa_wiki1 / trqa_wiki2: TRQA query rows have none).
+            split_of[str(row["id"])] = (split_of[str(row["id"])][0], row["source"])
+            if row["texts_ok"] and row["criteria"]:
+                with_texts[split_of[str(row["id"])][0]].append(str(row["id"]))
+        for name, ids in with_texts.items():
+            atomic_write_text(paths.gold_ids(name), "".join(q + "\n" for q in ids))
 
     counts = Counter(split for split, _ in split_of.values())
     by_source = {name: dict(sorted(Counter(source for split, source in split_of.values()
                                            if split == name and source).items()))
                  for name in POOL_SPLITS}
     write_stats(paths.stats, "split", {"shares": shares, "queries": {name: counts[name] for name in POOL_SPLITS},
+                                       "with_texts": {name: len(ids) for name, ids in with_texts.items()},
                                        "by_source": by_source})
     print(f"[split] {len(split_of)} queries of split {paths.split}, shares {shares} -> {paths.root}")
     for name in POOL_SPLITS:
         detail = f" ({', '.join(f'{s} {n}' for s, n in by_source[name].items())})" if by_source[name] else ""
-        print(f"[split]   {name}: {counts[name]} queries ({counts[name] / max(1, len(split_of)):.1%}){detail}")
+        print(f"[split]   {name}: {counts[name]} queries ({counts[name] / max(1, len(split_of)):.1%}){detail}, "
+              f"{len(with_texts[name])} with criterion texts")

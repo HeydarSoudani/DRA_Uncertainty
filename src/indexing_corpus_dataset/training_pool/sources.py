@@ -6,25 +6,31 @@ Record (one JSON line per question)::
      "question": str, "answer": str,
      "gold": [{"key": str, "kind": "wiki", "lang": str, "title": str}
               | {"key": str, "kind": "web", "url": str}],
-     "facts": [{"text": str, "pages": [title, ...]}],
-     "meta": {...}}
+     "annotation": {"query_shape": str, "criteria": [...], "entity_names": [...]},
+     "meta": {"ignored_urls": int, "reasoning_types": [...]}}   (what the source has)
 
 ``gold`` holds the source's gold pages (InfoSeek: the Wikipedia page of every
 tree node; WebShaper: its URLs; FRAMES: its Wikipedia links), each with a
-``key`` that identifies the page across questions.  ``facts`` holds the hop
-facts the source ships (InfoSeek: the claim of every tree edge, with its two
-endpoint pages; WebShaper: the formalization triples; FRAMES: none).
+``key`` that identifies the page across questions.  ``annotation`` is the
+skeleton of the gold annotation (``annotations.py``): the criteria the
+source states (InfoSeek: the hops of its research tree; WebShaper: the
+variables of its formalization; FRAMES: none) with their relations, answers
+and the keys of their gold pages (``gold_keys``), resolved to documents by
+step 2.
 """
 
 import ast
 import csv
-import json
 import re
 import sys
 from typing import Callable, Dict, Iterator, List, Optional
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from huggingface_hub import hf_hub_download
+
+from utils.io_utils import iter_jsonl
+
+from .annotations import infoseek_skeleton, no_skeleton, tree_nodes, webshaper_skeleton
 
 # The source files (Hugging Face dataset repos), pinned to a revision: the
 # question ids of InfoSeek and FRAMES are row numbers.
@@ -94,51 +100,21 @@ def _hf_file(repo: str, filename: str, revision: str) -> str:
     return hf_hub_download(repo_id=repo, filename=filename, repo_type="dataset", revision=revision)
 
 
-def _iter_jsonl(path: str) -> Iterator[dict]:
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            if line.strip():
-                yield json.loads(line)
-
-
 # ── InfoSeek ────────────────────────────────────────────────────────────────
-
-def _tree_nodes(node: dict) -> Iterator[dict]:
-    yield node
-    for child in node.get("children") or []:
-        yield from _tree_nodes(child)
-
-
-def _claim_text(claim: str, ids: Dict[str, str]) -> str:
-    """A claim ("A was born in B") with its node ids replaced by entities."""
-    for node_id, entity in ids.items():
-        claim = re.sub(rf"\b{re.escape(node_id)}\b", entity, claim)
-    return claim
-
 
 def load_infoseek() -> Iterator[dict]:
     """InfoSeek-Hard: the root question of each research tree; the answer is
     the root entity."""
-    for i, row in enumerate(_iter_jsonl(_hf_file(*INFOSEEK))):
+    for i, row in enumerate(iter_jsonl(_hf_file(*INFOSEEK))):
         root = row["root"]
-        nodes = list(_tree_nodes(root))
-        by_id = {n["id"]: n for n in nodes}
-        gold = _dedup_gold([wiki_gold(n["href"]) for n in nodes if n.get("href")])
-        facts = []
-        for node in nodes:
-            for claim in node.get("claims") or []:
-                target = by_id.get(claim.get("target_id"))
-                ends = [n for n in (node, target) if n]
-                ids = {n["id"]: n["entity"] for n in ends}
-                facts.append({
-                    "text": _claim_text(claim["claim"], ids),
-                    "pages": [normalize_title(n["href"]) for n in ends if n.get("href")],
-                })
+        gold = _dedup_gold([wiki_gold(n["href"]) for n in tree_nodes(root) if n.get("href")])
+        question = root["question"].strip()
         yield {
             "id": f"infoseek_{i:05d}", "source": "infoseek",
-            "question": root["question"].strip(), "answer": root["entity"].strip(),
-            "gold": gold, "facts": facts,
-            "meta": {"vertices": row.get("vertices")},
+            "question": question, "answer": root["entity"].strip(),
+            "gold": gold,
+            "annotation": infoseek_skeleton(question, root, lambda href: wiki_gold(href)["key"]),
+            "meta": {},
         }
 
 
@@ -146,15 +122,16 @@ def load_infoseek() -> Iterator[dict]:
 
 def load_webshaper() -> Iterator[dict]:
     """WebShaper: questions with their source URLs and formalization triples."""
-    for row in _iter_jsonl(_hf_file(*WEBSHAPER)):
+    for row in iter_jsonl(_hf_file(*WEBSHAPER)):
         triples = row.get("formalization") or []
         entries = [url_gold(u) for u in row.get("urls") or []]
+        answer = str(row["answer"]).strip()
         yield {
             "id": f"webshaper_{row['id']}", "source": "webshaper",
-            "question": row["question"].strip().strip('"').strip(), "answer": str(row["answer"]).strip(),
+            "question": row["question"].strip().strip('"').strip(), "answer": answer,
             "gold": _dedup_gold(entries),
-            "facts": [{"text": " | ".join(map(str, t)), "pages": []} for t in triples],
-            "meta": {"formalization": triples, "ignored_urls": entries.count(None)},
+            "annotation": webshaper_skeleton(triples, answer),
+            "meta": {"ignored_urls": entries.count(None)},
         }
 
 
@@ -180,7 +157,7 @@ def load_frames() -> Iterator[dict]:
                 "id": f"frames_{i:04d}", "source": "frames",
                 "question": row["Prompt"].strip(), "answer": row["Answer"].strip(),
                 "gold": _dedup_gold(entries),
-                "facts": [],
+                "annotation": no_skeleton(),
                 "meta": {"ignored_urls": entries.count(None), "reasoning_types": [t.strip() for t in (row.get("reasoning_types") or "").split("|") if t.strip()]},
             }
 

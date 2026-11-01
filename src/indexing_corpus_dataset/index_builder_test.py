@@ -535,3 +535,4 @@ if __name__ == "__main__":
 # python src/indexing_corpus_dataset/index_builder_test.py --dataset neuclir --retriever bge
 # python src/indexing_corpus_dataset/index_builder_test.py --dataset trqa
 # python src/indexing_corpus_dataset/index_builder_test.py --dataset ragtime
+# python src/indexing_corpus_dataset/index_builder_test.py --dataset deep_qa

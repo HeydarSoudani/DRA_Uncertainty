@@ -189,7 +189,7 @@ def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[s
 
     Reads ``queries/queries_{split}_intermediate_info.jsonl`` and returns
     ``{query_id: record}``, where a record is ``{"qid", "entity_values":
-    [{"entity", "value"}], "property": {"label", ...}, "aggregation",
+    [{"entity", "value", "passage_ids"}], "property": {"label", ...}, "aggregation",
     "answer"}``; empty for datasets without the file.
     """
     base = queries_base(data_path, data_set)

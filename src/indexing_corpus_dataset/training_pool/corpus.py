@@ -16,7 +16,6 @@ negatives are the rows of ``negatives/index.jsonl`` (the memory of step 3).
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from utils.io_utils import atomic_write_text, iter_jsonl
@@ -26,30 +25,6 @@ from .config import PoolPaths
 log = logging.getLogger(__name__)
 
 _ID_PREFIX = b'{"id": "'
-
-
-def drop_partial_line(path: Path) -> None:
-    """Cut a last line left unfinished by a killed run, so that appended
-    rows start on a line of their own (the file is read from its end)."""
-    if not path.exists() or path.stat().st_size == 0:
-        return
-    with open(path, "rb+") as fh:
-        end = fh.seek(0, 2)
-        fh.seek(end - 1)
-        if fh.read(1) == b"\n":
-            return
-        pos, size = end, 1 << 16
-        while pos > 0:
-            start = max(0, pos - size)
-            fh.seek(start)
-            cut = fh.read(pos - start).rfind(b"\n")
-            if cut >= 0:
-                fh.truncate(start + cut + 1)
-                break
-            pos = start
-        else:
-            fh.truncate(0)
-    log.warning("%s: removed an unfinished last line", path)
 
 
 def row_id(line: bytes) -> Optional[str]:

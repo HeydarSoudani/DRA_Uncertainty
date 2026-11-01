@@ -943,3 +943,4 @@ if __name__ == "__main__":
 #
 # python src/indexing_corpus_dataset/index_builder.py
 # python src/indexing_corpus_dataset/index_builder.py --dataset browsecomp_plus --retriever bge
+# python src/indexing_corpus_dataset/index_builder.py --dataset deep_qa

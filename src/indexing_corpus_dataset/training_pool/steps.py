@@ -6,11 +6,15 @@
        Wayback Machine), then Filter A (``filters.py``): keep a question when
        every gold page was fetched or, with web gold pages, at least
        ``pages.min_page_share`` of them; write the kept questions, the qrels
-       of their fetched gold pages in the canonical layout, and the corpus
-       (``corpus.py``: those pages and the hard negatives of step 3)
+       of their fetched gold pages in the canonical layout, their gold
+       annotation (``annotations.py``: the step 1 skeletons with the fetched
+       documents, the criterion texts by an LLM, ``gold_criteria.py``), and
+       the corpus (``corpus.py``: those pages and the hard negatives of
+       step 3)
     3  hard negatives of the Wikipedia gold pages (``negatives.py``)
     4  stats of the dataset as written (queries, qrels, corpus) per source,
-       the hard negatives, and consistency checks between the files
+       the hard negatives, the gold annotation (levels, criteria with
+       answers and documents), and consistency checks between the files
 
 Step 2 is incremental, like ``dra_inference.py``: a question is processed
 once Filter A has a final verdict (``filters.verdict``) from the rows of its
@@ -38,16 +42,18 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from tqdm import tqdm
 from tqdm.contrib.logging import logging_redirect_tqdm
 
-from utils.io_utils import atomic_write_text, iter_jsonl, read_jsonl, write_jsonl
+from utils.io_utils import atomic_write_text, drop_partial_line, iter_jsonl, read_jsonl, write_jsonl
 
-from .config import PoolConfig, PoolPaths
-from .corpus import drop_partial_line, read_negatives, write_corpus
+from . import annotations
+from .config import PoolConfig, PoolPaths, require_contact
+from .gold_criteria import check_writer, fill_texts
+from .corpus import read_negatives, write_corpus
 from .filters import failed_pages, failed_transiently, filter_a, is_transient, type_filter, verdict
 from .http_client import HttpClient, error_text, failure_status
 from .sources import LOADERS
 from .splits import check_shares, write_splits
-from .stats import (dataset_stats, drop_stats, format_dataset_table, page_stats, question_stats, read_stats,
-                    write_stats)
+from .stats import (annotation_stats, dataset_stats, drop_stats, format_annotation_table, format_dataset_table,
+                    page_stats, question_stats, read_stats, write_stats)
 from .web_pages import WebFetcher
 from .wikipedia_api import WikipediaClient, html_to_text
 
@@ -55,10 +61,10 @@ log = logging.getLogger(__name__)
 
 # Titles per Action API call (its limit).
 _RESOLVE_BATCH = 50
-# Off a terminal: one status line per this share of the questions, or after
-# this many seconds without one.
-_LINE_EVERY_SHARE = 0.01
-_LINE_EVERY_SECONDS = 60.0
+# Off a terminal: one status line per this share of the questions (step 3:
+# gold pages), or after this many seconds without one.
+LINE_EVERY_SHARE = 0.01
+LINE_EVERY_SECONDS = 60.0
 # The ``pages`` settings that decide a page's status or a question's verdict:
 # an incremental run must use those of the earlier runs.  The worker counts and rates may change between runs.
 PAGE_SETTINGS = ("wiki_lang", "min_words", "min_page_share", "wayback", "wayback_timestamp")
@@ -184,7 +190,7 @@ class _Progress:
         self.phase = "start"
         self._wiki_http, self._wiki_requests0 = wiki_http, wiki_http.requests
         self._start = self._last_line = time.monotonic()
-        self._line_every = max(1, int(len(records) * _LINE_EVERY_SHARE))
+        self._line_every = max(1, int(len(records) * LINE_EVERY_SHARE))
         self._lock = threading.Lock()
         self._tty = sys.stderr.isatty()
         self._bar = tqdm(total=len(records), desc="[step 2]", unit="q", dynamic_ncols=True, disable=not self._tty,
@@ -233,7 +239,7 @@ class _Progress:
             self._bar.set_postfix_str(self._status(), refresh=True)
             return
         now = time.monotonic()
-        if not force and now - self._last_line < _LINE_EVERY_SECONDS:
+        if not force and now - self._last_line < LINE_EVERY_SECONDS:
             return
         self._last_line = now
         n, total = len(self._finished), self._bar.total
@@ -340,79 +346,17 @@ def _fetch_pages(by_page: Dict[int, List[dict]], web_golds: List[dict], store: P
             future.result()
 
 
-def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths) -> Tuple[int, int]:
-    """The kept questions (queries) and their fetched gold pages (binary
-    qrels) in the canonical layout, each file replaced atomically, then the
-    corpus (``corpus.write_corpus``: those pages and their hard negatives);
-    returns the numbers of gold pages and hard negatives in the corpus."""
-    write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
-                                for r in records))
-    gold_urls: Dict[str, str] = {}
-    qrels = []
-    for record in records:
-        fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
-        for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
-            qrels.append(f"{record['id']} 0 {doc_id} 1\n")
-        for page in fetched:
-            gold_urls.setdefault(page["doc_id"], page["url"])
-    atomic_write_text(paths.qrels, "".join(qrels))
-    return write_corpus(paths, gold_urls)
-
-
-def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> None:
-    """Refuse page settings (``PAGE_SETTINGS``) other than those of the
-    earlier step 2 runs, and split shares other than the recorded ones."""
-    recorded = read_stats(paths.stats).get("step2", {}).get("config", {}).get("pages", {})
-    pages = cfg.to_dict()["pages"]
-    diffs = [f"pages.{k}: {recorded[k]!r} -> {pages[k]!r}" for k in PAGE_SETTINGS
-             if k in recorded and recorded[k] != pages[k]]
-    if diffs:
-        raise SystemExit(f"{paths.root}: the earlier step 2 runs used other page settings ({'; '.join(diffs)}); "
-                         "their pages and verdicts would mix with this run's. "
-                         "Restore the settings, or rebuild the pool from step 1")
-    check_shares(paths, cfg.split)
-
-
-def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
-              sources: Optional[List[str]] = None) -> None:
-    if not cfg.shared.contact:
-        raise SystemExit("step 2 needs shared.contact (e-mail or URL for the User-Agent, "
-                         "as the Wikimedia User-Agent policy asks): DRA_CONTACT in .env or shared.contact in the config")
-    if not paths.questions.exists():
-        raise SystemExit(f"{paths.questions} not found: run step 1 first")
-    _check_settings(cfg, paths)
-    config = cfg.to_dict()
-    del config["shared"]["contact"]  # personal: stays in .env
-    # The settings first, so a run that stops before its stats still records them.
-    write_stats(paths.stats, "step2", {**read_stats(paths.stats).get("step2", {}), "config": config})
-    records = read_jsonl(paths.questions)
-    store = PageStore(paths)
+def _fetch(todo: List[dict], golds: Dict[str, dict], store: PageStore, cfg: PoolConfig) -> None:
+    """Fetch the gold pages *golds* (key -> gold) of the questions *todo*
+    into *store*: other-language Wikipedia pages get their final row, the
+    other Wikipedia titles are resolved, then the pages fetched."""
     min_page_share = cfg.pages.min_page_share
-
-    def processed(record: dict) -> bool:
-        return verdict(record, store.rows, min_page_share) in ("kept", "dropped")
-
-    # ── Resume + limit ──────────────────────────────────────────────────────
-    todo = [r for r in records if not processed(r)]
-    print(f"[step 2] {len(records)} questions: {len(records) - len(todo)} already processed, {len(todo)} remaining")
-    if sources:
-        todo = [r for r in todo if r["source"] in sources]
-        print(f"[step 2] this run: sources {', '.join(sources)}, {len(todo)} remaining")
-    if limit is not None:
-        todo = todo[:limit]
-        print(f"[step 2] this run: the next {len(todo)} questions (--limit {limit})")
-    golds: Dict[str, dict] = {}
-    for record in todo:
-        for gold in record["gold"]:
-            if not store.done(gold["key"]):
-                golds.setdefault(gold["key"], gold)
     wiki_golds = [g for g in golds.values() if g["kind"] == "wiki" and g["lang"] == cfg.pages.wiki_lang]
     other_lang = [g for g in golds.values() if g["kind"] == "wiki" and g["lang"] != cfg.pages.wiki_lang]
     web_golds = [g for g in golds.values() if g["kind"] == "web"]
     print(f"[step 2] {len(golds)} gold pages to fetch: {len(wiki_golds)} wiki, {len(web_golds)} web, "
           f"{len(other_lang)} other-language wiki (dropped)")
 
-    # ── Fetch ───────────────────────────────────────────────────────────────
     shared = cfg.shared
     wiki_http = HttpClient(shared.contact, shared.timeout, shared.max_retries, cfg.pages.wiki_rate_per_min)
     web_http = HttpClient(shared.contact, shared.timeout, shared.max_retries)
@@ -436,10 +380,95 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
             _fetch_pages(by_page, web_golds, store, wiki, fetcher, cfg, progress)
     finally:
         progress.close()
-        store.close()
     v = progress.verdicts
     print(f"[step 2] this run: {sum(v.values())} of {len(todo)} questions finished: "
           f"kept {v['kept']}, dropped {v['dropped']}, retry next run {v['retry']}")
+
+
+def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths,
+                   cfg: PoolConfig) -> Tuple[List[dict], int, int]:
+    """The gold annotation of the kept questions (``annotations.row``) with
+    its criterion texts (``gold_criteria.fill_texts``) first, then the files,
+    each replaced atomically: the questions (queries), their fetched gold
+    pages (binary qrels) in the canonical layout, the annotation, and the
+    corpus (``corpus.write_corpus``: those pages and their hard negatives);
+    returns the annotation rows and the numbers of gold pages and hard
+    negatives in the corpus."""
+    rows = [annotations.row(r, pages) for r in records]
+    annotations.check(rows)
+    rows = fill_texts(cfg.gold_criteria, paths, rows)
+    write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
+                                for r in records))
+    gold_urls: Dict[str, str] = {}
+    qrels = []
+    for record in records:
+        fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
+        for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
+            qrels.append(f"{record['id']} 0 {doc_id} 1\n")
+        for page in fetched:
+            gold_urls.setdefault(page["doc_id"], page["url"])
+    atomic_write_text(paths.qrels, "".join(qrels))
+    annotations.write(paths.annotations(paths.split), rows)
+    return (rows, *write_corpus(paths, gold_urls))
+
+
+def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> None:
+    """Refuse page settings (``PAGE_SETTINGS``) other than those of the
+    earlier step 2 runs, and split shares other than the recorded ones."""
+    recorded = read_stats(paths.stats).get("step2", {}).get("config", {}).get("pages", {})
+    pages = cfg.to_dict()["pages"]
+    diffs = [f"pages.{k}: {recorded[k]!r} -> {pages[k]!r}" for k in PAGE_SETTINGS
+             if k in recorded and recorded[k] != pages[k]]
+    if diffs:
+        raise SystemExit(f"{paths.root}: the earlier step 2 runs used other page settings ({'; '.join(diffs)}); "
+                         "their pages and verdicts would mix with this run's. "
+                         "Restore the settings, or rebuild the pool from step 1")
+    check_shares(paths, cfg.split)
+
+
+def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
+              sources: Optional[List[str]] = None) -> None:
+    require_contact(cfg, 2)
+    if not paths.questions.exists():
+        raise SystemExit(f"{paths.questions} not found: run step 1 first")
+    check_writer(cfg.gold_criteria, paths)
+    _check_settings(cfg, paths)
+    records = read_jsonl(paths.questions)
+    if any("annotation" not in r for r in records):
+        raise SystemExit(f"{paths.questions} has questions without the skeleton of their gold annotation "
+                         "(written by an older step 1): run step 1 again")
+    config = cfg.to_dict()
+    del config["shared"]["contact"]  # personal: stays in .env
+    # The settings first, so a run that stops before its stats still records them.
+    write_stats(paths.stats, "step2", {**read_stats(paths.stats).get("step2", {}), "config": config})
+    store = PageStore(paths)
+    min_page_share = cfg.pages.min_page_share
+
+    def processed(record: dict) -> bool:
+        return verdict(record, store.rows, min_page_share) in ("kept", "dropped")
+
+    # ── Resume + limit ──────────────────────────────────────────────────────
+    todo = [r for r in records if not processed(r)]
+    print(f"[step 2] {len(records)} questions: {len(records) - len(todo)} already processed, {len(todo)} remaining")
+    if sources:
+        todo = [r for r in todo if r["source"] in sources]
+        print(f"[step 2] this run: sources {', '.join(sources)}, {len(todo)} remaining")
+    if limit is not None:
+        todo = todo[:limit]
+        print(f"[step 2] this run: the next {len(todo)} questions (--limit {limit})"
+              + ("; no fetch, the dataset files are rewritten" if not todo else ""))
+    golds: Dict[str, dict] = {}
+    for record in todo:
+        for gold in record["gold"]:
+            if not store.done(gold["key"]):
+                golds.setdefault(gold["key"], gold)
+
+    # ── Fetch ───────────────────────────────────────────────────────────────
+    try:
+        if todo:
+            _fetch(todo, golds, store, cfg)
+    finally:
+        store.close()
 
     # ── Dataset: all processed questions ────────────────────────────────────
     done = [r for r in records if processed(r)]
@@ -447,10 +476,11 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     kept, dropped = filter_a(done, pages, min_page_share)
     partial = [{"id": r["id"], "source": r["source"], "reasons": failed_pages(r, pages)} for r in kept]
     partial = [p for p in partial if p["reasons"]]
-    n_docs, n_negatives = _write_dataset(kept, pages, paths)
+    rows, n_docs, n_negatives = _write_dataset(kept, pages, paths, cfg)
     _write_dropped(paths, 2, dropped)
     write_stats(paths.stats, "step2", {
         "config": config,
+        "annotations": annotation_stats(rows),
         "questions": {"candidates": len(records), "processed": len(done),
                       "remaining": len(records) - len(done)},
         "pages": page_stats(pages.values()), "kept": question_stats(kept), "corpus_docs": n_docs,
@@ -476,9 +506,9 @@ def _read_ids(path: Path) -> List[str]:
 
 def run_step4(paths: PoolPaths) -> None:
     """Stats of the dataset as written by steps 2 and 3 (queries, qrels,
-    corpus, hard negatives): printed as a table and saved as the ``step4``
-    section of ``stats.json``."""
-    for path in (paths.questions, paths.queries, paths.qrels, paths.corpus):
+    corpus, hard negatives, gold annotation): printed as tables and saved as
+    the ``step4`` section of ``stats.json``."""
+    for path in (paths.questions, paths.queries, paths.qrels, paths.corpus, paths.annotations(paths.split)):
         if not path.exists():
             raise SystemExit(f"{path} not found: run steps 1 and 2 first")
     qrels: Dict[str, List[str]] = {}
@@ -489,7 +519,10 @@ def run_step4(paths: PoolPaths) -> None:
                 qrels.setdefault(qid, []).append(doc_id)
     doc_words = {row["id"]: len(row["contents"].split()) for row in iter_jsonl(paths.corpus)}
     dropped = [r for r in iter_jsonl(paths.dropped) if r["step"] == 2] if paths.dropped.exists() else []
-    stats = dataset_stats(read_jsonl(paths.questions), read_jsonl(paths.queries), qrels, doc_words, dropped,
+    queries = read_jsonl(paths.queries)
+    stats = dataset_stats(read_jsonl(paths.questions), queries, qrels, doc_words, dropped,
                           _read_ids(paths.ids_hard_negative), read_negatives(paths))
+    stats["annotations"] = annotation_stats(read_jsonl(paths.annotations(paths.split)), [q["id"] for q in queries])
     write_stats(paths.stats, "step4", stats)
-    print(f"[step 4] dataset {paths.root}\n\n{format_dataset_table(stats)}\n")
+    print(f"[step 4] dataset {paths.root}\n\n{format_dataset_table(stats)}\n\n"
+          f"gold annotation\n\n{format_annotation_table(stats['annotations'])}\n")

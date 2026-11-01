@@ -121,7 +121,9 @@ class DatasetSpec:
                              intermediate answers.
         query_shape:         Shape of the dataset's queries, for the criteria
                              extraction: ``"single_target"`` (clues of one
-                             entity or value), ``"set"`` (a value over every
+                             entity or value), ``"multi_hop"`` (one entity
+                             reached through a chain of other entities: one
+                             criterion per hop), ``"set"`` (a value over every
                              member of a set) or ``"multi_aspect"`` (a report
                              on several aspects of a topic).
         max_criteria:        Cap on the number of criteria the belief
@@ -208,10 +210,12 @@ DATASET_SPECS = {
     # deep_qa: BrowseComp-style questions (InfoSeek-Hard, WebShaper, FRAMES)
     # with their gold Wikipedia and web pages as binary qrels; the corpus adds
     # hard negatives of the Wikipedia gold pages (build step 3).  Lengths as
-    # BrowseComp-Plus (long web pages and multi-clue questions).
+    # BrowseComp-Plus (long web pages and multi-clue questions).  Multi-hop
+    # criteria: one per entity on the chain, as the gold criteria of the pool
+    # (InfoSeek's research trees, WebShaper's formalizations; build step 2).
     "deep_qa": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
     # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
     # intermediate info merged; TRQA's settings, corpus and indices.
@@ -320,6 +324,23 @@ def criteria_bank_path(dataset: str, split: str) -> Path:
     (a training pool: ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/...``)."""
     root = CRITERIA_ROOT / "training_pool" if dataset in BUILT_DATASETS else CRITERIA_ROOT
     return root / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
+
+
+def gold_annotation_path(root: Path, split: str) -> Path:
+    """Return the gold annotation of a split of the training pool at *root*,
+    e.g. ``{root}/gold/annotations_sft.jsonl``; the ids of its queries with
+    criterion texts are ``ids_{split}.txt`` next to it
+    (``training_pool/annotations.py``)."""
+    return root / "gold" / f"annotations_{split}.jsonl"
+
+
+def gold_criteria_path(dataset: str, split: str) -> Path:
+    """Return the gold criteria of a training pool split: its gold
+    annotation, e.g. ``TRAINING_POOL_ROOT/deep_qa/gold/annotations_sft.jsonl``
+    (``gold_annotation_path``)."""
+    if dataset not in BUILT_DATASETS:
+        raise ValueError(f"gold criteria exist for the training pools only ({sorted(BUILT_DATASETS)}), not {dataset!r}")
+    return gold_annotation_path(TRAINING_POOL_ROOT / dataset, split)
 
 
 def criteria_reachability_dir(dataset: str, split: str) -> Path:
