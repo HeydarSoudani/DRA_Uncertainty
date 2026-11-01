@@ -11,17 +11,20 @@ retriever, whose encoder gives the novelty embeddings) are in the run's
 ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 16::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 17::
 
-    line 1  {"record": "meta", "schema_version": 16, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 17, "query_id": "q1", "question": "...",
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "set", "errors": [], "bank": "hit"},
              "final_belief": ["almost certain", "unknown", ...],
+             "final_utilized": [3, 0, ...], "final_utilization": 0.75,
              "final_criteria_attempts": [2, 0, ...],
              "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "almost certain",
                                     "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
-                                                  "spans": ["..."], "span_verified": [true]}]}, ...]}
+                                                  "spans": ["..."], "span_verified": [true]}]}, ...],
+             "final_update": {"agent_turn": "...", "utilized_updates": [...],
+                              "belief_updater_output": "...", "errors": []} | null}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
@@ -29,16 +32,22 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 16::
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
+             "utilization": 1.0,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [1.0, 0.5, ...]}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
              "belief_before": ["unknown", ...], "belief_after": ["almost certain", ...],
              "criteria_sources_after": [1, 0, ...],
+             "utilized_before": [0, 0, ...], "utilized_after": [0, 0, ...],
              "criteria_targeted": ["c1"], "criteria_attempts_after": [1, 0, ...],
              "criteria_updates": [{"id": "c1", "from": "unknown", "to": "almost certain",
                                    "written": "almost certain", "support": [{"doc_id": "d1", ...}],
                                    "contradict": [], "reason": "...", "note": ""}, ...],
+             "utilized_updates": [{"id": "c2", "from": "unknown", "to": "probable", "step": 0,
+                                   "rise": 2, "utilized": true, "span": "...",
+                                   "span_verified": true, "reason": "...", "note": ""}],
+             "agent_turn": "Reasoning: ... Search queries: ...",
              "belief_updater_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
     ...
@@ -85,7 +94,14 @@ line (``agent``, ``llm_model``, ``dataset``, ``task``, ``query_shape``,
 ``run_config.json``; ``encoder``: the retriever's, ``searcher.retriever_name``
 there), and the steps drop ``subqueries`` (the texts of
 ``queries``) and ``belief_state_tag`` (the trajectory step's
-``belief_state``).
+``belief_state``).  schema_version 17 adds the reasoner side of the
+belief: the updater call of a step also judges, against the agent's turn
+of the step (``agent_turn``), whether the agent used the passages that
+raised criteria in the previous call (``utilized_updates``); per
+criterion, ``utilized_before`` / ``utilized_after`` sum the used gains and
+``utilization`` is the used share of the judged gains; the meta line adds
+``final_utilized``, ``final_utilization`` and ``final_update`` (the rises of
+the last step judged against the answer turn).
 ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
@@ -101,7 +117,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

@@ -69,6 +69,7 @@ FILE_BACKED_DEFAULTS = {
     "belief_judge_model": "",
     "query_scorer_model": "",
     "criteria_bank": True,
+    "gold_criteria": False,
     "add_intermediate_answer": False,
     # Evaluation
     "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
@@ -305,6 +306,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
     pipeline_kwargs["query_scorer_model"] = args.query_scorer_model
     pipeline_kwargs["criteria_bank"] = args.criteria_bank
+    pipeline_kwargs["gold_criteria"] = args.gold_criteria
     pipeline_kwargs["add_intermediate_answer"] = args.add_intermediate_answer
 
     # Keys named as the CLI args: a worker rebuilds its LLM client and

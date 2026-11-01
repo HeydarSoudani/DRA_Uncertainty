@@ -3,7 +3,9 @@
 Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model is
 trained, here with the agent frozen.  It is one model with two calls: init
 f(query) -> the criteria, then every step the update
-b_t = f(query, b_{t-1}, o_t) -> their statuses.  One
+b_t = f(query, b_{t-1}, o_t) -> their statuses (retriever side) and whether
+the agent's turn used what raised them (reasoner side).  Training uses only
+the queries with gold criteria (the pool's gold/ids_{split}.txt).  One
 phase per call (``--phase N``):
 
     1  dra_inference with the frozen agent on     run_outputs/ (dra_inference layout)
@@ -12,9 +14,9 @@ phase per call (``--phase N``):
        teacher belief model, rl in off mode
     2  SFT warm-up of the student (LoRA, merged)  phase2_sft/
        on the teacher's replies (sft, val runs)
-    3  RL of the student (GRPO on its own belief  phase3_rl/
-       updates, Agent-BRACE PPO update; rl run,
-       validation on the val run)
+    3  RL of the student (GRPO on its whole       phase3_rl/
+       belief chains, Agent-BRACE PPO update; rl
+       run, validation on the val run)
 
 Phases 2 and 3 read the phase 1 runs of ``--policy-model`` and write under
 ``{output_root}/{training_data}/{policy_model}/``.
@@ -55,6 +57,7 @@ load_dotenv()
 
 from belief_model_training.config import RunPaths, load_config
 from indexing_corpus_dataset.layout import POOL_SPLITS
+from utils.cli_setup import _sm_bool
 
 _CONFIG_DEFAULT = str(_HERE.parent / "configs" / "belief_model_training.yaml")
 
@@ -72,6 +75,7 @@ _FLAGS = {
     "split": "trajectories.split",
     "teacher_belief_model": "trajectories.teacher_belief_model",
     "limit": "trajectories.limit",
+    "quiet": "trajectories.quiet",
     # phase 2
     "student_belief_model": "sft.student_belief_model",
     # phase 3
@@ -92,19 +96,20 @@ def _parse_args() -> argparse.Namespace:
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--training-data", type=str, default="deep_qa", choices=["deep_qa", "trqa_validation"], help="Training pool (dataset of dra_inference).")
     parser.add_argument("--policy-model", type=str, default="glm", help="Frozen agent (--policy-model of dra_inference), e.g. glm, oss_20b: phase 1 runs it, phases 2-3 read its runs and write under {output root}/{training data}/{policy model}.")
-    parser.add_argument("--output-root", type=str, default=None, help="Root of the phase 2-3 runs (None = OUTPUT_ROOT/belief_model_training).")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phase 1).")
+    parser.add_argument("--output-root", type=str, default=None, help="Root of the phase 2-3 runs (None = OUTPUT_ROOT/belief_model_training).")
     parser.add_argument("--num-gpus", type=int, default=4, help="dra_inference workers (phase 1).")
     parser.add_argument("--gpu-ids", type=str, default=None, help="GPUs of the dra_inference workers (phase 1), comma-separated physical ids, e.g. 0,1,2,3 (None = gpu_ids of the inference config).")
+    parser.add_argument("--seed", type=int, default=0, help="Random seed.")
 
     # ── Phase 1: trajectories ───────────────────────────────────────────────
     parser.add_argument("--split", type=str, default="sft", choices=list(POOL_SPLITS), help="Pool split to run: sft and val in monitor mode with the teacher, rl in off mode.")
     parser.add_argument("--teacher-belief-model", type=str, default="openrouter/qwen/qwen3.6-27b", help="Teacher belief model (criteria init and belief updates; phase 2 checks the runs used it).")
     parser.add_argument("--limit", type=int, default=None, help="The next N queries of the split not run yet (None = all).")
+    parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (no per-step agent output), as dra_inference --quiet.")
 
     # ── Phase 2: SFT ────────────────────────────────────────────────────────
-    parser.add_argument("--student-belief-model", type=str, default="Qwen/Qwen3-4B-Instruct-2507", help="Base checkpoint of the student belief model.")
+    parser.add_argument("--student-belief-model", type=str, default="Qwen/Qwen3.5-4B", help="Base checkpoint of the student belief model (non-thinking).")
 
     # ── Phase 3: RL ─────────────────────────────────────────────────────────
     parser.add_argument("--rl-init-belief-model", type=str, default=None, help="Start checkpoint of the student belief model (None = the merged phase 2 model).")
@@ -150,8 +155,8 @@ if __name__ == "__main__":
 
 
 # Examples:
-# python experiments/training/belief_model_training.py --phase 1 --training-data trqa_validation --split val --policy-model glm
-# python experiments/training/belief_model_training.py --phase 1 --training-data trqa_validation --split sft --policy-model glm --limit 200
-# python experiments/training/belief_model_training.py --phase 1 --training-data trqa_validation --split rl --policy-model glm --limit 500
-# torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phase 2 --training-data trqa_validation --policy-model glm
-# python experiments/training/belief_model_training.py --phase 3 --training-data trqa_validation --policy-model glm
+# python experiments/training/belief_model_training.py --phase 1 --split sft --limit 1
+# python experiments/training/belief_model_training.py --phase 1 --split rl --limit 1
+# python experiments/training/belief_model_training.py --phase 1 --split val --limit 1
+# python experiments/training/belief_model_training.py --phase 2
+# python experiments/training/belief_model_training.py --phase 3

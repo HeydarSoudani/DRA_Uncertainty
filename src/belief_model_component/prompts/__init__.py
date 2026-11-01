@@ -10,7 +10,11 @@ from pathlib import Path
 from ..types import QUERY_SHAPES
 from .user_prompts import (
     criteria_init_user,
+    CRITERIA_UPDATE_INSTRUCTION,
+    CRITERIA_UPDATE_NO_PASSAGES,
     CRITERIA_UPDATE_PASSAGE_TEMPLATE,
+    CRITERIA_UPDATE_RISES_INSTRUCTION,
+    CRITERIA_UPDATE_RISES_TEMPLATE,
     CRITERIA_UPDATE_USER_TEMPLATE,
     QUERY_TARGETING_USER_TEMPLATE,
     intermediate_answer_instruction,

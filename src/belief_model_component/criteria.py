@@ -10,7 +10,8 @@ status can move up or down); the other criteria keep their status.
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` derives the criteria from the query;
   ``BankedCriteriaSource`` reads them from a bank file and derives (and
-  adds) only the missing ones, so runs and analyses share one list per query.
+  adds) only the missing ones, so runs and analyses share one list per query;
+  ``GoldCriteriaSource`` reads a training pool's gold criteria.
 - ``BeliefState``: b_t and the evidence attached to each criterion.
 
 Each criterion is closed (one fact), open (several parts or answers that
@@ -38,8 +39,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    ASPECT, CLOSED, INITIAL_STATUS, MULTI_ASPECT, OPEN, QUERY_SHAPES, REST, SET,
-    Criterion, CriterionUpdate, Evidence,
+    ASPECT, CLOSED, INITIAL_STATUS, MULTI_ASPECT, OPEN, QUERY_SHAPES, REST, SET, STATUS_LEVEL,
+    Criterion, CriterionUpdate, Evidence, UtilizedJudgment,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,9 @@ def _is_rest(text: str) -> bool:
 
 def _kinds(shape: str, texts: List[str]) -> List[str]:
     """Kind of each criterion of a *shape* query: every clue of a single
-    target is closed; the first criterion of a set query (the complete set)
-    is open, its rest criterion is rest and its members are closed; every
-    report criterion is an aspect."""
+    target and every hop of a multi-hop query is closed; the first criterion
+    of a set query (the complete set) is open, its rest criterion is rest and
+    its members are closed; every report criterion is an aspect."""
     if shape == MULTI_ASPECT:
         return [ASPECT] * len(texts)
     if shape == SET:
@@ -342,12 +343,54 @@ class BankedCriteriaSource(CriteriaSource):
         return criteria, {**info, "bank": "added"}
 
 
+# Model name in the criteria info of gold criteria (``GoldCriteriaSource``).
+GOLD_CRITERIA_MODEL = "gold"
+
+
+class GoldCriteriaSource(CriteriaSource):
+    """Reads each query's gold criteria from a training pool's gold criteria
+    file (``layout.gold_criteria_path``, written by the pool build,
+    ``training_pool/gold_criteria.py``): per query, its criteria with their
+    gold intermediate answers and documents.  Only the criteria (id, text,
+    kind) reach the belief model; a query without criteria or whose texts
+    failed (``texts_ok``) gets none (the belief model is then off for it)."""
+
+    def __init__(self, path: Path | str, query_shape: str) -> None:
+        self.path = Path(path)
+        self._shape = query_shape
+        self._rows: Dict[str, Dict[str, Any]] = {}
+        if self.path.exists():
+            with open(self.path, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        row = json.loads(line)
+                        self._rows[str(row["id"])] = row
+
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+        info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "errors": []}
+        row = self._rows.get(str(query_id))
+        if row is None or not row.get("texts_ok") or not row.get("criteria"):
+            info["errors"].append(f"gold criteria: none for query {query_id} in {self.path}")
+            return [], info
+        if row.get("query") is not None and row["query"] != query:
+            info["errors"].append(f"gold criteria: the query of {query_id} in {self.path} differs")
+            return [], info
+        return [Criterion(id=c["id"], text=c["text"], kind=c["kind"]) for c in row["criteria"]], info
+
+
 # ---------------------------------------------------------------------------
 # Belief state
 # ---------------------------------------------------------------------------
 
+def rise(before: str, after: str) -> int:
+    """How far a status change raised the criterion's coverage: the gain in
+    clipped status level (negative levels count as 0), 0 for no gain."""
+    return max(max(STATUS_LEVEL[after], 0) - max(STATUS_LEVEL[before], 0), 0)
+
+
 class BeliefState:
-    """Belief state b_t: per criterion, its belief status and its evidence.
+    """Belief state b_t: per criterion, its belief status and its evidence
+    (retrieval), and how much of what raised it the agent used (reasoner).
 
     b_0 gives every criterion ``INITIAL_STATUS``.  Each step the belief
     updater updates the criteria that the step's new passages support,
@@ -365,6 +408,16 @@ class BeliefState:
       attached again.
 
     The updater sees the attached evidence in later steps.
+
+    Use by the agent (RAGChecker's context utilization, per rise): each
+    step's rises (``rise``: a status change that gains clipped level) are
+    kept as ``pending``, with the verified spans of the passages cited for
+    them; the next call judges each against the agent's turn after the step
+    (``judge``) and clears them.  ``utilized[k]`` sums the gains of
+    criterion k's rises judged utilized, ``judged_rise[k]`` the gains of all
+    its judged rises.  A rise never judged (failed call, no later call)
+    counts in neither.  Both only grow: a later contradiction lowers the
+    status, not what the agent used.
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
@@ -372,14 +425,20 @@ class BeliefState:
         self.statuses: List[str] = [INITIAL_STATUS] * len(self.criteria)
         self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
+        self.utilized: List[int] = [0] * len(self.criteria)
+        self.judged_rise: List[int] = [0] * len(self.criteria)
+        # The rises of the last applied update, to judge in the next call:
+        # {id, from, to, step, rise, spans: [(verified spans, title), ...]}.
+        self.pending: List[Dict[str, Any]] = []
 
     def attached(self, k: int, limit: Optional[int] = None) -> List[Evidence]:
         """Evidence of criterion *k*, oldest first; the last *limit* when set."""
         items = self._evidence[k]
         return items[-limit:] if limit else list(items)
 
-    def update(self, updates: List[CriterionUpdate]) -> List[Dict[str, Any]]:
-        """Apply the belief the updater wrote for one step.
+    def update(self, updates: List[CriterionUpdate], step: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Apply the belief the updater wrote for one step (*step*, kept
+        with the step's rises in ``pending``).
 
         Returns one record per criterion, in criteria order, then one per
         update with an unknown or repeated id: ``{id, from, to, written,
@@ -435,7 +494,51 @@ class BeliefState:
                 self.statuses[k] = u.status
                 record["to"] = u.status
             record["note"] = "; ".join(notes)
+        self.pending = [
+            {"id": c.id, "from": r["from"], "to": r["to"], "step": step, "rise": rise(r["from"], r["to"]),
+             "spans": [(e.verified_spans, e.title) for e in first[k].support if e.verified_spans]}
+            for k, (c, r) in enumerate(zip(self.criteria, records)) if rise(r["from"], r["to"]) > 0
+        ]
         return records + extra
+
+    def judge(self, judgments: Optional[List[UtilizedJudgment]], note: str = "") -> List[Dict[str, Any]]:
+        """Apply the judgments of the pending rises and clear them.
+
+        Returns one record per pending rise, in criteria order: ``{id, from,
+        to, step, rise, utilized, span, span_verified, reason, note}``;
+        ``utilized`` is null when the rise got no valid judgment (then it
+        counts in neither ``utilized`` nor ``judged_rise``).  *judgments*
+        None (the call failed or made none) leaves every rise unjudged, with
+        *note*.  Only the first judgment of a pending criterion is used;
+        judgments of other criteria are ignored."""
+        by_id: Dict[str, UtilizedJudgment] = {}
+        for j in judgments or []:
+            by_id.setdefault(j.id, j)
+        records = []
+        for p in self.pending:
+            j = by_id.get(p["id"]) if judgments is not None else None
+            record = {k: p[k] for k in ("id", "from", "to", "step", "rise")}
+            record.update(utilized=None, span="", span_verified=False, reason="", note=note)
+            if j is not None:
+                record.update(utilized=j.utilized, span=j.span, span_verified=j.span_verified, reason=j.reason)
+                if j.utilized is None:
+                    record["note"] = "no valid utilized value"
+            elif judgments is not None:
+                record["note"] = "not judged"
+            if record["utilized"] is not None:
+                k = self._index[p["id"]]
+                self.judged_rise[k] += p["rise"]
+                if record["utilized"]:
+                    self.utilized[k] += p["rise"]
+            records.append(record)
+        self.pending = []
+        return records
+
+    def utilization(self) -> Optional[float]:
+        """U: the share of the judged rises (by gain) the agent used; None
+        before any rise was judged."""
+        total = sum(self.judged_rise)
+        return sum(self.utilized) / total if total else None
 
     def sources(self) -> List[int]:
         """Per criterion, its distinct supporting documents."""

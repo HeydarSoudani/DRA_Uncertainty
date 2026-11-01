@@ -185,10 +185,13 @@ class BeliefUpdateSignal:
     levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the status
     levels (``types.STATUS_LEVEL``, -2 to 4, "unknown" 0); it is positive
     when the passages cover more of the criteria and negative when they
-    turn against them.  With no unjudged document the updater is not called and Delta^D
-    is 0; when the updater fails the belief is unchanged, Delta^D is null
-    and the step's documents stay unjudged, so a later step that retrieves
-    them shows them again.
+    turn against them.  The same call judges the rises of the previous call
+    against the agent's turn of this step (``BeliefState.judge``), so a step
+    with rises to judge calls the updater even without a new document.  With
+    nothing to do the updater is not called and Delta^D is 0; when the
+    updater fails the belief is unchanged, Delta^D is null, the step's
+    documents stay unjudged, so a later step that retrieves them shows them
+    again, and the pending rises stay unjudged.
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
@@ -208,47 +211,68 @@ class BeliefUpdateSignal:
     def statuses(self) -> Optional[List[str]]:
         return list(self._state.statuses) if self._state is not None else None
 
+    def utilized(self) -> Optional[List[int]]:
+        return list(self._state.utilized) if self._state is not None else None
+
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._state = BeliefState(criteria) if criteria else None
         self._judged.clear()
 
     def score(
-        self, docs: List[Dict[str, Any]], step: int,
-    ) -> Tuple[Optional[int], List[Dict[str, Any]], Optional[str], List[str]]:
-        """Return ``(delta, updates, raw, errors)`` for the step's unique
-        *docs*; *updates* has one record per criterion
-        (``BeliefState.update``), *raw* is the updater's reply (None when it
+        self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None,
+    ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]], Optional[str], List[str]]:
+        """Return ``(delta, updates, utilized, raw, errors)`` for the step's
+        unique *docs* and the agent's turn of the step (*agent_turn*; None:
+        the pending rises are not judged); *updates* has one record per
+        criterion (``BeliefState.update``), *utilized* one per pending rise
+        (``BeliefState.judge``), *raw* is the updater's reply (None when it
         was not called).  Documents without an id are shown every step."""
         if self._state is None:
-            return None, [], None, []
+            return None, [], [], None, []
         docs = self.unjudged(docs)
-        if not docs:
-            return 0, [], None, []
-        updates, raw, errors = self.updater.update(self._query, self._state, docs, step)
-        delta, records = self.apply(docs, updates, raw)
-        return delta, records, raw, errors
+        if not docs and not (self._state.pending and agent_turn is not None):
+            return 0, [], [], None, []
+        updates, judgments, raw, errors = self.updater.update(self._query, self._state, docs, step, agent_turn)
+        delta, records, used = self.apply(docs, updates, judgments, raw, step)
+        return delta, records, used, raw, errors
 
     def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """The documents of *docs* the updater has not judged yet."""
         return [d for d in docs if _doc_id(d) not in self._judged]
 
     def apply(
-        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], raw: Optional[str],
-    ) -> Tuple[Optional[int], List[Dict[str, Any]]]:
+        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], judgments: Optional[List[Any]],
+        raw: Optional[str], step: Optional[int] = None,
+    ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Apply the updater's result on the unjudged *docs*: return
-        ``(delta, records)``.  *updates* None (failed call) leaves the belief
-        and the judged documents unchanged; *raw* None (not called) only
-        marks *docs* judged."""
+        ``(delta, records, utilized)``.  The pending rises are judged first
+        (*judgments*), then the statuses updated, whose rises become the
+        new pending ones.  *updates* None (failed call) leaves the belief
+        and the judged documents unchanged, and the pending rises are
+        dropped unjudged (a rise is judged on the turn right after it only);
+        *raw* None (not called) only marks *docs* judged."""
         if updates is None:
-            return None, []
+            return None, [], self._state.judge(None, note="call failed")
         self._judged.update(i for i in map(_doc_id, docs) if i)
         if raw is None:
-            return 0, []
+            return 0, [], []
+        used = self._state.judge(judgments, note="" if judgments is not None else "reply has no 'utilized' list")
         before = list(self._state.statuses)
-        records = self._state.update(updates)
+        records = self._state.update(updates, step)
         after = list(self._state.statuses)
-        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after)), records
+        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after)), records, used
+
+    def finish(self, step: int, agent_turn: str) -> Tuple[List[Dict[str, Any]], Optional[str], List[str]]:
+        """The final call: the rises of the last step judged against the
+        agent's answer turn, no document.  Returns ``(utilized, raw,
+        errors)``; nothing when no rise is pending."""
+        if self._state is None or not self._state.pending:
+            return [], None, []
+        updates, judgments, raw, errors = self.updater.update(self._query, self._state, [], step, agent_turn)
+        # No passage: any status the reply writes is ignored.
+        _, _, used = self.apply([], None if updates is None else [], judgments, raw, step)
+        return used, raw, errors
 
 
 # ---------------------------------------------------------------------------

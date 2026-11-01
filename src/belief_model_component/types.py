@@ -50,13 +50,15 @@ REST = "rest"
 ASPECT = "aspect"
 
 # Query shapes (layout.DATASET_SPECS): one entity or value described by clues,
-# a value computed over every member of a set, or a report on several aspects
-# of a topic.  The shape picks the criteria-extraction prompt and the kind of
-# each criterion; the extractor never chooses either.
+# one entity reached through a chain of other entities (hops), a value
+# computed over every member of a set, or a report on several aspects of a
+# topic.  The shape picks the criteria-extraction prompt and the kind of each
+# criterion; the extractor never chooses either.
 SINGLE_TARGET = "single_target"
+MULTI_HOP = "multi_hop"
 SET = "set"
 MULTI_ASPECT = "multi_aspect"
-QUERY_SHAPES = (SINGLE_TARGET, SET, MULTI_ASPECT)
+QUERY_SHAPES = (SINGLE_TARGET, MULTI_HOP, SET, MULTI_ASPECT)
 
 
 @dataclass
@@ -109,4 +111,22 @@ class CriterionUpdate:
     status: Optional[str]
     support: List[Evidence] = field(default_factory=list)
     contradict: List[Evidence] = field(default_factory=list)
+    reason: str = ""
+
+
+@dataclass
+class UtilizedJudgment:
+    """The belief updater's judgment of one rise: whether the agent's turn
+    after the step whose passages raised the criterion's status states the
+    information those passages gave (the reasoner used the retrieved
+    content).
+
+    ``utilized`` is None when the reply gives no valid value; ``span`` is the
+    part of the agent's turn the updater cited, ``span_verified`` whether it
+    occurs there (case, whitespace and punctuation ignored).
+    """
+    id: str
+    utilized: Optional[bool]
+    span: str = ""
+    span_verified: bool = False
     reason: str = ""

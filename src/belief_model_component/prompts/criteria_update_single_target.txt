@@ -41,5 +41,6 @@ Example output:
     {"id": "c1", "support": [], "contradict": [{"passage": 2, "spans": ["The 2019 prize went to the cellist Anna Varga"]}], "reason": "Passage 2 gives a different winner of the 2019 prize that the attached evidence gives to Marta Leclerc.", "status": "possible"},
     {"id": "c4", "support": [{"passage": 1, "spans": ["Marta Leclerc looked back on Glass Harbour, the song cycle she premiered 25 years earlier"]}], "contradict": [], "reason": "Passage 1 states that the essay names Glass Harbour as premiered 25 years earlier.", "status": "certain"},
     {"id": "c3", "support": [], "contradict": [{"passage": 3, "spans": ["she has never written an opera"]}], "reason": "Passage 3 states that Marta Leclerc, the composer in the evidence, never wrote an opera.", "status": "doubtful"}
-  ]
+  ],
+  "utilized": []
 }

@@ -12,8 +12,10 @@ x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t), plus extra saved information
 (retrieval gain against qrels, intermediate answers).
 
 Module layout:
-    types         belief statuses, Criterion, Evidence, CriterionUpdate
-    criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource, BeliefState
+    types         belief statuses, Criterion, Evidence, CriterionUpdate, UtilizedJudgment
+    criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource,
+                  GoldCriteriaSource, BeliefState (statuses and utilized gains)
+    agent_turn    the agent's turn as the updater reads it
     judges        LLMBeliefUpdater, LLMQueryScorer, build_belief_judges
     signals       DocNoveltySignal, QueryNoveltySignal, BeliefUpdateSignal,
                   CriteriaTargetingSignal, RetrievalGainSignal,
@@ -30,11 +32,13 @@ from .types import (
     Criterion,
     CriterionUpdate,
     Evidence,
+    UtilizedJudgment,
 )
 from .criteria import (
     CriteriaSource,
     LLMCriteriaSource,
     BankedCriteriaSource,
+    GoldCriteriaSource,
     BeliefState,
 )
 from .judges import (
@@ -62,9 +66,11 @@ __all__ = [
     "Criterion",
     "CriterionUpdate",
     "Evidence",
+    "UtilizedJudgment",
     "CriteriaSource",
     "LLMCriteriaSource",
     "BankedCriteriaSource",
+    "GoldCriteriaSource",
     "BeliefState",
     "LLMBeliefUpdater",
     "LLMQueryScorer",

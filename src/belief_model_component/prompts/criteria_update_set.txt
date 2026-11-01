@@ -44,5 +44,6 @@ Example output:
     {"id": "c2", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km², more than 10 km².", "status": "certain"},
     {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "possible"},
     {"id": "c4", "support": [], "contradict": [], "reason": "Passage 3 calls Lake Tirsa a small pond with a twenty-minute shore path, which points against a surface area of more than 10 km² without giving it.", "status": "unlikely"}
-  ]
+  ],
+  "utilized": []
 }

@@ -98,6 +98,7 @@ def build_belief_model(
     policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
     criteria_bank: Optional[str] = None,
+    gold_criteria: Optional[str] = None,
 ):
     """Build the belief model, or None when *mode* is ``"off"``.
 
@@ -130,6 +131,11 @@ def build_belief_model(
         criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
             a query's criteria are read from it, and extracted and added
             only when missing.  None: extracted for every sample.
+        gold_criteria: Gold criteria file of a training pool split
+            (``layout.gold_criteria_path``): each query's criteria are its
+            gold ones (no extraction, *criteria_bank* unused); a query
+            without them gets no belief state.  The updater and query
+            scorer are still the *belief_judge_model* / *llm_criteria* LLM.
     """
     if mode == "off":
         return None
@@ -137,13 +143,18 @@ def build_belief_model(
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from belief_model_component import (
-        BankedCriteriaSource, LLMCriteriaSource, LLMQueryScorer, BeliefModel, build_belief_judges,
-        encode_fn_from_retriever,
+        BankedCriteriaSource, GoldCriteriaSource, LLMCriteriaSource, LLMQueryScorer, BeliefModel,
+        build_belief_judges, encode_fn_from_retriever,
     )
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
     criteria_source = None
-    if llm_criteria:
+    if gold_criteria:
+        if not (belief_judge_model or llm_criteria):
+            raise ValueError("gold criteria need a belief updater model (--belief-judge-model or --llm-criteria)")
+        criteria_source = GoldCriteriaSource(gold_criteria, query_shape)
+        print(f"Belief model: gold criteria from {gold_criteria}")
+    elif llm_criteria:
         criteria_source = LLMCriteriaSource(
             llm_client=_belief_llm(llm_criteria),
             max_criteria=max_criteria,
@@ -471,6 +482,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         policy_model=policy_model,
         dataset=dataset,
         criteria_bank=worker_config.get("criteria_bank"),
+        gold_criteria=worker_config.get("gold_criteria"),
     )
     if belief_model is not None and hasattr(agent, "belief_model"):
         agent.belief_model = belief_model

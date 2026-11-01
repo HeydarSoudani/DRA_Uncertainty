@@ -31,11 +31,35 @@ Query: {query}
 Criteria, with their current status:
 {belief}
 
-New passages:
+{utilization}New passages:
 {passages}
 
-Decide which criteria each new passage supports, contradicts or relates to, if any, and give their new status.\
+{instruction}\
 """
+
+# The section on the rises of the previous step, before the passages; left
+# out (empty) when no criterion rose there.
+CRITERIA_UPDATE_RISES_TEMPLATE = """\
+Criteria that rose in the previous step, with the passages that raised them:
+{rises}
+
+The agent's turn after that step:
+<agent_turn>
+{agent_turn}
+</agent_turn>
+
+"""
+
+# The passages section of a call with rises to judge and no new passage.
+CRITERIA_UPDATE_NO_PASSAGES = "(none)"
+
+CRITERIA_UPDATE_INSTRUCTION = (
+    "Decide which criteria each new passage supports, contradicts or relates to, if any, and give their new status."
+)
+CRITERIA_UPDATE_RISES_INSTRUCTION = (
+    " Then judge, for each criterion that rose in the previous step, whether the agent's turn uses the "
+    "information that raised it."
+)
 
 # One passage of the belief updater's user message.
 CRITERIA_UPDATE_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"

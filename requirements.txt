@@ -18,6 +18,8 @@ torchvision==0.26.0
 vllm==0.24.0
 transformers==5.12.1           # >=5.5.3 (vllm) and <6 (pyserini)
 accelerate==1.14.0             # required by transformers when device_map is used
+peft==0.21.2                   # belief model training, phase 2 (LoRA)
+flash-linear-attention==0.5.2  # Gated DeltaNet kernels for training Qwen3.5 (torch fallback otherwise)
 sentence-transformers==5.6.0
 safetensors==0.8.0
 numpy==2.4.6                   # <2.5: numba (transitive) requires numpy<2.5

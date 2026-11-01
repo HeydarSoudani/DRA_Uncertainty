@@ -112,12 +112,15 @@ class AgentVerboseMixin:
         *,
         seen_docs: Optional[List[Dict[str, Any]]] = None,
         trajectory: Any = None,
+        agent_turn: Optional[str] = None,
     ) -> Optional[str]:
         """Pass one finished search iteration to the belief model.
 
         Called once per iteration, after all its searches, with the
-        iteration's queries, the documents the agent was shown and its
-        conversation so far (*trajectory*, for the intermediate answer).
+        iteration's queries, the documents the agent was shown, its
+        conversation so far (*trajectory*, for the intermediate answer) and
+        its turn (*agent_turn*: reasoning and queries, against which the
+        belief model judges the use of the previous step's passages).
         *seen_docs*, when given, are printed in verbose mode.
 
         Returns the iteration's ``<belief_state>`` tag in ``inform`` mode, which
@@ -151,6 +154,7 @@ class AgentVerboseMixin:
                 iter_num=iter_num,
                 original_query=original_query or "",
                 trajectory=trajectory,
+                agent_turn=agent_turn,
             )
             self._vprint_belief(iter_num, record)
             tag = record.get("belief_state_tag")
@@ -201,9 +205,12 @@ class AgentVerboseMixin:
             step["iteration"] = iter_num
         tag = None
         if subqueries or docs:
+            from belief_model_component.agent_turn import agent_turn_text
+            queries = [subqueries] if isinstance(subqueries, str) else list(subqueries)
             tag = self._observe_step(
                 subqueries, docs, iter_num, original_query,
                 seen_docs=seen_docs, trajectory=trajectory,
+                agent_turn=agent_turn_text([s.get("think") for s in steps], queries),
             )
         if tag:
             if messages is not None:
@@ -267,6 +274,12 @@ class AgentVerboseMixin:
         belief_model = getattr(self, "belief_model", None)
         if belief_model is None:
             return
+        from belief_model_component.agent_turn import answer_turn
+        try:
+            # The rises of the last iteration are judged against the answer turn.
+            belief_model.finish(answer_turn(result.get("trajectory") or [], result.get("generation") or ""))
+        except Exception:
+            logger.warning("Belief model final update failed", exc_info=True)
         try:
             result["belief_meta"] = belief_model.meta()
             result["belief_steps"] = list(belief_model.steps)

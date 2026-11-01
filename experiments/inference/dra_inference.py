@@ -59,7 +59,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_bank_path
+from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_bank_path, gold_criteria_path
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
@@ -114,6 +114,7 @@ class RunPlan:
     answers: Dict[str, str]
     run_dir: str
     criteria_bank: Optional[str]
+    gold_criteria: Optional[str]
 
 
 def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Optional[str] = None,
@@ -189,6 +190,12 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     # Criteria bank of the split: criteria are read from it, extracted only when missing.
     criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
                      if belief_mode != "off" and kwargs["criteria_bank"] else None)
+    # Gold criteria of a training pool split: they replace the extracted criteria.
+    gold_criteria = (str(gold_criteria_path(dataset, file_data_set))
+                     if belief_mode != "off" and kwargs.get("gold_criteria") else None)
+    if gold_criteria and not Path(gold_criteria).exists():
+        raise SystemExit(f"--gold-criteria: {gold_criteria} not found; build the pool with "
+                         "experiments/training/build_training_pool.py (deep_qa step 2, or the trqa_validation build)")
 
     # ==================== Resume: skip already-processed queries ====================
     # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
@@ -231,7 +238,7 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     return RunPlan(
         dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
         all_questions=all_questions, qrels=qrels, graded_qrels=graded_qrels, answers=answers,
-        run_dir=run_dir, criteria_bank=criteria_bank,
+        run_dir=run_dir, criteria_bank=criteria_bank, gold_criteria=gold_criteria,
     )
 
 
@@ -311,6 +318,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     if worker_config is not None and belief_mode != "off":
         worker_config["qrels"] = qrels
         worker_config["criteria_bank"] = plan.criteria_bank
+        worker_config["gold_criteria"] = plan.gold_criteria
     # The gold answers, for the header of each query's trajectory .md.
     if worker_config is not None:
         worker_config["answers"] = answers
@@ -375,6 +383,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
             policy_model=policy_model,
             dataset=plan.dataset,
             criteria_bank=plan.criteria_bank,
+            gold_criteria=plan.gold_criteria,
         )
         if belief_model is not None and hasattr(agent, "belief_model"):
             agent.belief_model = belief_model

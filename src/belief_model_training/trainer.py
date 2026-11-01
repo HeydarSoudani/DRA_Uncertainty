@@ -9,6 +9,8 @@ with each reward term normalized apart (computed by the caller,
   moments and an fp32 update, written into the bf16 weights with
   stochastic rounding, so that updates below bf16's resolution are kept on
   average (an fp32 master copy does not fit next to vLLM on one GPU).
+  A vision-language student (Qwen3.5) keeps its vision encoder frozen
+  (``sft.load_student``), outside the optimizer.
 - Advantage (GRPO with GDPO's per-term normalization, arXiv 2601.05242):
   each reward term normalized within its group, the replies to the same
   prompt (``(r - mean) / max(std, std_floor)``; 0 for a term with zero
@@ -158,18 +160,19 @@ def token_log_probs(logits: torch.Tensor, labels: torch.Tensor, temperature: flo
 
 class BeliefPPOTrainer:
     def __init__(self, model_path: str, cfg: RLConfig, device: str = "cuda", seed: int = 0) -> None:
-        from transformers import AutoModelForCausalLM
+        from .sft import load_student
 
         self.cfg = cfg
         self.device = torch.device(device)
         self._rng = random.Random(seed)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16)
+        self.model = load_student(model_path)
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         self.model.config.use_cache = False
-        self.optimizer = StochasticRoundingAdamW(self.model.parameters(), lr=cfg.learning_rate)
+        self.optimizer = StochasticRoundingAdamW([p for p in self.model.parameters() if p.requires_grad],
+                                                 lr=cfg.learning_rate)
         self.ref_model = None
         if cfg.use_kl_loss:
-            self.ref_model = AutoModelForCausalLM.from_pretrained(model_path, dtype=torch.bfloat16)
+            self.ref_model = load_student(model_path)
             self.ref_model.requires_grad_(False)
             self.ref_model.eval()
 
@@ -191,10 +194,10 @@ class BeliefPPOTrainer:
         gc.collect()
         torch.cuda.empty_cache()
 
-    def save(self, path: str, tokenizer=None) -> None:
+    def save(self, path: str, processor=None) -> None:
         self.model.save_pretrained(path)
-        if tokenizer is not None:
-            tokenizer.save_pretrained(path)
+        if processor is not None:
+            processor.save_pretrained(path)
 
     # -- update --
 

@@ -1,293 +1,126 @@
-"""Phase 3 environment: belief update steps (GRPO groups) from the
-student's own belief chain.
+"""Phase 3 environment: belief chains of the student over whole episodes
+(GRPO groups of chains).
 
-A step item is one search step of an episode of the ``rl`` split (off-mode
-run) whose documents include one not shown in an earlier step, so the
-updater is called there.  The belief never changes what the agent does, so
-the documents of every step are fixed and a step's prompt is built from
-the student's own b_{t-1}: its criteria (its init call) and its replies to
-the earlier steps, greedy as at inference (``student_prompts``,
-DAgger-style: the states the student meets when it runs alone).
+An episode of the ``rl`` split (off-mode run) has fixed observations: the
+documents of each search step and the agent's turn of each step and its
+answer turn (the belief never changes what the agent does).  A chain is the
+student's belief updater run over the whole episode from the episode's gold
+criteria (the init call is not trained here): one call per step that has a
+document not judged yet or rises to judge, then the final call on the answer
+turn, each call's prompt built from the chain's own b_{t-1}
+(``episodes.BeliefTracker``), as at inference.  ``run_chains`` draws
+``group_size`` chains per episode (temperature 1 in training, greedy for
+validation); the calls of all chains are generated together, one round per
+call.  A reply that does not parse (or a prompt too long) leaves the call's
+documents unjudged and drops its rises unjudged, as at inference.
 
-The student writes ``group_size`` replies to a prompt; each is applied to a
-copy of b_{t-1}, which gives its statuses and cited support for the reward.
-The gold of a prompt is the relevant documents among its call's passages:
-a failed or unparsed earlier call leaves documents unjudged, and they are
-shown again.  r_ts applies to a prompt when it is ``final``: the last
-updater call of the student's chain, when its reply parses (no later step
-then shows a document not judged yet; ``_last_call``), as in the
-validation.  The init call is not trained here (the criteria stay as
-learned in SFT).
-
-``run_student_chains`` runs the student's chain over whole episodes for the
-free-running validation.
-
-``StepSampler`` draws the step items of a batch: a share of steps with new
-gold documents, at most a share from episodes without gold, the rest from
-the other steps; within each pool the last calls of episodes are balanced
-on the correctness of the final answer.
+``EpisodeSampler`` draws the episodes of a batch, balanced on the
+correctness of the agent's final answer.
 """
 
-import copy
 import random
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
-from belief_model_component import Criterion
-from belief_model_component.belief_model import unique_docs
+import numpy as np
 
 from .episodes import BeliefTracker, DocumentStore, Episode, UpdaterCall
 from .rollout import VLLMRolloutEngine
 
-# LLMCriteriaSource's max_tokens: the init call at inference.
-CRITERIA_MAX_TOKENS = 4096
-
 
 @dataclass
-class StepItem:
-    """One updater step of an episode: ``t`` indexes ``episode.steps``."""
-    episode: Episode
-    t: int
-    # The step shows relevant documents first seen in it / is the episode's
-    # last step with a document not shown before (batch balance only).
-    has_gold: bool
-    last: bool
-
-
-@dataclass
-class StepPrompt:
-    """The student's prompt of a step item, and b_{t-1} (``signal``) to
-    apply its replies to."""
-    item: StepItem
+class ChainCall:
+    """One updater call of a chain and the student's reply."""
     call: UpdaterCall
-    signal: Any
-    # The relevant documents among the call's passages.
-    gold: Set[str]
-    # r_ts applies: the last updater call of the chain.
-    final: bool
-
-
-@dataclass
-class StudentSample:
-    """One student reply; ``group`` indexes the prompt of the batch."""
-    prompt: StepPrompt
-    group: int
     prompt_ids: List[int]
     response_ids: List[int]
     # vLLM's log-probs of the reply tokens (compared with the trainer's).
     rollout_log_probs: List[float]
+    text: Optional[str]
     finish_reason: Optional[str]
-    # apply_reply: parsed, then records and statuses.
+    # BeliefTracker.submit
     outcome: Dict[str, Any] = field(default_factory=dict)
 
 
-def step_items(episodes: List[Episode]) -> List[StepItem]:
-    """The steps of *episodes* with a document not shown in an earlier step."""
-    items: List[StepItem] = []
-    for ep in episodes:
-        seen: Set[str] = set()
-        steps = []
-        for t, step in enumerate(ep.steps):
-            if set(step.doc_ids) - seen:
-                steps.append(t)
-            seen.update(step.doc_ids)
-        items += [StepItem(ep, t, bool(ep.steps[t].new_gold_ids), t == steps[-1]) for t in steps]
-    return items
-
-
-def _prompt(item: StepItem, call: UpdaterCall, signal: Any, final: bool) -> StepPrompt:
-    gold = item.episode.gold_among([d["doc_id"] for d in call.kept])
-    return StepPrompt(item, call, _snapshot(signal), gold, final)
-
-
-def _snapshot(signal: Any) -> Any:
-    """A copy of the belief signal that shares its updater (prompt and
-    parse only)."""
-    return copy.deepcopy(signal, memo={id(signal.updater): signal.updater})
-
-
-def apply_reply(prompt: StepPrompt, raw: Optional[str]) -> Dict[str, Any]:
-    """The reply *raw* applied to a copy of b_{t-1}: ``{parsed, records,
-    statuses}`` (``records`` as ``BeliefState.update``)."""
-    signal = _snapshot(prompt.signal)
-    call = prompt.call
-    updates = signal.updater.parse(raw, call.kept, call.iteration) if raw is not None else None
-    if updates is None:
-        return {"parsed": False, "records": [], "statuses": signal.statuses()}
-    _, records = signal.apply(call.docs, updates, raw)
-    return {"parsed": True, "records": records, "statuses": signal.statuses()}
-
-
-def rollout_groups(prompts: List[StepPrompt], engine: VLLMRolloutEngine, *, group_size: int,
-                   temperature: float, max_new_tokens: int) -> List[StudentSample]:
-    """*group_size* student replies per prompt, in one batched generation;
-    the samples of a group are contiguous."""
-    groups = engine.generate([p.call.messages for p in prompts], temperature=temperature,
-                             max_new_tokens=max_new_tokens, n=group_size)
-    return [
-        StudentSample(
-            prompt=prompt, group=g, prompt_ids=gen.prompt_ids, response_ids=gen.response_ids,
-            rollout_log_probs=gen.logprobs, finish_reason=gen.finish_reason,
-            outcome=apply_reply(prompt, gen.text),
-        )
-        for g, (prompt, gens) in enumerate(zip(prompts, groups)) for gen in gens
-    ]
-
-
-# ---------------------------------------------------------------------------
-# The student's own belief chain
-# ---------------------------------------------------------------------------
-
-def student_criteria(episodes: List[Episode], engine: VLLMRolloutEngine) -> List[List[Criterion]]:
-    """The student's criteria of each episode: its init call, greedy as at
-    inference (empty when the reply does not parse)."""
-    extractors = [ep.criteria_extractor() for ep in episodes]
-    gens = engine.generate([x.messages(ep.query) for x, ep in zip(extractors, episodes)], temperature=0.0,
-                           max_new_tokens=CRITERIA_MAX_TOKENS)
-    return [x.parse(g[0].text)[0] if g[0].text is not None else [] for x, g in zip(extractors, gens)]
+@dataclass
+class Chain:
+    """The student's belief chain over one episode; ``group`` indexes the
+    episode in the batch.  ``statuses`` and ``utilization`` are the belief
+    after the last call."""
+    episode: Episode
+    group: int
+    calls: List[ChainCall] = field(default_factory=list)
+    statuses: List[str] = field(default_factory=list)
+    utilization: Optional[float] = None
 
 
 @dataclass
-class ChainCall:
-    """One updater call of a student chain: its prompt (b_{t-1}) and the
-    student's greedy reply (None when not generated)."""
-    t: int
-    prompt: StepPrompt
-    text: Optional[str] = None
-    finish_reason: Optional[str] = None
+class _Run:
+    chain: Chain
+    tracker: BeliefTracker
+    next_t: int = 0
+    finished: bool = False
 
 
-def run_student_chains(
-    episodes: List[Episode], criteria: List[List[Criterion]], targets: List[int], store: DocumentStore,
-    engine: VLLMRolloutEngine, *, max_new_tokens: int, reply_at_target: bool,
-) -> List[List[ChainCall]]:
-    """The student's belief chain over each episode from its *criteria*, up
-    to step ``targets[e]``: the calls of all episodes are generated
-    together, one round per step, greedy as at inference.  The call at the
-    target step gets a reply only with *reply_at_target*.  A reply that does
-    not parse (or a prompt too long) leaves the call's documents unjudged,
-    as at inference.  The prompts' ``final`` is left False."""
-    trackers = [BeliefTracker(ep, store.docs(ep), crit) for ep, crit in zip(episodes, criteria)]
-    nxt = [0] * len(episodes)
-    calls: List[List[ChainCall]] = [[] for _ in episodes]
-    while True:
-        pending: List[Tuple[int, ChainCall]] = []
-        for e, (ep, tracker) in enumerate(zip(episodes, trackers)):
-            while nxt[e] <= targets[e]:
-                t = nxt[e]
-                nxt[e] += 1
-                call = tracker.open_step(t)
-                if call is None:
-                    continue
-                cc = ChainCall(t, _prompt(StepItem(ep, t, False, False), call, tracker.signal, False))
-                cc.prompt.item.has_gold = bool(cc.prompt.gold)
-                calls[e].append(cc)
-                if t == targets[e] and not reply_at_target:
-                    tracker.submit(None)
-                    break
-                pending.append((e, cc))
-                break
+def _next_call(run: _Run) -> Optional[UpdaterCall]:
+    """The chain's next updater call (steps in order, then the final call),
+    or None when the chain is over."""
+    steps = run.chain.episode.steps
+    while run.next_t < len(steps):
+        t = run.next_t
+        run.next_t += 1
+        call = run.tracker.open_step(t)
+        if call is not None:
+            return call
+    if not run.finished:
+        run.finished = True
+        return run.tracker.open_final()
+    return None
+
+
+def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRolloutEngine, *, group_size: int,
+               temperature: float, max_new_tokens: int) -> List[Chain]:
+    """*group_size* chains per episode from its gold criteria; the chains of
+    an episode are contiguous and share its index as ``group``."""
+    runs = [_Run(Chain(ep, g), BeliefTracker(ep, store.docs(ep), ep.gold_criteria_list()))
+            for g, ep in enumerate(episodes) for _ in range(group_size)]
+    active = list(runs)
+    while active:
+        pending = []
+        for run in active:
+            call = _next_call(run)
+            if call is not None:
+                pending.append((run, call))
         if not pending:
-            return calls
-        gens = engine.generate([cc.prompt.call.messages for _, cc in pending], temperature=0.0,
+            break
+        gens = engine.generate([c.messages for _, c in pending], temperature=temperature,
                                max_new_tokens=max_new_tokens)
-        for (e, cc), g in zip(pending, gens):
-            cc.text, cc.finish_reason = g[0].text, g[0].finish_reason
-            trackers[e].submit(cc.text)
+        for (run, call), g in zip(pending, gens):
+            gen = g[0]
+            outcome = run.tracker.submit(gen.text)
+            run.chain.calls.append(ChainCall(call, gen.prompt_ids, gen.response_ids, gen.logprobs, gen.text,
+                                             gen.finish_reason, outcome))
+        active = [run for run, _ in pending]
+    for run in runs:
+        run.chain.statuses = run.tracker.signal.statuses()
+        run.chain.utilization = run.tracker.signal.state.utilization()
+    return [run.chain for run in runs]
 
 
-def _last_call(prompt: StepPrompt, docs: List[List[Dict[str, Any]]]) -> bool:
-    """No later step of the episode makes an updater call once the reply
-    to *prompt* parses (its documents are then judged): every later
-    document was judged before or has no text."""
-    signal = _snapshot(prompt.signal)
-    signal.apply(prompt.call.docs, [], None)
-    episode = prompt.item.episode
-    for t in range(prompt.item.t + 1, len(episode.steps)):
-        new = signal.unjudged(unique_docs(docs[t]))
-        if not new:
-            continue
-        if signal.updater.prompt(episode.query, signal.state, new)[0] is not None:
-            return False
-        signal.apply(new, [], None)
-    return True
+class EpisodeSampler:
+    """Draws the episodes of a batch without replacement, the episodes with
+    a correct and with a wrong final answer weighing the same in total
+    (episodes not judged weigh as one of the larger class)."""
 
+    def __init__(self, episodes: List[Episode], rng: random.Random) -> None:
+        self.episodes = episodes
+        n = {y: sum(ep.correct is y for ep in episodes) for y in (True, False)}
+        big = max(n.values()) or 1
+        w = np.array([big / n[ep.correct] if ep.correct is not None and n[ep.correct] else 1.0 for ep in episodes])
+        self.p = w / w.sum()
+        self.rng = np.random.default_rng(rng.randrange(2 ** 32))
 
-def student_prompts(items: List[StepItem], store: DocumentStore, engine: VLLMRolloutEngine, *,
-                    max_new_tokens: int, criteria_cache: Optional[Dict[int, List[Criterion]]] = None,
-                    ) -> Tuple[List[StepPrompt], List[StepItem]]:
-    """The prompts of *items* from the student's own belief: per episode,
-    the student's criteria and its greedy chain up to the item's step.
-    Returns ``(prompts, rest)``: *rest* are the items without a student
-    prompt (no criteria parsed, or no call at the step in the student's
-    chain).  r_ts applies to the chain's last call (``_last_call``).
-    *criteria_cache* keeps the student's criteria by episode (``id``) for
-    the caller to clear when the weights change."""
-    by_episode: Dict[int, List[StepItem]] = defaultdict(list)
-    for item in items:
-        by_episode[id(item.episode)].append(item)
-    groups = list(by_episode.values())
-    episodes = [g[0].episode for g in groups]
-    cache = {} if criteria_cache is None else criteria_cache
-    missing = [ep for ep in episodes if id(ep) not in cache]
-    if missing:
-        cache.update(zip(map(id, missing), student_criteria(missing, engine)))
-    criteria = [cache[id(ep)] for ep in episodes]
-    keep = [e for e, c in enumerate(criteria) if c]
-    rest = [item for e, g in enumerate(groups) if not criteria[e] for item in g]
-    chains = run_student_chains(
-        [episodes[e] for e in keep], [criteria[e] for e in keep], [max(i.t for i in groups[e]) for e in keep],
-        store, engine, max_new_tokens=max_new_tokens, reply_at_target=False,
-    )
-    prompts: List[StepPrompt] = []
-    for e, chain in zip(keep, chains):
-        by_t = {cc.t: cc.prompt for cc in chain}
-        for item in groups[e]:
-            base = by_t.get(item.t)
-            if base is None:
-                rest.append(item)
-                continue
-            prompt = StepPrompt(item, base.call, base.signal, base.gold, False)
-            prompt.final = _last_call(prompt, store.docs(item.episode))
-            prompts.append(prompt)
-    return prompts, rest
-
-
-class StepSampler:
-    """Draws the step items of a batch (with replacement): ``gold_share``
-    from steps with new gold, ``no_gold_share`` at most (and at most their
-    natural share) from episodes without gold, the rest from the other
-    steps of episodes with gold."""
-
-    def __init__(self, items: List[StepItem], gold_share: float, no_gold_share: float, rng: random.Random) -> None:
-        gold = [i for i in items if i.has_gold]
-        no_gold = [i for i in items if not i.episode.has_gold]
-        other = [i for i in items if not i.has_gold and i.episode.has_gold]
-        no_gold_share = min(no_gold_share, len(no_gold) / max(len(items), 1))
-        pools = [(gold, gold_share), (no_gold, no_gold_share), (other, max(1.0 - gold_share - no_gold_share, 0.0))]
-        pools = [(p, s) for p, s in pools if p and s > 0]
-        total = sum(s for _, s in pools)
-        self.pools = [(p, s / total, _balance_weights(p)) for p, s in pools]
-        self.rng = rng
-
-    def sample(self, n: int) -> List[StepItem]:
-        """*n* items in random order (the pools mixed)."""
-        counts = [int(round(n * s)) for _, s, _ in self.pools]
-        counts[-1] += n - sum(counts)
-        out: List[StepItem] = []
-        for (pool, _, weights), c in zip(self.pools, counts):
-            out += self.rng.choices(pool, weights=weights, k=max(c, 0))
-        self.rng.shuffle(out)
-        return out
-
-
-def _balance_weights(pool: List[StepItem]) -> List[float]:
-    """Sampling weights that give the last calls with a correct and with a
-    wrong final answer equal total weight; other items weigh 1."""
-    n_y = {y: sum(i.last and i.episode.correct is y for i in pool) for y in (True, False)}
-    if not all(n_y.values()):
-        return [1.0] * len(pool)
-    n_last = n_y[True] + n_y[False]
-    return [n_last / (2 * n_y[i.episode.correct]) if i.last and i.episode.correct is not None else 1.0
-            for i in pool]
+    def sample(self, n: int) -> List[Episode]:
+        n = min(n, len(self.episodes))
+        idx = self.rng.choice(len(self.episodes), size=n, replace=False, p=self.p)
+        return [self.episodes[i] for i in idx]

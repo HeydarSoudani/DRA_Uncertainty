@@ -1,23 +1,29 @@
 """Scores of a belief model against the gold of its episodes.
 
 One set of standard measures (``measures``), used to assess the teacher on
-the phase 1 episodes (``assess``) and the student on the validation steps
+the phase 1 episodes (``assess``) and the student on the validation chains
 of phase 3; the phase 3 rewards (``rewards``) are their per-sample forms.
-A belief update at step t is scored on three parts:
+An updater call is scored on the two sides of the belief and the chain on
+its end:
 
-    what moves     precision / recall / F1 of the documents cited as
-                   support (with a verified span) against the gold
-                   documents among the call's passages
-                   (``Episode.shown_gold``), pooled over the steps (micro)
-    how far        coverage C_t against ``recall_so_far``: mean signed
-                   error (> 0 = ahead of recall), RMSE, and Kendall's
-                   tau-b pooled over all steps
-    where it ends  final coverage C_T against the correctness y of the
-                   agent's final answer: AUROC, Brier score, ECE (10
-                   equal-width bins)
+    retriever    coverage C_t against ``recall_so_far``: mean signed error
+                 (> 0 = ahead of recall), RMSE, Kendall's tau-b pooled over
+                 the calls; logged too: precision / recall / F1 of the
+                 documents cited as support (verified span) against the
+                 gold documents among the call's passages, pooled (micro)
+    reasoner     the ``utilized`` judgments of the rises the call judges
+                 against the gold (the agent turn states the criterion's
+                 gold answer, ``utilized_gold``): accuracy, and precision /
+                 recall / F1 of "utilized", pooled
+    final        the final confidence C_T = C^ret_T x U_T against the
+                 correctness y of the agent's final answer: AUROC, Brier
+                 score, ECE (10 equal-width bins); the same for C^ret_T
+                 alone (does the reasoner side add to it?)
 
 Coverage, with negative levels clipped to 0:
-``C_t = mean_k max(level_t(k), 0) / 4`` (``types.STATUS_LEVEL``).
+``C_t = mean_k max(level_t(k), 0) / 4`` (``types.STATUS_LEVEL``);
+utilization U_t = the used share of the judged rises
+(``BeliefState.utilization``; 1 before any rise was judged).
 """
 
 import math
@@ -40,6 +46,12 @@ def coverage(statuses: Sequence[str]) -> float:
     return sum(max(STATUS_LEVEL[s], 0) for s in statuses) / (len(statuses) * TOP_LEVEL)
 
 
+def confidence(cov: float, utilization: Optional[float]) -> float:
+    """C = C^ret x U: the covered share the agent used (U = 1 before any
+    rise was judged)."""
+    return cov * (1.0 if utilization is None else utilization)
+
+
 def cited_support(records: List[Dict[str, Any]]) -> Set[str]:
     """Documents cited as support, with at least one verified span, in a
     step's ``criteria_updates``; the records of invalid updates (``from``
@@ -49,37 +61,54 @@ def cited_support(records: List[Dict[str, Any]]) -> Set[str]:
             for e in r.get("support") or [] if any(e.get("span_verified") or [])}
 
 
-def support_f1(cited: Set[str], gold: Set[str]) -> float:
-    """F1 of the cited support documents against the new gold documents of
-    a step; 1 when both are empty (nothing cited on a step without gold)."""
-    if not cited and not gold:
-        return 1.0
-    tp = len(cited & gold)
-    return 2 * tp / (len(cited) + len(gold))
+def used_pairs(episode: Episode, t: Optional[int], used: List[Dict[str, Any]]) -> List[Tuple[bool, bool]]:
+    """``(judged, gold)`` of each rise judged with a valid value on the
+    agent turn of step *t* (None: the answer turn)."""
+    stated = episode.stated_at(t) or set()
+    return [(bool(u["utilized"]), u["id"] in stated) for u in used if u.get("utilized") is not None]
 
 
-def step_row(episode: Episode, t: int, cited: Set[str], coverage: float, final: bool,
-             gold: Optional[Set[str]] = None) -> Dict[str, Any]:
-    """The ``measures`` row of one scored belief update at step *t*; *gold*
-    defaults to the gold of the teacher's call (``Episode.shown_gold``)."""
-    return {"cited": cited, "coverage": coverage, "gold": episode.shown_gold(t) if gold is None else gold,
-            "recall": episode.steps[t].recall_so_far, "final": final, "correct": episode.correct}
+def call_row(episode: Episode, t: Optional[int], statuses: Sequence[str], utilization: Optional[float],
+             cited: Set[str], gold: Set[str], used: List[Dict[str, Any]], final: bool) -> Dict[str, Any]:
+    """The ``measures`` row of one scored updater call: at step *t* (None:
+    the final call, on the answer turn), with the belief after it."""
+    cov = coverage(statuses)
+    recall = episode.steps[t].recall_so_far if t is not None else (
+        episode.steps[-1].recall_so_far if episode.steps else None)
+    return {"cited": cited, "gold": gold, "coverage": cov, "recall": recall,
+            "used": used_pairs(episode, t, used), "confidence": confidence(cov, utilization),
+            "final": final, "correct": episode.correct}
 
 
 def teacher_trace(episode: Episode) -> List[Dict[str, Any]]:
-    """Per step of the teacher's matched replay, a ``measures`` row:
-    ``{cited, coverage, gold, recall, final, correct}``.  The statuses
-    after a step are the ``to`` of its saved records (unchanged when the
-    updater was not called or failed); the last row is the final one when
-    the whole episode replayed."""
+    """Per call of the teacher's matched replay, a ``measures`` row.  The
+    statuses after a step are the ``to`` of its saved records (unchanged
+    when the updater was not called or failed), U from the saved
+    ``utilized_updates``; the last row is the final one when the whole
+    episode replayed."""
     statuses = [INITIAL_STATUS] * len(episode.criteria)
+    used_gain = judged_gain = 0
     trace = []
+
+    def add_used(used: List[Dict[str, Any]]) -> None:
+        nonlocal used_gain, judged_gain
+        for u in used:
+            if u.get("utilized") is not None:
+                judged_gain += u["rise"]
+                used_gain += u["rise"] if u["utilized"] else 0
+
     for t, step in enumerate(episode.steps[:episode.replay_steps]):
         records = [r for r in step.teacher_updates if r.get("from") is not None]
         if len(records) == len(statuses):
             statuses = [r["to"] for r in records]
-        trace.append(step_row(episode, t, cited_support(step.teacher_updates), coverage(statuses), False))
+        add_used(step.teacher_used)
+        trace.append(call_row(episode, t, statuses, used_gain / judged_gain if judged_gain else None,
+                              cited_support(step.teacher_updates), episode.shown_gold(t), step.teacher_used, False))
     if trace and episode.replay_steps == len(episode.steps):
+        if episode.teacher_final_used:
+            add_used(episode.teacher_final_used)
+            trace.append(call_row(episode, None, statuses, used_gain / judged_gain if judged_gain else None,
+                                  set(), set(), episode.teacher_final_used, False))
         trace[-1]["final"] = True
     return trace
 
@@ -111,16 +140,24 @@ def _prf(tp: int, fp: int, fn: int) -> Tuple[float, float, float]:
 
 
 def assess(episodes: List[Episode]) -> Dict[str, Any]:
-    """The teacher's scores over *episodes* (the matched replay steps)."""
+    """The teacher's scores over *episodes* (the matched replay calls)."""
     return measures([row for ep in episodes for row in teacher_trace(ep)])
 
 
+def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, float]:
+    return {
+        f"{prefix}_auroc": _auroc(y, s),
+        f"{prefix}_brier": float(((s - y) ** 2).mean()) if len(y) else math.nan,
+        f"{prefix}_ece": _ece(y, s),
+    }
+
+
 def measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The measures over step rows ``{cited, coverage, gold, recall,
-    final, correct}``; the final rows with a known ``correct`` give the
-    final-coverage measures."""
+    """The measures over call rows (``call_row``); the final rows with a
+    known ``correct`` give the final measures."""
     tp = fp = fn = 0
-    cov, rec, final, y = [], [], [], []
+    cov, rec, conf, final_cov, y = [], [], [], [], []
+    used = [p for r in rows for p in r["used"]]
     for t in rows:
         tp += len(t["cited"] & t["gold"])
         fp += len(t["cited"] - t["gold"])
@@ -129,19 +166,25 @@ def measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             cov.append(t["coverage"])
             rec.append(t["recall"])
         if t["final"] and t["correct"] is not None:
-            final.append(t["coverage"])
+            conf.append(t["confidence"])
+            final_cov.append(t["coverage"])
             y.append(float(t["correct"]))
     p, r, f = _prf(tp, fp, fn)
+    up, ur, uf = _prf(sum(a and g for a, g in used), sum(a and not g for a, g in used),
+                      sum(g and not a for a, g in used))
     c, g = np.array(cov), np.array(rec)
-    s, yy = np.array(final), np.array(y)
+    yy = np.array(y)
     return {
-        "support_precision": p, "support_recall": r, "support_f1": f,
-        "steps": len(c),
+        "calls": len(rows),
         "coverage_minus_recall": float((c - g).mean()) if len(c) else math.nan,
         "coverage_recall_rmse": float(np.sqrt(((c - g) ** 2).mean())) if len(c) else math.nan,
         "coverage_recall_tau_b": float(kendalltau(c, g)[0]) if len(c) > 1 else math.nan,
+        "support_precision": p, "support_recall": r, "support_f1": f,
+        "utilized_judged": len(used),
+        "utilized_accuracy": sum(a == g for a, g in used) / len(used) if used else math.nan,
+        "utilized_gold_rate": sum(g for _, g in used) / len(used) if used else math.nan,
+        "utilized_precision": up, "utilized_recall": ur, "utilized_f1": uf,
         "final_judged": len(yy),
-        "final_auroc": _auroc(yy, s),
-        "final_brier": float(((s - yy) ** 2).mean()) if len(yy) else math.nan,
-        "final_ece": _ece(yy, s),
+        **_final_measures("final", np.array(conf), yy),
+        **_final_measures("final_coverage", np.array(final_cov), yy),
     }

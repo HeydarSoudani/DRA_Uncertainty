@@ -2,8 +2,10 @@
 
 An episode is one query of an inference run (``experiments/inference/dra_inference.py``)
 on a training pool split, in ``monitor`` or ``off`` mode: the query and per
-search iteration the documents the agent was shown, in order
-(``trajectory/{qid}.jsonl``, ``read_episode``).  Its steps are numbered as
+search iteration the documents the agent was shown, in order, and the
+agent's turn of the iteration (its reasoning and queries,
+``agent_turn.agent_turn_text``), then its answer turn
+(``trajectory/{qid}.jsonl`` and ``generation/{qid}.md``, ``read_episode``).  Its steps are numbered as
 the belief model numbers them (``iteration``, from 1, one per search
 iteration); ``agent_iteration`` is the agent's own counter, the key that
 joins a trajectory iteration to its belief step.  The belief never changes
@@ -11,26 +13,31 @@ what the agent does, so these observations are fixed and any updater step
 can be rebuilt from any belief chain over the episode (phases 2 and 3).
 
 A monitor run also has the teacher belief model's view
-(``belief/{qid}.jsonl``, ``attach_teacher``): its criteria (the init call's
-output) and the model that wrote them, and per iteration the teacher
-updater's reply.  The belief file must have one step per search iteration
-of the trajectory, with the same documents.
+(``belief/{qid}.jsonl``, ``attach_teacher``): its criteria (the gold
+criteria of the pool, or the init call's output) and the model that wrote
+them, per iteration the teacher updater's reply and the agent turn it read,
+and the final call on the answer turn.  The belief file must have one step
+per search iteration of the trajectory, with the same documents.
 
 Document text is read back from the corpus (``CorpusLookup.contents``, the
 field the retrievers return).
 
 ``teacher_init_call`` rebuilds the init call (the criteria extraction
-prompt) with the episode's criteria as the reply.  ``replay_teacher`` re-runs the inference belief updater on the episode with
-the teacher's saved replies in place of the LLM: it gives the exact prompt
-of every teacher call (the SFT inputs) and checks the replay against the
-saved ``criteria_updates`` (statuses, cited passages and span checks, which
-depend on the passage text), so an episode whose documents or prompts
-cannot be rebuilt is caught.
+prompt) with the episode's criteria as the reply.  ``replay_teacher``
+re-runs the inference belief updater on the episode with the teacher's
+saved replies in place of the LLM: it gives the exact prompt of every
+teacher call (the SFT inputs), the final call on the answer turn included,
+and checks the replay against the saved ``criteria_updates`` (statuses,
+cited passages and span checks, which depend on the passage text) and
+``utilized_updates``, so an episode whose documents or prompts cannot be
+rebuilt is caught.
 
 The episode also carries the gold of the rewards and scores
 (``annotate_gold``, from the qrels): per step the gold documents first
 seen in it and ``recall_so_far``, and the final correctness of the agent's
-answer.  The gold of an updater call is the gold among its passages
+answer; with the gold criteria of the pool (``gold_criteria``), which
+criteria each agent turn states the gold answer of (``utilized_gold``).
+The gold of an updater call is the gold among its passages
 (``Episode.gold_among``): a document of a failed or unparsed call stays
 unjudged and is shown again in a later call, so it counts in that call.
 """
@@ -42,6 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from belief_model_component import BeliefUpdateSignal, Criterion, LLMCriteriaSource, build_belief_judges
+from belief_model_component.agent_turn import agent_turn_text, answer_turn
 from belief_model_component.belief_model import unique_docs
 from evaluation.belief import SCHEMA_VERSION
 from evaluation.belief.writer import _clean
@@ -72,6 +80,14 @@ class EpisodeStep:
     saved_recall: Optional[float] = None
     # The passages of the step's call in the teacher's replay (null when it made none).
     shown_doc_ids: Optional[List[str]] = None
+    # The agent's turn of the iteration (reasoning and queries): from the
+    # trajectory, or as the teacher read it (attach_teacher).
+    agent_turn: Optional[str] = None
+    # Monitor runs: the saved utilized_updates (replay check).
+    teacher_used: List[Dict[str, Any]] = field(default_factory=list)
+    # Gold criteria (utilized_gold): the ids of the criteria whose gold
+    # answer the step's agent turn states.
+    stated: Optional[Set[str]] = None
 
     @property
     def teacher_reply(self) -> Optional[str]:
@@ -106,6 +122,21 @@ class Episode:
     # (null when it was not judged or the judge failed).
     num_relevant: Optional[int] = None
     correct: Optional[bool] = None
+    # The agent's answer turn (null without an answer); monitor runs: the
+    # teacher's final call on it (reply, failed, saved utilized_updates).
+    answer_turn: Optional[str] = None
+    teacher_final_output: Optional[str] = None
+    teacher_final_failed: bool = False
+    teacher_final_used: List[Dict[str, Any]] = field(default_factory=list)
+    # The gold criteria of the pool (queries with texts_ok only): per
+    # criterion {id, kind, relations, answers, doc_ids, text}, answers and
+    # doc_ids empty when the source states none; the criteria ids the
+    # answer turn states the gold answer of (utilized_gold).
+    gold_criteria: Optional[List[Dict[str, Any]]] = None
+    answer_stated: Optional[Set[str]] = None
+    # Every entity name of the gold structure (InfoSeek's tree; else empty),
+    # masked when matching an answer inside a longer name.
+    gold_names: List[str] = field(default_factory=list)
 
     @property
     def split(self) -> Split:
@@ -130,6 +161,15 @@ class Episode:
 
     def criteria_list(self) -> List[Criterion]:
         return [Criterion(**c) for c in self.criteria]
+
+    def gold_criteria_list(self) -> List[Criterion]:
+        """The gold criteria, as the belief model reads them."""
+        return [Criterion(id=c["id"], text=c["text"], kind=c["kind"]) for c in self.gold_criteria or []]
+
+    def stated_at(self, t: Optional[int]) -> Optional[Set[str]]:
+        """The criteria whose gold answer the agent turn of step *t* states
+        (None: the answer turn)."""
+        return self.answer_stated if t is None else self.steps[t].stated
 
     def criteria_extractor(self) -> LLMCriteriaSource:
         """The init call of the episode's query (prompt and parse; no LLM)."""
@@ -160,23 +200,33 @@ def read_episode(path: Path, split: Split, run_dir: Path) -> Optional[Episode]:
     """The episode of one ``trajectory/{qid}.jsonl`` file: one step per
     search iteration, in order, with its shown documents (those of all its
     searches, first occurrence kept; none when its searches returned
-    nothing), or None when the run of the query did not finish (no meta
-    line)."""
+    nothing) and its agent turn (the reasoning and queries of the
+    iteration's lines), then the answer turn (the reasoning after the last
+    search and ``generation/{qid}.md``), or None when the run of the query
+    did not finish (no meta line)."""
     lines = read_jsonl(path)
     meta = next((r for r in lines if r.get("record") == "meta"), None)
     if meta is None:
         return None
+    steps = [r for r in lines if r.get("record") is None]
     docs: Dict[int, List[str]] = {}
-    for r in lines:
-        if r.get("record") is None and r.get("search_query"):
+    for r in steps:
+        if r.get("search_query"):
             docs.setdefault(_iteration(r["iter"]), []).extend(r.get("seen_docs") or [])
+    turns = {}
+    for i in docs:
+        own = [r for r in steps if _iteration(r["iter"]) == i]
+        turns[i] = agent_turn_text([r.get("think") for r in own], [r.get("search_query") for r in own])
     qid = str(meta["qid"])
+    generation = Path(run_dir) / "generation" / f"{qid}.md"
+    answer = generation.read_text(encoding="utf-8") if generation.exists() else ""
     return Episode(
         qid=qid, dataset=split.dataset, subset=split.subset, dataset_year=split.dataset_year,
         query=meta["question"], query_shape=DATASET_SPECS[split.dataset].query_shape,
-        steps=[EpisodeStep(iteration=n, agent_iteration=i, doc_ids=list(dict.fromkeys(d)))
+        steps=[EpisodeStep(iteration=n, agent_iteration=i, doc_ids=list(dict.fromkeys(d)), agent_turn=turns[i])
                for n, (i, d) in enumerate(docs.items(), 1)],
         run_dir=str(run_dir), source=qid.split("_", 1)[0] if "_" in qid else None,
+        answer_turn=answer_turn(steps, answer),
     )
 
 
@@ -216,7 +266,12 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
         step.teacher_output = r.get("belief_updater_output")
         step.teacher_failed = _call_failed(r.get("errors") or [])
         step.teacher_updates = r.get("criteria_updates") or []
+        step.teacher_used = r.get("utilized_updates") or []
         step.saved_recall = r.get("recall_so_far")
+        # The turn the teacher read (the trajectory's may differ in steps
+        # that are not search lines).
+        if r.get("agent_turn") is not None:
+            step.agent_turn = r["agent_turn"]
         joined.add(step.iteration)
     missing = [s.agent_iteration for s in episode.steps if s.iteration not in joined]
     if missing:
@@ -224,6 +279,12 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     episode.criteria = meta["criteria"]
     episode.criteria_model = (meta.get("criteria_info") or {}).get("model")
     episode.num_relevant = meta.get("num_relevant")
+    final = meta.get("final_update")
+    if final is not None:
+        episode.answer_turn = final.get("agent_turn")
+        episode.teacher_final_output = final.get("belief_updater_output")
+        episode.teacher_final_failed = _call_failed(final.get("errors") or [])
+        episode.teacher_final_used = final.get("utilized_updates") or []
     return None
 
 
@@ -293,12 +354,22 @@ class _NoLLM:
 
 @dataclass
 class UpdaterCall:
-    """One updater call of an episode: the prompt and what it is applied to."""
+    """One updater call of an episode: the prompt and what it is applied to.
+    ``t`` indexes ``episode.steps`` (None: the final call, on the answer
+    turn, which judges the last step's rises and has no passage)."""
+    t: Optional[int]
     iteration: int
     messages: List[Dict[str, str]]
     docs: List[Dict[str, Any]]
     kept: List[Dict[str, Any]]
     belief_before: List[str]
+    agent_turn: Optional[str]
+    # The ids of the criteria whose rises the call judges.
+    judged: List[str] = field(default_factory=list)
+
+    @property
+    def final(self) -> bool:
+        return self.t is None
 
 
 def teacher_init_call(episode: Episode) -> Dict[str, Any]:
@@ -322,9 +393,10 @@ class BeliefTracker:
     the LLM calls made by the caller.
 
     ``open_step(t)`` starts step *t* and returns its updater call, or None
-    when its documents need none (all judged before, or none with text; the
-    step is then applied at once); ``submit`` applies the reply to the open
-    call."""
+    when it needs none (no unjudged document with text and no rise to judge;
+    the step is then applied at once); ``open_final()`` returns the final
+    call on the answer turn, or None (no rise pending or no answer turn);
+    ``submit`` applies the reply to the open call."""
 
     def __init__(self, episode: Episode, docs: List[List[Dict[str, Any]]],
                  criteria: Optional[List[Criterion]] = None) -> None:
@@ -335,32 +407,51 @@ class BeliefTracker:
         self.signal.reset(episode.query, episode.criteria_list() if criteria is None else criteria)
         self._pending: Optional[UpdaterCall] = None
 
+    def _open(self, t: Optional[int], docs: List[Dict[str, Any]], agent_turn: Optional[str]) -> Optional[UpdaterCall]:
+        state = self.signal.state
+        messages, kept, _ = self.updater.prompt(self.episode.query, state, docs, agent_turn)
+        if messages is None:
+            self.signal.apply(docs, [], None, None)
+            return None
+        iteration = self.episode.steps[t].iteration if t is not None else len(self.episode.steps) + 1
+        judged = [p["id"] for p in state.pending] if agent_turn is not None else []
+        self._pending = UpdaterCall(t, iteration, messages, docs, kept, self.signal.statuses(), agent_turn, judged)
+        return self._pending
+
     def open_step(self, t: int) -> Optional[UpdaterCall]:
         if self._pending is not None:
             raise RuntimeError("the previous updater call has no reply yet")
         docs = self.signal.unjudged(unique_docs(self._docs[t]))
-        if not docs:
+        turn = self.episode.steps[t].agent_turn
+        if not docs and not (self.signal.state.pending and turn is not None):
             return None
-        messages, kept, _ = self.updater.prompt(self.episode.query, self.signal.state, docs)
-        if messages is None:
-            self.signal.apply(docs, [], None)
+        return self._open(t, docs, turn)
+
+    def open_final(self) -> Optional[UpdaterCall]:
+        if self._pending is not None:
+            raise RuntimeError("the previous updater call has no reply yet")
+        if not self.signal.state.pending or self.episode.answer_turn is None:
             return None
-        self._pending = UpdaterCall(self.episode.steps[t].iteration, messages, docs, kept, self.signal.statuses())
-        return self._pending
+        return self._open(None, [], self.episode.answer_turn)
 
     def submit(self, raw: Optional[str]) -> Dict[str, Any]:
         """Apply the reply *raw* (None: the call failed) to the open call;
-        returns the step's outcome."""
+        returns the call's outcome.  The final call keeps the statuses
+        (it has no passage)."""
         call = self._pending
         if call is None:
             raise RuntimeError("no open updater call")
         self._pending = None
-        updates = self.updater.parse(raw, call.kept, call.iteration) if raw is not None else None
-        delta, records = self.signal.apply(call.docs, updates, raw)
+        updates, judgments = (self.updater.parse(raw, call.kept, call.iteration, call.agent_turn)
+                              if raw is not None else (None, None))
+        if call.final and updates is not None:
+            updates = []
+        delta, records, used = self.signal.apply(call.docs, updates, judgments, raw, call.iteration)
         return {
             "iteration": call.iteration, "parsed": updates is not None, "criteria_delta": delta,
             "belief_before": call.belief_before, "belief_after": self.signal.statuses(),
-            "criteria_updates": records,
+            "criteria_updates": records, "utilized_updates": used,
+            "utilization": self.signal.state.utilization(),
         }
 
 
@@ -375,29 +466,40 @@ def replay_teacher(
 
     Returns ``(calls, matched, error)``: one ``{iteration, messages, output,
     parsed, spans_verified}`` per teacher call before the first step whose
-    replay differs from the saved run, the number of steps before it, and
-    the reason of the difference (None when every step matches).  Sets the
+    replay differs from the saved run (the final call on the answer turn
+    last), the number of steps before it, and the reason of the difference
+    (None when every step and the final call match).  Sets the
     ``shown_doc_ids`` of every step with a call.
     """
     tracker = BeliefTracker(episode, docs)
     calls: List[Dict[str, Any]] = []
-    for t, step in enumerate(episode.steps):
-        call = tracker.open_step(t)
+    steps: List[Tuple[Optional[int], Optional[str], bool, List[Dict[str, Any]], List[Dict[str, Any]]]] = [
+        (t, s.teacher_output, s.teacher_failed, s.teacher_updates, s.teacher_used) for t, s in enumerate(episode.steps)
+    ] + [(None, episode.teacher_final_output, episode.teacher_final_failed, [], episode.teacher_final_used)]
+    for t, output, failed, saved_updates, saved_used in steps:
+        name = f"iteration {episode.steps[t].iteration}" if t is not None else "the final call"
+        matched = t if t is not None else len(episode.steps)
+        call = tracker.open_step(t) if t is not None else tracker.open_final()
         if call is None:
-            if step.teacher_output is not None or step.teacher_failed:
-                return calls, t, f"iteration {step.iteration}: the saved run called the updater, the replay does not"
+            if output is not None or failed:
+                return calls, matched, f"{name}: the saved run called the updater, the replay does not"
             continue
-        step.shown_doc_ids = [d["doc_id"] for d in call.kept]
-        if step.teacher_output is None and not step.teacher_failed:
-            return calls, t, f"iteration {step.iteration}: the replay calls the updater, the saved run did not"
-        outcome = tracker.submit(step.teacher_reply)
-        if _canonical(outcome["criteria_updates"]) != _canonical(step.teacher_updates):
-            return calls, t, f"iteration {step.iteration}: replayed criteria_updates differ from the saved ones"
-        if step.teacher_reply is not None:
+        if t is not None:
+            episode.steps[t].shown_doc_ids = [d["doc_id"] for d in call.kept]
+        if output is None and not failed:
+            return calls, matched, f"{name}: the replay calls the updater, the saved run did not"
+        reply = None if failed else output
+        outcome = tracker.submit(reply)
+        if t is not None and _canonical(outcome["criteria_updates"]) != _canonical(saved_updates):
+            return calls, matched, f"{name}: replayed criteria_updates differ from the saved ones"
+        if _canonical(outcome["utilized_updates"]) != _canonical(saved_used):
+            return calls, matched, f"{name}: replayed utilized_updates differ from the saved ones"
+        if reply is not None:
             cited = [e for r in outcome["criteria_updates"] for e in r["support"] + r["contradict"]]
+            used = [u for u in outcome["utilized_updates"] if u["utilized"]]
             calls.append({
-                "iteration": step.iteration, "messages": call.messages, "output": step.teacher_output,
+                "iteration": call.iteration, "messages": call.messages, "output": output,
                 "parsed": outcome["parsed"],
-                "spans_verified": all(span_verified(e) for e in cited),
+                "spans_verified": all(span_verified(e) for e in cited) and all(u["span_verified"] for u in used),
             })
     return calls, len(episode.steps), None

@@ -1,0 +1,16 @@
+The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every entity on the chain that the query describes without naming it, the answer included, is one hop.
+
+---rules---
+4. Every entity the query describes without naming it leads to one criterion, the answer last. Write the part of the query that describes the entity, in the query's words: keep the entities the query names, and describe the other unnamed entities as the query does, never by a name you know or guess. Start the criterion with the entity's type in the query's words ("the city where ...", "the botanist who ..."), or "the entity" when the query gives no type.
+5. Order the criteria along the chain: an entity whose description needs another unnamed entity comes after it. Leave out the entities the query names, and background on who is asking. When you must leave out criteria to stay within the given number, keep the answer and the entities closest to it.
+
+---example---
+Example query: "Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?"
+Example output:
+{
+  "criteria": [
+    "the town where the Varn Folk Museum was founded",
+    "the engineer who was born in the town where the Varn Folk Museum was founded",
+    "the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded"
+  ]
+}

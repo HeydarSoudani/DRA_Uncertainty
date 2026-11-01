@@ -76,19 +76,25 @@ class TrajectoriesConfig:
     teacher_belief_model: str = "openrouter/qwen/qwen3.6-27b"
     # The next N queries of the split not run yet (null = all), as dra_inference --limit.
     limit: Optional[int] = None
+    # Minimal logs (no per-step agent output), as dra_inference --quiet.
+    quiet: bool = False
 
 
 @dataclass
 class SFTConfig:
     """Phase 2: SFT warm-up of the student on the teacher's replies (LoRA, then merged)."""
-    student_belief_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    # Same generation, architecture and tokenizer as the teacher (Qwen3.6); non-thinking.
+    student_belief_model: str = "Qwen/Qwen3.5-4B"
     # SFT samples only from replies whose cited spans all occur in their passage.
     require_verified_spans: bool = True
     lora_r: int = 64
     lora_alpha: int = 128
     lora_dropout: float = 0.05
+    # Attention, Gated DeltaNet (Qwen3.5: in_proj_qkv, in_proj_z, out_proj) and MLP
+    # projections; names a model lacks are skipped.
     lora_target_modules: List[str] = field(default_factory=lambda: [
-        "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+        "q_proj", "k_proj", "v_proj", "o_proj", "in_proj_qkv", "in_proj_z", "out_proj",
+        "gate_proj", "up_proj", "down_proj",
     ])
     # Agent-BRACE uses 2e-5; 1e-4 is the usual LoRA rate (LoRA trains few weights).
     learning_rate: float = 1e-4
@@ -104,31 +110,30 @@ class SFTConfig:
 
 @dataclass
 class RLConfig:
-    """Phase 3: GRPO on belief updates from the student's own belief chain
+    """Phase 3: GRPO on whole belief chains of the student over rl episodes
     (env, rewards), with the PPO update of Agent-BRACE's
     BeliefStateLMTrainer (no critic, no KL by default)."""
     # Start checkpoint of the student belief model; null = the merged phase 2 model.
     init_belief_model: Optional[str] = None
     num_iterations: int = 200
-    # Prompts (updater steps of rl episodes) per iteration, and replies per prompt (GRPO group).
-    prompts_per_batch: int = 32
+    # Episodes per iteration, and chains per episode (GRPO group).
+    episodes_per_batch: int = 16
     group_size: int = 8
-    # Batch mix: share of steps with new gold; at most this share from episodes without gold.
-    gold_step_share: float = 0.5
-    no_gold_share: float = 0.15
-    # Weights of the reward terms (rewards.py): state tracking, state correctness, task success.
-    reward_weight_st: float = 1.0
-    reward_weight_sc: float = 1.0
-    reward_weight_ts: float = 1.0
+    # w of R = w * sum_k (r_ret_k + r_reas_k) + r_final (rewards.py).
+    reward_weight_step: float = 1.0
     # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
     adv_std_floor: float = 0.05
+    # Judge of the gold of the reasoner side for the turns without a string
+    # match (utilized_gold.py; the correctness judge); null = matching only.
+    utilized_judge_model: Optional[str] = "openrouter/qwen/qwen3-32b"
     # Validation every val_every iterations on at most val_max_episodes val
-    # episodes: the student's own chain over each whole episode.
+    # episodes: one greedy chain per episode.
     val_every: int = 20
     val_max_episodes: int = 50
     learning_rate: float = 1e-5
     ppo_epochs: int = 1
-    # 256 replies per iteration / 32 = 8 optimizer steps per iteration.
+    # Updater calls per optimizer step (16 x 8 chains x ~8 calls = ~1000
+    # calls per iteration, ~32 optimizer steps).
     ppo_mini_batch_size: int = 32
     # Ratio clipped to [1 - clip_ratio_low, 1 + clip_ratio_high] (DAPO's clip-higher).
     clip_ratio_low: float = 0.2

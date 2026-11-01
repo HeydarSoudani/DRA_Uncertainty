@@ -10,7 +10,9 @@ with the trainer: ``sleep`` frees the GPU memory for the update and
 of the engine).
 
 Prompts are built with the model's chat template exactly as the inference
-server builds them (``sft.chat_prompt``).
+server builds them (``sft.chat_prompt``).  The prompts are text only: the
+vision encoder of a vision-language student (Qwen3.5) is not loaded
+(``language_model_only``; no effect on a text-only model).
 """
 
 from dataclasses import dataclass
@@ -37,7 +39,7 @@ class VLLMRolloutEngine:
         self.llm = LLM(
             model=model_path, dtype="bfloat16", enable_sleep_mode=True, seed=seed,
             gpu_memory_utilization=gpu_memory_utilization, max_model_len=max_model_len,
-            max_num_seqs=max_num_seqs,
+            max_num_seqs=max_num_seqs, language_model_only=True,
         )
         self.tokenizer = self.llm.get_tokenizer()
 

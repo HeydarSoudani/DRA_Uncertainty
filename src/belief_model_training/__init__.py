@@ -13,10 +13,11 @@ Module layout:
     trajectories  phase 1: dra_inference on a pool split (sft, val: monitor; rl: off)
     sft           phase 2: SFT samples and teacher scores, SFT warm-up (LoRA, merged)
     rollout       vLLM generation with log-probs, sleep / weight reload
+    utilized_gold the gold of the reasoner side: which criteria each agent turn states the gold answer of
     scoring       measures of a belief model against the gold (teacher scores, validation)
-    env           phase 3 environment: updater steps from the student's own chain,
-                  GRPO groups, batch sampler
-    rewards       phase 3 reward of one belief update
+    env           phase 3 environment: the student's belief chains over whole episodes
+                  (GRPO groups), episode sampler
+    rewards       phase 3 reward of one belief chain
     ppo           PPO losses (from veRL)
     trainer       PPO update (from Agent-BRACE's BeliefStateLMTrainer)
     rl            phase 3 loop

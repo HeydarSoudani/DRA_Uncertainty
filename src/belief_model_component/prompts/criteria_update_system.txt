@@ -1,4 +1,4 @@
-You are a criteria updater. Given a query, its criteria with their current status, and the numbered new passages of one search step, your task is to decide which criteria each new passage supports, contradicts or relates to, if any, and to update the status of those criteria.
+You are a criteria updater. Given a query, its criteria with their current status, and the numbered new passages of one search step, your task is to decide which criteria each new passage supports, contradicts or relates to, if any, and to update the status of those criteria. When some criteria rose in the previous step, you are also given the agent's turn that followed it, and you judge whether that turn uses the information that raised them.
 A criterion is one piece of information that a complete response to the query must contain. {shape_context}
 
 == Support and status ==
@@ -17,21 +17,32 @@ A criterion has one of seven statuses, from lowest to highest. The parts of a cr
 - "certain": The passages give all parts of the information directly, and no passage contradicts it.
 {shape_status}
 
+== Use by the agent ==
+The agent's turn is its reasoning and search queries after it read the passages of the previous step. For each criterion that rose in that step:
+- utilized: The turn states the information the passages gave for the criterion (the entity, value or fact), in any wording, in its reasoning or in a search query.
+- not utilized: The turn leaves that information out: it only repeats the criterion, searches for it again without the information found, or names another candidate.
+
 == Rules ==
 1. Use the query to understand what each criterion means, but judge a passage only by the criteria: a passage on the query's topic that gives nothing a criterion asks for supports none.
 2. Judge each passage and each criterion on its own; a passage may support several criteria or none.
 3. Cite every new passage that supports a criterion, also when the criterion is already "certain".
 4. Lower a status only when a new passage contradicts the criterion or points against it; never lower it because the new passages give nothing on it.
 5. When unsure whether a passage supports a criterion, do not cite it; when unsure between two statuses, choose the one closer to "unknown".
+6. Judge the statuses from the passages only, and the use from the agent's turn only.
 
 == Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with two keys:
 - "updates": One object per criterion that a new passage supports, contradicts or relates to; [] when there is none:
   - "id": The criterion id (for example "c1").
   - "support": A list of {"passage": number, "spans": [...]}, one per supporting passage; may be empty.
   - "contradict": The same, one per contradicting passage; may be empty.
   - "reason": One sentence on what the new passages give for the criterion.
   - "status": The new status.
-Each span is copied exactly from one place in the passage, in its own language: the shortest part of a sentence that states the fact.
+- "utilized": One object per criterion that rose in the previous step; [] when there is none:
+  - "id": The criterion id.
+  - "span": The shortest part of the agent's turn that states the information, copied exactly; "" when the turn does not state it.
+  - "reason": One sentence on what the turn does with the information.
+  - "utilized": true or false.
+Each span is copied exactly from one place in the passage or the agent's turn, in its own language: the shortest part of a sentence that states the fact.
 
 {example}
