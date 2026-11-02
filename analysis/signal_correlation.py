@@ -111,6 +111,7 @@ from utils.cli_setup import (
 )
 from belief_model_component.types import STATUS_LEVEL
 from utils.config import POLICY_MODEL_TO_LLM
+from indexing_corpus_dataset.layout import effective_criteria_source
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
 logger = logging.getLogger(__name__)
@@ -195,14 +196,14 @@ def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
 
 
 def _final_belief(statuses: Optional[List[str]]) -> Optional[float]:
-    """Mean status level (``STATUS_LEVEL``) of a belief state, divided by
-    the top level: 1 every criterion "certain", 0 every criterion
-    "unknown", negative when the passages are against them; None without
-    one."""
-    if not statuses:
+    """Mean status level (``STATUS_LEVEL``) of a belief state over the
+    criteria with a status (null: an aggregate), divided by the top level:
+    1 every criterion "certain", 0 every criterion "unknown", negative when
+    the passages are against them; None without one."""
+    levels = [STATUS_LEVEL[status] for status in statuses or [] if status is not None]
+    if not levels:
         return None
-    top = max(STATUS_LEVEL.values())
-    return sum(STATUS_LEVEL[status] for status in statuses) / (len(statuses) * top)
+    return sum(levels) / (len(levels) * max(STATUS_LEVEL.values()))
 
 
 def load_correctness(run_dir: Path) -> Dict[str, Optional[int]]:
@@ -618,7 +619,8 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
         policy_model=args.policy_model, llm_model=args.llm_model, use_plan=args.use_plan,
     )
     dataset_dir = build_dataset_dir_name(args.dataset, file_data_set, args.query_key, args.retriever)
-    belief_config = build_belief_config_name(belief_mode=args.belief_mode)
+    belief_config = build_belief_config_name(
+        args.belief_mode, effective_criteria_source(args.criteria_source, args.dataset))
     return Path(args.output) / dataset_dir / run_name / belief_config
 
 

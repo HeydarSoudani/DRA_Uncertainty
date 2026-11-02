@@ -5,7 +5,8 @@ trained, here with the agent frozen.  It is one model with two calls: init
 f(query) -> the criteria, then every step the update
 b_t = f(query, b_{t-1}, o_t) -> their statuses (retriever side) and whether
 the agent's turn used what raised them (reasoner side).  Training uses only
-the queries with gold criteria (the pool's gold/ids_{split}.txt).  One
+the queries with gold criteria (each query's ``split`` in the pool's
+queries file).  One
 phase per call (``--phase N``):
 
     1  dra_inference with the frozen agent on     run_outputs/ (dra_inference layout)

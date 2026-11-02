@@ -5,12 +5,12 @@
     2  fetch every gold page from its source (Wikipedia API, live web or the
        Wayback Machine), then Filter A (``filters.py``): keep a question when
        every gold page was fetched or, with web gold pages, at least
-       ``pages.min_page_share`` of them; write the kept questions, the qrels
-       of their fetched gold pages in the canonical layout, their gold
-       annotation (``annotations.py``: the step 1 skeletons with the fetched
-       documents, the criterion texts by an LLM, ``gold_criteria.py``), and
-       the corpus (``corpus.py``: those pages and the hard negatives of
-       step 3)
+       ``pages.min_page_share`` of them; write the kept questions, one row
+       each with its split and gold annotation (``annotations.py``: the
+       step 1 skeletons with the fetched documents, the criterion texts by
+       an LLM, ``gold_criteria.py``; the split, ``splits.py``), the qrels of
+       their fetched gold pages in the canonical layout, and the corpus
+       (``corpus.py``: those pages and the hard negatives of step 3)
     3  hard negatives of the Wikipedia gold pages (``negatives.py``)
     4  stats of the dataset as written (queries, qrels, corpus) per source,
        the hard negatives, the gold annotation (levels, criteria with
@@ -23,8 +23,7 @@ takes the next ``limit`` of the others (of ``sources`` only, when given;
 otherwise in step 1 order).  Transient failures (transport errors, HTTP 429 /
 5xx) leave a question unprocessed, so a later run retries it, up to
 ``filters.MAX_ATTEMPTS`` fetches of the page.  The dataset files are
-rewritten after every run from all the processed questions, then split into
-sft / rl / val (``splits.py``).  The page settings that decide a question's
+rewritten after every run from all the processed questions.  The page settings that decide a question's
 verdict (``PAGE_SETTINGS``) must stay those of the earlier runs.
 """
 
@@ -46,14 +45,14 @@ from utils.io_utils import atomic_write_text, drop_partial_line, iter_jsonl, rea
 
 from . import annotations
 from .config import PoolConfig, PoolPaths, require_contact
-from .gold_criteria import check_writer, fill_texts
+from .gold_criteria import check_writer, fill_texts, require_api_key
 from .corpus import read_negatives, write_corpus
 from .filters import failed_pages, failed_transiently, filter_a, is_transient, type_filter, verdict
 from .http_client import HttpClient, error_text, failure_status
 from .sources import LOADERS
-from .splits import check_shares, write_splits
+from .splits import check_shares, split_rows
 from .stats import (annotation_stats, dataset_stats, drop_stats, format_annotation_table, format_dataset_table,
-                    page_stats, question_stats, read_stats, write_stats)
+                    page_stats, question_stats, read_stats, write_annotation_stats, write_stats)
 from .web_pages import WebFetcher
 from .wikipedia_api import WikipediaClient, html_to_text
 
@@ -387,28 +386,23 @@ def _fetch(todo: List[dict], golds: Dict[str, dict], store: PageStore, cfg: Pool
 
 def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: PoolPaths,
                    cfg: PoolConfig) -> Tuple[List[dict], int, int]:
-    """The gold annotation of the kept questions (``annotations.row``) with
-    its criterion texts (``gold_criteria.fill_texts``) first, then the files,
-    each replaced atomically: the questions (queries), their fetched gold
-    pages (binary qrels) in the canonical layout, the annotation, and the
-    corpus (``corpus.write_corpus``: those pages and their hard negatives);
-    returns the annotation rows and the numbers of gold pages and hard
-    negatives in the corpus."""
+    """The rows of the kept questions (``annotations.row``) with their
+    criterion texts (``gold_criteria.fill_texts``) and split
+    (``splits.split_rows``) first, then the files, each replaced
+    atomically: the rows (queries), their fetched gold pages (binary qrels)
+    in the canonical layout, and the corpus (``corpus.write_corpus``: those
+    pages and their hard negatives); returns the rows and the numbers of
+    gold pages and hard negatives in the corpus."""
     rows = [annotations.row(r, pages) for r in records]
     annotations.check(rows)
-    rows = fill_texts(cfg.gold_criteria, paths, rows)
-    write_jsonl(paths.queries, ({"id": r["id"], "text": r["question"], "answer": r["answer"], "source": r["source"]}
-                                for r in records))
+    rows = split_rows(paths, cfg.split, fill_texts(cfg.gold_criteria, paths, rows))
+    annotations.write(paths.queries, rows)
+    atomic_write_text(paths.qrels, "".join(f"{row['id']} 0 {doc_id} 1\n" for row in rows for doc_id in row["doc_ids"]))
     gold_urls: Dict[str, str] = {}
-    qrels = []
     for record in records:
-        fetched = [pages[g["key"]] for g in record["gold"] if pages[g["key"]]["status"] == "ok"]
-        for doc_id in dict.fromkeys(page["doc_id"] for page in fetched):
-            qrels.append(f"{record['id']} 0 {doc_id} 1\n")
-        for page in fetched:
-            gold_urls.setdefault(page["doc_id"], page["url"])
-    atomic_write_text(paths.qrels, "".join(qrels))
-    annotations.write(paths.annotations(paths.split), rows)
+        for g in record["gold"]:
+            if pages[g["key"]]["status"] == "ok":
+                gold_urls.setdefault(pages[g["key"]]["doc_id"], pages[g["key"]]["url"])
     return (rows, *write_corpus(paths, gold_urls))
 
 
@@ -457,6 +451,9 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
         todo = todo[:limit]
         print(f"[step 2] this run: the next {len(todo)} questions (--limit {limit})"
               + ("; no fetch, the dataset files are rewritten" if not todo else ""))
+    if todo:
+        # Before the fetch: the new questions get their texts at the end of the run.
+        require_api_key(cfg.gold_criteria, "the criterion texts of the new questions")
     golds: Dict[str, dict] = {}
     for record in todo:
         for gold in record["gold"]:
@@ -478,9 +475,9 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     partial = [p for p in partial if p["reasons"]]
     rows, n_docs, n_negatives = _write_dataset(kept, pages, paths, cfg)
     _write_dropped(paths, 2, dropped)
+    write_annotation_stats(paths, cfg.gold_criteria, rows)
     write_stats(paths.stats, "step2", {
         "config": config,
-        "annotations": annotation_stats(rows),
         "questions": {"candidates": len(records), "processed": len(done),
                       "remaining": len(records) - len(done)},
         "pages": page_stats(pages.values()), "kept": question_stats(kept), "corpus_docs": n_docs,
@@ -492,7 +489,6 @@ def run_step2(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
     print(f"[step 2] dataset: {len(kept)} kept of {len(done)} processed questions "
           f"({len(partial)} with failed gold pages, {len(records) - len(done)} remaining), "
           f"{n_docs} gold pages + {n_negatives} hard negatives (step 3) in the corpus -> {paths.root}")
-    write_splits(paths, cfg.split)
 
 
 # ── Step 4 ──────────────────────────────────────────────────────────────────
@@ -506,9 +502,10 @@ def _read_ids(path: Path) -> List[str]:
 
 def run_step4(paths: PoolPaths) -> None:
     """Stats of the dataset as written by steps 2 and 3 (queries, qrels,
-    corpus, hard negatives, gold annotation): printed as tables and saved as
-    the ``step4`` section of ``stats.json``."""
-    for path in (paths.questions, paths.queries, paths.qrels, paths.corpus, paths.annotations(paths.split)):
+    corpus, hard negatives): printed as a table and saved as the ``step4``
+    section of ``stats.json``; the gold annotation of the rows is printed
+    only (step 2 saves it, in the ``annotations`` section)."""
+    for path in (paths.questions, paths.queries, paths.qrels, paths.corpus):
         if not path.exists():
             raise SystemExit(f"{path} not found: run steps 1 and 2 first")
     qrels: Dict[str, List[str]] = {}
@@ -522,7 +519,7 @@ def run_step4(paths: PoolPaths) -> None:
     queries = read_jsonl(paths.queries)
     stats = dataset_stats(read_jsonl(paths.questions), queries, qrels, doc_words, dropped,
                           _read_ids(paths.ids_hard_negative), read_negatives(paths))
-    stats["annotations"] = annotation_stats(read_jsonl(paths.annotations(paths.split)), [q["id"] for q in queries])
+    annotation = annotation_stats(queries)
     write_stats(paths.stats, "step4", stats)
     print(f"[step 4] dataset {paths.root}\n\n{format_dataset_table(stats)}\n\n"
-          f"gold annotation\n\n{format_annotation_table(stats['annotations'])}\n")
+          f"gold annotation\n\n{format_annotation_table(annotation)}\n")

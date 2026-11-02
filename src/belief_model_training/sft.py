@@ -31,8 +31,9 @@ Multi-GPU: launch with ``torchrun --nproc_per_node N`` (data parallel; the
 effective batch is per_device_batch_size x gradient_accumulation_steps x N).
 
 The teacher is scored on the sft and val episodes before training
-(``scoring.assess``: coverage against ``recall_so_far``, its ``utilized``
-judgments against the gold, the final confidence against correctness),
+(``scoring.assess``: coverage against ``recall_so_far``, its answer
+candidates against the gold intermediate answers, the final confidence
+against correctness),
 so its quality is known: SFT copies its errors.
 
 Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, qid,
@@ -60,7 +61,7 @@ from .config import RunPaths, TrainingConfig
 from .episodes import DocumentStore, Episode, replay_teacher, teacher_init_call
 from belief_model_component.criteria import GOLD_CRITERIA_MODEL
 
-from .runs import check_same_settings, load_episodes
+from .runs import candidate_gold, check_same_settings, load_episodes
 from .scoring import assess
 
 logger = logging.getLogger(__name__)
@@ -173,7 +174,7 @@ def build_samples(cfg: TrainingConfig, paths: RunPaths) -> None:
             episodes.append(episode)
         print(f"[phase 2] {name}: {dict(counts)}")
     write_jsonl(paths.sft_samples, rows)
-    scores = assess(episodes)
+    scores = assess(episodes, candidate_gold(cfg))
     paths.teacher_scores_file.write_text(json.dumps(scores, indent=2) + "\n")
     print(f"[phase 2] teacher on {len(episodes)} sft + val episodes: "
           f"{json.dumps({k: round(v, 3) for k, v in scores.items()})}")

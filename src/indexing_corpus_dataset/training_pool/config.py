@@ -5,8 +5,8 @@ paths.  The sources and the dropped question types of step 1 are fixed
 (``sources.py``, ``filters.py``).
 
 The YAML file (``experiments/configs/build_training_pool.yaml``) has the same
-sections and keys as the dataclasses below; the CLI flags override it.  An
-unknown section or key is an error.
+sections and keys as the dataclasses below (the CLI flags ``--limit`` and
+``--source`` are not settings).  An unknown section or key is an error.
 """
 
 import dataclasses
@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from utils.sectioned_config import load_sectioned
 from indexing_corpus_dataset.layout import (BUILT_DATASETS, POOL_ALL_SPLIT, POOL_SPLITS, TRAINING_POOL_ROOT, corpus_path,
-                                            gold_annotation_path, qrels_base, queries_base)
+                                            qrels_base, queries_base)
 
 
 @dataclass
@@ -124,10 +124,9 @@ def require_contact(cfg: PoolConfig, step: int) -> None:
                          "as the Wikimedia User-Agent policy asks): DRA_CONTACT in .env or shared.contact in the config")
 
 
-def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> PoolConfig:
-    """The config of *path* (YAML; None = the defaults) with *overrides*
-    (``{"section.key": value}``) applied."""
-    cfg = load_sectioned(PoolConfig(), SECTIONS, path, overrides)
+def load_config(path: Optional[str]) -> PoolConfig:
+    """The config of *path* (YAML; None = the defaults)."""
+    cfg = load_sectioned(PoolConfig(), SECTIONS, path, None)
     if not cfg.shared.contact:
         cfg.shared.contact = os.environ.get("DRA_CONTACT") or None
     shares = cfg.split.shares()
@@ -152,7 +151,8 @@ class PoolPaths:
     """The files of a build under ``TRAINING_POOL_ROOT/{pool}``
     (data/training_pool/{pool} of the repo): the dataset in the canonical layout
     (``layout.py``; ``queries``, ``qrels`` are split ``all``, every query of
-    the pool) and, next to it, the step files of deep_qa."""
+    the pool, one row per query with its split and gold annotation,
+    ``annotations.py``) and, next to it, the build files."""
 
     def __init__(self, pool: str = "deep_qa"):
         self.root = TRAINING_POOL_ROOT / pool
@@ -167,34 +167,6 @@ class PoolPaths:
     @property
     def qrels(self) -> Path:
         return qrels_base(self.root, self.split).with_suffix(".txt")
-
-    def split_queries(self, split: str) -> Path:
-        return queries_base(self.root, split).with_suffix(".jsonl")
-
-    def split_info(self, split: str) -> Path:
-        """The intermediate info of *split* (trqa_validation only)."""
-        base = queries_base(self.root, split)
-        return base.with_name(f"{base.name}_intermediate_info.jsonl")
-
-    def split_qrels(self, split: str) -> Path:
-        return qrels_base(self.root, split).with_suffix(".txt")
-
-    def annotations(self, split: str) -> Path:
-        """The gold annotation of *split*, one row per query with its
-        criterion texts (``annotations.py``; deep_qa step 2, the
-        trqa_validation build)."""
-        return gold_annotation_path(self.root, split)
-
-    def gold_ids(self, split: str) -> Path:
-        """The ids of the queries of *split* with criteria and their texts
-        (``texts_ok``): dra_inference's ``--query-ids-file`` in training."""
-        return self.annotations(split).with_name(f"ids_{split}.txt")
-
-    @property
-    def texts(self) -> Path:
-        """The memory of the criterion texts: one row per query whose texts
-        are final, appended as the writer finishes them (``gold_criteria.py``)."""
-        return self.annotations(self.split).with_name("texts.jsonl")
 
     @property
     def corpus(self) -> Path:
@@ -214,7 +186,13 @@ class PoolPaths:
         one per line."""
         return self.root / "corpus" / "ids_hard_negative.txt"
 
-    # ── Step files ──────────────────────────────────────────────────────────
+    # ── Build files ─────────────────────────────────────────────────────────
+
+    @property
+    def texts(self) -> Path:
+        """The memory of the criterion texts: one row per query whose texts
+        are final, appended as the writer finishes them (``gold_criteria.py``)."""
+        return self.root / "criterion_texts.jsonl"
 
     @property
     def questions(self) -> Path:
@@ -230,8 +208,9 @@ class PoolPaths:
     @property
     def stats(self) -> Path:
         """One section per step (``step1`` ... ``step4``; trqa_validation:
-        ``build``) and the
-        ``split`` section (shares and per-split counts, ``splits.py``)."""
+        ``build``), the ``annotations`` section (annotation stats and the
+        writer of the texts) and the ``split`` section (shares and per-split
+        counts, ``splits.py``)."""
         return self.root / "stats.json"
 
     @property

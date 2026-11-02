@@ -11,19 +11,20 @@ retriever, whose encoder gives the novelty embeddings) are in the run's
 ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 17::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 19::
 
-    line 1  {"record": "meta", "schema_version": 17, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 19, "query_id": "q1", "question": "...",
              "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "set", "errors": [], "bank": "hit"},
              "final_belief": ["almost certain", "unknown", ...],
-             "final_utilized": [3, 0, ...], "final_utilization": 0.75,
+             "final_candidates": [[{"value": "Osby", "status": "certain"}], [], ...],
+             "final_reasoning_confidence": 0.5,
              "final_criteria_attempts": [2, 0, ...],
              "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "almost certain",
                                     "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
                                                   "spans": ["..."], "span_verified": [true]}]}, ...],
-             "final_update": {"agent_turn": "...", "utilized_updates": [...],
+             "final_update": {"agent_turn": "...", "candidate_updates": [...],
                               "belief_updater_output": "...", "errors": []} | null}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
@@ -32,21 +33,21 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 17::
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
-             "utilization": 1.0,
+             "reasoning_confidence": 0.3333,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
                           "target_scores": [1.0, 0.5, ...]}],
              "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
              "belief_before": ["unknown", ...], "belief_after": ["almost certain", ...],
              "criteria_sources_after": [1, 0, ...],
-             "utilized_before": [0, 0, ...], "utilized_after": [0, 0, ...],
+             "candidates_before": [[], ...], "candidates_after": [[{"value": "Osby", "status": "unknown"}], ...],
              "criteria_targeted": ["c1"], "criteria_attempts_after": [1, 0, ...],
              "criteria_updates": [{"id": "c1", "from": "unknown", "to": "almost certain",
                                    "written": "almost certain", "support": [{"doc_id": "d1", ...}],
                                    "contradict": [], "reason": "...", "note": ""}, ...],
-             "utilized_updates": [{"id": "c2", "from": "unknown", "to": "probable", "step": 0,
-                                   "rise": 2, "utilized": true, "span": "...",
-                                   "span_verified": true, "reason": "...", "note": ""}],
+             "candidate_updates": [{"id": "c1", "before": [], "after": [{"value": "Osby", "status": "unknown"}],
+                                    "written": [{"value": "Osby", "status": "unknown", "anchored": true}],
+                                    "reason": "...", "note": ""}],
              "agent_turn": "Reasoning: ... Search queries: ...",
              "belief_updater_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
@@ -101,7 +102,24 @@ raised criteria in the previous call (``utilized_updates``); per
 criterion, ``utilized_before`` / ``utilized_after`` sum the used gains and
 ``utilization`` is the used share of the judged gains; the meta line adds
 ``final_utilized``, ``final_utilization`` and ``final_update`` (the rises of
-the last step judged against the answer turn).
+the last step judged against the answer turn).  schema_version 18
+replaces the use judgments with answer candidates: per criterion, the
+answers the agent considers for it (from its memory or the passages), each
+with a belief status read as how likely it is correct, rewritten by the
+updater call of every step from the step's ``agent_turn``
+(``candidate_updates``; ``candidates_before`` / ``candidates_after``), and
+``reasoning_confidence`` (mean top-candidate probability) in place of
+``utilization``; the meta line has ``final_candidates`` and
+``final_reasoning_confidence`` in place of ``final_utilized`` and
+``final_utilization``, and ``final_update`` reads the answer turn whenever
+there is one.  schema_version 19 aligns the criteria of a set query
+with the gold criteria of the training pools (members, the rest
+criterion, then the aggregate: how the answer follows from the members'
+values; no "complete list" criterion); the aggregate has answer
+candidates only, so its status is null in ``belief_before`` /
+``belief_after`` / ``final_belief`` and its ``criteria_updates`` record
+has ``from`` / ``to`` null; ``reasoning_confidence`` leaves out the rest
+criterion.
 ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
@@ -117,7 +135,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

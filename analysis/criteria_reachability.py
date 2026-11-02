@@ -31,8 +31,9 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
   (:func:`evaluation.gold.match_entities`), then one LLM call per request
   for the entities and member criteria left unmatched, for aliases, other
   spellings and transliterations (:class:`evaluation.gold.LLMEntityMatcher`).
-  The set criterion and the rest criterion ("any other member: ...") are
-  left out: they cover every member by construction.  Reachability is the
+  The rest criterion ("any other member: ...") and the aggregate (and,
+  in banks of schema 18 and before, the set criterion) are left out: they
+  cover every member by construction.  Reachability is the
   share of reachable gold entities; the share of member criteria that name
   a gold entity (``member_precision``) is a secondary diagnostic.
 
@@ -479,7 +480,8 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
 # ---------------------------------------------------------------------------
 
 def members_of(criteria: List[Dict]) -> List[Dict]:
-    """The member criteria: not the set criterion nor the rest criterion."""
+    """The member criteria (closed): not the rest criterion, the aggregate
+    or an older bank's set criterion."""
     return [c for c in criteria if c.get("kind", CLOSED) == CLOSED]
 
 
@@ -597,7 +599,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "config": args.config,
             "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria, "criteria_bank": str(source.path),
             "judge_model": args.judge_model, "judge_prompt": ENTITY_MATCH_PROMPT_HASH,
-            "criteria_matched": "member criteria (not the set and rest criteria)",
+            "criteria_matched": "member criteria (not the rest and aggregate criteria)",
         },
         "counts": {
             "requests": len(records),

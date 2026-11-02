@@ -3,7 +3,7 @@
 Phase 1 runs ``experiments/inference/dra_inference.py`` on one split of the
 training pool, with the standard output layout:
 
-    {inference_output}/{dataset}_{split}_{retriever}/{agent dir}/belief-{mode}/
+    {inference_output}/{dataset}_{split}_{retriever}/{agent dir}/belief-{mode}[-gold]/
 
     split  mode      used by
     sft    monitor   phase 2 (SFT samples, teacher scores)
@@ -13,11 +13,14 @@ training pool, with the standard output layout:
 ``load_episodes`` gives the episodes of a split's run: the trajectories
 (``episodes.read_episode``), the gold of the qrels (``annotate_gold``), the
 correctness of the run's ``accuracy.jsonl`` and the pool's gold criteria
-(``gold_criteria``; a query without criteria or whose texts failed is left
-out: training uses only queries with gold criteria) with the gold of the reasoner side
-(``utilized_gold.annotate_utilized``); with ``teacher``, also the
+(``gold_criteria``; training uses only the queries with the full gold
+annotation and criterion texts: the out-of-domain queries of ``val``, whose
+criteria the teacher wrote, are for evaluation and left out, as is a query
+whose texts failed) with the gold of the reasoner side
+(``candidate_gold.annotate_stated``); with ``teacher``, also the
 teacher's view (``attach_teacher``), after checking that the run's belief
-model is the teacher on the gold criteria.  Phase 2 replays the teacher
+model is the teacher on the gold criteria, and the gold of the teacher's
+answer candidates (``candidate_gold``).  Phase 2 replays the teacher
 (``replay_teacher``).
 
 ``check_same_settings`` checks that the runs a phase reads share their agent
@@ -34,15 +37,16 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from indexing_corpus_dataset.dataset_loaders import load_split
-from indexing_corpus_dataset.layout import DATASET_SPECS, dataset_root, gold_criteria_path
+from indexing_corpus_dataset.layout import DATASET_SPECS, GOLD_CRITERIA, dataset_root, gold_criteria_path
 from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
-from belief_model_component.criteria import GOLD_CRITERIA_MODEL
+from belief_model_component.criteria import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL
 
 from .config import RunPaths, Split, TrainingConfig
 from .episodes import Episode, annotate_gold, attach_teacher, read_episode
-from .utilized_gold import UtilizedJudge, annotate_utilized
+from .scoring import teacher_candidate_values
+from .candidate_gold import AnswerJudge, CandidateGold, annotate_stated
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +82,8 @@ def find_run(cfg: TrainingConfig, split: Split) -> Tuple[Path, Dict]:
         split.dataset, split.split_id, DATASET_SPECS[split.dataset].query_key, cfg.shared.retriever,
     )
     root = cfg.inference_output / dataset_dir
-    belief_dir = build_belief_config_name(belief_mode=SPLIT_MODE[split.subset])
+    # The monitor runs use the gold criteria (``-gold``); the off run has none.
+    belief_dir = build_belief_config_name(SPLIT_MODE[split.subset], GOLD_CRITERIA)
     key = (root, belief_dir, cfg.shared.policy_model)
     if key not in _RUNS:
         configs = [(d, run_config(d)) for d in sorted(root.glob(f"*/{belief_dir}")) if (d / "run_config.json").exists()]
@@ -119,37 +124,53 @@ def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
     """The run's updater model is *teacher*, on the gold criteria."""
     belief = config["belief_model"]
     judge = belief.get("belief_judge_model")
-    if judge != teacher or not belief.get("gold_criteria"):
-        raise SystemExit(f"{run_dir}: updater {judge!r}, gold criteria {belief.get('gold_criteria')!r}; expected "
+    source = belief.get("criteria_source_effective")
+    if judge != teacher or source != GOLD_CRITERIA:
+        raise SystemExit(f"{run_dir}: updater {judge!r}, criteria source {source!r}; expected "
                          f"the teacher {teacher!r} (trajectories.teacher_belief_model) on the gold criteria")
 
 
-def read_gold_criteria(split: Split) -> Dict[str, Dict]:
-    """The gold criteria rows of the queries of *split* that have criteria
-    with texts (``texts_ok``), by query id (``layout.gold_criteria_path``)."""
-    path = gold_criteria_path(split.dataset, split.split_id)
+def read_gold_criteria(split: Split) -> Tuple[Dict[str, Dict], Set[str]]:
+    """The gold criteria rows of the queries of *split* with the full
+    annotation and criteria with texts (``texts_ok``), by query id
+    (``layout.gold_criteria_path``: the pool's rows with that ``split``),
+    and the ids of the out-of-domain queries (not full)."""
+    path = gold_criteria_path(split.dataset)
     if not path.exists():
         raise SystemExit(f"{path} not found: build the pool (build_training_pool.py: deep_qa step 2, or trqa_validation)")
-    out = {}
+    out, ood = {}, set()
     for line in path.read_text().splitlines():
         row = json.loads(line) if line.strip() else None
-        if row and row.get("texts_ok") and row.get("criteria"):
+        if not row or row.get("split") != split.split_id:
+            continue
+        if row.get("level") != GOLD_CRITERIA_LEVEL:
+            ood.add(str(row["id"]))
+        elif row.get("texts_ok") and row.get("criteria"):
             out[str(row["id"])] = row
-    return out
+    return out, ood
 
 
-_JUDGES: Dict[str, UtilizedJudge] = {}
+_JUDGES: Dict[str, AnswerJudge] = {}
+_GOLD: Dict[Optional[str], CandidateGold] = {}
 
 
-def utilized_judge(cfg: TrainingConfig) -> Optional[UtilizedJudge]:
-    """The judge of the gold of the reasoner side (``rl.utilized_judge_model``;
+def answer_judge(cfg: TrainingConfig) -> Optional[AnswerJudge]:
+    """The judge of the gold of the reasoner side (``rl.answer_judge_model``;
     None: matching only), its cache under the training run."""
-    model = cfg.rl.utilized_judge_model
+    model = cfg.rl.answer_judge_model
     if not model:
         return None
     if model not in _JUDGES:
-        _JUDGES[model] = UtilizedJudge(model, RunPaths(cfg).root / "utilized_gold.jsonl")
+        _JUDGES[model] = AnswerJudge(model, RunPaths(cfg).root / "answer_gold.jsonl")
     return _JUDGES[model]
+
+
+def candidate_gold(cfg: TrainingConfig) -> CandidateGold:
+    """The gold of the answer candidates, one per judge model."""
+    model = cfg.rl.answer_judge_model or None
+    if model not in _GOLD:
+        _GOLD[model] = CandidateGold(answer_judge(cfg))
+    return _GOLD[model]
 
 
 def split_gold(split: Split, config: Dict) -> Dict[str, Set[str]]:
@@ -196,7 +217,7 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         check_teacher(run_dir, config, cfg.trajectories.teacher_belief_model)
     max_criteria = criteria_cap(cfg, split)
     gold = split_gold(split, config)
-    gold_criteria = read_gold_criteria(split)
+    gold_criteria, ood = read_gold_criteria(split)
     correctness = read_correctness(run_dir)
     # Finished as dra_inference counts them (with the belief file when the belief model is on).
     finished, _ = scan_queries(run_dir, require_belief=mode != "off")
@@ -204,7 +225,7 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
     counts: Counter = Counter()
     for qid in gold:
         if qid not in gold_criteria:
-            counts["no_gold_criteria"] += 1
+            counts["out_of_domain" if qid in ood else "no_gold_criteria"] += 1
             continue
         episode = read_episode(run_dir / "trajectory" / f"{qid}.jsonl", split, run_dir) if qid in finished else None
         if episode is None:
@@ -213,7 +234,9 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         episode.policy_model = cfg.shared.policy_model
         episode.max_criteria = max_criteria
         episode.gold_criteria = gold_criteria[qid]["criteria"]
+        episode.source = gold_criteria[qid]["source"]
         episode.gold_names = gold_criteria[qid]["entity_names"]
+        episode.gold_members = gold_criteria[qid]["members"]
         if teacher:
             reason = attach_teacher(episode, run_dir / "belief" / f"{qid}.jsonl")
             if reason is None and episode.criteria_model != GOLD_CRITERIA_MODEL:
@@ -233,7 +256,11 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         episode.correct = correctness.get(qid)
         episodes.append(episode)
     print(f"{tag} {split.name} ({run_dir}): {len(gold)} queries, {dict(counts)}")
-    print(f"{tag} {split.name}: gold of the reasoner side {annotate_utilized(episodes, utilized_judge(cfg))}")
+    print(f"{tag} {split.name}: gold answers stated by the agent turns {annotate_stated(episodes, answer_judge(cfg))}")
+    if teacher:
+        counts = candidate_gold(cfg).resolve(
+            [(ep, cid, value) for ep in episodes for cid, value in teacher_candidate_values(ep)])
+        print(f"{tag} {split.name}: gold of the teacher's answer candidates {counts}")
     if counts["not_evaluated"]:
         logger.warning("%s %s: %d episodes have no verdict in %s/accuracy.jsonl (the run stopped before its "
                        "evaluation?); rerun dra_inference with --eval-only to judge them",

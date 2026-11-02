@@ -5,10 +5,10 @@
   criterion's status and evidence) plus the step's passages not judged
   before, and updates the criteria they support, contradict or relate to:
   the passages that support or contradict each one and its new status.
-  ``BeliefState.update`` takes the statuses as written.  When criteria rose
-  in the previous call, the observation also holds the agent's turn after
-  it, and the call judges whether the turn used what raised each
-  (``BeliefState.judge``).
+  ``BeliefState.update`` takes the statuses as written.  The observation
+  also holds the agent's turn of the step, and the call rewrites the answer
+  candidates of the criteria whose candidates change
+  (``BeliefState.revise``).
 - ``LLMQueryScorer``: one call per step scores how strongly each query
   targets each criterion (0, 0.5 or 1), given a short summary of the
   belief; used for the targeting state a.
@@ -27,17 +27,19 @@ from utils.text_utils import doc_id as _doc_id, doc_text, parse_json_object
 
 from .criteria import BeliefState
 from .prompts import (
+    CRITERIA_UPDATE_CANDIDATES_INSTRUCTION,
     CRITERIA_UPDATE_INSTRUCTION,
     CRITERIA_UPDATE_NO_PASSAGES,
     CRITERIA_UPDATE_PASSAGE_TEMPLATE,
-    CRITERIA_UPDATE_RISES_INSTRUCTION,
-    CRITERIA_UPDATE_RISES_TEMPLATE,
     CRITERIA_UPDATE_SYSTEMS,
+    CRITERIA_UPDATE_TURN_TEMPLATE,
     CRITERIA_UPDATE_USER_TEMPLATE,
     QUERY_TARGETING_SYSTEM,
     QUERY_TARGETING_USER_TEMPLATE,
 )
-from .types import MULTI_ASPECT, QUERY_SHAPES, SINGLE_TARGET, CriterionUpdate, Evidence, UtilizedJudgment, parse_status
+from .types import (
+    MULTI_ASPECT, QUERY_SHAPES, SET, SINGLE_TARGET, Candidate, CandidateUpdate, CriterionUpdate, Evidence, parse_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,12 @@ logger = logging.getLogger(__name__)
 # document (multi-aspect query) is shown whole.  Shared with belief model
 # training, which rebuilds the updater prompts.
 SHORT_ANSWER_PASSAGE_CHARS = 3000
+
+# Output tokens of one updater call; a set query (up to ~50 member criteria,
+# each with its candidates) gets more, since a reply cut at the limit
+# cannot be parsed and the whole step is lost.
+DEFAULT_MAX_TOKENS = 8192
+SET_MAX_TOKENS = 16384
 
 
 def _cut(text: str, max_chars: Optional[int]) -> str:
@@ -56,12 +64,20 @@ def _quote(spans: List[str]) -> str:
     return " | ".join(f'"{s}"' for s in spans)
 
 
+# How the prompts show the status of a criterion without one (an aggregate).
+NO_STATUS = "no status"
+
+
+def _status_text(status: Optional[str]) -> str:
+    return status if status is not None else NO_STATUS
+
+
 def format_state_summary(state: BeliefState) -> str:
     """Per criterion, its status and the verified spans of its latest
     evidence passage that has any."""
     blocks = []
     for k, c in enumerate(state.criteria):
-        lines = [f"{c.id} [{state.statuses[k]}]: {c.text}"]
+        lines = [f"{c.id} [{_status_text(state.statuses[k])}]: {c.text}"]
         latest = next((e for e in reversed(state.attached(k)) if e.verified_spans), None)
         if latest is not None:
             lines.append(f"  evidence ({latest.role}): {_quote(latest.verified_spans)}")
@@ -112,15 +128,19 @@ def passage_title(text: str, max_chars: int = 120) -> str:
 # ---------------------------------------------------------------------------
 
 def _parse_reply(raw: str) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
-    """The updater's lists ``(updates, utilized)``; ``updates`` is None when
-    *raw* has none, ``utilized`` None when it has no ``utilized`` list.
-    Besides ``{"updates": [...], "utilized": [...]}``, a bare list (the
-    updates without their key) is accepted."""
+    """The updater's lists ``(updates, candidates)``; ``updates`` is None
+    when *raw* has none, ``candidates`` None when it has no ``candidates``
+    list.  Besides ``{"updates": [...], "candidates": [...]}``, a bare list
+    (the updates without their key) is accepted, and an object with
+    ``candidates`` only (no criterion to update, e.g. a call without new
+    passages) has no updates: ``[]``."""
     data = parse_json_object(raw)
     if data is not None:
         updates = data["updates"] if isinstance(data.get("updates"), list) else None
-        utilized = data["utilized"] if isinstance(data.get("utilized"), list) else None
-        return updates, utilized
+        candidates = data["candidates"] if isinstance(data.get("candidates"), list) else None
+        if updates is None and candidates is not None:
+            updates = []
+        return updates, candidates
     text = raw.strip()
     fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
     if fence:
@@ -132,11 +152,14 @@ def _parse_reply(raw: str) -> Tuple[Optional[List[Any]], Optional[List[Any]]]:
     return (items, None) if isinstance(items, list) else (None, None)
 
 
-def _parse_bool(value: Any) -> Optional[bool]:
-    if isinstance(value, bool):
-        return value
-    key = str(value or "").strip().lower()
-    return {"true": True, "yes": True, "false": False, "no": False}.get(key)
+def _candidates(items: Any) -> List[Candidate]:
+    """The candidates of one criterion as written (``{value, status}``
+    objects; others skipped)."""
+    out = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and str(item.get("value") or "").strip():
+            out.append(Candidate(value=str(item["value"]).strip(), status=parse_status(item.get("status"))))
+    return out
 
 
 class LLMBeliefUpdater:
@@ -149,9 +172,10 @@ class LLMBeliefUpdater:
     seen in earlier steps (``max_passage_chars`` each).  The updater gives a
     new status, with the passages that support or contradict it, only to
     the criteria those passages support, contradict or relate to (both
-    lists may be empty).  When criteria rose in the previous call, the
-    prompt also shows those rises and the agent's turn after them, and the
-    updater judges each rise utilized or not.  It never sees the signals.
+    lists may be empty).  Except for a report query (multi-aspect), each
+    criterion is also shown with its answer candidates, the prompt shows the
+    agent's turn of the step, and the updater rewrites the candidate list of
+    each criterion whose candidates change.  It never sees the signals.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
@@ -163,7 +187,9 @@ class LLMBeliefUpdater:
             shows the whole passage.
         max_evidence_per_criterion: Attached evidence passages shown per
             criterion (the most recent).
-        max_tokens / temperature: LLM call settings.
+        max_tokens / temperature: LLM call settings (``build_belief_judges``
+            gives a set query ``SET_MAX_TOKENS``: its many member criteria
+            and candidate lists make long replies).
         parse_retries: Extra calls when the output cannot be parsed; each
             failed attempt is recorded in the step's errors.
     """
@@ -175,7 +201,7 @@ class LLMBeliefUpdater:
         query_shape: str = SINGLE_TARGET,
         max_passage_chars: Optional[int] = SHORT_ANSWER_PASSAGE_CHARS,
         max_evidence_per_criterion: int = 4,
-        max_tokens: int = 8192,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         temperature: float = 0.0,
         parse_retries: int = 1,
     ) -> None:
@@ -184,6 +210,7 @@ class LLMBeliefUpdater:
         self._llm = llm_client
         self.name = f"llm:{model_name}"
         self._system = CRITERIA_UPDATE_SYSTEMS[query_shape]
+        self.candidates = query_shape != MULTI_ASPECT
         self._parse_retries = parse_retries
         self._max_passage_chars = max_passage_chars
         self._max_evidence = max_evidence_per_criterion
@@ -193,13 +220,16 @@ class LLMBeliefUpdater:
     def _format_belief(self, state: BeliefState) -> str:
         lines = []
         for k, c in enumerate(state.criteria):
-            lines.append(f"{c.id} [{state.statuses[k]}]: {c.text}")
+            lines.append(f"{c.id} [{_status_text(state.statuses[k])}]: {c.text}")
             for e in state.attached(k, self._max_evidence):
                 title = f" ({e.title})" if e.title else ""
                 lines.append(f"  - {e.role}: {_quote(e.verified_spans)}{title}")
             hidden = len(state.attached(k)) - self._max_evidence
             if hidden > 0:
                 lines.append(f"  - and {hidden} earlier evidence passages")
+            if self.candidates:
+                cands = "; ".join(f'"{c.value}" [{c.status}]' for c in state.candidates[k])
+                lines.append(f"  - candidates: {cands or '(none)'}")
         return "\n".join(lines)
 
     def _evidence(self, items: Any, docs: List[Dict[str, Any]], texts: List[str],
@@ -232,51 +262,44 @@ class LLMBeliefUpdater:
                     ev.span_verified.append(matched is not None)
         return list(out.values())
 
-    @staticmethod
-    def _format_rises(state: BeliefState) -> str:
-        lines = []
-        for p in state.pending:
-            spans = "; ".join(f"{_quote(spans)}" + (f" ({title})" if title else "") for spans, title in p["spans"])
-            lines.append(f"{p['id']} [{p['from']} -> {p['to']}]: {spans or '(no verified span)'}")
-        return "\n".join(lines)
-
     def prompt(
         self, query: str, state: BeliefState, docs: List[Dict[str, Any]], agent_turn: Optional[str] = None,
     ) -> Tuple[Optional[List[Dict[str, str]]], List[Dict[str, Any]], List[str]]:
         """Return ``(messages, kept, errors)`` of one step's call: *kept* are
-        the documents with text, numbered as passages in that order.  With
-        rises pending in *state* and the agent's turn after them
-        (*agent_turn*), the call also judges them.  *messages* is None when
-        there is nothing to do: no document with text and no rise to judge."""
+        the documents with text, numbered as passages in that order.  The
+        agent's turn of the step (*agent_turn*) is shown when the query has
+        answer candidates.  *messages* is None when there is nothing to do:
+        no document with text and no turn to read."""
         texts = [doc_text(doc, max_length=None) for doc in docs]
         kept = [doc for doc, text in zip(docs, texts) if text]
         errors = [f"belief_updater: empty text for doc {_doc_id(d)}" for d, text in zip(docs, texts) if not text]
-        judges = bool(state.pending) and agent_turn is not None
-        if not kept and not judges:
+        turn = agent_turn if self.candidates else None
+        if not kept and turn is None:
             return None, kept, errors
         passages = "\n\n".join(
             CRITERIA_UPDATE_PASSAGE_TEMPLATE.format(n=i + 1, text=_cut(text, self._max_passage_chars))
             for i, text in enumerate(t for t in texts if t)
         ) or CRITERIA_UPDATE_NO_PASSAGES
-        utilization = (CRITERIA_UPDATE_RISES_TEMPLATE.format(rises=self._format_rises(state), agent_turn=agent_turn)
-                       if judges else "")
-        instruction = CRITERIA_UPDATE_INSTRUCTION + (CRITERIA_UPDATE_RISES_INSTRUCTION if judges else "")
         messages = [
             {"role": "system", "content": self._system},
             {"role": "user", "content": CRITERIA_UPDATE_USER_TEMPLATE.format(
-                query=query, belief=self._format_belief(state), utilization=utilization, passages=passages,
-                instruction=instruction,
+                query=query, candidates=" and answer candidates" if self.candidates else "",
+                belief=self._format_belief(state),
+                agent_turn=CRITERIA_UPDATE_TURN_TEMPLATE.format(agent_turn=turn) if turn is not None else "",
+                passages=passages,
+                instruction=CRITERIA_UPDATE_INSTRUCTION + (
+                    CRITERIA_UPDATE_CANDIDATES_INSTRUCTION if self.candidates else ""),
             )},
         ]
         return messages, kept, errors
 
-    def parse(self, raw: str, kept: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None,
-              ) -> Tuple[Optional[List[CriterionUpdate]], Optional[List[UtilizedJudgment]]]:
-        """``(updates, judgments)`` of the reply *raw* to the call on the
+    def parse(self, raw: str, kept: List[Dict[str, Any]], step: int,
+              ) -> Tuple[Optional[List[CriterionUpdate]], Optional[List[CandidateUpdate]]]:
+        """``(updates, candidates)`` of the reply *raw* to the call on the
         passages *kept*: *updates* None when it has no list of updates,
-        *judgments* None when it has no ``utilized`` list (each span checked
-        against *agent_turn*)."""
-        data, used = _parse_reply(raw)
+        *candidates* None when it has no ``candidates`` list (the values are
+        checked against the agent's turns by ``BeliefState.revise``)."""
+        data, cands = _parse_reply(raw)
         if data is None:
             return None, None
         texts = [doc_text(doc, max_length=None) for doc in kept]
@@ -291,25 +314,19 @@ class LLMBeliefUpdater:
                 contradict=self._evidence(item.get("contradict"), kept, texts, step, "contradict"),
                 reason=str(item.get("reason", "")),
             ))
-        if used is None:
+        if cands is None:
             return updates, None
-        judgments: List[UtilizedJudgment] = []
-        for item in used:
-            if not isinstance(item, dict):
-                continue
-            span = str(item.get("span") or "").strip()
-            matched = span_in_passage(agent_turn or "", span) if span else None
-            judgments.append(UtilizedJudgment(
-                id=str(item.get("id", "")).strip(), utilized=_parse_bool(item.get("utilized")),
-                span=matched or span, span_verified=matched is not None, reason=str(item.get("reason", "")),
-            ))
-        return updates, judgments
+        return updates, [
+            CandidateUpdate(id=str(item.get("id", "")).strip(), candidates=_candidates(item.get("candidates")),
+                            reason=str(item.get("reason", "")))
+            for item in cands if isinstance(item, dict)
+        ]
 
     def update(
         self, query: str, state: BeliefState, docs: List[Dict[str, Any]], step: int,
         agent_turn: Optional[str] = None,
-    ) -> Tuple[Optional[List[CriterionUpdate]], Optional[List[UtilizedJudgment]], Optional[str], List[str]]:
-        """Return ``(updates, judgments, raw, errors)``; *updates* is None
+    ) -> Tuple[Optional[List[CriterionUpdate]], Optional[List[CandidateUpdate]], Optional[str], List[str]]:
+        """Return ``(updates, candidates, raw, errors)``; *updates* is None
         when the call or its parsing failed, *raw* is None when the updater
         was not called (nothing to do, ``prompt``) or its call raised.
         Documents without text are left out."""
@@ -323,9 +340,9 @@ class LLMBeliefUpdater:
             except Exception as e:
                 logger.warning("LLMBeliefUpdater: step call failed: %s", e)
                 return None, None, None, errors + [f"belief_updater: {e}"]
-            updates, judgments = self.parse(raw, kept, step, agent_turn)
+            updates, candidates = self.parse(raw, kept, step)
             if updates is not None:
-                return updates, judgments, raw, errors
+                return updates, candidates, raw, errors
             errors.append(f"belief_updater: parse (attempt {attempt + 1}): no JSON object with an 'updates' list")
         logger.warning("LLMBeliefUpdater: step %d dropped, updater output not parseable", step)
         return None, None, raw, errors
@@ -408,7 +425,9 @@ def build_belief_judges(
     if llm_client is None:
         raise ValueError("the criteria judges need an LLM client")
     max_passage_chars = None if query_shape == MULTI_ASPECT else SHORT_ANSWER_PASSAGE_CHARS
+    max_tokens = SET_MAX_TOKENS if query_shape == SET else DEFAULT_MAX_TOKENS
     return (
-        LLMBeliefUpdater(llm_client, model_name=model, query_shape=query_shape, max_passage_chars=max_passage_chars),
+        LLMBeliefUpdater(llm_client, model_name=model, query_shape=query_shape, max_passage_chars=max_passage_chars,
+                         max_tokens=max_tokens),
         LLMQueryScorer(llm_client, model_name=model),
     )

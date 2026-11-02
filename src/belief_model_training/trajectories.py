@@ -2,18 +2,23 @@
 
 ``experiments/inference/dra_inference.py`` runs the frozen agent on one split
 (``trajectories.split``) of the training pool ``shared.training_data``
-(``experiments/training/build_training_pool.py``): every query of the split
-with qrels and gold criteria with texts (the ``ids_{split}.txt`` of the
-pool's gold annotation, ``gold/ids_{split}.txt``; training uses no other
-query), or the next
-``limit`` of them.  The mode follows the split (``runs.SPLIT_MODE``):
+(``experiments/training/build_training_pool.py``): the queries with that
+``split`` in the pool's queries file (``--subset``: dra_inference reads the
+split as a view, ``layout.is_pool_view``): those with the full gold
+annotation and criterion texts, and in ``val`` also the out-of-domain ones
+(no full annotation: deep_qa's WebShaper and FRAMES), or the next ``limit``
+of them.  The mode follows the split (``runs.SPLIT_MODE``):
 
     sft, val  monitor: the belief model starts from the query's gold
-              criteria (``--gold-criteria``) and the teacher writes the
-              belief updates (statuses, and the use of each rise by the
-              agent), the agent never sees them; the query scorer is
-              frozen (``query_scorer_model`` of the inference config,
-              default the teacher)
+              criteria (``--criteria-source gold``), or for an
+              out-of-domain query from the teacher's own
+              (``--llm-criteria``, through the criteria bank), and the
+              teacher writes the belief updates
+              (statuses and answer candidates), the agent never sees them;
+              the query scorer is frozen (``query_scorer_model`` of the
+              inference config, default the teacher).  Training uses only
+              the in-domain queries; the out-of-domain ones are for
+              evaluation
     rl        off: no belief model (phase 3 runs the student's chains)
 
 Inference resume applies: queries already run are skipped, so a call after
@@ -26,7 +31,6 @@ import subprocess
 import sys
 from typing import List
 
-from indexing_corpus_dataset.layout import gold_criteria_path
 
 from .config import REPO_ROOT, TrainingConfig
 from .runs import SPLIT_MODE
@@ -50,16 +54,11 @@ def inference_command(cfg: TrainingConfig) -> List[str]:
     ]
     if cfg.shared.gpu_ids:
         cmd += ["--gpu-ids", cfg.shared.gpu_ids]
-    # Training uses only the queries with gold criteria.
-    ids = gold_criteria_path(split.dataset, split.split_id).with_name(f"ids_{split.split_id}.txt")
-    if not ids.exists():
-        raise SystemExit(f"{ids} not found: build the pool (build_training_pool.py: deep_qa step 2, or trqa_validation)")
-    cmd += ["--query-ids-file", str(ids)]
     if mode == "monitor":
         cmd += [
             "--llm-criteria", tc.teacher_belief_model,
             "--belief-judge-model", tc.teacher_belief_model,
-            "--gold-criteria", "true",
+            "--criteria-source", "gold",
         ]
     if tc.limit is not None:
         cmd += ["--limit", str(tc.limit)]

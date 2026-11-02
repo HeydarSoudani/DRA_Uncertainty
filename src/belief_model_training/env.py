@@ -6,13 +6,13 @@ documents of each search step and the agent's turn of each step and its
 answer turn (the belief never changes what the agent does).  A chain is the
 student's belief updater run over the whole episode from the episode's gold
 criteria (the init call is not trained here): one call per step that has a
-document not judged yet or rises to judge, then the final call on the answer
-turn, each call's prompt built from the chain's own b_{t-1}
+document not judged yet or an agent turn to read, then the final call on the
+answer turn, each call's prompt built from the chain's own b_{t-1}
 (``episodes.BeliefTracker``), as at inference.  ``run_chains`` draws
 ``group_size`` chains per episode (temperature 1 in training, greedy for
 validation); the calls of all chains are generated together, one round per
 call.  A reply that does not parse (or a prompt too long) leaves the call's
-documents unjudged and drops its rises unjudged, as at inference.
+documents unjudged and the candidates unchanged, as at inference.
 
 ``EpisodeSampler`` draws the episodes of a batch, balanced on the
 correctness of the agent's final answer.
@@ -45,13 +45,13 @@ class ChainCall:
 @dataclass
 class Chain:
     """The student's belief chain over one episode; ``group`` indexes the
-    episode in the batch.  ``statuses`` and ``utilization`` are the belief
+    episode in the batch.  ``statuses`` and ``candidates`` are the belief
     after the last call."""
     episode: Episode
     group: int
     calls: List[ChainCall] = field(default_factory=list)
     statuses: List[str] = field(default_factory=list)
-    utilization: Optional[float] = None
+    candidates: List[List[Dict[str, Any]]] = field(default_factory=list)
 
 
 @dataclass
@@ -103,7 +103,7 @@ def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRollou
         active = [run for run, _ in pending]
     for run in runs:
         run.chain.statuses = run.tracker.signal.statuses()
-        run.chain.utilization = run.tracker.signal.state.utilization()
+        run.chain.candidates = run.tracker.signal.candidates()
     return [run.chain for run in runs]
 
 

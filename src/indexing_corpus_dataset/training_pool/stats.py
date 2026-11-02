@@ -1,7 +1,9 @@
 """Counts written to ``stats.json``, one section per step: questions per
 source, gold pages per question, drop reasons, and (step 2) page fetch
-outcomes and lengths and the gold annotation, (step 3) the hard negatives,
-(step 4) the dataset as written."""
+outcomes and lengths, (step 3) the hard negatives, (step 4) the dataset as
+written; the ``annotations`` section holds the gold annotation of the
+pool's rows (deep_qa step 2, the trqa_validation build), the ``split``
+section the split (``splits.py``)."""
 
 import json
 import statistics
@@ -11,7 +13,8 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from utils.io_utils import atomic_write_text
 
-from .annotations import LEVELS, problems
+from .annotations import CLOSED, KINDS, LEVELS, REST, has_gold, problems
+from .gold_criteria import PROMPTS, prompt_hash
 
 
 def distribution(values: List[float]) -> dict:
@@ -86,7 +89,8 @@ def read_stats(path: Path) -> dict:
 
 
 def write_stats(path: Path, section: str, stats: dict) -> None:
-    """Set *section* (``step1`` ... ``step4``, ``build``, ``split``) of *path*,
+    """Set *section* (``step1`` ... ``step4``, ``build``, ``annotations``,
+    ``split``) of *path*,
     the other sections kept."""
     sections = read_stats(path)
     sections[section] = stats
@@ -175,13 +179,13 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
     return {"corpus_docs": len(doc_words), "per_source": per_source, "hard_negatives": hard, "checks": checks}
 
 
-def annotation_stats(rows: List[dict], query_ids: Optional[List[str]] = None) -> dict:
+def annotation_stats(rows: List[dict]) -> dict:
     """The gold annotation (``annotations.py``) per source (and ``all``):
     queries per level and per state of the criterion texts (``texts_ok``),
-    criteria per query, and the criteria with answers, with documents and
-    with both; the rows that break the row format
-    (``annotations.problems``) and, with *query_ids*, the queries without a
-    row and the rows of no query."""
+    criteria per query and per kind, the criteria with answers (all but
+    the rest), with documents (the closed ones) and with their gold
+    (``annotations.has_gold``); the rows that break the row format
+    (``annotations.problems``) and the duplicate ids."""
     groups: Dict[str, List[dict]] = defaultdict(list)
     for row in rows:
         groups[row["source"]].append(row)
@@ -197,16 +201,13 @@ def annotation_stats(rows: List[dict], query_ids: Optional[List[str]] = None) ->
                       for k, v in (("ok", True), ("failed", False), ("retry", None))},
             "criteria_per_query": distribution([len(r["criteria"]) for r in group]),
             "criteria": len(criteria),
-            "with_answers": sum(bool(c["answers"]) for c in criteria),
-            "with_docs": sum(bool(c["doc_ids"]) for c in criteria),
-            "with_both": sum(bool(c["answers"] and c["doc_ids"]) for c in criteria),
+            "kinds": {k: sum(c["kind"] == k for c in criteria) for k in KINDS},
+            "with_answers": sum(bool(c["answers"]) for c in criteria if c["kind"] != REST),
+            "with_docs": sum(bool(c["doc_ids"]) for c in criteria if c["kind"] == CLOSED),
+            "with_gold": sum(has_gold(c) for c in criteria),
         }
     checks = {"rows_breaking_format": sum(bool(problems(r)) for r in rows),
               "duplicate_ids": len(rows) - len({r["id"] for r in rows})}
-    if query_ids is not None:
-        ids = {r["id"] for r in rows}
-        checks["queries_without_row"] = len(set(query_ids) - ids)
-        checks["rows_of_no_query"] = len(ids - set(query_ids))
     return {"per_source": per_source, "checks": checks}
 
 
@@ -216,8 +217,8 @@ def format_annotation_table(stats: dict) -> str:
     per_source = stats["per_source"]
     sources = [s for s in per_source if s != "all"] + ["all"] if per_source else []
 
-    def share(n: int, s: dict) -> str:
-        return f"{n} ({n / s['criteria']:.0%})" if s["criteria"] else "0"
+    def share(n: int, total: int) -> str:
+        return f"{n} ({n / total:.0%})" if total else "0"
 
     rows = [("queries", lambda s: s["queries"])]
     rows += [(f"  level {lv}", lambda s, lv=lv: s["levels"][lv]) for lv in ("full", "partial", "query")]
@@ -225,9 +226,12 @@ def format_annotation_table(stats: dict) -> str:
     rows += [
         ("criteria/query mean/med/max", lambda s: _dist(s["criteria_per_query"], ("mean", "median", "max"))),
         ("criteria", lambda s: s["criteria"]),
-        ("  with answers", lambda s: share(s["with_answers"], s)),
-        ("  with docs", lambda s: share(s["with_docs"], s)),
-        ("  with both", lambda s: share(s["with_both"], s)),
+    ]
+    rows += [(f"  {k}", lambda s, k=k: s["kinds"][k]) for k in KINDS]
+    rows += [
+        ("  with answers (not rest)", lambda s: share(s["with_answers"], s["criteria"] - s["kinds"][REST])),
+        ("  with docs (closed)", lambda s: share(s["with_docs"], s["kinds"][CLOSED])),
+        ("  with their gold", lambda s: share(s["with_gold"], s["criteria"])),
     ]
     lines = _table(sources, per_source, rows)
     lines.append("")
@@ -287,3 +291,14 @@ def format_dataset_table(stats: dict) -> str:
     lines.append("checks (all 0 = consistent): "
                  + ", ".join(f"{k} {v}" for k, v in stats["checks"].items()))
     return "\n".join(lines)
+
+
+def write_annotation_stats(paths, gc, rows: List[dict]) -> dict:
+    """The ``annotations`` section of ``stats.json``, the same in every
+    pool: ``annotation_stats`` of the rows of split ``all`` and the writer of
+    their criterion texts (``gold_criteria.model`` and the hash of its
+    prompts per query shape)."""
+    stats = {"writer": {"model": gc.model, "prompt": {shape: prompt_hash(shape) for shape in PROMPTS}},
+             **annotation_stats(rows)}
+    write_stats(paths.stats, "annotations", stats)
+    return stats

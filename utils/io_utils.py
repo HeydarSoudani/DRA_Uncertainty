@@ -329,15 +329,19 @@ def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> 
     return f"{name}_{backend}_{model_display_name(llm_model)}"
 
 
-def build_belief_config_name(**kwargs) -> str:
+def build_belief_config_name(belief_mode: str = "off", criteria_source: str = "llm") -> str:
     """Build the belief-model directory name (the run's varying knob).
 
     Searcher/retrieval settings are fixed and recorded in run_config.json
-    rather than the path.  Only the belief model mode is surfaced here.
+    rather than the path.  The belief model mode is surfaced here, and the
+    criteria source a run uses (``layout.effective_criteria_source``) when
+    it is not the default ``llm``.
 
-    Examples: ``belief-off``, ``belief-monitor``, ``belief-inform``.
+    Examples: ``belief-off``, ``belief-monitor``, ``belief-inform``,
+    ``belief-monitor-gold``.
     """
-    return f"belief-{kwargs.get('belief_mode', 'off')}"
+    suffix = f"-{criteria_source}" if belief_mode != "off" and criteria_source != "llm" else ""
+    return f"belief-{belief_mode}{suffix}"
 
 
 #: Sections of ``run_config.json`` that the queries of one run directory
@@ -361,7 +365,7 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
     (:func:`utils.config.effective_max_output_tokens`).
     """
     from utils.config import effective_max_output_tokens, model_display_name, resolve_agent_backend
-    from indexing_corpus_dataset.layout import DATASET_SPECS
+    from indexing_corpus_dataset.layout import DATASET_SPECS, effective_criteria_source
 
     backend, slug = resolve_agent_backend(policy_model)
     mode = kwargs["belief_mode"]
@@ -376,7 +380,8 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "belief_judge_model": judge,
             "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
             "criteria_bank": bool(kwargs["criteria_bank"]),
-            "gold_criteria": bool(kwargs.get("gold_criteria")),
+            "criteria_source": kwargs["criteria_source"],
+            "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
         })
     return {

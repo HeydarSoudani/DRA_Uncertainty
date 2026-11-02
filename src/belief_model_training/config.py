@@ -123,9 +123,10 @@ class RLConfig:
     reward_weight_step: float = 1.0
     # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
     adv_std_floor: float = 0.05
-    # Judge of the gold of the reasoner side for the turns without a string
-    # match (utilized_gold.py; the correctness judge); null = matching only.
-    utilized_judge_model: Optional[str] = "openrouter/qwen/qwen3-32b"
+    # Judge of the gold of the reasoner side (answer candidates and agent
+    # turns) without a string match (candidate_gold.py; the correctness
+    # judge); null = matching only.
+    answer_judge_model: Optional[str] = "openrouter/qwen/qwen3-32b"
     # Validation every val_every iterations on at most val_max_episodes val
     # episodes: one greedy chain per episode.
     val_every: int = 20

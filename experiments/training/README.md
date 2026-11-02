@@ -7,13 +7,13 @@ Training plan of the belief model, with the deep research agent frozen.
 The goal is to report an uncertainty score for the deep research agent (DRA), both during its search and for its
 final answer. The idea is to distill this uncertainty into a belief state kept by a separate belief model next to
 the agent: a list of criteria that a complete answer must satisfy, and per criterion two values, one per source of
-uncertainty (the split of RAGChecker, Ru et al. 2024: claim recall for the retriever, context utilization for the
-generator):
+uncertainty (the split of RAGChecker, Ru et al. 2024: claim recall for the retriever, the generator's use of the
+retrieved content for the reasoner):
 
 | Side | Value per criterion $k$ | Question it answers |
 |---|---|---|
 | retriever | status, signed level $\ell_t(k)$ | how much of $k$ do the documents found so far give? |
-| reasoner | utilized gain $u_t(k)$ | how much of what raised $k$ has the agent used? |
+| reasoner | answer candidates $A_t(k)$, each with a status | which answers does the agent consider for $k$, and how likely is each correct? |
 
 The retriever side is the coverage after search step t, the mean status level scaled to $[0, 1]$ with negative
 levels counted as 0:
@@ -22,22 +22,25 @@ $$
 C_t = \frac{1}{|\mathcal{C}|} \sum_{k \in \mathcal{C}} \frac{\max\left(\ell_t(k), 0\right)}{4} \in [0, 1].
 $$
 
-The reasoner side is judged per rise. A rise of $k$ at step $t-1$ is a status change that gains clipped level,
-$g = \max(\ell_{t-1}(k), 0) - \max(\ell_{t-2}(k), 0) > 0$. At step $t$ the belief model reads the agent's next turn
-(its reasoning and queries, written after it read the passages of $t-1$) and judges whether the turn uses the
-information that raised $k$. $u_t(k)$ sums the gains of $k$'s rises judged used, and the utilization is the used
-share of all judged gains:
+The reasoner side is read from the agent's turns. At step $t$ the belief model reads the agent's turn (its
+reasoning and queries, written after it read the passages of $t-1$) and keeps, per criterion, a short list of the
+answers the agent currently considers for it, from its own knowledge or from the passages: at most 3 alternatives
+for a criterion with one answer, at most 50 members or values for a criterion with several (a candidate of a set
+query's rest criterion is one member with its value, "<member>: <value>", each part copied from the agent's turns). Each candidate $a$ has a
+status, read as how likely it is the correct answer, judged from the passages so far (a candidate the agent states
+from memory with no passage on it is `unknown`), with probability $p(a) = (\ell(a) + 2) / 6$ (doubtful 0, unknown
+1/3, certain 1). Several candidates with middling statuses are high reasoning uncertainty. The reasoning confidence
+is the mean probability of each criterion's top candidate (0 without one):
 
 $$
-U_t = \frac{\sum_k u_t(k)}{\sum_k \sum_{\text{judged rises of } k} g} \ (1 \text{ before any rise}), \qquad
-\hat{y}_T = C_T \cdot U_T .
+R_t = \frac{1}{|\mathcal{C}|} \sum_{k \in \mathcal{C}} \max_{a \in A_t(k)} p(a), \qquad
+\hat{y}_T = C_T \cdot R_T .
 $$
 
-$u$ only grows: a later contradiction lowers the status, not what the agent used. In practice, the belief model is
-trained so that $C_t$ follows the recall $\rho_t$ of relevant documents during the search, its judgments of use
-follow whether the agent's turn states the gold intermediate answer, and the final confidence $\hat{y}_T$ predicts
-whether the agent's final answer is correct ($y \in \{0, 1\}$). Only the belief model is trained; the agent and the
-query targeting scorer stay frozen.
+In practice, the belief model is trained so that $C_t$ follows the recall $\rho_t$ of relevant documents during the
+search, the candidate probabilities follow whether each candidate is a gold intermediate answer, and the final
+confidence $\hat{y}_T$ predicts whether the agent's final answer is correct ($y \in \{0, 1\}$). Only the belief
+model is trained; the agent and the query targeting scorer stay frozen.
 
 ## Model
 
@@ -46,12 +49,14 @@ One model, two calls:
 | Call | Input | Output |
 |---|---|---|
 | init (once per query) | query $q$ | criteria $\mathcal{C}$, each `unknown` |
-| update (every search step $t$) | $q$, belief $b_{t-1}$, new documents $D_t$; when criteria rose at $t-1$: those rises and the agent's turn $a_t$ | belief $b_t$: a status per criterion, with cited spans; per rise of $t-1$: utilized or not, with a span of $a_t$ |
+| update (every search step $t$) | $q$, belief $b_{t-1}$ (statuses, evidence, candidates), the agent's turn $a_t$, new documents $D_t$ | belief $b_t$: a status per criterion, with cited spans; the new candidate list of each criterion whose candidates change |
 
-A step with rises to judge calls the updater even without a new document, and after the last step one final call
-judges the last rises against the agent's answer turn (reasoning and final answer). The judgments only use the
-agent's turn and the statuses only the passages (rule 6 of the updater prompt), so the definition works online,
-in `inform` mode too.
+Every step with a turn calls the updater, even without a new document, and after the last step one final call
+reads the candidates of the agent's answer turn (reasoning and final answer). A candidate value must be copied from
+the agent's turns (checked in code: case, spaces and punctuation ignored; otherwise it is dropped), so the belief
+model reports the agent's answers, never its own. The statuses of the criteria use the passages only (rule 6 of
+the updater prompt), so the definition works online, in `inform` mode too. A report query (multi-aspect) has no
+candidates.
 
 Each status has a signed level $\ell_t(k)$:
 
@@ -60,15 +65,15 @@ Each status has a signed level $\ell_t(k)$:
 | $\ell$ | −2 | −1 | 0 | 1 | 2 | 3 | 4 |
 
 The criteria follow the query shape of the dataset: `multi_hop` for deep_qa (one criterion per entity on the chain
-to the answer, the answer last), `set` for trqa_validation (the complete list of members, then
-"any other member: <property>").
+to the answer, the answer last), `set` for trqa_validation (one criterion per member, "<member>: <property>",
+then "any other member: <property>", then the aggregation, how the answer follows from the members' values).
 
 ## Phases
 
 | Phase | Script | Does | Output |
 |---|---|---|---|
 | 0 | `build_training_pool.py --pool P` | builds a training pool, deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_pool/{pool}/` |
-| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split that have gold criteria: `sft` and `val` in monitor mode with the teacher belief model on the gold criteria, `rl` in off mode | `run_outputs/` (dra_inference layout) |
+| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the pool's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the gold criteria (the out-of-domain queries of `val`: on its own criteria), `rl` in off mode | `run_outputs/` (dra_inference layout) |
 | 2 | `belief_model_training.py --phase 2` | SFT of the student on the gold criteria (init) and the teacher's replies (update) of the `sft` run (LoRA, then merged), validated on the `val` run | `phase2_sft/merged/` |
 | 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on whole belief chains) on the `rl` run, validated on the `val` run | `phase3_rl/final/` |
 
@@ -89,18 +94,40 @@ CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --ph
 
 ## Phase 0: Training pools
 
-Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`. Split `all` holds every query of
-the pool. The build (the end of deep_qa step 2, the trqa_validation call) splits it by a hash of the query id into three disjoint splits, with the shares of
-the `split` section of `experiments/configs/build_training_pool.yaml`:
+Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`, with one row per query:
 
-| Split | Share | Phase 1 mode | Used by |
+| File | Contents |
+|---|---|
+| `queries/queries_all.jsonl` | one row per query: the question and answer, its source, its split, its gold annotation (see [Gold annotation](#gold-annotation-deep_qa-steps-1-2-trqa_validation-build)) |
+| `qrels/qrels_all.txt` | the gold documents of each query (TREC qrels) |
+| `corpus/` | deep_qa only: gold pages and hard negatives (trqa_validation searches TRQA's corpus) |
+| `criterion_texts.jsonl`, `stats.json` | build files: the writer's saved criterion texts, the counts and settings of each step |
+
+deep_qa also keeps its step files next to them (`questions.jsonl`, `pages/`, `negatives/`, `dropped.jsonl`). The
+splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
+`split` `sft` and their qrels (`layout.is_pool_view`), so dra_inference runs a split as on any dataset and its run
+folders are named by the split. The build (the end of deep_qa step 2, the trqa_validation call) sets each row's
+`split`. SFT
+and RL need the full gold annotation (`level` `full`: every criterion with gold answers and gold documents, for
+$r_{\mathrm{ret}}$ and $r_{\mathrm{reas}}$), so the full queries are split with the shares of the `split` section of
+`experiments/configs/build_training_pool.yaml`, and every other query goes to `val` as its out-of-domain (OOD) part:
+
+| Split | Queries | Phase 1 mode | Used by |
 |---|---|---|---|
-| `sft` | 30% | monitor (teacher) | phase 2: SFT samples |
-| `rl` | 60% | off | phase 3: RL prompts |
-| `val` | 10% | monitor (teacher) | phase 2: validation loss; phase 3: validation |
+| `sft` | 30% of the full ones | monitor (teacher, gold criteria) | phase 2: SFT samples |
+| `rl` | 60% of the full ones | off | phase 3: RL prompts |
+| `val` | in domain: 10% of the full ones | monitor (teacher, gold criteria) | phase 2: validation loss; phase 3: validation |
+| `val` | OOD: the others (deep_qa: WebShaper, FRAMES) | monitor (teacher, its own criteria) | evaluation only |
 
-A query's split depends on its id only, so a query keeps its split when the pool grows, and `--limit` on one split
-never reaches the queries of another.
+A full query without criterion texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
+split until a later build writes its texts. A query keeps the split it has in the queries file, so no query moves
+when the pool grows, and `--limit` on one split never reaches the queries of another. The new full queries of a build
+are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below its
+share, so the shares hold at every pool size (20 full queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3).
+In the OOD part the belief model writes its own criteria (the init call) and builds the belief from them, as on any
+new dataset; its queries have qrels and a judged final answer, so coverage against recall and the final confidence
+against correctness can be measured, but not the candidates (no gold intermediate answers). Since deep_qa has one
+query shape (`multi_hop`), FRAMES gets the multi-hop criteria prompt.
 
 ### deep_qa
 
@@ -120,6 +147,7 @@ Values are means, after step 1.
 ```bash
 python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
 python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A, split all -> sft / rl / val
+python experiments/training/build_training_pool.py --step 2 --source webshaper,frames     # the OOD part of val (all of them; or with --limit)
 python experiments/training/build_training_pool.py --step 3 --limit 500                   # hard negatives of the next 500 wiki gold pages
 python experiments/training/build_training_pool.py --step 4                               # print the statistics per source
 ```
@@ -134,25 +162,35 @@ order, and `--limit N` counts gold pages. `corpus/corpus.jsonl` holds gold pages
 `corpus/ids_gold.txt` and `corpus/ids_hard_negative.txt` list the ids of each. qrels are unchanged. Steps 2 and 3
 write the corpus the same way, so a later step 2 run keeps the negatives.
 
-Step 2 ends with the split, so the split files always match the pool. The shares and per-split counts are recorded
-in the `split` section of `stats.json`. Other shares (they would move queries between splits) and other page
+Step 2 sets the split of every row it writes, so the splits always match the pool. The shares and per-split counts are recorded
+in the `split` section of `stats.json`. Other shares (they would mix two splits in one pool) and other page
 settings than the earlier step 2 runs' (`wiki_lang`, `min_words`, `min_page_share`, `wayback`, `wayback_timestamp`)
-are refused: to change the shares, remove the `split` section of `stats.json` and the next build re-splits; to
+are refused: to change the shares, remove the `split` section of `stats.json` and the next build re-splits every query; to
 change the page settings, rebuild the pool from step 1. Other step 3 settings than the earlier runs' are refused too:
 to change them, remove `negatives/index.jsonl` and the `step3` section of `stats.json`. One build of a pool runs at a time (`.build.lock` in
 its directory).
 
 ### trqa_validation
 
-The trqa_validation pool merges the TRQA wiki1 and wiki2 validation files into
-`queries/queries_all.jsonl`, `queries/queries_all_intermediate_info.jsonl` and `qrels/qrels_all.txt`, then splits
-them (one call); it searches TRQA's `wiki_partial` corpus.
+The trqa_validation pool merges the TRQA wiki1 and wiki2 validation files (queries, intermediate info, qrels) into
+`queries/queries_all.jsonl` and `qrels/qrels_all.txt` (one call): a query and its intermediate info become one row,
+the members with their values and documents in `members`, with `property` (the label) and `aggregation`. It searches
+TRQA's `wiki_partial` corpus. The gold loaders (`load_query_intermediate_info`) read the intermediate info of a pool
+from its rows, in TRQA's record format.
 
-Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels: 346 sft, 688 rl and 111 val.
+Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels and all full, so `val` has no OOD part: 343 sft, 687 rl and 115 val.
 
 ```bash
-python experiments/training/build_training_pool.py --pool trqa_validation
+python experiments/training/build_training_pool.py --pool trqa_validation             # every query
+python experiments/training/build_training_pool.py --pool trqa_validation --limit 100 # the next 100 not yet in the pool
 ```
+
+`--limit N` is incremental, like deep_qa step 2: it adds the next N kept queries not yet in the pool (file order,
+wiki1 then wiki2) to those already there; `--limit 0` adds none and rewrites the files. The criterion texts of
+earlier calls are reused, so only the new queries call the writer, and every earlier query keeps its split. The
+`build` section of `stats.json` records the queries in the pool and the ones remaining.
+
+Its rows have the keys of deep_qa's (source `trqa_wiki1` / `trqa_wiki2`).
 
 ### Gold annotation (deep_qa steps 1-2, trqa_validation build)
 
@@ -165,14 +203,18 @@ source does not state is an empty value (`[]` or `null`), never a missing key.
 | InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | its Wikipedia page |
 | WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the answer only (final answer) | none (the URLs are the query's) |
 | FRAMES | none | | |
-| TRQA wiki2 | "the complete list of ..." and "any other member: <property>" (`set`) | the members / their values (`entity_values`) | the members' documents (`entity_values[].passage_ids`) |
+| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then "any other member: <property>" (`rest`); then the aggregation, how the answer follows from the values (`aggregate`) (`set`) | the member's value (`entity_values`); rest: none; aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); rest and aggregate: none |
 | TRQA wiki1 | the same | the same | the same |
+
+Every TRQA member has its own criterion, so the rest criterion has no gold in the pool: training can hide some
+members under it (their values and documents then become its gold), as at inference, where the belief model lists
+only the members it knows. The aggregate criterion has no documents since no document states the computed value.
 
 `level` follows from the row and selects a group of queries:
 
 | `level` | The row has | Training can use |
 |---|---|---|
-| `full` | criteria, each with gold answers and gold documents | per criterion: its answers and its documents; the final answer and the qrels |
+| `full` | criteria, each with its gold: gold answers and gold documents (a `rest` criterion none, an `aggregate` one answers only) | per criterion: its answers and its documents; the final answer and the qrels |
 | `partial` | criteria, some without answers or without documents | the criteria that have them; the final answer and the qrels |
 | `query` | no criteria | the final answer and the qrels only |
 
@@ -184,75 +226,100 @@ Queries per level, with the pools as built on 2026-11-01 (deep_qa: the 998 quest
 | deep_qa | InfoSeek | 400 | 400 | 0 | 0 | 2.5 |
 | deep_qa | WebShaper | 106 | 0 | 106 | 0 | 5.3 |
 | deep_qa | FRAMES | 404 | 0 | 0 | 404 | 0 |
-| trqa_validation | TRQA wiki1 | 91 | 91 | 0 | 0 | 2 |
-| trqa_validation | TRQA wiki2 | 1,054 | 1,054 | 0 | 0 | 2 |
+| trqa_validation | TRQA wiki1 | 91 | 91 | 0 | 0 | 15.4 |
+| trqa_validation | TRQA wiki2 | 1,054 | 1,054 | 0 | 0 | 11.7 |
+
+TRQA's criteria per query are the members plus the rest and the aggregate (the members per query of the TRQA files,
+before the build leaves out 29 queries).
 
 An InfoSeek query is `partial` when an entity of its criteria has no Wikipedia page in the tree, or that page was not
 fetched (Filter A keeps an InfoSeek query only when all its pages were fetched, so none is so far). A WebShaper
 criterion has no documents, and only the answer criterion has answers. The numbers come from the annotation tables of
-step 4 (deep_qa, `step4` section of `stats.json`) and of the trqa_validation build (`build` section). Step 1 builds the criteria from the source (`annotation` of each record in
+the `annotations` section of `stats.json`, the same in both pools (written by deep_qa steps 2 and 4 and by the trqa_validation build, with the writer of the texts). Step 1 builds the criteria from the source (`annotation` of each record in
 `questions.jsonl`, with the page keys of their documents); step 2 resolves the keys to the fetched documents (a page
-that was not fetched gives none, so a query can fall from full to partial) and writes `gold/annotations_all.jsonl`,
-split with the queries into `gold/annotations_{sft,rl,val}.jsonl`. The trqa_validation build writes the same files
-from the intermediate info. Query row: `id`, `source`, `query`, `answer`, `query_shape`, `level`, `doc_ids` (the
-qrels), `criteria`, `members` (set queries: `entity`, `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of
-the tree), `property` (set queries); criterion: `id`, `kind`, `relations` (the source structure the writer reads),
-`answers`, `doc_ids`, `text`; then `texts_ok`, `errors`, `model`, `prompt` of the texts. Steps 2 and 4 and the trqa_validation build count the rows per source and
-level and the criteria with answers and documents, and check the row format.
+that was not fetched gives none, so a query can fall from full to partial) and writes the rows to
+`queries/queries_all.jsonl`. The trqa_validation build writes the same rows from the intermediate info. Query row:
+`id`, `source`, `split`, `text` (the question), `answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`,
+`members` (set queries: `entity`, `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the
+members), `property` and `aggregation` (set queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind`
+(`closed`, `rest`, `aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer and its prompt hash
+are in `stats.json` and `criterion_texts.jsonl`, not per row). Steps 2 and 4 and the trqa_validation build count the rows per source and
+level, the criteria per kind and with their answers, documents and gold, and check the row format.
 
 ### Criterion texts (end of deep_qa step 2 and of the trqa_validation build)
 
-An LLM (`gold_criteria.model`, the teacher) writes the text of each criterion from the question and the criterion's
-relations (multi-hop: InfoSeek, WebShaper) or the set's property (TRQA), in the question's words; answers, documents
-and level come from the source (`training_pool/gold_criteria.py`). It runs before the split, so every annotation file
-holds its texts; step 2 and the trqa_validation build need `OPENROUTER_API_KEY`. `texts_ok` is true when every text
+An LLM (`gold_criteria.model`, the teacher) writes the criterion texts in the question's words, one call per query;
+answers, documents and level come from the source (`training_pool/gold_criteria.py`). The prompts are the files of
+`training_pool/prompts/`, one system and one user prompt per query shape:
+
+- multi-hop (InfoSeek, WebShaper): one text per criterion, from its relations, with only the details the question
+  states (a relation may hold more, such as a year).
+- set (TRQA): the property phrase (what is looked up per member, with its year and unit, no condition) and the
+  aggregation (what the answer computes over "the members": the property, the conditions on its values and how many
+  members it takes, not what selects the members, which the member criteria carry), from the question, TRQA's property label
+  and its computation code. The member criteria "<member>: <phrase>" and the rest criterion "any other member:
+  <phrase>" are built from the phrase; the aggregate criterion is the aggregation.
+
+The writer runs before the split, so the rows are written
+with their texts; step 2 and the trqa_validation build need `OPENROUTER_API_KEY`. `texts_ok` is true when every text
 names none of the gold answers (a name inside a longer entity name, such as Groningen in "University of Groningen",
-does not count), or when the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak
-after one retry with the names given, no text for a criterion); null when the writer call failed (an error, a reply
+does not count; set queries: neither the phrase nor the aggregation names a member, a value or the final answer that
+the question does not name; multi-hop queries: no number or capitalized word the question does not state), or when
+the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak or an unstated word
+after one retry with them given, no text for a criterion); null when the writer call failed (an error, a reply
 that is not JSON), and the next run asks again. The number of criteria is the source's (no cap). Final texts are
-appended to `gold/texts.jsonl` as they are written, so a stopped run keeps them; a run reuses them for unchanged
+appended to `criterion_texts.jsonl` as they are written, so a stopped run keeps them; a run reuses them for unchanged
 criteria and writes only the new queries' texts. Another `gold_criteria.model` or other prompts than those of
-`gold/texts.jsonl` are refused (remove the file to write every text again). `--step 2 --limit 0` fetches nothing and
-rewrites the dataset files, annotation and split from the questions already processed. `gold/ids_{sft,rl,val}.txt` lists the queries with `texts_ok` and at least one
-criterion; phase 1 runs these only. The annotation tables of steps 2 and 4 count the texts per source (ok, failed,
+`criterion_texts.jsonl` are refused (remove the file to write every text again). The prompts are hashed per query
+shape, so editing the set prompts leaves the multi-hop texts valid. `--step 2 --limit 0` fetches nothing
+and rewrites the dataset files from the questions already processed. The queries of a split (its phase 1 run) are
+the full ones with `texts_ok` and at least one criterion, and in `val` also the OOD ones. The `split` section of
+`stats.json` counts the queries per split, source and level, and the full ones in no split (`no_split`). The annotation tables of steps 2 and 4 count the texts per source (ok, failed,
 retry).
 
 ## Phase 1: Trajectory collection
 
-Phase 1 runs `dra_inference.py` with the frozen agent on the queries of one split that have gold criteria
-(`--query-ids-file` = `gold/ids_{split}.txt` of the pool), every such query or the next `--limit` not run yet (inference
-resume). The mode follows the split:
+Phase 1 runs `dra_inference.py` with the frozen agent on the queries of one split (`--subset {split}`: the
+pool's rows with that `split`), every such query or the next `--limit` not run yet (inference resume). The mode
+follows the split:
 
 | Split | Mode | Belief model |
 |---|---|---|
-| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--gold-criteria true`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates (statuses and use); frozen query scorer |
+| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source gold`; an OOD query of `val`: the teacher's own, through the criteria bank, `ood: true` and `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates (statuses and candidates); frozen query scorer |
 | `rl` | off | none |
 
 The query scorer (criteria attempts) runs only in monitor mode; training does not read the attempts. The belief
 does not change what the agent does, so the documents and agent turns of every step are fixed, and phase 3 can run
 the student over the steps of an off-mode run. The runs go to dra_inference's output root in its usual layout
-(`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-{mode}/`), and phase 1 writes nothing else.
+(`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-monitor-gold/` for `sft` and `val`, `belief-off/` for `rl`),
+and phase 1 writes nothing else.
 
 **Episodes.** Phases 2 and 3 read a split's run at their start (`belief_model_training/runs.py`), one episode per
-finished query with gold criteria (`texts_ok`, at least one criterion):
+finished in-domain query (`level` full, `texts_ok`, at least one criterion; the OOD queries of `val` are counted as
+`out_of_domain` and left out):
 
 | Level | Field | Source | Used by |
 |---|---|---|---|
 | step | `doc_ids`: documents shown in the search iteration (all its searches; none when they returned nothing); `iteration`, the belief model's step number (from 1), and `agent_iteration`, the agent's own (`iter`) | `trajectory/{qid}.jsonl` (`seen_docs`) | SFT replay, RL chains |
 | step | `agent_turn`: the agent's reasoning and queries of the iteration (as the teacher read it in monitor runs) | `trajectory/{qid}.jsonl`, `belief/{qid}.jsonl` | the updater prompt |
 | step | `new_gold_ids`: relevant documents first seen in the step; `recall_so_far` ($\rho_t$) | qrels | $r_{\mathrm{ret}}$ |
-| step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `utilized_gold.py` | $r_{\mathrm{reas}}$ |
-| step | `teacher_output`, `teacher_used`: the teacher's reply and its judgments (monitor runs) | `belief/{qid}.jsonl` | SFT |
+| step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `candidate_gold.py` | $r_{\mathrm{reas}}$ (missed answers) |
+| step | `teacher_output`, `teacher_candidates`: the teacher's reply and its candidate updates (monitor runs) | `belief/{qid}.jsonl` | SFT |
 | episode | `answer_turn`: reasoning after the last search and the final answer; the teacher's final call on it (monitor runs) | `trajectory/{qid}.jsonl`, `generation/{qid}.md`, `belief/{qid}.jsonl` | final call |
 | episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{final}}$ |
-| episode | `gold_criteria`: criteria with `answers` and `doc_ids` (empty when the source states none) | `gold/annotations_{split}.jsonl` | init (SFT target, RL chains), gold of use |
+| episode | `gold_criteria`: criteria with `answers` and `doc_ids` (empty when the source states none) | `queries/queries_all.jsonl` of the pool | init (SFT target, RL chains), gold of the candidates |
 
-**Gold of use.** A turn states a criterion's gold answer when the answer occurs in it as whole words (case, accents
-and punctuation ignored; not inside a longer entity name of the query's gold structure) or, for a number, when a
-number of the turn equals it. A (turn, criterion) pair without a match, whose gold documents were shown before the
-turn, is asked of the correctness judge (`rl.utilized_judge_model`, YES/NO); the verdicts are cached in
-`{output_root}/{training_data}/{policy_model}/utilized_gold.jsonl`. `rl.utilized_judge_model: null` uses the match
-only.
+**Gold of the candidates.** A candidate is correct ($g = 1$) when one of the criterion's gold answers occurs in its
+value as whole words (case, accents and punctuation ignored; not inside a longer entity name of the query's gold
+structure) or, for a number, when a number of the value equals it; for the set criterion, any member. The rest
+criterion of a set query is matched member by member: the candidate must name a member and that member's own value
+(TRQA: in 425 of the 1,083 wiki2 validation queries every member has the same value, so a value alone says
+nothing). A
+candidate without a match is asked of the correctness judge (`rl.answer_judge_model`, YES/NO: is the candidate the
+gold answer?). A turn states a criterion's gold answer by the same match; a (turn, criterion) pair without a match,
+whose gold documents were shown before the turn, is asked of the same judge. The verdicts are cached in
+`{output_root}/{training_data}/{policy_model}/answer_gold.jsonl`. `rl.answer_judge_model: null` uses the match only.
+A criterion without gold answers has no gold and is not scored; training uses InfoSeek and TRQA (level full).
 
 Only finished queries are episodes, as dra_inference counts them: the trajectory ends with its meta line and, in a
 monitor run, the belief file exists. The qrels are read with the run's `dataset.min_relevance_score`. The runs a phase reads must share
@@ -303,8 +370,8 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 | Part | Measure |
 |---|---|
 | retriever | coverage $C_t$ against $\rho_t$: mean signed error (> 0 = ahead of recall), RMSE, Kendall τ-b over all calls; logged: precision / recall / F1 of the documents cited as support against $N_t$ |
-| reasoner | the judgments of use against the gold: accuracy, precision / recall / F1 of "utilized", and the gold rate |
-| final | $\hat{y}_T = C_T \cdot U_T$ against $y$: AUROC, Brier score, ECE (10 bins); the same for $C_T$ alone, to see what the reasoner side adds |
+| reasoner | the candidate probabilities $p$ against their gold $g$: Brier score, AUROC, gold rate; accuracy of each criterion's top candidate; missed rate (the turn states the gold answer, no candidate matches it) |
+| final | $\hat{y}_T = C_T \cdot R_T$ against $y$: AUROC, Brier score, ECE (10 bins); the same for $C_T$ alone, to see what the reasoner side adds |
 
 The phase 3 rewards are the per-sample forms of these measures.
 
@@ -313,13 +380,14 @@ The phase 3 rewards are the per-sample forms of these measures.
 **Notation.** In a chain over an episode, at updater call k (step $t$):
 
 - $\rho_t$: `recall_so_far`, the share of the query's relevant documents seen up to step t;
-- $C_k$: coverage after the call; $U_T$: utilization after the chain's last call;
-- $J_k$: the rises the call judges, each with the student's judgment and the gold (the agent turn states the
-  criterion's gold answer);
+- $C_k$: coverage after the call; $R_T$: reasoning confidence after the chain's last call;
+- $K_k$: the gold criteria (with gold answers) that have candidates after the call, or whose gold answer the call's
+  agent turn states; per criterion $k$, its candidates $A_k$ with probability $p$ and gold $g$, and $m_k = 1$ when
+  the turn states the gold answer and no candidate is correct (a missed answer);
 - $y \in \{0, 1\}$: the agent's final answer is correct.
 
 **Chains.** A chain is the student's belief updater run over a whole `rl` episode from its gold criteria (the init
-call is not trained in RL): one call per step with a document not judged yet or rises to judge, then the final call
+call is not trained in RL): one call per step with a document not judged yet or an agent turn, then the final call
 on the answer turn, each prompt built from the chain's own $b_{t-1}$, as at inference. The agent is frozen, so the
 documents and agent turns of every step are fixed. Training on the student's own states, not the teacher's, keeps
 it ready for its own earlier errors (exposure bias; DAgger, Ross et al. 2011).
@@ -337,22 +405,21 @@ $$
 
 $$
 r_{\mathrm{ret},k} = 1 - (C_k - \rho_t)^2, \qquad
-r_{\mathrm{reas},k} = \frac{1}{|J_k|} \sum_{j \in J_k} \mathbb{1}[\text{judged}_j = \text{gold}_j] \ \ (1 \text{ when } J_k = \emptyset), \qquad
-r_{\mathrm{final}} = f_T \left(1 - (C_T U_T - y)^2\right),
+r_{\mathrm{reas},k} = \frac{1}{|K_k|} \sum_{k' \in K_k} (1 - m_{k'}) \frac{1}{|A_{k'}|} \sum_{a \in A_{k'}} \left(1 - (p_a - g_a)^2\right) \ \ (1 \text{ when } K_k = \emptyset), \qquad
+r_{\mathrm{final}} = f_T \left(1 - (C_T R_T - y)^2\right),
 $$
 
 with $w$ = `rl.reward_weight_step` (1).
 
 | Term | Measures | Available when |
 |---|---|---|
-| format $f_k \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each criterion it lists a valid status, names only known criteria, each once, every cited passage has spans that all occur verbatim in it, and every rise it judges has a valid value, with a span that occurs in the agent's turn when used | every call |
+| format $f_k \in \{0, 1\}$ | 1 if the reply is not cut off, parses, gives each criterion it lists a valid status, names only known criteria, each once, every cited passage has spans that all occur verbatim in it, has a `candidates` list when the call shows an agent turn, and every candidate it writes is kept (value copied from the agent's turns, a valid status, not repeated, within the cap) | every call |
 | $r_{\mathrm{ret}}$ (retriever) | the coverage follows recall | step calls (not the final call, which has no passage) |
-| $r_{\mathrm{reas}}$ (reasoner) | the judgments of use match the gold; a call with nothing to judge cannot get one wrong | every call |
+| $r_{\mathrm{reas}}$ (reasoner) | the candidate statuses are calibrated against the gold intermediate answers, and no stated gold answer is left out; a call with nothing to score cannot get one wrong | every call |
 | $r_{\mathrm{final}}$ | the final confidence predicts correctness (Brier) | $y$ known (else 0) |
 
 The squared errors are minimized by the expected target given the input, so they reward calibrated coverage and
-confidence. $r_{\mathrm{reas}} = 1$ on a call with nothing to judge keeps a chain from gaining by raising more
-statuses. $R$ is the logged reward and the validation measure.
+confidence. The missed-answer term keeps a chain from gaining by listing no candidates. $R$ is the logged reward and the validation measure.
 
 **Advantage.** Each of the three terms (the sums of $f_k r_{\mathrm{ret},k}$ and of $f_k r_{\mathrm{reas},k}$, and
 $r_{\mathrm{final}}$) is normalized within the episode's group (GDPO, arXiv 2601.05242) and weighted $w$, $w$, 1,

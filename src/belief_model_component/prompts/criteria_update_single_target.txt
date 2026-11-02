@@ -7,12 +7,26 @@ For this query:
 ---example---
 Example query: A composer who won a conservatory prize wrote an essay less than 5 years before receiving the prize. The composer co-wrote an opera with 2 others that premiered more than 20 years before the prize. The essay names a different work by the composer as being 25 years since it premiered. What is the composer's first and last name?
 
-Example criteria, with their current status:
+Example criteria, with their current status and answer candidates:
 c1 [certain]: the composer who received a prize from a conservatory
   - support: "Marta Leclerc received the Halden Conservatory Prize in 2019." (Marta Leclerc - Wikipedia)
+  - candidates: "Marta Leclerc" [certain]
 c2 [unknown]: the composer who wrote an essay less than 5 years before receiving the prize
+  - candidates: (none)
 c3 [unknown]: the composer who co-wrote an opera with 2 others that premiered more than 20 years before the prize
+  - candidates: (none)
 c4 [unknown]: the composer whose essay names a different work of theirs as being 25 years since it premiered
+  - candidates: (none)
+
+Example agent turn:
+<agent_turn>
+Reasoning:
+Marta Leclerc received the Halden prize in 2019, so she is the composer to check against the other clues: an essay and a co-written opera.
+
+Search queries:
+1. Marta Leclerc essay
+2. Marta Leclerc opera premiere
+</agent_turn>
 
 Example new passages:
 <passage 1>
@@ -42,5 +56,10 @@ Example output:
     {"id": "c4", "support": [{"passage": 1, "spans": ["Marta Leclerc looked back on Glass Harbour, the song cycle she premiered 25 years earlier"]}], "contradict": [], "reason": "Passage 1 states that the essay names Glass Harbour as premiered 25 years earlier.", "status": "certain"},
     {"id": "c3", "support": [], "contradict": [{"passage": 3, "spans": ["she has never written an opera"]}], "reason": "Passage 3 states that Marta Leclerc, the composer in the evidence, never wrote an opera.", "status": "doubtful"}
   ],
-  "utilized": []
+  "candidates": [
+    {"id": "c1", "reason": "Passage 2 gives the 2019 prize to another person, so the passages now disagree on Marta Leclerc.", "candidates": [{"value": "Marta Leclerc", "status": "possible"}]},
+    {"id": "c2", "reason": "The turn checks Marta Leclerc against every clue; passage 1 gives an essay of hers but not its date.", "candidates": [{"value": "Marta Leclerc", "status": "possible"}]},
+    {"id": "c3", "reason": "The turn checks Marta Leclerc against every clue; passage 3 states she never wrote an opera.", "candidates": [{"value": "Marta Leclerc", "status": "doubtful"}]},
+    {"id": "c4", "reason": "The turn checks Marta Leclerc against every clue; passage 1 states her essay names a work premiered 25 years earlier.", "candidates": [{"value": "Marta Leclerc", "status": "certain"}]}
+  ]
 }

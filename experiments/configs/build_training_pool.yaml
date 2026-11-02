@@ -45,21 +45,26 @@ negatives:
 # negatives/index.jsonl and the 'step3' section of stats.json.
 
 # ── Split (end of deep_qa step 2, trqa_validation build): shares of the queries
-# Recorded in stats.json; other shares move queries between splits and are
-# refused; to change them, remove the 'split' section of stats.json (the next
-# step 2 run or trqa_validation build re-splits).
+# with the full gold annotation (level full); every other query (deep_qa:
+# WebShaper, FRAMES) goes to val as its out-of-domain part.
+# A query keeps its split as the pool grows; the new ones fill the split
+# furthest below its share, so the shares hold at every pool size.
+# Recorded in stats.json; other shares are refused; to change them, remove
+# the 'split' section of stats.json (the next step 2 run or trqa_validation
+# build re-splits every query).
 split:
   sft: 0.3                          # SFT samples (monitor mode, teacher replies)
   rl: 0.6                           # RL prompts (off mode)
-  val: 0.1                          # validation of SFT and RL (monitor mode)
+  val: 0.1                          # validation of SFT and RL (monitor mode); plus the out-of-domain queries
 
 # ── Criterion texts of the gold annotation (end of deep_qa step 2 and of the
 # trqa_validation build) ─────────────────────────────────────────────────────
 # An LLM writes the criterion texts from the question and the criteria's
 # source structure; the gold answers, documents and level come from the
-# source.  Needs OPENROUTER_API_KEY; earlier texts are kept (gold/texts.jsonl
-# of the pool).  model (and the prompts) must stay those of the kept texts;
-# to change them, remove gold/texts.jsonl (every text is written again).
+# source.  Earlier texts are kept (criterion_texts.jsonl of the pool);
+# writing new ones needs OPENROUTER_API_KEY.  model (and the prompts) must
+# stay those of the kept texts; to change them, remove criterion_texts.jsonl
+# (every text is written again; every query keeps its split).
 gold_criteria:
   model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model of training)
   workers: 8                        # concurrent LLM calls

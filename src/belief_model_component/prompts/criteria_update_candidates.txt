@@ -1,0 +1,23 @@
+---section---
+== Answer candidates ==
+The agent's turn is its reasoning and search queries after it read the passages of the previous step, or, at the end, its reasoning and final answer. An answer candidate of a criterion is an answer the agent considers for it: the entity, value or fact the criterion asks for, taken from the passages or from the agent's own knowledge. A candidate has one of the seven statuses, read as how likely it is the correct answer:
+- "doubtful": A passage contradicts the candidate.
+- "unlikely": The passages point against the candidate without contradicting it.
+- "unknown": No passage relates to the candidate (the agent states it from its own knowledge).
+- "possible": The passages relate to the candidate but do not show that it is the answer, or they disagree on it.
+- "probable": The passages show that the candidate is the answer only in part, or only indirectly or by combining several passages.
+- "almost certain": The passages show most of what makes the candidate the answer, and no passage contradicts it.
+- "certain": The passages show that the candidate is the answer, and no passage contradicts it.
+{shape_candidates}
+
+---rules---
+6. Judge the statuses of the criteria from the passages only.
+7. Take candidates from the agent's turns only, never from the passages alone, and copy each value exactly as the agent wrote it. A criterion gets a candidate when the turn names an answer for it, also as a guess or a hypothesis it searches for; drop a candidate the turn rejects.
+8. Judge the status of a candidate from all the passages so far, never from how sure the agent sounds.
+9. A criterion with one answer has at most 3 candidates, its alternatives; a criterion with several answers (members or values) has one candidate per answer, at most 50.
+
+---output---
+- "candidates": One object per criterion whose candidates change (the turn adds, drops or changes one, or the new passages change the status of one); [] when there is none:
+  - "id": The criterion id.
+  - "reason": One sentence on where the candidates come from and why they have these statuses.
+  - "candidates": The whole new list, most likely first, each {"value": the answer copied exactly from the agent's turn, "status": its status}; [] when the agent considers no answer any more.

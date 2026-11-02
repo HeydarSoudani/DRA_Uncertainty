@@ -59,7 +59,10 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_bank_path, gold_criteria_path
+from indexing_corpus_dataset.layout import (
+    DATASETS, DATASET_SPECS, GOLD_CRITERIA, OUTPUT_ROOT, criteria_bank_path, effective_criteria_source,
+    gold_criteria_path,
+)
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
@@ -190,12 +193,31 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     # Criteria bank of the split: criteria are read from it, extracted only when missing.
     criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
                      if belief_mode != "off" and kwargs["criteria_bank"] else None)
-    # Gold criteria of a training pool split: they replace the extracted criteria.
-    gold_criteria = (str(gold_criteria_path(dataset, file_data_set))
-                     if belief_mode != "off" and kwargs.get("gold_criteria") else None)
-    if gold_criteria and not Path(gold_criteria).exists():
-        raise SystemExit(f"--gold-criteria: {gold_criteria} not found; build the pool with "
-                         "experiments/training/build_training_pool.py (deep_qa step 2, or the trqa_validation build)")
+    # Criteria source: the gold criteria of a training pool replace the
+    # extracted ones; a dataset without gold criteria, and a query without
+    # them, get extracted ones (the belief model always runs).
+    criteria_source = effective_criteria_source(kwargs["criteria_source"], dataset)
+    gold_criteria = None
+    if belief_mode != "off" and kwargs["criteria_source"] == GOLD_CRITERIA:
+        if criteria_source != GOLD_CRITERIA:
+            print(f"[WARNING] criteria_source gold: {dataset} has no gold criteria; the belief model runs "
+                  f"with the criteria of the extraction prompt ({kwargs['llm_criteria']})")
+        else:
+            gold_criteria = str(gold_criteria_path(dataset))
+            if not Path(gold_criteria).exists():
+                raise SystemExit(f"--criteria-source gold: {gold_criteria} not found; build the pool with "
+                                 "experiments/training/build_training_pool.py (deep_qa step 2, or the "
+                                 "trqa_validation build)")
+            if not kwargs["llm_criteria"]:
+                raise SystemExit("--criteria-source gold needs --llm-criteria: the queries without gold "
+                                 "criteria get extracted ones")
+            from belief_model_component import GoldCriteriaSource
+            gold = GoldCriteriaSource(gold_criteria, DATASET_SPECS[dataset].query_shape)
+            without = sum(gold.missing(qid, q) is not None for qid, q in queries.items())
+            if without:
+                print(f"[WARNING] criteria_source gold: {without} of {len(queries)} queries have no gold "
+                      f"criteria; the belief model runs with the criteria of the extraction prompt "
+                      f"({kwargs['llm_criteria']}) for them (ood: true in their criteria_info)")
 
     # ==================== Resume: skip already-processed queries ====================
     # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
@@ -203,7 +225,8 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     policy_model_cli = kwargs.pop("policy_model_cli")
     run_name = build_run_name_for_pipeline(policy_model=policy_model_cli, llm_model=llm_model, **kwargs)
     dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, kwargs["retriever_name"])
-    run_dir = str(Path(output_path) / dataset_dir / run_name / build_belief_config_name(**kwargs))
+    run_dir = str(Path(output_path) / dataset_dir / run_name
+                  / build_belief_config_name(belief_mode, criteria_source))
 
     print(f"\n{'=' * 80}")
     print(f"[OUTPUT] Loading/saving results from: {run_dir}")
@@ -804,8 +827,9 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}/
-#   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default)
+#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-gold]/
+#   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default;
+#   -gold when the run uses gold criteria, criteria_source gold on a training pool)
 #   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_20b_vllm_gpt-oss-20b/belief-monitor/
 #   ({agent} = the --policy-model name)
 #

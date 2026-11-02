@@ -11,19 +11,27 @@ its end:
                  the calls; logged too: precision / recall / F1 of the
                  documents cited as support (verified span) against the
                  gold documents among the call's passages, pooled (micro)
-    reasoner     the ``utilized`` judgments of the rises the call judges
-                 against the gold (the agent turn states the criterion's
-                 gold answer, ``utilized_gold``): accuracy, and precision /
-                 recall / F1 of "utilized", pooled
-    final        the final confidence C_T = C^ret_T x U_T against the
+    reasoner     the answer candidates after the call against the gold
+                 intermediate answers (``candidate_gold``), on the gold
+                 criteria with gold answers that have candidates or whose
+                 gold answer the call's agent turn states
+                 (``reasoner_items``): Brier score and AUROC of the
+                 candidate probabilities p against their correctness g,
+                 the gold rate, the accuracy of each criterion's top
+                 candidate, and the missed rate (the turn states the gold
+                 answer and no candidate matches it), pooled
+    final        the final confidence C_T = C^ret_T x R_T against the
                  correctness y of the agent's final answer: AUROC, Brier
                  score, ECE (10 equal-width bins); the same for C^ret_T
                  alone (does the reasoner side add to it?)
 
 Coverage, with negative levels clipped to 0:
-``C_t = mean_k max(level_t(k), 0) / 4`` (``types.STATUS_LEVEL``);
-utilization U_t = the used share of the judged rises
-(``BeliefState.utilization``; 1 before any rise was judged).
+``C_t = mean_k max(level_t(k), 0) / 4`` (``types.STATUS_LEVEL``) over the
+criteria with a status (an aggregate has none);
+reasoning confidence R_t = the mean over the criteria of their top
+candidate's probability p = (level + 2) / 6 (``types.candidate_probability``;
+0 without a candidate), rest criteria left out
+(``criteria.reasoning_confidence``).
 """
 
 import math
@@ -32,83 +40,124 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 from scipy.stats import kendalltau, rankdata
 
-from belief_model_component import STATUS_LEVEL, INITIAL_STATUS
+from belief_model_component import STATUS_LEVEL, candidate_probability, initial_status
+from belief_model_component.criteria import reasoning_confidence
 
+from .candidate_gold import CandidateGold
 from .episodes import Episode
 
 TOP_LEVEL = max(STATUS_LEVEL.values())
 
 
-def coverage(statuses: Sequence[str]) -> float:
-    """C_t of a belief state: mean clipped status level over the criteria, in [0, 1]."""
-    if not statuses:
-        return 0.0
-    return sum(max(STATUS_LEVEL[s], 0) for s in statuses) / (len(statuses) * TOP_LEVEL)
+def coverage(statuses: Sequence[Optional[str]]) -> float:
+    """C_t of a belief state: mean clipped status level over the criteria
+    with a status (None: an aggregate), in [0, 1]."""
+    levels = [max(STATUS_LEVEL[s], 0) for s in statuses if s is not None]
+    return sum(levels) / (len(levels) * TOP_LEVEL) if levels else 0.0
 
 
-def confidence(cov: float, utilization: Optional[float]) -> float:
-    """C = C^ret x U: the covered share the agent used (U = 1 before any
-    rise was judged)."""
-    return cov * (1.0 if utilization is None else utilization)
+def confidence(cov: float, candidates: Sequence[Sequence[Dict[str, Any]]], kinds: Sequence[str]) -> float:
+    """C = C^ret x R: the coverage times the reasoning confidence of the
+    candidate lists of criteria of *kinds*."""
+    return cov * reasoning_confidence(list(candidates), list(kinds))
+
+
+def criteria_kinds(episode: Episode) -> List[str]:
+    """The kind of each of the episode's criteria, in order."""
+    return [c["kind"] for c in episode.criteria]
 
 
 def cited_support(records: List[Dict[str, Any]]) -> Set[str]:
     """Documents cited as support, with at least one verified span, in a
-    step's ``criteria_updates``; the records of invalid updates (``from``
-    null: unknown criterion id, duplicate update) are not applied and are
-    left out."""
+    step's ``criteria_updates``; records with ``from`` null are left out:
+    invalid updates (unknown criterion id, duplicate update), which are not
+    applied, and criteria without a status, which cite nothing."""
     return {e["doc_id"] for r in records if r.get("from") is not None
             for e in r.get("support") or [] if any(e.get("span_verified") or [])}
 
 
-def used_pairs(episode: Episode, t: Optional[int], used: List[Dict[str, Any]]) -> List[Tuple[bool, bool]]:
-    """``(judged, gold)`` of each rise judged with a valid value on the
-    agent turn of step *t* (None: the answer turn)."""
+def reasoner_items(episode: Episode, t: Optional[int], candidates: Sequence[Sequence[Dict[str, Any]]],
+                   gold: CandidateGold) -> List[Dict[str, Any]]:
+    """One ``{pairs, stated, missed}`` per gold criterion with gold answers
+    that has candidates after the call at step *t* (None: the final call),
+    or whose gold answer the call's agent turn states: ``pairs`` holds
+    ``(p, g)`` per candidate (probability, is a gold answer), ``missed`` is
+    true when the turn states the gold answer and no candidate is one.
+    *candidates* are in the order of the episode's gold criteria."""
     stated = episode.stated_at(t) or set()
-    return [(bool(u["utilized"]), u["id"] in stated) for u in used if u.get("utilized") is not None]
+    items = []
+    for c, cands in zip(episode.gold_criteria or [], candidates):
+        if not c["answers"] or not (cands or c["id"] in stated):
+            continue
+        pairs = [(candidate_probability(x["status"]), bool(gold.correct(episode, c["id"], x["value"])))
+                 for x in cands]
+        items.append({"pairs": pairs, "stated": c["id"] in stated,
+                      "missed": c["id"] in stated and not any(g for _, g in pairs)})
+    return items
 
 
-def call_row(episode: Episode, t: Optional[int], statuses: Sequence[str], utilization: Optional[float],
-             cited: Set[str], gold: Set[str], used: List[Dict[str, Any]], final: bool) -> Dict[str, Any]:
+def reasoner_reward(items: List[Dict[str, Any]]) -> Optional[float]:
+    """r_reas of one call: the mean over *items* (``reasoner_items``) of
+    the mean 1 - (p - g)^2 over the criterion's candidates, 0 for a missed
+    answer; None without items."""
+    if not items:
+        return None
+    return sum(0.0 if it["missed"] else sum(1.0 - (p - g) ** 2 for p, g in it["pairs"]) / len(it["pairs"])
+               for it in items) / len(items)
+
+
+def call_row(episode: Episode, t: Optional[int], statuses: Sequence[str],
+             candidates: Sequence[Sequence[Dict[str, Any]]], cited: Set[str], gold_docs: Set[str],
+             gold: CandidateGold, final: bool) -> Dict[str, Any]:
     """The ``measures`` row of one scored updater call: at step *t* (None:
     the final call, on the answer turn), with the belief after it."""
     cov = coverage(statuses)
     recall = episode.steps[t].recall_so_far if t is not None else (
         episode.steps[-1].recall_so_far if episode.steps else None)
-    return {"cited": cited, "gold": gold, "coverage": cov, "recall": recall,
-            "used": used_pairs(episode, t, used), "confidence": confidence(cov, utilization),
+    return {"cited": cited, "gold": gold_docs, "coverage": cov, "recall": recall,
+            "reasoner": reasoner_items(episode, t, candidates, gold),
+            "confidence": confidence(cov, candidates, criteria_kinds(episode)),
             "final": final, "correct": episode.correct}
 
 
-def teacher_trace(episode: Episode) -> List[Dict[str, Any]]:
+def _replay_candidates(lists: List[List[Dict[str, Any]]], index: Dict[str, int],
+                       records: List[Dict[str, Any]]) -> None:
+    """Apply saved ``candidate_updates`` records to per-criterion *lists*."""
+    for r in records:
+        if r.get("after") is not None and r["id"] in index:
+            lists[index[r["id"]]] = r["after"]
+
+
+def teacher_candidate_values(episode: Episode) -> List[Tuple[str, str]]:
+    """``(criterion id, value)`` of every candidate the teacher kept."""
+    records = [r for s in episode.steps for r in s.teacher_candidates] + episode.teacher_final_candidates
+    return [(r["id"], c["value"]) for r in records for c in r.get("after") or []]
+
+
+def teacher_trace(episode: Episode, gold: CandidateGold) -> List[Dict[str, Any]]:
     """Per call of the teacher's matched replay, a ``measures`` row.  The
     statuses after a step are the ``to`` of its saved records (unchanged
-    when the updater was not called or failed), U from the saved
-    ``utilized_updates``; the last row is the final one when the whole
-    episode replayed."""
-    statuses = [INITIAL_STATUS] * len(episode.criteria)
-    used_gain = judged_gain = 0
+    when the updater was not called or failed), the candidates the saved
+    ``candidate_updates`` applied; the last row is the final one when the
+    whole episode replayed."""
+    statuses = [initial_status(c["kind"]) for c in episode.criteria]
+    candidates: List[List[Dict[str, Any]]] = [[] for _ in episode.criteria]
+    index = {c["id"]: k for k, c in enumerate(episode.criteria)}
+    ids = list(index)
     trace = []
-
-    def add_used(used: List[Dict[str, Any]]) -> None:
-        nonlocal used_gain, judged_gain
-        for u in used:
-            if u.get("utilized") is not None:
-                judged_gain += u["rise"]
-                used_gain += u["rise"] if u["utilized"] else 0
-
     for t, step in enumerate(episode.steps[:episode.replay_steps]):
-        records = [r for r in step.teacher_updates if r.get("from") is not None]
-        if len(records) == len(statuses):
+        # One record per criterion, in criteria order, comes first
+        # (``BeliefState.update``); records of invalid updates follow.
+        records = step.teacher_updates[:len(ids)]
+        if [r.get("id") for r in records] == ids:
             statuses = [r["to"] for r in records]
-        add_used(step.teacher_used)
-        trace.append(call_row(episode, t, statuses, used_gain / judged_gain if judged_gain else None,
-                              cited_support(step.teacher_updates), episode.shown_gold(t), step.teacher_used, False))
+        _replay_candidates(candidates, index, step.teacher_candidates)
+        trace.append(call_row(episode, t, statuses, candidates, cited_support(step.teacher_updates),
+                              episode.shown_gold(t), gold, False))
     if trace and episode.replay_steps == len(episode.steps):
-        if episode.teacher_final_used:
-            add_used(episode.teacher_final_used)
-            trace.append(call_row(episode, None, statuses, used_gain / judged_gain if judged_gain else None,
-                                  set(), set(), episode.teacher_final_used, False))
+        if episode.teacher_final_output is not None:
+            _replay_candidates(candidates, index, episode.teacher_final_candidates)
+            trace.append(call_row(episode, None, statuses, candidates, set(), set(), gold, False))
         trace[-1]["final"] = True
     return trace
 
@@ -139,9 +188,11 @@ def _prf(tp: int, fp: int, fn: int) -> Tuple[float, float, float]:
     return p, r, f
 
 
-def assess(episodes: List[Episode]) -> Dict[str, Any]:
-    """The teacher's scores over *episodes* (the matched replay calls)."""
-    return measures([row for ep in episodes for row in teacher_trace(ep)])
+def assess(episodes: List[Episode], gold: CandidateGold) -> Dict[str, Any]:
+    """The teacher's scores over *episodes* (the matched replay calls); the
+    teacher's candidates must be resolved in *gold* first
+    (``teacher_candidate_values``)."""
+    return measures([row for ep in episodes for row in teacher_trace(ep, gold)])
 
 
 def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, float]:
@@ -157,7 +208,10 @@ def measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     known ``correct`` give the final measures."""
     tp = fp = fn = 0
     cov, rec, conf, final_cov, y = [], [], [], [], []
-    used = [p for r in rows for p in r["used"]]
+    items = [it for r in rows for it in r["reasoner"]]
+    pairs = [pg for it in items for pg in it["pairs"]]
+    tops = [max(it["pairs"], key=lambda pg: pg[0])[1] for it in items if it["pairs"]]
+    stated = [it["missed"] for it in items if it["stated"]]
     for t in rows:
         tp += len(t["cited"] & t["gold"])
         fp += len(t["cited"] - t["gold"])
@@ -170,8 +224,7 @@ def measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             final_cov.append(t["coverage"])
             y.append(float(t["correct"]))
     p, r, f = _prf(tp, fp, fn)
-    up, ur, uf = _prf(sum(a and g for a, g in used), sum(a and not g for a, g in used),
-                      sum(g and not a for a, g in used))
+    pp, pg = np.array([p for p, _ in pairs]), np.array([float(g) for _, g in pairs])
     c, g = np.array(cov), np.array(rec)
     yy = np.array(y)
     return {
@@ -180,10 +233,12 @@ def measures(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "coverage_recall_rmse": float(np.sqrt(((c - g) ** 2).mean())) if len(c) else math.nan,
         "coverage_recall_tau_b": float(kendalltau(c, g)[0]) if len(c) > 1 else math.nan,
         "support_precision": p, "support_recall": r, "support_f1": f,
-        "utilized_judged": len(used),
-        "utilized_accuracy": sum(a == g for a, g in used) / len(used) if used else math.nan,
-        "utilized_gold_rate": sum(g for _, g in used) / len(used) if used else math.nan,
-        "utilized_precision": up, "utilized_recall": ur, "utilized_f1": uf,
+        "candidates_scored": len(pairs),
+        "candidate_brier": float(((pp - pg) ** 2).mean()) if len(pairs) else math.nan,
+        "candidate_auroc": _auroc(pg, pp),
+        "candidate_gold_rate": float(pg.mean()) if len(pairs) else math.nan,
+        "top_candidate_accuracy": sum(tops) / len(tops) if tops else math.nan,
+        "missed_rate": sum(stated) / len(stated) if stated else math.nan,
         "final_judged": len(yy),
         **_final_measures("final", np.array(conf), yy),
         **_final_measures("final_coverage", np.array(final_cov), yy),

@@ -178,20 +178,20 @@ class BeliefUpdateSignal:
     """Belief update of each step and the change it makes.
 
     The stateful updater sees the current belief with its attached evidence
-    and the documents of the step it has not judged in an earlier step, and
-    updates the criteria they support, contradict or relate to; a status can go
-    up (new or combined evidence) or down (a contradiction or a passage that
-    points against it) by any number of
-    levels.  Delta^D = sum_k (level_t(k) - level_{t-1}(k)) over the status
-    levels (``types.STATUS_LEVEL``, -2 to 4, "unknown" 0); it is positive
-    when the passages cover more of the criteria and negative when they
-    turn against them.  The same call judges the rises of the previous call
-    against the agent's turn of this step (``BeliefState.judge``), so a step
-    with rises to judge calls the updater even without a new document.  With
-    nothing to do the updater is not called and Delta^D is 0; when the
-    updater fails the belief is unchanged, Delta^D is null, the step's
-    documents stay unjudged, so a later step that retrieves them shows them
-    again, and the pending rises stay unjudged.
+    and answer candidates, the agent's turn of the step and the documents of
+    the step it has not judged in an earlier step, and updates the criteria
+    the documents support, contradict or relate to; a status can go up (new
+    or combined evidence) or down (a contradiction or a passage that points
+    against it) by any number of levels.  Delta^D = sum_k (level_t(k) -
+    level_{t-1}(k)) over the status levels (``types.STATUS_LEVEL``, -2 to 4,
+    "unknown" 0) of the criteria with a status; it is positive when the passages cover more of the
+    criteria and negative when they turn against them.  The same call
+    rewrites the answer candidates the turn changes (``BeliefState.revise``),
+    so a step with a turn calls the updater even without a new document
+    (except for a query without candidates).  With nothing to do the updater
+    is not called and Delta^D is 0; when the updater fails the belief and
+    the candidates are unchanged, Delta^D is null, and the step's documents
+    stay unjudged, so a later step that retrieves them shows them again.
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
@@ -211,8 +211,8 @@ class BeliefUpdateSignal:
     def statuses(self) -> Optional[List[str]]:
         return list(self._state.statuses) if self._state is not None else None
 
-    def utilized(self) -> Optional[List[int]]:
-        return list(self._state.utilized) if self._state is not None else None
+    def candidates(self) -> Optional[List[List[Dict[str, Any]]]]:
+        return self._state.candidate_lists() if self._state is not None else None
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
@@ -222,57 +222,60 @@ class BeliefUpdateSignal:
     def score(
         self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None,
     ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]], Optional[str], List[str]]:
-        """Return ``(delta, updates, utilized, raw, errors)`` for the step's
-        unique *docs* and the agent's turn of the step (*agent_turn*; None:
-        the pending rises are not judged); *updates* has one record per
-        criterion (``BeliefState.update``), *utilized* one per pending rise
-        (``BeliefState.judge``), *raw* is the updater's reply (None when it
-        was not called).  Documents without an id are shown every step."""
+        """Return ``(delta, updates, candidates, raw, errors)`` for the
+        step's unique *docs* and the agent's turn of the step (*agent_turn*;
+        None: no turn to read); *updates* has one record per criterion
+        (``BeliefState.update``), *candidates* one per criterion whose
+        candidates the call rewrote (``BeliefState.revise``), *raw* is the
+        updater's reply (None when it was not called).  Documents without
+        an id are shown every step."""
         if self._state is None:
             return None, [], [], None, []
         docs = self.unjudged(docs)
-        if not docs and not (self._state.pending and agent_turn is not None):
+        turn = agent_turn if self.updater.candidates else None
+        if not docs and turn is None:
             return 0, [], [], None, []
-        updates, judgments, raw, errors = self.updater.update(self._query, self._state, docs, step, agent_turn)
-        delta, records, used = self.apply(docs, updates, judgments, raw, step)
-        return delta, records, used, raw, errors
+        updates, cands, raw, errors = self.updater.update(self._query, self._state, docs, step, turn)
+        delta, records, revised = self.apply(docs, updates, cands, raw, turn)
+        return delta, records, revised, raw, errors
 
     def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """The documents of *docs* the updater has not judged yet."""
         return [d for d in docs if _doc_id(d) not in self._judged]
 
     def apply(
-        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], judgments: Optional[List[Any]],
-        raw: Optional[str], step: Optional[int] = None,
+        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], candidates: Optional[List[Any]],
+        raw: Optional[str], agent_turn: Optional[str] = None,
     ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Apply the updater's result on the unjudged *docs*: return
-        ``(delta, records, utilized)``.  The pending rises are judged first
-        (*judgments*), then the statuses updated, whose rises become the
-        new pending ones.  *updates* None (failed call) leaves the belief
-        and the judged documents unchanged, and the pending rises are
-        dropped unjudged (a rise is judged on the turn right after it only);
-        *raw* None (not called) only marks *docs* judged."""
+        """Apply the updater's result on the unjudged *docs* and the agent's
+        turn shown to it (*agent_turn*, added to the candidates' anchors
+        first): return ``(delta, records, revised)``.  *updates* None
+        (failed call) leaves the belief, the candidates and the judged
+        documents unchanged; *raw* None (not called) only marks *docs*
+        judged; *candidates* None (the reply has no list) leaves the
+        candidates unchanged."""
+        self._state.read_turn(agent_turn)
         if updates is None:
-            return None, [], self._state.judge(None, note="call failed")
+            return None, [], []
         self._judged.update(i for i in map(_doc_id, docs) if i)
         if raw is None:
             return 0, [], []
-        used = self._state.judge(judgments, note="" if judgments is not None else "reply has no 'utilized' list")
         before = list(self._state.statuses)
-        records = self._state.update(updates, step)
+        records = self._state.update(updates)
         after = list(self._state.statuses)
-        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after)), records, used
+        revised = self._state.revise(candidates) if candidates is not None else []
+        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after) if b is not None), records, revised
 
     def finish(self, step: int, agent_turn: str) -> Tuple[List[Dict[str, Any]], Optional[str], List[str]]:
-        """The final call: the rises of the last step judged against the
-        agent's answer turn, no document.  Returns ``(utilized, raw,
-        errors)``; nothing when no rise is pending."""
-        if self._state is None or not self._state.pending:
+        """The final call: the candidates read from the agent's answer turn,
+        no document.  Returns ``(revised, raw, errors)``; nothing for a
+        query without candidates."""
+        if self._state is None or not self.updater.candidates:
             return [], None, []
-        updates, judgments, raw, errors = self.updater.update(self._query, self._state, [], step, agent_turn)
+        updates, cands, raw, errors = self.updater.update(self._query, self._state, [], step, agent_turn)
         # No passage: any status the reply writes is ignored.
-        _, _, used = self.apply([], None if updates is None else [], judgments, raw, step)
-        return used, raw, errors
+        _, _, revised = self.apply([], None if updates is None else [], cands, raw, agent_turn)
+        return revised, raw, errors
 
 
 # ---------------------------------------------------------------------------

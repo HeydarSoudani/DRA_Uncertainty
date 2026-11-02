@@ -14,11 +14,12 @@ status can move up or down); the other criteria keep their status.
   ``GoldCriteriaSource`` reads a training pool's gold criteria.
 - ``BeliefState``: b_t and the evidence attached to each criterion.
 
-Each criterion is closed (one fact), open (several parts or answers that
-documents establish only together) or, in a report request, an aspect of the
-topic.  A set query ends with a rest criterion, "any other member:
-<property>", for the members the extractor did not list.  The kind follows
-from the dataset's query shape and the criterion's position and text
+Each criterion is closed (one fact) or, in a report request, an aspect of
+the topic.  A set query lists its members as closed criteria, then a rest
+criterion, "any other member: <property>", for the members the extractor
+did not list, then an aggregate criterion, how the answer follows from the
+members' values, as in the gold criteria of the training pools.  The kind
+follows from the dataset's query shape and the criterion's position
 (``_kinds``); the extractor only lists the criteria.
 
 The belief updater and the query scorer are in ``judges``.
@@ -39,8 +40,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    ASPECT, CLOSED, INITIAL_STATUS, MULTI_ASPECT, OPEN, QUERY_SHAPES, REST, SET, STATUS_LEVEL,
-    Criterion, CriterionUpdate, Evidence, UtilizedJudgment,
+    AGGREGATE, ASPECT, CLOSED, MAX_CANDIDATES, MULTI_ASPECT, QUERY_SHAPES, REASONING_KINDS_EXCLUDED, REST,
+    REST_PAIR, SET, STATUSLESS_KINDS, Candidate, CandidateUpdate, Criterion, CriterionUpdate, Evidence,
+    candidate_probability, initial_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,39 +77,55 @@ def _is_rest(text: str) -> bool:
 
 def _kinds(shape: str, texts: List[str]) -> List[str]:
     """Kind of each criterion of a *shape* query: every clue of a single
-    target and every hop of a multi-hop query is closed; the first criterion
-    of a set query (the complete set) is open, its rest criterion is rest and
-    its members are closed; every report criterion is an aspect."""
+    target and every hop of a multi-hop query is closed; a set query's list
+    (``_set_layout``) is its members (closed), the rest criterion and the
+    aggregate; every report criterion is an aspect."""
     if shape == MULTI_ASPECT:
         return [ASPECT] * len(texts)
-    if shape == SET:
-        return [OPEN if k == 0 else REST if _is_rest(t) else CLOSED for k, t in enumerate(texts)]
+    if shape == SET and len(texts) >= 2:
+        return [CLOSED] * (len(texts) - 2) + [REST, AGGREGATE]
     return [CLOSED] * len(texts)
 
 
-def _set_with_rest(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
-    """A set query's criteria as the prompt asks: the set criterion, the
-    members, then one rest criterion (added with the members' property when
-    the model left it out), within *cap* (at least 2) by leaving out
-    members.  Every left-out item is noted in ``info["warnings"]``."""
+def _set_layout(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
+    """A set query's criteria as the prompt asks: the members, one rest
+    criterion, then the aggregate, within *cap* (at least 3) by leaving out
+    members.  The aggregate is the first item after the rest criterion or,
+    without one, the last item when it is not "<member>: <property>".  A
+    missing rest criterion is added with the members' property, a missing
+    aggregate with a generic text.  Every change is noted in
+    ``info["warnings"]``."""
     if not items:
         return items
-    first, rest = items[0], [t for t in items[1:] if _is_rest(t)]
-    members = [t for t in items[1:] if not _is_rest(t)]
-    if rest:
-        rest_item = rest[0]
-        if len(rest) > 1:
-            info.setdefault("warnings", []).append(
-                f"rest: kept the first of {len(rest)} rest criteria, dropped {rest[1:]}")
+    warnings = info.setdefault("warnings", [])
+    rest_at = next((k for k, t in enumerate(items) if _is_rest(t)), None)
+    if rest_at is not None:
+        members, after = items[:rest_at], items[rest_at + 1:]
+        rest_item = items[rest_at]
+        extra_rest = [t for t in after if _is_rest(t)]
+        if extra_rest:
+            warnings.append(f"rest: kept the first of {len(extra_rest) + 1} rest criteria, dropped {extra_rest}")
+        after = [t for t in after if not _is_rest(t)]
+        aggregate = after[0] if after else None
+        if len(after) > 1:
+            warnings.append(f"aggregate: kept the first item after the rest criterion, dropped {after[1:]}")
     else:
-        prop = next((t.rsplit(":", 1)[1].strip() for t in members if ":" in t), "")
+        aggregate = items[-1] if ":" not in items[-1] else None
+        members = items[:-1] if aggregate is not None else list(items)
+        rest_item = None
+    prop = next((t.rsplit(":", 1)[1].strip() for t in members if ":" in t), "")
+    if rest_item is None:
         rest_item = f"{REST_SUBJECT}: {prop or 'the property the query asks about'}"
-        info.setdefault("warnings", []).append("rest: added the missing rest criterion")
+        warnings.append("rest: added the missing rest criterion")
+    if aggregate is None:
+        aggregate = f"the answer the query computes from every member's {prop or 'value'}"
+        warnings.append("aggregate: added the missing aggregate criterion")
     keep = cap - 2
     if len(members) > keep:
-        info.setdefault("warnings", []).append(
-            f"cap: kept {keep} of {len(members)} members, dropped {members[keep:]}")
-    return [first] + members[:keep] + [rest_item]
+        warnings.append(f"cap: kept {keep} of {len(members)} members, dropped {members[keep:]}")
+    if not warnings:
+        del info["warnings"]
+    return members[:keep] + [rest_item, aggregate]
 
 
 # ---------------------------------------------------------------------------
@@ -129,23 +147,25 @@ class CriteriaSource(ABC):
 class LLMCriteriaSource(CriteriaSource):
     """Derives the criteria of the query with one LLM call.
 
-    The dataset's query shape (single target, set or multi-aspect) picks the
-    prompt and the kind of each criterion; the model only lists the
-    criteria, as strings.  The shape is saved in *info* as ``query_shape``.
+    The dataset's query shape (single target, multi-hop, set or
+    multi-aspect) picks the prompt and the kind of each criterion; the
+    model only lists the criteria, as strings.  The shape is saved in
+    *info* as ``query_shape``.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
-            ``max_criteria`` in layout.DATASET_SPECS); at least 2 for a
-            set query (the set and the rest criterion).  For a multi-aspect
+            ``max_criteria`` in layout.DATASET_SPECS); at least 3 for a
+            set query (a member, the rest criterion and the aggregate).  For a multi-aspect
             query it is the number of criteria the model may add to the
             request's own, asked in the prompt; the list is kept whole, since
             a cut could drop a criterion the request states.
         model_name: Saved in the meta line.
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
-        query_shape: ``"single_target"``, ``"set"`` or ``"multi_aspect"``
-            (the dataset's ``query_shape`` in layout.DATASET_SPECS).
+        query_shape: ``"single_target"``, ``"multi_hop"``, ``"set"`` or
+            ``"multi_aspect"`` (the dataset's ``query_shape`` in
+            layout.DATASET_SPECS).
     """
 
     def __init__(
@@ -159,9 +179,9 @@ class LLMCriteriaSource(CriteriaSource):
     ) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
-        if query_shape == SET and max_criteria < 2:
-            raise ValueError(f"max_criteria={max_criteria} for a set query; it needs at least 2 "
-                             "(the set criterion and the rest criterion)")
+        if query_shape == SET and max_criteria < 3:
+            raise ValueError(f"max_criteria={max_criteria} for a set query; it needs at least 3 "
+                             "(a member, the rest criterion and the aggregate)")
         self._shape = query_shape
         self._system = CRITERIA_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
@@ -233,7 +253,7 @@ class LLMCriteriaSource(CriteriaSource):
             info["raw"] = raw
 
         if self._shape == SET:
-            items = _set_with_rest(items, self._max_criteria, info)
+            items = _set_layout(items, self._max_criteria, info)
         elif self._shape != MULTI_ASPECT:
             items = items[:self._max_criteria]
         criteria = [
@@ -347,17 +367,30 @@ class BankedCriteriaSource(CriteriaSource):
 GOLD_CRITERIA_MODEL = "gold"
 
 
+# The annotation level of a query whose gold criteria are used (every
+# criterion with gold answers and documents; training_pool/annotations.py).
+GOLD_CRITERIA_LEVEL = "full"
+
+
 class GoldCriteriaSource(CriteriaSource):
     """Reads each query's gold criteria from a training pool's gold criteria
     file (``layout.gold_criteria_path``, written by the pool build,
     ``training_pool/gold_criteria.py``): per query, its criteria with their
     gold intermediate answers and documents.  Only the criteria (id, text,
-    kind) reach the belief model; a query without criteria or whose texts
-    failed (``texts_ok``) gets none (the belief model is then off for it)."""
+    kind) reach the belief model, and only of a query with the full
+    annotation (``level``) and criterion texts (``texts_ok``).
 
-    def __init__(self, path: Path | str, query_shape: str) -> None:
+    Any other query (no row, no full annotation, failed texts, or another
+    query text: ``missing``) gets its criteria from *fallback* (the
+    criteria extractor, through the bank, as on any dataset), with ``ood:
+    true`` and the reason (``gold_missing``) in its info, so the belief
+    model always runs; training uses only the queries with gold criteria.
+    Without *fallback* such a query gets none."""
+
+    def __init__(self, path: Path | str, query_shape: str, fallback: Optional[CriteriaSource] = None) -> None:
         self.path = Path(path)
         self._shape = query_shape
+        self._fallback = fallback
         self._rows: Dict[str, Dict[str, Any]] = {}
         if self.path.exists():
             with open(self.path, encoding="utf-8") as f:
@@ -366,41 +399,104 @@ class GoldCriteriaSource(CriteriaSource):
                         row = json.loads(line)
                         self._rows[str(row["id"])] = row
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "errors": []}
+    def missing(self, query_id: Optional[str], query: str) -> Optional[str]:
+        """Why the query has no gold criteria to use, or None when it has."""
         row = self._rows.get(str(query_id))
-        if row is None or not row.get("texts_ok") or not row.get("criteria"):
-            info["errors"].append(f"gold criteria: none for query {query_id} in {self.path}")
-            return [], info
-        if row.get("query") is not None and row["query"] != query:
-            info["errors"].append(f"gold criteria: the query of {query_id} in {self.path} differs")
-            return [], info
-        return [Criterion(id=c["id"], text=c["text"], kind=c["kind"]) for c in row["criteria"]], info
+        if row is None:
+            return f"no row for query {query_id} in {self.path}"
+        if row.get("level") != GOLD_CRITERIA_LEVEL:
+            return f"annotation level {row.get('level')!r}, not {GOLD_CRITERIA_LEVEL!r}"
+        if not row.get("texts_ok") or not row.get("criteria"):
+            return "no criterion texts"
+        if row.get("text") is not None and row["text"] != query:
+            return f"the query of {query_id} in {self.path} differs"
+        return None
+
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+        reason = self.missing(query_id, query)
+        if reason is None:
+            info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "errors": []}
+            return [Criterion(id=c["id"], text=c["text"], kind=c["kind"])
+                    for c in self._rows[str(query_id)]["criteria"]], info
+        if self._fallback is None:
+            return [], {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape,
+                        "errors": [f"gold criteria: {reason}"]}
+        criteria, info = self._fallback.get(query_id, query)
+        return criteria, {**info, "ood": True, "gold_missing": reason}
 
 
 # ---------------------------------------------------------------------------
 # Belief state
 # ---------------------------------------------------------------------------
 
-def rise(before: str, after: str) -> int:
-    """How far a status change raised the criterion's coverage: the gain in
-    clipped status level (negative levels count as 0), 0 for no gain."""
-    return max(max(STATUS_LEVEL[after], 0) - max(STATUS_LEVEL[before], 0), 0)
+def _alnum(text: str) -> str:
+    return "".join(ch for ch in text.lower() if ch.isalnum())
+
+
+# A value whose letters and digits are this short, or only digits, must
+# match whole words of the turn: "3" must not match inside "13".
+SHORT_VALUE_CHARS = 3
+
+
+def _whole_word(turn: str, start: int, end: int) -> bool:
+    """*turn[start:end]* is not part of a longer word or number."""
+    return ((start == 0 or not turn[start - 1].isalnum())
+            and (end == len(turn) or not turn[end].isalnum()))
+
+
+def anchor(value: str, turns: List[str]) -> Optional[str]:
+    """The text of *turns* matching *value* (case, whitespace and
+    punctuation ignored, so "12,388" matches "12388"), from the latest turn
+    that has it, or None.  A short or numeric value (``SHORT_VALUE_CHARS``)
+    matches only whole words or numbers."""
+    target = _alnum(value)
+    if not target:
+        return None
+    whole = len(target) <= SHORT_VALUE_CHARS or target.isdigit()
+    for turn in reversed(turns):
+        keys, pos = [], []
+        for i, ch in enumerate(turn):
+            for k in ch.lower():
+                if k.isalnum():
+                    keys.append(k)
+                    pos.append(i)
+        joined = "".join(keys)
+        j = joined.find(target)
+        while j >= 0:
+            start, end = pos[j], pos[j + len(target) - 1] + 1
+            if not whole or _whole_word(turn, start, end):
+                return turn[start:end]
+            j = joined.find(target, j + 1)
+    return None
+
+
+def anchor_candidate(value: str, kind: str, turns: List[str]) -> Optional[str]:
+    """The candidate *value* as the agent's turns write it (``anchor``), or
+    None.  A rest candidate "<member>: <value>" (``REST_PAIR``) is anchored
+    part by part, since the agent need not write the two together."""
+    if kind == REST and REST_PAIR in value:
+        member, val = (anchor(part.strip(), turns) for part in value.split(REST_PAIR, 1))
+        return f"{member}{REST_PAIR}{val}" if member is not None and val is not None else None
+    return anchor(value, turns)
 
 
 class BeliefState:
     """Belief state b_t: per criterion, its belief status and its evidence
-    (retrieval), and how much of what raised it the agent used (reasoner).
+    (retrieval), and its answer candidates (reasoner).
 
-    b_0 gives every criterion ``INITIAL_STATUS``.  Each step the belief
-    updater updates the criteria that the step's new passages support,
-    contradict or relate to, from the current belief and those passages
-    (Agent-BRACE style), and ``update`` takes the statuses as written:
+    b_0 gives every criterion ``INITIAL_STATUS`` (an aggregate criterion,
+    ``STATUSLESS_KINDS``, has no status: None) and no candidate.  Each
+    step the belief updater updates the criteria that the step's new
+    passages support, contradict or relate to, from the current belief and
+    those passages (Agent-BRACE style), and ``update`` takes the statuses as
+    written:
 
     - the updater lists only the criteria the step's passages support,
       contradict or relate to; each listed criterion takes the status it gave;
     - a criterion the updater left out, or gave no valid status, keeps its
       status (``note`` says why);
+    - an update of a criterion without a status is ignored, its cited
+      passages too (``note``);
     - a cited passage is attached only with at least one span that occurs
       in it verbatim (``Evidence.verified_spans``); the others are dropped.
       This guards the evidence only, never the status;
@@ -409,41 +505,39 @@ class BeliefState:
 
     The updater sees the attached evidence in later steps.
 
-    Use by the agent (RAGChecker's context utilization, per rise): each
-    step's rises (``rise``: a status change that gains clipped level) are
-    kept as ``pending``, with the verified spans of the passages cited for
-    them; the next call judges each against the agent's turn after the step
-    (``judge``) and clears them.  ``utilized[k]`` sums the gains of
-    criterion k's rises judged utilized, ``judged_rise[k]`` the gains of all
-    its judged rises.  A rise never judged (failed call, no later call)
-    counts in neither.  Both only grow: a later contradiction lowers the
-    status, not what the agent used.
+    Answer candidates: the same call reads the agent's turn of the step
+    (``read_turn``) and rewrites the candidate list of each criterion whose
+    candidates the turn changes (``revise``): the answers the agent
+    currently considers for it, from its memory or from the passages, each
+    with a status for how likely it is correct.  A candidate is kept only
+    when its value occurs in an agent turn read so far (``anchor_candidate``)
+    and it
+    has a valid status, at most ``MAX_CANDIDATES[kind]`` per criterion; the
+    other criteria keep their list.
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
-        self.statuses: List[str] = [INITIAL_STATUS] * len(self.criteria)
+        self.statuses: List[Optional[str]] = [initial_status(c.kind) for c in self.criteria]
         self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
-        self.utilized: List[int] = [0] * len(self.criteria)
-        self.judged_rise: List[int] = [0] * len(self.criteria)
-        # The rises of the last applied update, to judge in the next call:
-        # {id, from, to, step, rise, spans: [(verified spans, title), ...]}.
-        self.pending: List[Dict[str, Any]] = []
+        self.candidates: List[List[Candidate]] = [[] for _ in self.criteria]
+        # The agent turns read so far, in order (the candidates' anchors).
+        self.turns: List[str] = []
 
     def attached(self, k: int, limit: Optional[int] = None) -> List[Evidence]:
         """Evidence of criterion *k*, oldest first; the last *limit* when set."""
         items = self._evidence[k]
         return items[-limit:] if limit else list(items)
 
-    def update(self, updates: List[CriterionUpdate], step: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Apply the belief the updater wrote for one step (*step*, kept
-        with the step's rises in ``pending``).
+    def update(self, updates: List[CriterionUpdate]) -> List[Dict[str, Any]]:
+        """Apply the statuses the updater wrote for one step.
 
         Returns one record per criterion, in criteria order, then one per
         update with an unknown or repeated id: ``{id, from, to, written,
         support, contradict, reason, note}``.  ``written`` is the status as
-        the updater wrote it (null when left out); ``support`` and
+        the updater wrote it (null when left out); ``from`` and ``to`` are
+        null for a criterion without a status; ``support`` and
         ``contradict`` are the passages as cited, with ``span_verified``.
         Only the first update of a criterion is used.
         """
@@ -473,6 +567,10 @@ class BeliefState:
             if u is None:
                 record["note"] = "not updated; status kept"
                 continue
+            if c.kind in STATUSLESS_KINDS:
+                record.update(written=u.status, reason=u.reason,
+                              note=f"{c.kind} criterion has no status; update ignored")
+                continue
             record.update(
                 written=u.status, reason=u.reason,
                 support=[e.to_dict() for e in u.support],
@@ -494,51 +592,71 @@ class BeliefState:
                 self.statuses[k] = u.status
                 record["to"] = u.status
             record["note"] = "; ".join(notes)
-        self.pending = [
-            {"id": c.id, "from": r["from"], "to": r["to"], "step": step, "rise": rise(r["from"], r["to"]),
-             "spans": [(e.verified_spans, e.title) for e in first[k].support if e.verified_spans]}
-            for k, (c, r) in enumerate(zip(self.criteria, records)) if rise(r["from"], r["to"]) > 0
-        ]
         return records + extra
 
-    def judge(self, judgments: Optional[List[UtilizedJudgment]], note: str = "") -> List[Dict[str, Any]]:
-        """Apply the judgments of the pending rises and clear them.
+    def read_turn(self, turn: Optional[str]) -> None:
+        """Add the agent's turn of the step to the candidates' anchors."""
+        if turn and turn.strip():
+            self.turns.append(turn)
 
-        Returns one record per pending rise, in criteria order: ``{id, from,
-        to, step, rise, utilized, span, span_verified, reason, note}``;
-        ``utilized`` is null when the rise got no valid judgment (then it
-        counts in neither ``utilized`` nor ``judged_rise``).  *judgments*
-        None (the call failed or made none) leaves every rise unjudged, with
-        *note*.  Only the first judgment of a pending criterion is used;
-        judgments of other criteria are ignored."""
-        by_id: Dict[str, UtilizedJudgment] = {}
-        for j in judgments or []:
-            by_id.setdefault(j.id, j)
-        records = []
-        for p in self.pending:
-            j = by_id.get(p["id"]) if judgments is not None else None
-            record = {k: p[k] for k in ("id", "from", "to", "step", "rise")}
-            record.update(utilized=None, span="", span_verified=False, reason="", note=note)
-            if j is not None:
-                record.update(utilized=j.utilized, span=j.span, span_verified=j.span_verified, reason=j.reason)
-                if j.utilized is None:
-                    record["note"] = "no valid utilized value"
-            elif judgments is not None:
-                record["note"] = "not judged"
-            if record["utilized"] is not None:
-                k = self._index[p["id"]]
-                self.judged_rise[k] += p["rise"]
-                if record["utilized"]:
-                    self.utilized[k] += p["rise"]
+    def revise(self, updates: List[CandidateUpdate]) -> List[Dict[str, Any]]:
+        """Apply the candidate lists the updater wrote for one step.
+
+        Returns one record per listed criterion, then one per update with
+        an unknown or repeated id: ``{id, before, after, written, reason,
+        note}``; ``before`` / ``after`` are the lists as kept, ``written``
+        the list as written, each candidate with ``anchored``.  A written
+        candidate is dropped (``note``) when its value occurs in no agent
+        turn read so far, when it has no valid status, when it repeats an
+        earlier value of the list, or beyond the cap of the criterion's kind.
+        Only the first update of a criterion is used.
+        """
+        records: List[Dict[str, Any]] = []
+        seen = set()
+        for u in updates:
+            k = self._index.get(u.id)
+            kind = self.criteria[k].kind if k is not None else CLOSED
+            written = []
+            for c in u.candidates:
+                matched = anchor_candidate(c.value, kind, self.turns)
+                c.anchored = matched is not None
+                c.value = matched or c.value
+                written.append({**c.to_dict(), "anchored": c.anchored})
+            record = {"id": u.id, "before": None, "after": None, "written": written,
+                      "reason": u.reason, "note": ""}
             records.append(record)
-        self.pending = []
+            if k is None or k in seen:
+                record["note"] = "unknown criterion id" if k is None else "duplicate update"
+                continue
+            seen.add(k)
+            cap = MAX_CANDIDATES.get(self.criteria[k].kind, 0)
+            kept: List[Candidate] = []
+            notes = []
+            for c in u.candidates:
+                if not c.anchored:
+                    notes.append(f"{c.value!r} not in the agent's turns; dropped")
+                elif c.status is None:
+                    notes.append(f"{c.value!r} has no valid status; dropped")
+                elif any(_alnum(c.value) == _alnum(o.value) for o in kept):
+                    notes.append(f"{c.value!r} repeated; dropped")
+                elif len(kept) >= cap:
+                    notes.append(f"{c.value!r} over the cap of {cap}; dropped")
+                else:
+                    kept.append(c)
+            record["before"] = [c.to_dict() for c in self.candidates[k]]
+            record["after"] = [c.to_dict() for c in kept]
+            record["note"] = "; ".join(notes)
+            self.candidates[k] = kept
         return records
 
-    def utilization(self) -> Optional[float]:
-        """U: the share of the judged rises (by gain) the agent used; None
-        before any rise was judged."""
-        total = sum(self.judged_rise)
-        return sum(self.utilized) / total if total else None
+    def candidate_lists(self) -> List[List[Dict[str, Any]]]:
+        """Per criterion, its candidates (``{value, status}``)."""
+        return [[c.to_dict() for c in cands] for cands in self.candidates]
+
+    def reasoning_confidence(self) -> float:
+        """R: the mean over the criteria of the probability of their most
+        likely candidate (``reasoning_confidence``)."""
+        return reasoning_confidence(self.candidate_lists(), [c.kind for c in self.criteria])
 
     def sources(self) -> List[int]:
         """Per criterion, its distinct supporting documents."""
@@ -555,3 +673,13 @@ class BeliefState:
             {"id": c.id, "kind": c.kind, "status": status, "evidence": [e.to_dict() for e in ev]}
             for c, status, ev in zip(self.criteria, self.statuses, self._evidence)
         ]
+
+
+def reasoning_confidence(candidates: List[List[Dict[str, Any]]], kinds: List[str]) -> float:
+    """R of per-criterion candidate lists (``BeliefState.candidate_lists``)
+    of criteria of *kinds*: the mean over the criteria whose kind is not in
+    ``REASONING_KINDS_EXCLUDED`` of their top candidate probability, 0 for a
+    criterion without candidates and for no such criterion."""
+    tops = [max((candidate_probability(c["status"]) for c in cands), default=0.0)
+            for cands, kind in zip(candidates, kinds) if kind not in REASONING_KINDS_EXCLUDED]
+    return sum(tops) / len(tops) if tops else 0.0

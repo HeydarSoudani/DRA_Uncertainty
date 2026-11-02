@@ -8,22 +8,22 @@ For this query:
 ---example---
 Example query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
 
-Example criteria, with their current status:
+Example criteria, with their current status and answer candidates:
 c1 [certain]: the town where the Varn Folk Museum was founded
   - support: "The Varn Folk Museum was founded in Osby in 1921." (Varn Folk Museum)
+  - candidates: "Osby" [certain]
 c2 [unknown]: the engineer who was born in the town where the Varn Folk Museum was founded
+  - candidates: (none)
 c3 [unknown]: the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
+  - candidates: (none)
 
-Example criteria that rose in the previous step, with the passages that raised them:
-c1 [unknown -> certain]: "The Varn Folk Museum was founded in Osby in 1921." (Varn Folk Museum)
-
-Example agent turn after that step:
+Example agent turn:
 <agent_turn>
 Reasoning:
-The museum was founded in Osby, so I need an engineer who was born in Osby.
+The museum was founded in Osby, so I need an engineer who was born in Osby. I recall that the engineer Nils Berg came from Osby, but I should check.
 
 Search queries:
-1. engineer born in Osby lighthouse
+1. Nils Berg engineer Osby lighthouse
 </agent_turn>
 
 Example new passages:
@@ -49,7 +49,7 @@ Example output:
     {"id": "c2", "support": [{"passage": 1, "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]}], "contradict": [], "reason": "Passage 1 identifies Henrik Dahl as an engineer born in Osby, the town in the evidence of c1.", "status": "certain"},
     {"id": "c3", "support": [{"passage": 2, "spans": ["The Skarv Lighthouse was completed in 1889 to a design by Henrik Dahl"]}], "contradict": [], "reason": "Passage 2 gives a lighthouse designed by Henrik Dahl, whom passage 1 identifies as the engineer; the link takes both passages.", "status": "probable"}
   ],
-  "utilized": [
-    {"id": "c1", "span": "The museum was founded in Osby", "reason": "The turn states Osby, the town the passage gave, and searches from it.", "utilized": true}
+  "candidates": [
+    {"id": "c2", "reason": "The turn names Nils Berg from the agent's own knowledge, and no passage relates to him; Henrik Dahl, whom passage 1 gives, is not in the turn.", "candidates": [{"value": "Nils Berg", "status": "unknown"}]}
   ]
 }

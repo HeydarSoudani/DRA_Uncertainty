@@ -63,7 +63,7 @@ max_criteria: null                  # Cap on the number of criteria per query (n
 belief_judge_model: ""            # LLM of the belief updater (belief state, criteria_delta); "" = llm_criteria; a vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE)
 query_scorer_model: ""            # LLM of the query scorer (criteria attempts); "" = belief_judge_model
 criteria_bank: true                 # Read each query's criteria from CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl (shared with analysis/criteria_reachability.py); extract and add only the missing ones
-gold_criteria: false                # Training pools only: each query's gold criteria (TRAINING_POOL_ROOT/{pool}/gold/annotations_{split}.jsonl) instead of extracted ones; queries without them get no belief model
+criteria_source: llm               # Where each query's criteria come from: llm (extracted by llm_criteria, through the bank when criteria_bank is true) or gold (the training pools' gold criteria, the rows of TRAINING_POOL_ROOT/{pool}/queries/queries_all.jsonl; run folder belief-{mode}-gold). gold on a dataset without gold criteria, or for a query without them: a warning, and the extracted criteria are used
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────

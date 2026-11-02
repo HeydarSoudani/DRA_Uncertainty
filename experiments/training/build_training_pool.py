@@ -1,9 +1,18 @@
 """Build a training pool (``--pool``) under its dataset directory,
 data/training_pool/{pool} of the repo.
 
+Every pool has one row per query in ``queries/queries_all.jsonl``: the
+question and answer, its source, its split (``sft``, ``rl`` or ``val``)
+and its gold annotation (criteria with their gold answers, documents and
+texts; ``training_pool/annotations.py``), and its gold documents in
+``qrels/qrels_all.txt``.  The splits are views of that file
+(``dataset_loaders``: ``--subset sft`` of dra_inference reads the rows of
+split ``sft``).
+
 trqa_validation: the TRQA wiki1 + wiki2 validation queries, intermediate
-info and qrels merged into split ``all``, then split into ``sft``, ``rl``
-and ``val`` (one call, no ``--step``); it searches TRQA's wiki_partial
+info and qrels merged into those two files (one call, no ``--step``;
+``--limit N``: incremental, the next N queries not yet in the pool, wiki1
+then wiki2; 0 = rewrite the files only); it searches TRQA's wiki_partial
 corpus and indices; its gold annotation comes from the intermediate info,
 with the criterion texts written by an LLM (``gold_criteria`` section).
 
@@ -18,12 +27,11 @@ with their gold pages fetched from the source, one step per call
     2  fetch the gold pages (Wikipedia API, web,      pages/index.jsonl, pages/text.jsonl,
        Wayback fallback), Filter A (all gold pages,   queries/queries_all.jsonl,
        >= min_page_share with web gold pages), the    qrels/qrels_all.txt,
-       gold annotation (criteria, answers, fetched    gold/annotations_all.jsonl,
-       documents, level; the criterion texts by an    corpus/corpus.jsonl,
-       LLM, ``gold_criteria`` section), then split    queries/queries_{sft,rl,val}.jsonl,
-       ``all`` into sft / rl / val by a hash of the   qrels/qrels_{sft,rl,val}.txt,
-       query id (shares: ``split`` section)           gold/annotations_{sft,rl,val}.jsonl,
-                                                      gold/ids_{sft,rl,val}.txt
+       gold annotation (criteria, answers, fetched    corpus/corpus.jsonl,
+       documents, level; the criterion texts by an    criterion_texts.jsonl
+       LLM, ``gold_criteria`` section), the split
+       (full queries with the shares of the
+       ``split`` section; the others: val)
     3  hard negatives of the Wikipedia gold pages     negatives/index.jsonl,
        (Wikipedia API: morelike, category siblings;   pages/text.jsonl,
        at most max_per_gold each; ``negatives``       corpus/corpus.jsonl,
@@ -53,7 +61,8 @@ processed question and gold page, and a query keeps its split when the pool
 grows.  The criterion texts of an earlier run are kept; a run writes the
 texts of the new queries and retries those whose writer call failed.  Step
 2 and the trqa_validation build need the writer's API key
-(``OPENROUTER_API_KEY``).  Other page settings than the earlier runs' (``steps.PAGE_SETTINGS``),
+(``OPENROUTER_API_KEY``) when they have texts to write.  Other page
+settings than the earlier runs' (``steps.PAGE_SETTINGS``),
 other step 3 settings, or other split shares than the recorded ones are
 refused.  One build of a pool runs at a time (a lock file in its directory).
 """
@@ -68,7 +77,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from indexing_corpus_dataset.training_pool import trqa_validation
-from indexing_corpus_dataset.training_pool.splits import check_shares, write_splits
 from indexing_corpus_dataset.training_pool.config import POOLS, PoolPaths, load_config
 from indexing_corpus_dataset.training_pool.negatives import run_step3
 from indexing_corpus_dataset.training_pool.sources import LOADERS
@@ -85,13 +93,6 @@ def _non_negative_int(value: str) -> int:
     return n
 
 
-def _positive_int(value: str) -> int:
-    n = int(value)
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
-    return n
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build the training pool (questions, gold pages, hard negatives).",
@@ -101,9 +102,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pool", type=str, default="deep_qa", choices=POOLS, help="Training pool to build.")
     parser.add_argument("--step", type=int, default=None, choices=[1, 2, 3, 4], help="deep_qa (required): 1 questions, 2 gold pages + Filter A + gold annotation with criterion texts + sft / rl / val split, 3 hard negatives, 4 dataset stats; trqa_validation: none (one build call).")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, sections 'shared', 'pages', 'negatives', 'split' and 'gold_criteria'.")
-    parser.add_argument("--limit", type=_non_negative_int, default=None, help="Step 2: the next N unprocessed questions (0 = rewrite the dataset files only); step 3: the next N >= 1 unprocessed wiki gold pages (None = all).")
+    parser.add_argument("--limit", type=_non_negative_int, default=None, help="Step 2: the next N unprocessed questions (0 = rewrite the dataset files only); step 3: the next N >= 1 unprocessed wiki gold pages; trqa_validation: the next N queries not yet in the pool (0 = rewrite the files only) (None = all).")
     parser.add_argument("--source", type=str, default=None, help="Steps 2 and 3: only these sources, comma-separated (webshaper, frames, infoseek; None = all).")
-    parser.add_argument("--max-negatives", type=_positive_int, default=None, help="Step 3: hard negatives kept per wiki gold page (overrides negatives.max_per_gold of --config; None = the config's).")
     return parser.parse_args()
 
 
@@ -121,34 +121,32 @@ def _lock(root: Path):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # LiteLLM and its HTTP client log every call of the criterion texts' writer at INFO.
+    for name in ("LiteLLM", "httpx"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     args = _parse_args()
     if args.pool == "deep_qa" and args.step is None:
         raise SystemExit("--step is required for deep_qa")
     if args.pool == "trqa_validation" and args.step is not None:
         raise SystemExit("trqa_validation takes no --step (one build call)")
-    if args.step not in (2, 3) and args.limit is not None:
+    if args.pool == "deep_qa" and args.step not in (2, 3) and args.limit is not None:
         raise SystemExit("--limit applies to steps 2 and 3 only")
     if args.step not in (2, 3) and args.source is not None:
         raise SystemExit("--source applies to steps 2 and 3 only")
     if args.step == 3 and args.limit == 0:
         raise SystemExit("--limit 0 applies to step 2 only (step 3: N >= 1)")
-    if args.step != 3 and args.max_negatives is not None:
-        raise SystemExit("--max-negatives applies to step 3 only")
     sources = [s.strip() for s in args.source.split(",") if s.strip()] if args.source else None
     unknown = sorted(set(sources or ()) - set(LOADERS))
     if unknown:
         raise SystemExit(f"unknown source(s) {unknown}; expected some of {list(LOADERS)}")
 
-    overrides = {"negatives.max_per_gold": args.max_negatives} if args.max_negatives is not None else None
-    cfg = load_config(args.config, overrides)
+    cfg = load_config(args.config)
     paths = PoolPaths(args.pool)
     lock = _lock(paths.root)  # noqa: F841 - held until exit
 
     if args.pool == "trqa_validation":
         print(f"[build_training_pool] trqa_validation, dataset {paths.root}")
-        check_shares(paths, cfg.split)  # before the writer's calls
-        trqa_validation.build(paths, cfg.gold_criteria)
-        write_splits(paths, cfg.split)
+        trqa_validation.build(paths, cfg.gold_criteria, cfg.split, args.limit)
         return
     print(f"[build_training_pool] deep_qa step {args.step}, dataset {paths.root}")
 
@@ -164,10 +162,10 @@ if __name__ == "__main__":
     main()
 
 # python experiments/training/build_training_pool.py --pool trqa_validation
+# python experiments/training/build_training_pool.py --pool trqa_validation --limit 10
 # python experiments/training/build_training_pool.py --step 1
-# python experiments/training/build_training_pool.py --step 2 --limit 20
-# python experiments/training/build_training_pool.py --step 2 --limit 0
-# python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 100
+# python experiments/training/build_training_pool.py --step 2 --limit 10
+# python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source frames --limit 100
 # python experiments/training/build_training_pool.py --step 3 --limit 100
 # python experiments/training/build_training_pool.py --step 4

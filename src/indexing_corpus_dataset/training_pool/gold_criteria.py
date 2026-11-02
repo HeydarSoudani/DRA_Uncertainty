@@ -10,40 +10,51 @@ of the question, from the question and the criteria's source structure:
     multi_hop   one text per criterion from its relations (placeholders E1,
                 E2, ... for the criteria, the last one the answer):
                 InfoSeek's tree hops, WebShaper's formalization variables
-    set         the set ("the complete list of ...") and the rest criterion
-                ("any other member: <property>") from the property: TRQA
+    set         the property phrase and the aggregation from the question,
+                its property and its computation (TRQA): the member
+                criteria "<member>: <property>" and the rest criterion
+                "any other member: <property>" are built from the phrase,
+                the aggregate criterion is the aggregation
 
-The row keeps its keys and gets ``text`` per criterion and ``texts_ok``,
-``errors``, ``model``, ``prompt``.  ``texts_ok`` is true when every
+The prompts are the files of ``prompts/`` (one system and one user prompt
+per shape, the retry note).  The row keeps its keys and gets ``text`` per
+criterion, ``texts_ok`` and ``errors``.  ``texts_ok`` is true when every
 criterion has a text that names none of the gold answers (no leak of an
-answer into a criterion; an answer the question names is exempt), or when
+answer into a criterion; an answer the question names is exempt; in a set
+query, no member, value or final answer in the phrase or the aggregation,
+the member's name in its own criterion being the point; in a multi-hop
+query, no number or capitalized word the question does not state, such as
+a year the relations give), or when
 the query has no criteria (FRAMES: no LLM call); false when the texts
-failed for good (a leak after the retry, no text for a criterion); None
-when the writer call failed (an error, a reply that is not a JSON object),
-so the next build run asks again.  A list that leaks is asked once more
-with the leak named.  The number of criteria is the source's (no cap).
+failed for good (a leak or an unstated word after the retry, no text for a
+criterion); None when the writer call failed (an error, a reply that is not
+a JSON object), so the next build run asks again.  A list that leaks or
+holds unstated words is asked once more with them named.  The number of criteria is the source's (no cap).
 
-Memory: ``gold/texts.jsonl`` gets one row per query whose texts are final
+Memory: ``criterion_texts.jsonl`` gets one row per query whose texts are final
 (``{"id", "structure", "texts", "texts_ok", "errors", "model", "prompt"}``),
 appended as the writer finishes them, so a stopped run keeps its texts.  A
 run reuses them for a query whose criteria are unchanged (``structure``)
 and writes the others.  A writer (``gold_criteria.model``) or prompts other
-than those of the memory are refused (``check_writer``).
+than those of the memory are refused (``check_writer``); the prompts are
+hashed per query shape (``prompt_hash``).
 """
 
 import hashlib
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from tqdm import tqdm
 
 from utils.io_utils import drop_partial_line, iter_jsonl
 from utils.text_utils import parse_json_object
 
-from .annotations import mentions
+from .annotations import AGGREGATE, CLOSED, REST, mentions, normalize
 from .config import GoldCriteriaConfig, PoolPaths
 
 log = logging.getLogger(__name__)
@@ -51,65 +62,31 @@ log = logging.getLogger(__name__)
 
 # ── Prompts ──────────────────────────────────────────────────────────────────
 
-MULTI_HOP_SYSTEM = """\
-You are a criteria writer. Given a question and the chain of entities that leads to its answer, your task is to write one criterion for each entity marked with a placeholder (E1, E2, ...): the part of the question that describes that entity.
-
-== Rules ==
-1. Write each criterion in the question's own words: keep the entities the question names, and describe each placeholder entity as the question describes it, never by its name. No criterion may contain the name of any placeholder entity.
-2. Every criterion is self-contained: it describes its entity through the whole chain that the question gives for it, not by pointing back with words such as "that city" or "the above".
-3. Start each criterion with the entity's type in the question's words ("the city where ...", "the botanist who ..."), or "the entity" when the question gives no type.
-4. Use only what the question states; the relations listed are there to tell which part of the question describes which entity.
-
-== Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
-- "criteria": One object per placeholder, in the given order: {"entity": "E1", "text": "..."}.
-
-Example question: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
-Example chain:
-E1: Varn Folk Museum was founded in E1
-E2: E2 was born in E1
-E3 (the answer): E3 was designed by E2
-Example output:
-{"criteria": [
-  {"entity": "E1", "text": "the town where the Varn Folk Museum was founded"},
-  {"entity": "E2", "text": "the engineer who was born in the town where the Varn Folk Museum was founded"},
-  {"entity": "E3", "text": "the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded"}
-]}"""
-
-MULTI_HOP_USER = """\
-Question: {question}
-
-Chain:
-{chain}
-
-Write one criterion per placeholder.{retry}"""
-
-SET_SYSTEM = """\
-You are a criteria writer. Given a question whose answer is computed over every member of a set (a count, a sum, an average, the earliest or latest value), and the property the question computes, your task is to write the question's set and property in its own words.
-
-== Rules ==
-1. "set": the complete set of members, starting with "the complete list of", with the conditions that define the set in the question's words. When the question counts or selects the members that meet a condition, that condition is not part of the set: it is the property.
-2. "property": what the question computes or counts for each member, in the question's words, without the aggregation (no "average", "how many", "the two largest").
-3. Name no member of the set.
-
-== Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with two keys: "set" and "property".
-
-Example question: How many novels by Jules Verne that were published before 1870 were adapted into films?
-Example property: adapted into a film
-Example output:
-{"set": "the complete list of the novels by Jules Verne that were published before 1870", "property": "adapted into a film"}"""
-
-SET_USER = """\
-Question: {question}
-Property: {property}{retry}"""
-
-RETRY_NOTE = "\n\nYour earlier criteria named {names}; describe these entities as the question does, without their names."
+# The prompts are the .txt files of prompts/ next to this module, one system
+# and one user prompt per query shape, and the notes of the retry.
+_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 
-def prompt_hash() -> str:
-    """The hash of the prompts, saved with each row."""
-    text = "\n".join((MULTI_HOP_SYSTEM, MULTI_HOP_USER, SET_SYSTEM, SET_USER, RETRY_NOTE))
+def _read(name: str) -> str:
+    return (_PROMPTS_DIR / name).read_text(encoding="utf-8").strip()
+
+
+MULTI_HOP_SYSTEM = _read("multi_hop_system.txt")
+MULTI_HOP_USER = _read("multi_hop_user.txt")
+SET_SYSTEM = _read("set_system.txt")
+SET_USER = _read("set_user.txt")
+RETRY_NOTE = "\n\n" + _read("retry_note.txt")
+UNSTATED_NOTE = "\n\n" + _read("retry_note_unstated.txt")
+
+# The prompts of each query shape.
+PROMPTS = {"multi_hop": (MULTI_HOP_SYSTEM, MULTI_HOP_USER), "set": (SET_SYSTEM, SET_USER)}
+
+
+def prompt_hash(shape: str) -> str:
+    """The hash of the prompts of query shape *shape*, saved with each row
+    of the memory: a change of one shape's prompts leaves the texts of the
+    other shapes valid."""
+    text = "\n".join((*PROMPTS[shape], RETRY_NOTE, UNSTATED_NOTE))
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
@@ -142,13 +119,23 @@ def _leaks(texts: List[str], names: List[str], others: List[str]) -> List[str]:
     return [n for n in names if any(mentions(t, n, others) for t in texts)]
 
 
-def _texts(row: dict, texts: List[str], errors: List[str]) -> Dict[str, Any]:
+def _unstated(texts: List[str], question: str) -> List[str]:
+    """The words of *texts* with a digit or a capital first letter (a year,
+    a name: a detail a criterion holds only when the question states it)
+    that are not words of *question* (``normalize``d)."""
+    words = set(normalize(question).split())
+    found = (w for t in texts for w in re.findall(r"\w+", t) if w[0].isupper() or any(ch.isdigit() for ch in w))
+    return list(dict.fromkeys(w for w in found if not set(normalize(w).split()) <= words))
+
+
+def _with_texts(row: dict, texts: List[Optional[str]], ok: Optional[bool], errors: List[str]) -> Dict[str, Any]:
+    """*row* with one text per criterion, ``texts_ok`` *ok* and *errors*."""
     criteria = [{**c, "text": t} for c, t in zip(row["criteria"], texts)]
-    return {**row, "criteria": criteria, "texts_ok": True, "errors": errors}
+    return {**row, "criteria": criteria, "texts_ok": ok, "errors": errors}
 
 
 def _failed(row: dict, errors: List[str]) -> Dict[str, Any]:
-    return {**row, "criteria": [{**c, "text": None} for c in row["criteria"]], "texts_ok": False, "errors": errors}
+    return _with_texts(row, [None] * len(row["criteria"]), False, errors)
 
 
 def _chain(criteria: List[dict]) -> str:
@@ -163,7 +150,7 @@ def _chain(criteria: List[dict]) -> str:
 
 def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     """The texts of a multi-hop row (InfoSeek, WebShaper)."""
-    question, criteria, names_all = row["query"], row["criteria"], row["entity_names"]
+    question, criteria, names_all = row["text"], row["criteria"], row["entity_names"]
     others = names_all or [a for c in criteria for a in c["answers"]]
     # An answer the question itself mentions (a named answer) cannot be kept out.
     names = [a for c in criteria for a in c["answers"] if not mentions(question, a, others)]
@@ -180,45 +167,67 @@ def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
             errors.append("writer: no text for every criterion")
             continue
         leaked = _leaks(texts, names, others)
-        if leaked:
-            errors.append(f"writer: texts name {leaked}")
-            retry = RETRY_NOTE.format(names=", ".join(f'"{n}"' for n in leaked))
+        unstated = _unstated(texts, question)
+        if leaked or unstated:
+            retry = ""
+            if leaked:
+                errors.append(f"writer: texts name {leaked}")
+                retry += RETRY_NOTE.format(names=", ".join(f'"{n}"' for n in leaked))
+            if unstated:
+                errors.append(f"writer: texts state {unstated}, the question does not")
+                retry += UNSTATED_NOTE.format(words=", ".join(f'"{w}"' for w in unstated))
             continue
-        return _texts(row, texts, [])
+        return _with_texts(row, texts, True, [])
     return _failed(row, errors)
 
 
 def set_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
-    """The texts of a set row (TRQA): the set and the rest criterion."""
-    question = row["query"]
+    """The texts of a set row (TRQA): the property phrase and the
+    aggregation from the writer, then "<member>: <phrase>" per member, "any
+    other member: <phrase>" and the aggregation."""
+    question = row["text"]
     members = [m["entity"] for m in row["members"]]
+    # What the phrase and the aggregation must not name: the members (their
+    # titles and TRQA's labels), their values and the final answer, unless
+    # the question names them.
+    values = [t for c in row["criteria"] if c["kind"] != REST for t in c["answers"]]
+    others = row["entity_names"] + values
+    names = [n for n in dict.fromkeys(others) if not mentions(question, n, others)]
     errors: List[str] = []
     retry = ""
     for _ in range(2):
         data = writer.ask(SET_SYSTEM, SET_USER.format(question=question, property=row["property"] or "",
-                                                      retry=retry))
-        set_text = str(data.get("set") or "").strip()
+                                                      aggregation=row["aggregation"] or "", retry=retry))
         prop_text = str(data.get("property") or "").strip()
-        if not set_text or not prop_text:
-            errors.append("writer: no set or property")
+        agg_text = str(data.get("aggregation") or "").strip()
+        if not prop_text or not agg_text:
+            errors.append("writer: no property or aggregation")
             continue
-        leaked = [m for m in _leaks([set_text, prop_text], members, members) if not mentions(question, m, members)]
+        leaked = _leaks([prop_text, agg_text], names, others)
         if leaked:
             errors.append(f"writer: texts name {leaked}")
             retry = RETRY_NOTE.format(names=", ".join(f'"{n}"' for n in leaked))
             continue
-        return _texts(row, [set_text, f"any other member: {prop_text}"], [])
+        texts = [f"{m}: {prop_text}" for m in members] + [f"any other member: {prop_text}", agg_text]
+        return _with_texts(row, texts, True, [])
     return _failed(row, errors)
+
+
+def _set_shape(row: dict) -> bool:
+    """A set row has one criterion per member, then the rest and the
+    aggregate criterion."""
+    kinds = [c["kind"] for c in row["criteria"]]
+    return kinds == [CLOSED] * len(row["members"]) + [REST, AGGREGATE]
 
 
 def criteria_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     """The row with its criterion texts (``texts_ok``), or with
     ``texts_ok`` false and the reasons in ``errors``."""
     if not row["criteria"]:
-        return _texts(row, [], [])
+        return _with_texts(row, [], True, [])
     if row["query_shape"] == "set":
-        if len(row["criteria"]) != 2:
-            return _failed(row, [f"set query with {len(row['criteria'])} criteria, expected 2"])
+        if not _set_shape(row):
+            return _failed(row, ["set query: expected one criterion per member, then the rest and the aggregate"])
         return set_texts(row, writer)
     return multi_hop_texts(row, writer)
 
@@ -233,32 +242,39 @@ def _read_memory(paths: PoolPaths) -> Dict[str, dict]:
     return {str(r["id"]): r for r in iter_jsonl(paths.texts)}
 
 
-def check_writer(gc: GoldCriteriaConfig, paths: PoolPaths) -> None:
-    """Refuse to build without the writer's API key (a pool is never written
-    without its criterion texts), or with another writer or other prompts
-    than the texts in the memory (one pool, one writer)."""
+def require_api_key(gc: GoldCriteriaConfig, what: str) -> None:
+    """Refuse to go on without the writer's API key when criterion texts
+    are to be written (*what*: which ones); a pool is never written without
+    its criterion texts."""
     if gc.model.startswith("openrouter/") and not os.environ.get("OPENROUTER_API_KEY"):
-        raise SystemExit(f"the criterion texts need the writer {gc.model}: set OPENROUTER_API_KEY "
+        raise SystemExit(f"{what} need the writer {gc.model}: set OPENROUTER_API_KEY "
                          "(.env) or gold_criteria.model in the config")
-    used = {(r["model"], r["prompt"]) for r in _read_memory(paths).values()}
-    other = sorted(used - {(gc.model, prompt_hash())})
+
+
+def check_writer(gc: GoldCriteriaConfig, paths: PoolPaths) -> None:
+    """Refuse another writer or other prompts than the texts in the memory
+    (one pool, one writer); the API key is checked when texts are left to
+    write (``fill_texts``)."""
+    used ={(r["model"], r["prompt"]) for r in _read_memory(paths).values()}
+    current = {(gc.model, prompt_hash(shape)) for shape in PROMPTS}
+    other = sorted(used - current)
     if other:
         raise SystemExit(f"{paths.texts} holds texts of other writers or prompts ((model, prompt hash): {other}; "
-                         f"this run: ({gc.model!r}, {prompt_hash()!r})). Restore gold_criteria.model and the "
+                         f"this run: {sorted(current)}). Restore gold_criteria.model and the "
                          f"prompts, or remove {paths.texts} to write every text again")
 
 
 def _structure(row: dict) -> str:
     """The hash of what the texts are written from: an earlier run's texts
     are kept while it is unchanged."""
-    structure = [row["query"], row["query_shape"], row["property"],
+    structure = [row["text"], row["query_shape"], row["property"], row["aggregation"],
                  [[c["id"], c["kind"], c["relations"], c["answers"]] for c in row["criteria"]],
                  [m["entity"] for m in row["members"]]]
     return hashlib.sha1(json.dumps(structure, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
 
 
 def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> List[dict]:
-    """*rows* (the annotation rows of split ``all``) with their criterion
+    """*rows* (the rows of the pool, split ``all``) with their criterion
     texts: those of the memory for a query whose criteria are unchanged,
     the writer's for the others (added to the memory once final)."""
     memory = _read_memory(paths)
@@ -267,17 +283,16 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
     for row in rows:
         old = memory.get(str(row["id"]))
         if old is not None and old["structure"] == _structure(row):
-            out[row["id"]] = {**row, "criteria": [{**c, "text": t} for c, t in zip(row["criteria"], old["texts"])],
-                              **{k: old[k] for k in ("texts_ok", "errors", "model", "prompt")}}
+            out[row["id"]] = _with_texts(row, old["texts"], old["texts_ok"], old["errors"])
         elif not row["criteria"]:
-            out[row["id"]] = _texts(row, [], [])
+            out[row["id"]] = _with_texts(row, [], True, [])
         else:
             todo.append(row)
     print(f"[texts] {len(rows)} queries: {len(rows) - len(todo)} with final texts (kept or without criteria), "
           f"{len(todo)} to write with {gc.model}")
     if todo:
+        require_api_key(gc, f"the criterion texts of {len(todo)} queries")
         writer = CriteriaWriter(gc.model, gc.max_tokens)
-        prompt = prompt_hash()
 
         def one(row: dict) -> dict:
             try:
@@ -285,7 +300,7 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
             except Exception as e:  # noqa: BLE001 - recorded; the next run asks again
                 log.warning("criterion texts of %s failed: %s", row["id"], e)
                 return {**row, "errors": [f"writer: {e}"]}
-            return {**done, "model": gc.model, "prompt": prompt}
+            return done
 
         paths.texts.parent.mkdir(parents=True, exist_ok=True)
         pool = ThreadPoolExecutor(max_workers=max(1, gc.workers))
@@ -298,7 +313,8 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
                     if row["texts_ok"] is not None:
                         fh.write(json.dumps({"id": row["id"], "structure": _structure(row),
                                              "texts": [c["text"] for c in row["criteria"]],
-                                             **{k: row[k] for k in ("texts_ok", "errors", "model", "prompt")}},
+                                             "texts_ok": row["texts_ok"], "errors": row["errors"],
+                                             "model": gc.model, "prompt": prompt_hash(row["query_shape"])},
                                             ensure_ascii=False) + "\n")
                         fh.flush()
         finally:

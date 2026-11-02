@@ -1,13 +1,15 @@
 """Training pools, one folder each under ``{TRAINING_POOL_ROOT}/{pool}``
 (data/training_pool/ of the repo); each pool is a dataset of dra_inference.
 
-Every pool has the split ``all`` (every query) and its split into ``sft``,
-``rl`` and ``val`` by a hash of the query id (``splits.py``), for belief
-model training.
+Every pool has one row per query in ``queries/queries_all.jsonl`` (the
+question, answer, source, split and gold annotation, ``annotations.py``)
+and the qrels in ``qrels/qrels_all.txt``.  The splits ``sft``, ``rl`` and
+``val`` (``splits.py``: full queries with the shares, the others to val)
+are views of those files, read by ``dataset_loaders``.
 
 trqa_validation (``build_training_pool.py --pool trqa_validation``): the
 TRQA wiki1 + wiki2 validation files merged (``trqa_validation.py``) with
-their gold annotation and its criterion texts, then split.
+their gold annotation, its criterion texts and the split.
 
 deep_qa: deep-research questions with several gold pages each, merged from
 InfoSeek-Hard, WebShaper and FRAMES, with their gold pages fetched from the
@@ -20,19 +22,14 @@ source.  Steps (``experiments/training/build_training_pool.py --step N``):
                       (Wikipedia-only questions: every gold page; with web
                       gold pages: >= min_page_share of all of them); the
                       kept questions in the canonical layout:
-                      queries/queries_all.jsonl, qrels/qrels_all.txt
-                      (binary, one line per fetched gold page),
-                      corpus/corpus.jsonl (those pages and their hard
-                      negatives, corpus.py), gold/annotations_all.jsonl
-                      (the gold annotation: criteria with their answers and
+                      queries/queries_all.jsonl (one row per question with
+                      its gold annotation: criteria with their answers and
                       fetched documents, level, the criterion texts by an
-                      LLM, gold_criteria.py, kept in gold/texts.jsonl);
-                      then the split:
-                      queries/queries_{sft,rl,val}.jsonl,
-                      qrels/qrels_{sft,rl,val}.txt,
-                      gold/annotations_{sft,rl,val}.jsonl,
-                      gold/ids_{sft,rl,val}.txt (``splits.py``; a query
-                      keeps its split as the pool grows); incremental
+                      LLM, gold_criteria.py, kept in criterion_texts.jsonl;
+                      and its split, ``splits.py``: a query keeps its split
+                      as the pool grows), qrels/qrels_all.txt (binary, one
+                      line per fetched gold page), corpus/corpus.jsonl
+                      (those pages and their hard negatives, corpus.py); incremental
                       (--limit N = the next N unprocessed questions, 0 =
                       rewrite the files only; --source to pick sources)
     3  negatives      hard negatives of the Wikipedia gold pages from the
@@ -47,8 +44,8 @@ source.  Steps (``experiments/training/build_training_pool.py --step N``):
     4  stats          the dataset as written, per source, the hard
                       negatives, the gold annotation (levels, criteria with
                       answers and documents, criterion texts), and
-                      consistency checks between queries, qrels, corpus, id
-                      files and the annotation
+                      consistency checks between queries, qrels, corpus and
+                      id files
 
 Every step writes its section of ``stats.json`` (steps 2 and 3 with their settings,
 the split its shares and counts in ``split``); steps 1 and 2 write their
@@ -68,7 +65,7 @@ Modules:
     negatives      run_step3 (hard negatives, memory, resume)
     corpus         the corpus and id files, written by steps 2 and 3
     trqa_validation  the merged TRQA validation pool
-    splits         the sft / rl / val split of a pool
+    splits         the sft / rl / val split of a pool (the rows' ``split``)
     gold_criteria  the criterion texts of the gold annotation (LLM; step 2,
                    trqa_validation)
 """

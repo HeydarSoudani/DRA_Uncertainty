@@ -1,0 +1,1 @@
+Your earlier criteria stated {words}, which the question does not state; take every detail from the question, not from the relations.

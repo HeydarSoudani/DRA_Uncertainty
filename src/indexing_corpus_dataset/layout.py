@@ -218,10 +218,12 @@ DATASET_SPECS = {
         relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
     # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
-    # intermediate info merged; TRQA's settings, corpus and indices.
+    # intermediate info merged; TRQA's settings, corpus and indices, but up
+    # to 52 criteria: the gold has one per member (up to 50), the rest and
+    # the aggregate (training_pool/annotations.py).
     "trqa_validation": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
 }
 
@@ -229,9 +231,11 @@ DATASET_SPECS = {
 # others are downloaded inputs under ``DATA_ROOT``).
 BUILT_DATASETS = frozenset({"deep_qa", "trqa_validation"})
 
-# Splits of a training pool: ``all`` holds every query of the pool as built;
-# ``sft``, ``rl`` and ``val`` split it by a hash of the query id
-# (training_pool/splits.py), for belief model training.
+# Splits of a training pool: ``all`` holds every query of the pool as built,
+# one row per query with its ``split`` (training_pool/annotations.py);
+# ``sft``, ``rl`` and ``val`` are views of it, the rows with that split and
+# their qrels (``is_pool_view``; training_pool/splits.py), for belief model
+# training.
 POOL_ALL_SPLIT = "all"
 POOL_SPLITS = ("sft", "rl", "val")
 
@@ -326,21 +330,44 @@ def criteria_bank_path(dataset: str, split: str) -> Path:
     return root / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
 
 
-def gold_annotation_path(root: Path, split: str) -> Path:
-    """Return the gold annotation of a split of the training pool at *root*,
-    e.g. ``{root}/gold/annotations_sft.jsonl``; the ids of its queries with
-    criterion texts are ``ids_{split}.txt`` next to it
+def is_pool(data_path: Path | str) -> bool:
+    """Whether the dataset at *data_path* is a training pool (a folder of
+    ``TRAINING_POOL_ROOT``)."""
+    return Path(data_path).resolve().parent == TRAINING_POOL_ROOT.resolve()
+
+
+def is_pool_view(data_path: Path | str, split: str) -> bool:
+    """Whether *split* of the dataset at *data_path* is a view of a training
+    pool's split ``all`` (``sft``, ``rl`` or ``val`` of a pool under
+    ``TRAINING_POOL_ROOT``): its queries are the rows of
+    ``queries_all.jsonl`` with that ``split``, its qrels theirs."""
+    return split in POOL_SPLITS and is_pool(data_path)
+
+
+def gold_criteria_path(dataset: str) -> Path:
+    """Return the gold criteria of a training pool: its queries file, one
+    row per query with its gold annotation, e.g.
+    ``TRAINING_POOL_ROOT/deep_qa/queries/queries_all.jsonl``
     (``training_pool/annotations.py``)."""
-    return root / "gold" / f"annotations_{split}.jsonl"
-
-
-def gold_criteria_path(dataset: str, split: str) -> Path:
-    """Return the gold criteria of a training pool split: its gold
-    annotation, e.g. ``TRAINING_POOL_ROOT/deep_qa/gold/annotations_sft.jsonl``
-    (``gold_annotation_path``)."""
     if dataset not in BUILT_DATASETS:
         raise ValueError(f"gold criteria exist for the training pools only ({sorted(BUILT_DATASETS)}), not {dataset!r}")
-    return gold_annotation_path(TRAINING_POOL_ROOT / dataset, split)
+    return queries_base(TRAINING_POOL_ROOT / dataset, POOL_ALL_SPLIT).with_suffix(".jsonl")
+
+
+# Where the belief model's criteria come from (``criteria_source`` of
+# dra_inference): extracted by an LLM (``llm_criteria``, through the
+# criteria bank), or the gold criteria of a training pool.
+LLM_CRITERIA, GOLD_CRITERIA = "llm", "gold"
+CRITERIA_SOURCES = (LLM_CRITERIA, GOLD_CRITERIA)
+
+
+def effective_criteria_source(requested: str, dataset: str) -> str:
+    """The criteria source a run of *dataset* uses: ``gold`` when it is
+    asked for and the dataset has gold criteria (a training pool), else
+    ``llm``."""
+    if requested not in CRITERIA_SOURCES:
+        raise ValueError(f"unknown criteria source {requested!r}; expected one of {CRITERIA_SOURCES}")
+    return GOLD_CRITERIA if requested == GOLD_CRITERIA and dataset in BUILT_DATASETS else LLM_CRITERIA
 
 
 def criteria_reachability_dir(dataset: str, split: str) -> Path:

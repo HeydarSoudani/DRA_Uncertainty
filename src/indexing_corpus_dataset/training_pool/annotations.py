@@ -1,38 +1,49 @@
-"""The gold annotation of a training pool: per query, its criteria with
-their gold answers and gold documents, as far as the source states them.
+"""The rows of a training pool: one per query, in the pool's queries file
+(``queries/queries_all.jsonl``), with the query, its split and its gold
+annotation: its criteria with their gold answers and gold documents, as far
+as the source states them.
 
 Every row has the same keys, whatever the source; what the source does not
 state is an empty value (``[]`` or ``None``), never a missing key.
 
-Query row (``gold/annotations_{all,sft,rl,val}.jsonl`` of the pool)::
+Query row::
 
-    {"id", "source", "query", "answer",
+    {"id", "source",
+     "split": "sft" | "rl" | "val" | None,       (``splits.py``)
+     "text", "answer",          the question and its final answer
      "query_shape": "multi_hop" | "set",
      "level": "full" | "partial" | "query",      (``level``)
      "doc_ids": [...],          the query's qrels
      "criteria": [criterion],   [] when the source has no structure
      "members": [{"entity", "value", "doc_ids"}],   set queries; else []
      "entity_names": [...],     every entity name of the gold structure
-                                (InfoSeek's tree; ``mentions`` skips an
-                                answer inside a longer one); else []
+                                (InfoSeek's tree, TRQA's members;
+                                ``mentions`` skips an answer inside a
+                                longer one); else []
      "property": str | None,    the property of a set query; else None
+     "aggregation": str | None, how a set query's answer follows from
+                                the members' values (TRQA, e.g.
+                                ``AVG_TOP_K``); else None
      "texts_ok": bool | None,   the criterion texts (gold_criteria.py):
                                 true written (or no criteria), false
                                 failed for good (a leak after the retry,
                                 no text for a criterion), None not written
                                 yet (retried next run)
-     "errors": [...],           why the texts failed
-     "model": str | None,       the writer of the texts
-     "prompt": str | None}      the hash of the writer's prompts
+     "errors": [...]}           why the texts failed
+
+The writer of the texts and the hash of its prompts are recorded once, in
+the ``annotations`` section of the pool's ``stats.json`` (and per query in
+``criterion_texts.jsonl``, the writer's memory).
 
 Criterion::
 
-    {"id": "c1", "kind": "closed" | "open" | "rest",
-     "relations": [...],        the source structure the writer
+    {"id": "c1",
+     "text": str | None,        written by the writer (gold_criteria.py)
+     "answers": [...], "doc_ids": [...],
+     "kind": "closed" | "rest" | "aggregate",
+     "relations": [...]}        the source structure the writer
                                 reads (hop relations with placeholders E1,
                                 E2, ... for the criteria, by position)
-     "answers": [...], "doc_ids": [...],
-     "text": str | None}        written by the writer (gold_criteria.py)
 
 What each source states:
 
@@ -44,16 +55,25 @@ What each source states:
                  only the answer has answers (the final answer); no doc_ids
                  (the URLs are the query's)
     frames       no criteria (final answer and qrels only)
-    trqa_wiki2   set: "the complete list of ..." (answers = the members) and
-                 "any other member: <property>" (answers = their values);
-                 doc_ids = the members' documents (``entity_values[].passage_ids``)
+    trqa_wiki2   set: one criterion per member, "<member>: <property>"
+                 (answers = its value, doc_ids = its documents,
+                 ``entity_values[].passage_ids``), then the rest criterion
+                 "any other member: <property>" (answers and doc_ids empty:
+                 every member has a criterion; training may hide some
+                 members under it), then the aggregate criterion (how the
+                 answer follows from the values; answers = the final answer,
+                 no doc_ids: it is computed); members = TRQA's
+                 ``entity_values``, its documents as doc_ids, each named by
+                 the Wikipedia title of its first document ("San Fernando,
+                 La Union", not TRQA's label "San Fernando"; the label
+                 stays among ``entity_names``)
     trqa_wiki1   the same
 
 Step 1 builds the skeletons (criteria with the page keys of their
 documents, ``gold_keys``), step 2 resolves the keys to the fetched documents
 (``row``); the trqa_validation build writes its rows directly
 (``set_row``).  Both then have an LLM write the criterion texts
-(``gold_criteria.fill_texts``) before the split.
+(``gold_criteria.fill_texts``), and the split sets ``split``.
 """
 
 import re
@@ -64,19 +84,35 @@ from typing import Any, Dict, Iterator, List, Optional
 from utils.io_utils import write_jsonl
 
 # The keys of a query row and of a criterion, in their order.
-QUERY_KEYS = ("id", "source", "query", "answer", "query_shape", "level", "doc_ids", "criteria", "members",
-              "entity_names", "property", "texts_ok", "errors", "model", "prompt")
-CRITERION_KEYS = ("id", "kind", "relations", "answers", "doc_ids", "text")
+QUERY_KEYS = ("id", "source", "split", "text", "answer", "query_shape", "level", "doc_ids", "criteria", "members",
+              "entity_names", "property", "aggregation", "texts_ok", "errors")
+CRITERION_KEYS = ("id", "text", "answers", "doc_ids", "kind", "relations")
+# The kinds of criterion (belief_model_component.types): a rest criterion
+# has no gold of its own, an aggregate one no documents (it is computed).
+CLOSED, REST, AGGREGATE = "closed", "rest", "aggregate"
+KINDS = (CLOSED, REST, AGGREGATE)
 MEMBER_KEYS = ("entity", "value", "doc_ids")
-LEVELS = ("full", "partial", "query")
+FULL = "full"
+LEVELS = (FULL, "partial", "query")
+
+
+def has_gold(c: dict) -> bool:
+    """A criterion has its gold: answers and documents; a rest criterion
+    none (its members have their own criteria), an aggregate one answers
+    only (no document states a computed value)."""
+    if c["kind"] == REST:
+        return True
+    if c["kind"] == AGGREGATE:
+        return bool(c["answers"])
+    return bool(c["answers"] and c["doc_ids"])
 
 
 def level(criteria: List[dict]) -> str:
-    """``full``: every criterion has answers and documents; ``partial``:
-    some criterion lacks either; ``query``: no criteria."""
+    """``full``: every criterion has its gold (``has_gold``); ``partial``:
+    some criterion lacks it; ``query``: no criteria."""
     if not criteria:
         return "query"
-    return "full" if all(c["answers"] and c["doc_ids"] for c in criteria) else "partial"
+    return "full" if all(has_gold(c) for c in criteria) else "partial"
 
 
 def problems(row: dict) -> List[str]:
@@ -104,7 +140,7 @@ def check(rows: List[dict]) -> None:
 
 
 def write(path: Path, rows: List[dict]) -> None:
-    """Write the rows of a split (``check``ed)."""
+    """Write the rows of the pool (``check``ed)."""
     check(rows)
     write_jsonl(path, rows)
 
@@ -114,14 +150,14 @@ def _dedup(items) -> list:
 
 
 def _criterion(cid: str, kind: str, relations: List[str], answers: List[str], doc_ids: List[str]) -> dict:
-    return {"id": cid, "kind": kind, "relations": relations, "answers": answers, "doc_ids": doc_ids, "text": None}
+    return {"id": cid, "text": None, "answers": answers, "doc_ids": doc_ids, "kind": kind, "relations": relations}
 
 
-def _row(qid: str, source: str, query: str, answer: str, shape: str, doc_ids: List[str], criteria: List[dict],
-         members: List[dict], names: List[str], prop: Optional[str]) -> dict:
-    return {"id": qid, "source": source, "query": query, "answer": answer, "query_shape": shape,
+def _row(qid: str, source: str, text: str, answer: str, shape: str, doc_ids: List[str], criteria: List[dict],
+         members: List[dict], names: List[str], prop: Optional[str], aggregation: Optional[str]) -> dict:
+    return {"id": qid, "source": source, "split": None, "text": text, "answer": answer, "query_shape": shape,
             "level": level(criteria), "doc_ids": doc_ids, "criteria": criteria, "members": members,
-            "entity_names": names, "property": prop, "texts_ok": None, "errors": [], "model": None, "prompt": None}
+            "entity_names": names, "property": prop, "aggregation": aggregation, "texts_ok": None, "errors": []}
 
 
 # ── Matching ─────────────────────────────────────────────────────────────────
@@ -210,7 +246,7 @@ def infoseek_skeleton(question: str, root: dict, gold_key) -> dict:
             for node_id in (n["id"], target):
                 if node_id in relations and text not in relations[node_id]:
                     relations[node_id].append(text)
-    criteria = [{"id": f"c{k}", "kind": "closed", "relations": relations[n["id"]],
+    criteria = [{"id": f"c{k}", "kind": CLOSED, "relations": relations[n["id"]],
                  "answers": entity_names(n["entity"]), "gold_keys": [gold_key(n["href"])] if n.get("href") else []}
                 for k, n in enumerate(hops, 1)]
     names = [name for n in nodes.values() if is_entity(n) for name in entity_names(n["entity"])]
@@ -286,7 +322,7 @@ def webshaper_skeleton(triples: List[list], answer: str) -> dict:
         for node in _term_nodes(terms):
             if text not in relations[node]:
                 relations[node].append(text)
-    criteria = [{"id": f"c{k}", "kind": "closed", "relations": relations[v],
+    criteria = [{"id": f"c{k}", "kind": CLOSED, "relations": relations[v],
                  "answers": [answer] if v == _ANSWER and answer else [], "gold_keys": []}
                 for k, v in enumerate(hops, 1)]
     return {"query_shape": "multi_hop", "criteria": criteria, "entity_names": []}
@@ -311,10 +347,10 @@ def row(record: dict, pages: Dict[str, dict]) -> dict:
     criteria = [_criterion(c["id"], c["kind"], c["relations"], c["answers"], docs(c["gold_keys"]))
                 for c in skel["criteria"]]
     return _row(record["id"], record["source"], record["question"], record["answer"], skel["query_shape"],
-                docs(g["key"] for g in record["gold"]), criteria, [], skel["entity_names"], None)
+                docs(g["key"] for g in record["gold"]), criteria, [], skel["entity_names"], None, None)
 
 
-def _value_texts(value: Any) -> List[str]:
+def value_texts(value: Any) -> List[str]:
     """A gold value as answer texts: one per item of a list, a whole float
     without its ".0"."""
     values = value if isinstance(value, list) else [value]
@@ -326,18 +362,31 @@ def _value_texts(value: Any) -> List[str]:
     return out
 
 
-def set_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: List[str]) -> dict:
+def set_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: List[str],
+            titles: Dict[str, str]) -> dict:
     """The annotation row of a TRQA query from its intermediate info
-    (``entity_values``, ``property``): the set and the rest criterion, the
-    members' documents when the source gives them (``passage_ids``)."""
-    members = [{"entity": str(v["entity"]), "value": v.get("value"), "doc_ids": _dedup(v.get("passage_ids") or [])}
-               for v in info.get("entity_values") or []]
+    (``entity_values``, ``property``, ``aggregation``): one criterion per
+    member with its value and documents (``passage_ids``), the rest
+    criterion, and the aggregate criterion with the final answer.  A member
+    is named by the title of its first document (*titles*: doc id -> page
+    title), or by TRQA's label when it has none."""
+    labels, members = [], []
+    for v in info.get("entity_values") or []:
+        doc_ids = _dedup(v.get("passage_ids") or [])
+        label = str(v["entity"])
+        labels.append(label)
+        members.append({"entity": titles.get(doc_ids[0], label) if doc_ids else label, "value": v.get("value"),
+                        "doc_ids": doc_ids})
     criteria = []
     if members:
-        docs = _dedup(d for m in members for d in m["doc_ids"])
-        criteria = [
-            _criterion("c1", "open", [], [m["entity"] for m in members], docs),
-            _criterion("c2", "rest", [], _dedup(t for m in members for t in _value_texts(m["value"])), docs),
-        ]
+        criteria = [_criterion(f"c{k}", CLOSED, [], value_texts(m["value"]), m["doc_ids"])
+                    for k, m in enumerate(members, 1)]
+        n = len(criteria)
+        criteria.append(_criterion(f"c{n + 1}", REST, [], [], []))
+        # The final answer as the query states it, and a whole float without its ".0".
+        answers = _dedup([answer, *value_texts(info.get("answer"))]) if answer else value_texts(info.get("answer"))
+        criteria.append(_criterion(f"c{n + 2}", AGGREGATE, [], answers, []))
     prop = (info.get("property") or {}).get("label") or None
-    return _row(qid, source, query, answer, "set", qrels, criteria, members, [], prop)
+    names = _dedup(n for m, label in zip(members, labels) for name in (m["entity"], label)
+                   for n in entity_names(name))
+    return _row(qid, source, query, answer, "set", qrels, criteria, members, names, prop, info.get("aggregation"))

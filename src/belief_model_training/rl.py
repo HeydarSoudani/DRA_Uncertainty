@@ -43,9 +43,9 @@ from typing import Any, Dict, List, Optional
 from .config import RunPaths, TrainingConfig
 from .env import Chain, EpisodeSampler, run_chains
 from .episodes import DocumentStore, Episode
-from .rewards import TERMS, Reward
+from .rewards import TERMS, Reward, candidate_values
 from .rollout import VLLMRolloutEngine
-from .runs import check_same_settings, load_episodes
+from .runs import candidate_gold, check_same_settings, load_episodes
 from .scoring import measures
 from .sft import load_processor
 from .trainer import BeliefPPOTrainer, group_advantages
@@ -61,8 +61,11 @@ def _mean(values: List[Optional[float]]) -> Optional[float]:
 
 
 def score_chains(chains: List[Chain], reward_fn: Reward) -> List[Dict[str, Any]]:
+    """The reward of each chain, after the gold of all their candidates is
+    resolved in one batch."""
+    reward_fn.gold.resolve([v for c in chains for v in candidate_values(c.episode, [cc.outcome for cc in c.calls])])
     return [reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
-                      [cc.finish_reason for cc in c.calls], c.statuses, c.utilization) for c in chains]
+                      [cc.finish_reason for cc in c.calls], c.statuses, c.candidates) for c in chains]
 
 
 def score_stats(scores: List[Dict[str, Any]], prefix: str = "") -> Dict[str, Any]:
@@ -133,7 +136,7 @@ def start_over(paths: RunPaths, sync_dir: Path) -> None:
 
 def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     rc = cfg.rl
-    reward_fn = Reward(rc)
+    reward_fn = Reward(rc, candidate_gold(cfg))
     check_same_settings(cfg, ["rl", "val"])
     episodes = [ep for ep in load_episodes(cfg, "rl", teacher=False, tag="[phase 3]") if ep.steps]
     if not episodes:

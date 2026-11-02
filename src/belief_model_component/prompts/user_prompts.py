@@ -28,37 +28,33 @@ def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
 CRITERIA_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current status:
+Criteria, with their current status{candidates}:
 {belief}
 
-{utilization}New passages:
+{agent_turn}New passages:
 {passages}
 
 {instruction}\
 """
 
-# The section on the rises of the previous step, before the passages; left
-# out (empty) when no criterion rose there.
-CRITERIA_UPDATE_RISES_TEMPLATE = """\
-Criteria that rose in the previous step, with the passages that raised them:
-{rises}
-
-The agent's turn after that step:
+# The agent's turn of the step, before the passages; left out (empty) for a
+# query without answer candidates (multi-aspect) or a call without a turn.
+CRITERIA_UPDATE_TURN_TEMPLATE = """\
+The agent's latest turn:
 <agent_turn>
 {agent_turn}
 </agent_turn>
 
 """
 
-# The passages section of a call with rises to judge and no new passage.
+# The passages section of a call with an agent turn and no new passage.
 CRITERIA_UPDATE_NO_PASSAGES = "(none)"
 
 CRITERIA_UPDATE_INSTRUCTION = (
     "Decide which criteria each new passage supports, contradicts or relates to, if any, and give their new status."
 )
-CRITERIA_UPDATE_RISES_INSTRUCTION = (
-    " Then judge, for each criterion that rose in the previous step, whether the agent's turn uses the "
-    "information that raised it."
+CRITERIA_UPDATE_CANDIDATES_INSTRUCTION = (
+    " Then give the new answer candidates of each criterion whose candidates change."
 )
 
 # One passage of the belief updater's user message.

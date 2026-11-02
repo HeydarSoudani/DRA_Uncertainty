@@ -1,0 +1,5 @@
+Question: {question}
+Property: {property}
+Computation: {aggregation}
+
+Write the property and the aggregation.{retry}

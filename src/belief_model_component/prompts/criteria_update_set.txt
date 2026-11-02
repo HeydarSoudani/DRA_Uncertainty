@@ -1,20 +1,42 @@
-The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members.
+The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members. The criteria are one criterion per known member, "<member>: <property>", then "any other member: <property>" for the members without a criterion of their own, then how the answer follows from the members' values.
 
 ---status---
 For this query:
-- A passage supports a criterion when it establishes a member of the set, or whether a member has the property.
-- The last criterion, "any other member: <property>", is for the members without a criterion of their own.
+- A passage supports a member criterion when it states the member's value of the property.
+- A passage supports "any other member: <property>" when it establishes a member of the set without a criterion of its own, or gives the value of such a member; its parts are those members and their values.
+- The last criterion has no status ("no status"): no passage states it, the agent computes it from the members' values. Never list it in "updates"; it has answer candidates only.
+
+---candidates---
+For this query:
+- A candidate of a member criterion is the member's value.
+- A candidate of "any other member: <property>" is one member with its value, written "<member>: <value>", each part copied exactly from the agent's turns.
+- A candidate of the last criterion is an answer the agent computes. Judge its status from the members and values the passages give so far: "certain" only when they give every member and its value, and the computation over them gives the candidate.
 
 ---example---
 Example query: How many lakes that are either lakes of Norland or reservoirs of Vesterdal have a surface area of more than 10 km²?
 
-Example criteria, with their current status:
-c1 [probable]: the complete list of the lakes that are either lakes of Norland or reservoirs of Vesterdal
-  - support: "The lakes of Norland are Lake Varn, Lake Osby and Lake Tirsa." (List of lakes of Norland)
-c2 [unknown]: Lake Varn: surface area of more than 10 km²
-c3 [unknown]: Lake Osby: surface area of more than 10 km²
-c4 [unknown]: Lake Tirsa: surface area of more than 10 km²
-c5 [unknown]: any other member: surface area of more than 10 km²
+Example criteria, with their current status and answer candidates:
+c1 [unknown]: Lake Varn: surface area
+  - candidates: (none)
+c2 [unknown]: Lake Osby: surface area
+  - candidates: (none)
+c3 [unknown]: Lake Tirsa: surface area
+  - candidates: (none)
+c4 [unknown]: any other member: surface area
+  - candidates: (none)
+c5 [no status]: the number of the lakes that are either lakes of Norland or reservoirs of Vesterdal with a surface area of more than 10 km²
+  - candidates: (none)
+
+Example agent turn:
+<agent_turn>
+Reasoning:
+The lakes of Norland are Lake Varn, Lake Osby and Lake Tirsa; for the reservoirs of Vesterdal I only recall Lake Brenna, with about 12 km². I think Lake Osby covers about 25 km², so if my memory is right the answer is 2, Lake Osby and Lake Brenna. I need a source for each area.
+
+Search queries:
+1. Lake Varn surface area
+2. Lake Osby surface area
+3. Lake Tirsa surface area
+</agent_turn>
 
 Example new passages:
 <passage 1>
@@ -40,10 +62,13 @@ Norland welcomed 2.4 million visitors last year, most of them in the summer mont
 Example output:
 {
   "updates": [
-    {"id": "c1", "support": [{"passage": 1, "spans": ["Lake Varn is a freshwater lake in central Norland"]}], "contradict": [], "reason": "Passage 1 confirms Lake Varn as a lake of Norland, a member already in the evidence; the reservoirs of Vesterdal are still missing.", "status": "probable"},
-    {"id": "c2", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km², more than 10 km².", "status": "certain"},
-    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "possible"},
-    {"id": "c4", "support": [], "contradict": [], "reason": "Passage 3 calls Lake Tirsa a small pond with a twenty-minute shore path, which points against a surface area of more than 10 km² without giving it.", "status": "unlikely"}
+    {"id": "c1", "support": [{"passage": 1, "spans": ["It has a surface area of 14.2 km²"]}], "contradict": [], "reason": "Passage 1 gives the surface area of Lake Varn, 14.2 km².", "status": "certain"},
+    {"id": "c2", "support": [], "contradict": [], "reason": "Passage 2 mentions Lake Osby only for its fishing, not its surface area.", "status": "possible"},
+    {"id": "c3", "support": [], "contradict": [], "reason": "Passage 3 calls Lake Tirsa a small pond with a twenty-minute shore path, but gives no surface area.", "status": "possible"}
   ],
-  "utilized": []
+  "candidates": [
+    {"id": "c2", "reason": "The turn gives about 25 km² for Lake Osby from the agent's own knowledge, and no passage gives its area.", "candidates": [{"value": "25 km²", "status": "unknown"}]},
+    {"id": "c4", "reason": "Lake Brenna has no criterion of its own; the turn gives its area of about 12 km² from the agent's own knowledge, and no passage relates to it.", "candidates": [{"value": "Lake Brenna: 12 km²", "status": "unknown"}]},
+    {"id": "c5", "reason": "The turn computes 2 from Lake Osby and Lake Brenna; passage 1 gives a third lake over 10 km², Lake Varn, which points against 2 without contradicting it.", "candidates": [{"value": "2", "status": "unlikely"}]}
+  ]
 }

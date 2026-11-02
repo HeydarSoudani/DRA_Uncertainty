@@ -5,17 +5,17 @@ iteration's step record::
 
     <belief_state step="3">
       <criteria>
-        <k1 status="certain" utilized="4" attempts="1">born in the 1960s</k1>
-        <k2 status="possible" utilized="0" attempts="2">won a regional award</k2>
-        <k3 status="unknown" utilized="0" attempts="0">the films they directed</k3>
+        <k1 status="certain" attempts="1">born in the 1960s</k1>
+        <k2 status="possible" attempts="2">won a regional award</k2>
+        <k3 status="unknown" attempts="0">the films they directed</k3>
       </criteria>
       <signals doc_novelty="0.40" criteria_delta="+2" query_novelty="0.81"/>
     </belief_state>
 
-The tag is descriptive only: per criterion its belief status, the gain of
-its rises the agent used (``utilized_after``) and its attempts, then the
-step's signals.  Only the fields in ``SIGNAL_FIELDS``, the belief state, the
-utilized gains and the attempts (``criteria_attempts_after``; each left out
+The tag is descriptive only: per criterion its belief status (left out
+for a criterion without one, an aggregate) and its attempts, then the
+step's signals.  Only the fields in ``SIGNAL_FIELDS``,
+the belief state and the attempts (``criteria_attempts_after``; left out
 when null) are read, so
 gold-based signals (new-item precision, new-item graded recall, relevant
 counts) never reach the agent; they stay in ``belief/{qid}.jsonl`` for
@@ -58,14 +58,11 @@ def render_belief_state(record: Dict[str, Any], criteria: List[Criterion]) -> Op
         attempts = record.get("criteria_attempts_after")
         if not attempts or len(attempts) != len(criteria):
             attempts = [None] * len(criteria)
-        utilized = record.get("utilized_after")
-        if not utilized or len(utilized) != len(criteria):
-            utilized = [None] * len(criteria)
         lines.append("  <criteria>")
-        for i, (c, status, u, n) in enumerate(zip(criteria, statuses, utilized, attempts), 1):
-            attrs = (f'status="{status}"' + (f' utilized="{u}"' if u is not None else "")
-                     + (f' attempts="{n}"' if n is not None else ""))
-            lines.append(f'    <k{i} {attrs}>{escape(c.text, quote=False)}</k{i}>')
+        for i, (c, status, n) in enumerate(zip(criteria, statuses, attempts), 1):
+            attrs = " ".join(([f'status="{status}"'] if status is not None else [])
+                             + ([f'attempts="{n}"'] if n is not None else []))
+            lines.append(f'    <k{i}{" " + attrs if attrs else ""}>{escape(c.text, quote=False)}</k{i}>')
         lines.append("  </criteria>")
 
     signals = " ".join(

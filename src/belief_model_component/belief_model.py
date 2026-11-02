@@ -30,13 +30,13 @@ first, nested detail last::
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
-    utilization,
+    reasoning_confidence,
     intermediate_answers, intermediate_answer_status,
     queries[], docs[],
     belief_before, belief_after, criteria_sources_after,
-    utilized_before, utilized_after,
+    candidates_before, candidates_after,
     criteria_targeted, criteria_attempts_after, criteria_updates[],
-    utilized_updates[], agent_turn,
+    candidate_updates[], agent_turn,
     belief_updater_output, intermediate_answer_reasoning, errors[],
     belief_state_tag                                  # inform only, not saved (the
                                                       # trajectory step has it)
@@ -49,7 +49,8 @@ A signal that could not be computed is null, never 0; the reason is in
 ``errors`` (or a component is not configured: no encoder, no criteria,
 no qrels).  ``criteria_delta`` is negative when the belief fell.
 ``belief_before`` / ``belief_after`` hold one belief status per
-criterion (``types.BELIEF_STATUSES``), in ``criteria`` order.
+criterion (``types.BELIEF_STATUSES``), in ``criteria`` order; null for a
+criterion without a status (an aggregate, ``types.STATUSLESS_KINDS``).
 ``criteria_targeted`` lists the ids of the criteria that a query of the
 step targeted directly (score 1); ``criteria_attempts_after`` is, per
 criterion, the number of steps that targeted it so far.  When the targeting
@@ -57,14 +58,18 @@ scorer fails, ``criteria_targeted`` is null and the attempts are unchanged;
 both are null when it is not configured.
 ``criteria_sources_after`` is, per criterion, its distinct supporting
 documents so far (null without a criteria state).
-``utilized_before`` / ``utilized_after`` hold, per criterion, the gain of
-its rises that the agent used (``BeliefState.utilized``); ``utilized_updates``
-has one ``{id, from, to, step, rise, utilized, span, span_verified, reason,
-note}`` per rise of the previous call, judged against this step's
-``agent_turn`` (the agent's reasoning and queries of the iteration,
-``agent_turn.agent_turn_text``); ``utilization`` is U, the share of the
-judged rises used so far (null before any).  The rises of the last step are
-judged against the answer turn in the meta line's ``final_update``.
+``candidates_before`` / ``candidates_after`` hold, per criterion, its
+answer candidates (``[{value, status}]``, the answers the agent considers
+for it, ``BeliefState.candidates``), read from this step's ``agent_turn``
+(the agent's reasoning and queries of the iteration,
+``agent_turn.agent_turn_text``); ``candidate_updates`` has one ``{id,
+before, after, written, reason, note}`` per criterion whose list the call
+rewrote (``BeliefState.revise``); ``reasoning_confidence`` is R, the mean
+over the criteria of their top candidate's probability
+(``types.candidate_probability``), rest criteria left out
+(``types.REASONING_KINDS_EXCLUDED``).  The answer turn is read in the meta
+line's ``final_update``.  A query without candidates (multi-aspect) has
+empty lists.
 ``criteria_updates`` has one ``{id, from, to, written, support[],
 contradict[], reason, note}`` per criterion (``BeliefState.update``);
 ``belief_updater_output`` is the updater's raw reply (null when it was not
@@ -209,30 +214,32 @@ class BeliefModel:
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
             "final_belief": self._belief.statuses() if self._tracks_state else None,
-            "final_utilized": self._belief.utilized() if self._tracks_state else None,
-            "final_utilization": _round(self._belief.state.utilization()) if self._tracks_state else None,
+            "final_candidates": self._belief.candidates() if self._tracks_state else None,
+            "final_reasoning_confidence": (_round(self._belief.state.reasoning_confidence())
+                                           if self._tracks_state else None),
             "final_criteria_attempts": self._targeting.attempts if self._tracks_targeting else None,
             "criteria_evidence": self._belief.state.evidence() if self._tracks_state else None,
             "final_update": self._final_update,
         }
 
     def finish(self, answer_turn: Optional[str]) -> None:
-        """Judge the rises of the last step against the agent's answer turn
+        """Read the answer candidates of the agent's answer turn
         (``agent_turn.agent_turn_text`` with the answer); the outcome is the
-        meta line's ``final_update``: ``{agent_turn, utilized_updates,
-        belief_updater_output, errors}``, or null when no rise was pending
-        or there is no answer turn.  Called once, after the last step."""
-        if not self._tracks_state or answer_turn is None or not self._belief.state.pending:
+        meta line's ``final_update``: ``{agent_turn, candidate_updates,
+        belief_updater_output, errors}``, or null when there is no answer
+        turn or the query has no candidates.  Called once, after the last
+        step."""
+        if not self._tracks_state or answer_turn is None or not self._belief.updater.candidates:
             return
         errors: List[str] = []
-        used, raw = [], None
+        revised, raw = [], None
         try:
-            used, raw, updater_errors = self._belief.finish(self._step + 1, answer_turn)
+            revised, raw, updater_errors = self._belief.finish(self._step + 1, answer_turn)
             errors.extend(f"belief_update: {e}" for e in updater_errors)
         except Exception as e:
             logger.warning("BeliefModel: final belief update failed", exc_info=True)
             errors.append(f"belief_update: {e}")
-        self._final_update = {"agent_turn": answer_turn, "utilized_updates": used,
+        self._final_update = {"agent_turn": answer_turn, "candidate_updates": revised,
                               "belief_updater_output": raw, "errors": errors}
 
     def close(self) -> None:
@@ -267,8 +274,8 @@ class BeliefModel:
             trajectory: The agent's conversation so far, for the
                 intermediate answer.
             agent_turn: The agent's turn of the iteration
-                (``agent_turn.agent_turn_text``); the rises of the previous
-                step are judged against it.  None: they are not judged.
+                (``agent_turn.agent_turn_text``); the answer candidates are
+                read from it.  None: no turn to read.
         """
         self._step += 1
         subqueries = [q.strip() for q in subqueries if q and q.strip()]
@@ -276,7 +283,7 @@ class BeliefModel:
 
         tracks_state = self._tracks_state
         state_before = self._belief.statuses() if tracks_state else None
-        utilized_before = self._belief.utilized() if tracks_state else None
+        candidates_before = self._belief.candidates() if tracks_state else None
 
         # --- a: targeting state (the scorer sees b_{t-1}) -----------------------
         criteria_targeted, attempts_after, per_target = None, None, []
@@ -308,11 +315,11 @@ class BeliefModel:
         new_ids = [d["doc_id"] for d in per_doc if not d["seen_before"]]
 
         # --- b_t and Delta^D (the documents not judged in earlier steps) --------
-        criteria_delta, updates, used, updater_output = None, None, None, None
-        state_after, utilized_after = state_before, utilized_before
+        criteria_delta, updates, revised, updater_output = None, None, None, None
+        state_after, candidates_after = state_before, candidates_before
         if tracks_state:
             try:
-                criteria_delta, updates, used, updater_output, updater_errors = self._belief.score(
+                criteria_delta, updates, revised, updater_output, updater_errors = self._belief.score(
                     unique_docs(docs), self._step, agent_turn,
                 )
                 errors.extend(f"belief_update: {e}" for e in updater_errors)
@@ -320,7 +327,7 @@ class BeliefModel:
                 logger.warning("BeliefModel: belief update failed", exc_info=True)
                 errors.append(f"belief_update: {e}")
             state_after = self._belief.statuses()
-            utilized_after = self._belief.utilized()
+            candidates_after = self._belief.candidates()
 
         # --- Retrieval gain (extra) ---------------------------------------------
         try:
@@ -354,7 +361,7 @@ class BeliefModel:
             "criteria_delta": criteria_delta,
             "query_novelty": _round(query_novelty),
             **gain,
-            "utilization": _round(self._belief.state.utilization()) if tracks_state else None,
+            "reasoning_confidence": _round(self._belief.state.reasoning_confidence()) if tracks_state else None,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
             "queries": per_query,
@@ -362,12 +369,12 @@ class BeliefModel:
             "belief_before": state_before,
             "belief_after": state_after,
             "criteria_sources_after": self._belief.state.sources() if tracks_state else None,
-            "utilized_before": utilized_before,
-            "utilized_after": utilized_after,
+            "candidates_before": candidates_before,
+            "candidates_after": candidates_after,
             "criteria_targeted": criteria_targeted,
             "criteria_attempts_after": attempts_after,
             "criteria_updates": updates,
-            "utilized_updates": used,
+            "candidate_updates": revised,
             "agent_turn": agent_turn,
             "belief_updater_output": updater_output,
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,

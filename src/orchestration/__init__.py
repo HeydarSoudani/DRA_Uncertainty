@@ -131,10 +131,13 @@ def build_belief_model(
         criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
             a query's criteria are read from it, and extracted and added
             only when missing.  None: extracted for every sample.
-        gold_criteria: Gold criteria file of a training pool split
-            (``layout.gold_criteria_path``): each query's criteria are its
-            gold ones (no extraction, *criteria_bank* unused); a query
-            without them gets no belief state.  The updater and query
+        gold_criteria: Gold criteria file of a training pool
+            (``layout.gold_criteria_path``), given when the run's criteria
+            source is ``gold`` (``layout.effective_criteria_source``): the
+            criteria of a query with the full gold annotation are its gold
+            ones (no extraction); any other query gets them from
+            *llm_criteria* (through *criteria_bank*), so the belief model
+            always runs.  Needs *llm_criteria*.  The updater and query
             scorer are still the *belief_judge_model* / *llm_criteria* LLM.
     """
     if mode == "off":
@@ -149,12 +152,7 @@ def build_belief_model(
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
     criteria_source = None
-    if gold_criteria:
-        if not (belief_judge_model or llm_criteria):
-            raise ValueError("gold criteria need a belief updater model (--belief-judge-model or --llm-criteria)")
-        criteria_source = GoldCriteriaSource(gold_criteria, query_shape)
-        print(f"Belief model: gold criteria from {gold_criteria}")
-    elif llm_criteria:
+    if llm_criteria:
         criteria_source = LLMCriteriaSource(
             llm_client=_belief_llm(llm_criteria),
             max_criteria=max_criteria,
@@ -166,7 +164,13 @@ def build_belief_model(
             print(f"Belief model: criteria from the bank {criteria_bank}, missing ones from {llm_criteria}")
         else:
             print(f"Belief model: criteria from {llm_criteria}")
-    else:
+    if gold_criteria:
+        if not llm_criteria:
+            raise ValueError("criteria_source gold needs --llm-criteria: the queries without gold "
+                             "criteria get extracted ones")
+        criteria_source = GoldCriteriaSource(gold_criteria, query_shape, fallback=criteria_source)
+        print(f"Belief model: gold criteria from {gold_criteria}, the queries without them from the above")
+    elif not llm_criteria:
         logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
     encode_fn, _ = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)

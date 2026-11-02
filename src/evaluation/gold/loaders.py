@@ -1,7 +1,8 @@
 """Per-query gold entities (TRQA).
 
 The entities of each query's set, from the intermediate information
-(``queries_{split}_intermediate_info.jsonl``): the gold of the entity
+(``queries_{split}_intermediate_info.jsonl``; a training pool: its query
+rows, ``load_query_intermediate_info``): the gold of the entity
 reachability (``analysis/criteria_reachability.py``).
 """
 

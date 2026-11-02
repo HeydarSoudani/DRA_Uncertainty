@@ -1,0 +1,6 @@
+Question: {question}
+
+Chain:
+{chain}
+
+Write one criterion per placeholder.{retry}

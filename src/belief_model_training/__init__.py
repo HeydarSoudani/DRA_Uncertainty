@@ -13,7 +13,7 @@ Module layout:
     trajectories  phase 1: dra_inference on a pool split (sft, val: monitor; rl: off)
     sft           phase 2: SFT samples and teacher scores, SFT warm-up (LoRA, merged)
     rollout       vLLM generation with log-probs, sleep / weight reload
-    utilized_gold the gold of the reasoner side: which criteria each agent turn states the gold answer of
+    candidate_gold the gold of the reasoner side: answer candidates and agent turns against the gold answers
     scoring       measures of a belief model against the gold (teacher scores, validation)
     env           phase 3 environment: the student's belief chains over whole episodes
                   (GRPO groups), episode sampler

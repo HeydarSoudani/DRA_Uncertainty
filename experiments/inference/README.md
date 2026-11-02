@@ -90,7 +90,8 @@ prompt, a shared core plus one block per shape:
 | Shape | Datasets | Criteria |
 |---|---|---|
 | single target | BrowseComp-Plus | the clues of the target, copied verbatim |
-| set | TRQA | the set, then one "member: property" per known member, then "any other member: property" for members found only by the search |
+| multi-hop | deep_qa | one criterion per entity on the chain, the answer last |
+| set | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria) |
 | report | NeuCLIR, RAGTIME | every constraint the request states (no cap), then at most `max_criteria` (5) criteria the extractor adds, as one plain list |
 
 `max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps the list; for a report request it is the
@@ -104,10 +105,19 @@ Rules for report criteria:
 - Every criterion reads on its own, naming its subject instead of pointing back ("it", "these").
 - Criteria are distinct: none asks for what another one asks for.
 
-Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `open` (several parts or answers),
-`rest` or `aspect` (one aspect of a report topic). All clues are closed; the set (always the first criterion) is open,
-its members closed and its "any other member" criterion rest (added by code when the model leaves it out); all report
-criteria are aspects.
+Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `rest`, `aggregate` or `aspect` (one
+aspect of a report topic). All clues and hops are closed; a set query's members are closed, its "any other member"
+criterion rest and its last criterion aggregate (each added by code when the model leaves it out); all report
+criteria are aspects. An aggregate has no status (no passage states it, the agent computes it), only answer
+candidates.
+
+**Criteria source** (`criteria_source`: `llm`, the default, or `gold`). `llm`: the criteria are extracted by
+`llm_criteria`, through the criteria bank. `gold`: on a training pool (deep_qa, trqa_validation), each query's gold
+criteria (`TRAINING_POOL_ROOT/{pool}/queries/queries_all.jsonl`, `level` full with criterion texts) replace the
+extracted ones, and the run goes to `belief-{mode}-gold/`. The belief model always runs: with `gold` on a dataset
+without gold criteria the run warns and uses extracted criteria (`belief-{mode}/`), and a pool query without them
+gets extracted ones (`ood: true` and `gold_missing` in its `criteria_info`; deep_qa's WebShaper and FRAMES queries).
+`run_config.json` records `criteria_source` and the source used, `criteria_source_effective`.
 
 **Criteria bank** (`criteria_bank: true`, the default). A query's criteria are read from
 `CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl` and extracted only when missing, then added to it
@@ -292,7 +302,7 @@ pip install --no-deps "auto-argue @ git+https://github.com/hltcoe/auto-argue.git
 ## Output format
 
 ```
-$DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}/
+$DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-gold]/
 ├── run_config.json                 every resolved setting: dataset, agent (temperature included), searcher,
 │                                   belief model, evaluation
 ├── retrieval/

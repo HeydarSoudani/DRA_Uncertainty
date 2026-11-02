@@ -3,8 +3,9 @@
 The turn of search iteration t is the agent's reasoning and search queries
 of that iteration, written after it read the passages of iteration t-1; the
 answer turn is the reasoning and final answer after the last iteration.
-The updater call of iteration t reads turn t to judge whether the agent
-used the information that raised criteria at t-1 (``utilized``).
+The updater call of iteration t reads turn t for the answer candidates
+of the criteria (the answers the agent considers), and the final call the
+answer turn.
 
 The text is built the same way at inference (``BaseAgent`` passes the
 iteration's steps) and in belief model training (from the saved
