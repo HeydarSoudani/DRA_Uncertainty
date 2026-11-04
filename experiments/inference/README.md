@@ -89,13 +89,14 @@ prompt, a shared core plus one block per shape:
 
 | Shape | Datasets | Criteria |
 |---|---|---|
-| single target | BrowseComp-Plus | the clues of the target, copied verbatim |
-| multi-hop | deep_qa | one criterion per entity on the chain, the answer last |
-| set | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria) |
-| report | NeuCLIR, RAGTIME | every constraint the request states (no cap), then at most `max_criteria` (5) criteria the extractor adds, as one plain list |
+| single target | BrowseComp-Plus | every clue of the target, copied verbatim (no cap) |
+| multi-hop | deep_qa | one criterion per entity on the chain, the answer last (FRAMES; at most 8) |
+| set | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
+| report | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
-`max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps the list; for a report request it is the
-number of criteria the extractor may add, asked in the prompt, and code never cuts a report list.
+`max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
+trqa_validation (52) and deep_qa's FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
+whose criteria are all gold, a `max_criteria` stops the run (`criteria_init.check_max_criteria`).
 
 Rules for report criteria:
 
@@ -111,23 +112,65 @@ criterion rest and its last criterion aggregate (each added by code when the mod
 criteria are aspects. An aggregate has no status (no passage states it, the agent computes it), only answer
 candidates.
 
-**Criteria source** (`criteria_source`: `llm`, the default, or `gold`). `llm`: the criteria are extracted by
-`llm_criteria`, through the criteria bank. `gold`: on a training pool (deep_qa, trqa_validation), each query's gold
-criteria (`TRAINING_POOL_ROOT/{pool}/queries/queries_all.jsonl`, `level` full with criterion texts) replace the
-extracted ones, and the run goes to `belief-{mode}-gold/`. The belief model always runs: with `gold` on a dataset
-without gold criteria the run warns and uses extracted criteria (`belief-{mode}/`), and a pool query without them
-gets extracted ones (`ood: true` and `gold_missing` in its `criteria_info`; deep_qa's WebShaper and FRAMES queries).
-`run_config.json` records `criteria_source` and the source used, `criteria_source_effective`.
+**Gold and silver criteria.** Criteria are gold when they come from the question or from the dataset's annotation,
+silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_criteria`, `criteria_choice`):
 
-**Criteria bank** (`criteria_bank: true`, the default). A query's criteria are read from
-`CRITERIA_ROOT/{dataset}/criteria_bank/criteria_{split}.jsonl` and extracted only when missing, then added to it
-(`BankedCriteriaSource`).
+| Dataset | Gold | Silver |
+|---|---|---|
+| BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's criteria (the question's own clues and requirements) | none |
+| deep_qa InfoSeek, WebShaper | the pool's rows (`queries/queries_all.jsonl`, any `level`) | none |
+| deep_qa FRAMES | none | the extractor's multi-hop criteria |
+| TRQA | made from the intermediate info on demand (`trqa_gold_criteria.py`) | the extractor's set criteria |
+| trqa_validation | the pool's rows | the extractor's set criteria |
 
-- A line is used only when the query id and text, `llm_criteria`, the query shape, `max_criteria` and a hash of the
-  init prompt all match, so a changed prompt or cap extracts again.
+**Criteria source** (`criteria_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_validation only,
+whose queries have both; the run goes to `belief-{mode}-gold/` or `belief-{mode}-silver/`. Elsewhere it has no
+effect (an info line says so) and the run goes to `belief-{mode}/`. The belief model always runs: a query without
+gold criteria (FRAMES, failed texts) gets silver ones (`gold_missing` in its `criteria_info`). Each query's
+`criteria_info` records `criteria_kind` (`gold` or `silver`), and a gold row's `gold_level`. `run_config.json`
+records `criteria_source` and the source used, `criteria_source_effective`.
+
+**Criteria init** (`belief_model_component/criteria_init.py`). The criteria are part of the belief model: it makes
+each query's list once, at the start of the query (`BeliefModel.reset`). The run only passes the dataset,
+`criteria_source` and `llm_criteria`:
+
+1. The kind: the requested `criteria_source` on TRQA and trqa_validation, gold elsewhere; a query without gold
+   criteria gets silver ones.
+2. The criteria of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
+   made the first time a query needs it, in inference, in training (phase 1 is a dra_inference run) and in
+   `analysis/criteria_reachability.py`; no build step.
+
+Before the workers start (after the vLLM servers are up), the run makes and banks the missing criteria of its
+queries in parallel (`prepare_criteria`, with counts per kind and origin); the workers then read them from the bank,
+and a query still missing is made by its worker. The settings are checked before any model is loaded
+(`check_criteria_inputs`: e.g. a missing pool gold file stops the run).
+
+The banks:
+
+- The extractor's criteria (`llm_criteria`): `CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl`
+  (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training pool has one bank for all its splits,
+  `CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
+- TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
+  prompts). They are made from the query's intermediate info as the trqa_validation pool makes its own
+  (`annotations.set_row`: one criterion per member, the rest and the aggregate; members named by the page title of
+  their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `llm_criteria` writes
+  the property phrase and the aggregation (the pools' prompts, `training_pool/prompts/set_*`). The bank line keeps
+  the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
+  Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
+  criteria, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
+- A training pool's gold criteria: the pool's queries file is their bank, written by its build only
+  (`build_training_pool.py`), never during a run, so training scores against the same texts. A query whose gold
+  texts failed gets silver ones; rebuild the pool to fix them.
+
+Rules of a bank line:
+
+- It is used only when the query id and text, `llm_criteria`, the query shape, `max_criteria` and a hash of the
+  init prompt all match, so a changed prompt or cap extracts again. A `vllm/` model is keyed with the checkpoint
+  its server loaded (`{model}@{path}`), so two checkpoints served under one name do not share criteria.
 - A truncated reply is asked once more and fails when truncated again. A failed extraction is never added, so every
   criteria list a run uses is banked.
-- A query extracted by two processes at once keeps the line banked first.
+- A query extracted by two processes at once keeps the line banked first. Each process reads only the lines added
+  since its last read.
 - Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the criteria the runs use.
   The criteria are never scored against gold during a run.
 

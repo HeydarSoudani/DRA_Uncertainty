@@ -23,7 +23,8 @@ Document text is read back from the corpus (``CorpusLookup.contents``, the
 field the retrievers return).
 
 ``teacher_init_call`` rebuilds the init call (the criteria extraction
-prompt) with the episode's criteria as the reply.  ``replay_teacher``
+prompt; uncapped for gold criteria, within the cap for silver ones) with
+the episode's criteria as the reply.  ``replay_teacher``
 re-runs the inference belief updater on the episode with the teacher's
 saved replies in place of the LLM: it gives the exact prompt of every
 teacher call (the SFT inputs), the final call on the answer turn included,
@@ -54,7 +55,7 @@ from belief_model_component.belief_model import unique_docs
 from evaluation.belief import SCHEMA_VERSION
 from evaluation.belief.writer import _clean
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
-from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path
+from indexing_corpus_dataset.layout import DATASET_SPECS, GOLD_CRITERIA, default_corpus_path
 from utils.io_utils import read_jsonl
 
 from .config import Split
@@ -107,11 +108,13 @@ class Episode:
     query_shape: str
     steps: List[EpisodeStep]
     run_dir: str
-    # Monitor runs: the teacher's criteria, the criteria cap of the init
-    # prompt (run_config.json) and the model that wrote the criteria.
+    # Monitor runs: the run's criteria, the cap of a silver init prompt
+    # (run_config.json), the model that wrote the criteria and their kind
+    # (gold or silver, ``criteria_kind`` of the criteria info).
     criteria: List[Dict[str, str]] = field(default_factory=list)
     max_criteria: Optional[int] = None
     criteria_model: Optional[str] = None
+    criteria_kind: Optional[str] = None
     # Steps whose teacher replay matched the saved run (all of them when it matched).
     replay_steps: Optional[int] = None
     replay_error: Optional[str] = None
@@ -175,8 +178,13 @@ class Episode:
         return self.answer_stated if t is None else self.steps[t].stated
 
     def criteria_extractor(self) -> LLMCriteriaSource:
-        """The init call of the episode's query (prompt and parse; no LLM)."""
-        cap = self.max_criteria or DATASET_SPECS[self.dataset].max_criteria
+        """The init call of the episode's query (prompt and parse; no LLM):
+        uncapped for gold criteria, as gold is never capped; silver ones
+        within the run's cap (the dataset's by default)."""
+        if self.criteria_kind == GOLD_CRITERIA:
+            cap = None
+        else:
+            cap = self.max_criteria or DATASET_SPECS[self.dataset].max_criteria
         return LLMCriteriaSource(_NoLLM(), max_criteria=cap, query_shape=self.query_shape)
 
 
@@ -281,6 +289,7 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
         return f"agent iterations {missing} of the trajectory have no belief step"
     episode.criteria = meta["criteria"]
     episode.criteria_model = (meta.get("criteria_info") or {}).get("model")
+    episode.criteria_kind = (meta.get("criteria_info") or {}).get("criteria_kind")
     episode.num_relevant = meta.get("num_relevant")
     final = meta.get("final_update")
     if final is not None:

@@ -10,8 +10,9 @@ annotation and criterion texts, and in ``val`` also the out-of-domain ones
 of them.  The mode follows the split (``runs.SPLIT_MODE``):
 
     sft, val  monitor: the belief model starts from the query's gold
-              criteria (``--criteria-source gold``), or for an
-              out-of-domain query from the teacher's own
+              criteria (``--criteria-source``, ``shared.criteria_source``:
+              gold, or silver on trqa_validation), or for a query without
+              gold criteria from the teacher's silver ones
               (``--llm-criteria``, through the criteria bank), and the
               teacher writes the belief updates
               (statuses and answer candidates), the agent never sees them;
@@ -58,7 +59,7 @@ def inference_command(cfg: TrainingConfig) -> List[str]:
         cmd += [
             "--llm-criteria", tc.teacher_belief_model,
             "--belief-judge-model", tc.teacher_belief_model,
-            "--criteria-source", "gold",
+            "--criteria-source", cfg.shared.criteria_source,
         ]
     if tc.limit is not None:
         cmd += ["--limit", str(tc.limit)]

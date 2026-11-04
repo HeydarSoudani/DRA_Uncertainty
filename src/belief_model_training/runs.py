@@ -3,7 +3,10 @@
 Phase 1 runs ``experiments/inference/dra_inference.py`` on one split of the
 training pool, with the standard output layout:
 
-    {inference_output}/{dataset}_{split}_{retriever}/{agent dir}/belief-{mode}[-gold]/
+    {inference_output}/{dataset}_{split}_{retriever}/{agent dir}/belief-{mode}[-{source}]/
+
+(``-{source}``: ``shared.criteria_source`` on trqa_validation, where it is a
+choice; deep_qa's monitor runs are ``belief-monitor``.)
 
     split  mode      used by
     sft    monitor   phase 2 (SFT samples, teacher scores)
@@ -37,7 +40,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from indexing_corpus_dataset.dataset_loaders import load_split
-from indexing_corpus_dataset.layout import DATASET_SPECS, GOLD_CRITERIA, dataset_root, gold_criteria_path
+from indexing_corpus_dataset.layout import (
+    DATASET_SPECS, GOLD_CRITERIA, criteria_run_tag, dataset_root, effective_criteria_source, gold_criteria_path,
+)
 from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
@@ -82,8 +87,9 @@ def find_run(cfg: TrainingConfig, split: Split) -> Tuple[Path, Dict]:
         split.dataset, split.split_id, DATASET_SPECS[split.dataset].query_key, cfg.shared.retriever,
     )
     root = cfg.inference_output / dataset_dir
-    # The monitor runs use the gold criteria (``-gold``); the off run has none.
-    belief_dir = build_belief_config_name(SPLIT_MODE[split.subset], GOLD_CRITERIA)
+    # The monitor runs name their criteria source where it is a choice; the off run has none.
+    belief_dir = build_belief_config_name(SPLIT_MODE[split.subset],
+                                          criteria_run_tag(cfg.shared.criteria_source, split.dataset))
     key = (root, belief_dir, cfg.shared.policy_model)
     if key not in _RUNS:
         configs = [(d, run_config(d)) for d in sorted(root.glob(f"*/{belief_dir}")) if (d / "run_config.json").exists()]
@@ -108,7 +114,8 @@ def check_same_settings(cfg: TrainingConfig, names: List[str]) -> None:
 
 
 def criteria_cap(cfg: TrainingConfig, split: Split) -> Optional[int]:
-    """The criteria cap of the init prompt for the episodes of *split*: the
+    """The criteria cap of a silver init prompt for the episodes of *split*
+    (a gold one is uncapped, ``Episode.criteria_extractor``): the
     ``belief_model.max_criteria`` of the teacher's monitor run (the split's
     own, the val run's for rl, which has no belief model), so every split
     uses the same; None (the dataset's default) when no monitor run has it."""
@@ -128,6 +135,17 @@ def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
     if judge != teacher or source != GOLD_CRITERIA:
         raise SystemExit(f"{run_dir}: updater {judge!r}, criteria source {source!r}; expected "
                          f"the teacher {teacher!r} (trajectories.teacher_belief_model) on the gold criteria")
+
+
+def require_gold(cfg: TrainingConfig) -> None:
+    """Phases 2 and 3 score the belief against the pool's gold criteria
+    (the reasoner's gold answers, per criterion id): they read the runs on
+    the gold criteria only."""
+    source = effective_criteria_source(cfg.shared.criteria_source, cfg.shared.training_data)
+    if source != GOLD_CRITERIA:
+        raise SystemExit(f"shared.criteria_source {source}: phases 2 and 3 score against the pool's gold "
+                         f"criteria and need the runs on them (shared.criteria_source gold); silver runs are "
+                         f"for phase 1 and evaluation only")
 
 
 def read_gold_criteria(split: Split) -> Tuple[Dict[str, Dict], Set[str]]:
@@ -210,6 +228,7 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
     """The episodes of split *name*'s run, one per finished query.  With
     *teacher* (a monitor run), each also has the teacher's view; an episode
     whose belief file cannot be used is left out."""
+    require_gold(cfg)
     split = cfg.pool_split(name)
     run_dir, config = find_run(cfg, split)
     mode = SPLIT_MODE[split.subset]

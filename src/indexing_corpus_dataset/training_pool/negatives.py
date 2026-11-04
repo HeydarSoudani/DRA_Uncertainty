@@ -12,11 +12,19 @@ Per gold page, the sources of ``negatives.sources`` fill its
 
 A candidate is skipped when it is gold for any query of the pool, a
 disambiguation or list page, titled with the answer of a query of the gold
-page (the title with or without its parenthetical), or shorter than
-``pages.min_words`` once fetched.  Candidates are fetched as the gold pages
-were (Parsoid HTML, ``html_to_text``) and their text appended to
-``pages/text.jsonl``; a page that is the negative of several gold pages is
-fetched once.
+page (the title with or without its parenthetical), shorter than
+``pages.min_words`` once fetched, or a duplicate of a document of the corpus:
+a word 5-gram containment of at least ``negatives.dedup_threshold`` with a
+gold page or a kept negative (``duplicates.DuplicateIndex``).  Candidates are
+fetched as the gold pages were (Parsoid HTML, ``html_to_text``) and their
+text appended to ``pages/text.jsonl``; a page that is the negative of
+several gold pages is fetched once.
+
+Every run first indexes the gold pages (all of them, qrels order), then the
+kept negatives (memory order); a kept negative that duplicates a document
+indexed before it (a gold page added by a later step 2 run) is dropped from
+its gold pages' rows, so the corpus has no duplicates other than between
+gold pages (step 4 reports those).
 
 Memory: ``negatives/index.jsonl`` gets one row per gold page once it is done
 (``{"gold", "title", "negatives": [{"id", "title", "url", "source", "rank",
@@ -49,6 +57,7 @@ from utils.io_utils import drop_partial_line, read_jsonl
 from .annotations import normalize, strip_parenthetical
 from .config import PoolConfig, PoolPaths, require_contact
 from .corpus import read_negatives, write_corpus
+from .duplicates import SHINGLE, DuplicateIndex, read_shingles, shingles
 from .http_client import HttpClient, error_text, failure_status, is_permanent
 from .stats import negative_stats, read_stats, write_stats
 from .steps import LINE_EVERY_SECONDS, LINE_EVERY_SHARE, PageStore
@@ -77,7 +86,7 @@ def _settings(cfg: PoolConfig) -> dict:
     """The settings that decide the negatives of a gold page: an incremental
     run must use those of the earlier runs."""
     return {"wiki_lang": cfg.pages.wiki_lang, "min_words": cfg.pages.min_words,
-            **dataclasses.asdict(cfg.negatives)}
+            **dataclasses.asdict(cfg.negatives), "dedup_shingle": SHINGLE}
 
 
 class _Memory:
@@ -132,12 +141,17 @@ class _Finder:
     the pages fetched in this run between gold pages."""
 
     def __init__(self, cfg: PoolConfig, wiki: WikipediaClient, store: PageStore, memory: _Memory,
-                 gold_ids: Set[str]):
+                 gold_ids: Set[str], index: DuplicateIndex):
         self.cfg = cfg.negatives
         self.min_words = cfg.pages.min_words
         self.wiki = wiki
         self.store = store
         self.gold_ids = gold_ids
+        # The corpus documents (gold pages, kept negatives) by their 5-grams;
+        # the pages that duplicate one of them (the index only grows, so they
+        # stay duplicates).
+        self.index = index
+        self.duplicates: Set[str] = set()
         # Page id -> {"id", "title", "url", "words"} of a page kept as a
         # negative (text stored); pages too short to keep.
         self.known: Dict[str, dict] = {n["id"]: {k: n[k] for k in ("id", "title", "url", "words")}
@@ -192,6 +206,9 @@ class _Finder:
         if doc_id in self.too_short:
             self._count("too_short")
             return None
+        if doc_id in self.duplicates:
+            self._count("skip_duplicate")
+            return None
         try:
             text = html_to_text(self.wiki.fetch_html(candidate["revid"]))
         except Exception as exc:  # noqa: BLE001 - final failures skip the candidate
@@ -204,12 +221,26 @@ class _Finder:
             self.too_short.add(doc_id)
             self._count("too_short")
             return None
-        self._count("fetched")
-        self.store.add_text(doc_id, text)
         info = {"id": doc_id, "title": candidate["title"], "url": self.wiki.page_url(candidate["title"]),
                 "words": words}
-        self.known[doc_id] = info
-        return info
+        grams = shingles(text)
+        # Match and add under one lock, so two workers cannot keep two copies.
+        with self._lock:
+            if doc_id in self.known:  # kept by another worker meanwhile
+                outcome = "reused"
+            elif self.index.matches(grams):
+                self.duplicates.add(doc_id)
+                outcome = "skip_duplicate"
+            else:
+                self.index.add(doc_id, grams)
+                self.known[doc_id] = info
+                outcome = "fetched"
+        self._count(outcome)
+        if outcome == "skip_duplicate":
+            return None
+        if outcome == "fetched":
+            self.store.add_text(doc_id, text)
+        return self.known[doc_id]
 
     def find(self, gold: dict) -> dict:
         """The memory row of *gold*; a transient failure raises (no row)."""
@@ -340,6 +371,39 @@ def _check_settings(cfg: PoolConfig, paths: PoolPaths) -> dict:
     return settings
 
 
+def _dedup_index(cfg: PoolConfig, paths: PoolPaths, memory: _Memory, gold_ids: List[str]) -> DuplicateIndex:
+    """The corpus documents by their 5-grams: every gold page with a text
+    (qrels order), then the kept negatives (memory order).  A kept negative
+    that duplicates a document indexed before it, or is gold now, is dropped
+    from the rows of its gold pages (a new row, appended)."""
+    negative_ids = {n["id"] for row in memory.rows.values() for n in row["negatives"]}
+    grams = read_shingles(paths, set(gold_ids) | negative_ids)
+    index = DuplicateIndex(cfg.negatives.dedup_threshold)
+    for doc_id in gold_ids:
+        if doc_id in grams and doc_id not in index:
+            index.add(doc_id, grams[doc_id])
+    dropped: Dict[str, List[str]] = {}
+    gold = set(gold_ids)
+    for row in list(memory.rows.values()):
+        for neg in row["negatives"]:
+            doc_id = neg["id"]
+            if doc_id in index or doc_id in dropped or doc_id not in grams:
+                continue  # indexed (gold, or kept for an earlier row), dropped, or no text
+            found = index.matches(grams[doc_id])
+            if found:
+                dropped[doc_id] = [d for d, _ in found]
+            else:
+                index.add(doc_id, grams[doc_id])
+        kept = [n for n in row["negatives"] if n["id"] not in dropped and n["id"] not in gold]
+        if len(kept) < len(row["negatives"]):
+            memory.add({**row, "negatives": kept})
+    print(f"[step 3] duplicate index: {len(index)} corpus documents; {len(dropped)} kept negatives dropped "
+          f"as duplicates of earlier documents")
+    for doc_id, of in dropped.items():
+        log.info("dropped negative %s: duplicate of %s", doc_id, ", ".join(of))
+    return index
+
+
 def run_step3(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
               sources: Optional[List[str]] = None) -> None:
     require_contact(cfg, 3)
@@ -371,11 +435,13 @@ def run_step3(cfg: PoolConfig, paths: PoolPaths, limit: Optional[int] = None,
         todo = todo[:limit]
         print(f"[step 3] this run: the next {len(todo)} gold pages (--limit {limit})")
 
+    index = _dedup_index(cfg, paths, memory, gold_ids)
+
     # ── Find ────────────────────────────────────────────────────────────────
     shared = cfg.shared
     http = HttpClient(shared.contact, shared.timeout, shared.max_retries, cfg.pages.wiki_rate_per_min)
     wiki = WikipediaClient(http, cfg.pages.wiki_lang)
-    finder = _Finder(cfg, wiki, store, memory, set(gold_ids))
+    finder = _Finder(cfg, wiki, store, memory, set(gold_ids), index)
     logging.getLogger("urllib3").setLevel(logging.ERROR)
 
     def work(gold: dict) -> Optional[dict]:

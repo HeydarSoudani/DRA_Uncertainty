@@ -35,12 +35,15 @@ with their gold pages fetched from the source, one step per call
     3  hard negatives of the Wikipedia gold pages     negatives/index.jsonl,
        (Wikipedia API: morelike, category siblings;   pages/text.jsonl,
        at most max_per_gold each; ``negatives``       corpus/corpus.jsonl,
-       section); web gold pages get none              corpus/ids_gold.txt,
-                                                      corpus/ids_hard_negative.txt
-    4  analysis: stats of the dataset per source      (log tables)
-       (queries, docs per query, lengths, hard
+       section); web gold pages get none; no          corpus/ids_gold.txt,
+       negative duplicates a corpus document          corpus/ids_hard_negative.txt
+       (containment >= dedup_threshold)
+    4  analysis: stats of the dataset per source      (log tables),
+       (queries, docs per query, lengths, hard        duplicates.jsonl
        negatives, gold annotation levels and
-       texts, checks)
+       texts, checks); duplicate documents of the
+       corpus (same id, url or text, near-identical
+       text; duplicates.py), report only
 
 The corpus holds the gold pages and the hard negatives with their text;
 ``ids_gold.txt`` and ``ids_hard_negative.txt`` list the ids of each kind.
@@ -71,7 +74,6 @@ import argparse
 import fcntl
 import logging
 from pathlib import Path
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -155,7 +157,7 @@ def main() -> None:
     elif args.step in (2, 3):
         (run_step2 if args.step == 2 else run_step3)(cfg, paths, args.limit, sources)
     else:
-        run_step4(paths)
+        run_step4(paths, cfg.negatives.dedup_threshold)
 
 
 if __name__ == "__main__":
@@ -164,8 +166,8 @@ if __name__ == "__main__":
 # python experiments/training/build_training_pool.py --pool trqa_validation
 # python experiments/training/build_training_pool.py --pool trqa_validation --limit 10
 # python experiments/training/build_training_pool.py --step 1
-# python experiments/training/build_training_pool.py --step 2 --limit 10
+# python experiments/training/build_training_pool.py --step 2 --source webshaper --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10
-# python experiments/training/build_training_pool.py --step 2 --source frames --limit 100
+# python experiments/training/build_training_pool.py --step 2 --source frames --limit 10
 # python experiments/training/build_training_pool.py --step 3 --limit 100
 # python experiments/training/build_training_pool.py --step 4

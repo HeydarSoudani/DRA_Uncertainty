@@ -47,6 +47,7 @@ from . import annotations
 from .config import PoolConfig, PoolPaths, require_contact
 from .gold_criteria import check_writer, fill_texts, require_api_key
 from .corpus import read_negatives, write_corpus
+from .duplicates import find_duplicates, format_duplicates
 from .filters import failed_pages, failed_transiently, filter_a, is_transient, type_filter, verdict
 from .http_client import HttpClient, error_text, failure_status
 from .sources import LOADERS
@@ -500,7 +501,7 @@ def _read_ids(path: Path) -> List[str]:
         return [line.strip() for line in fh if line.strip()]
 
 
-def run_step4(paths: PoolPaths) -> None:
+def run_step4(paths: PoolPaths, dedup_threshold: float) -> None:
     """Stats of the dataset as written by steps 2 and 3 (queries, qrels,
     corpus, hard negatives): printed as a table and saved as the ``step4``
     section of ``stats.json``; the gold annotation of the rows is printed
@@ -520,6 +521,8 @@ def run_step4(paths: PoolPaths) -> None:
     stats = dataset_stats(read_jsonl(paths.questions), queries, qrels, doc_words, dropped,
                           _read_ids(paths.ids_hard_negative), read_negatives(paths))
     annotation = annotation_stats(queries)
+    stats["duplicates"] = find_duplicates(paths, dedup_threshold)
     write_stats(paths.stats, "step4", stats)
     print(f"[step 4] dataset {paths.root}\n\n{format_dataset_table(stats)}\n\n"
+          f"{format_duplicates(stats['duplicates'])}\n(details: {paths.duplicates})\n\n"
           f"gold annotation\n\n{format_annotation_table(annotation)}\n")

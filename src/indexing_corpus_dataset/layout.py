@@ -126,12 +126,32 @@ class DatasetSpec:
                              criterion per hop), ``"set"`` (a value over every
                              member of a set) or ``"multi_aspect"`` (a report
                              on several aspects of a topic).
-        max_criteria:        Cap on the number of criteria the belief
-                             model derives per query (a budget: a few
-                             clues, or every member of a set).  For
-                             ``multi_aspect`` it is the number of criteria the
-                             extractor may add to the request's own, asked in
-                             the prompt; the list is not cut.
+        max_criteria:        Cap on the number of criteria the criteria
+                             extractor lists per query, or None (uncapped).
+                             Gold criteria are never capped: a dataset
+                             whose extracted criteria are its gold
+                             (``gold_criteria == "question"``) has None; for
+                             the others it caps the silver extraction (the
+                             members of a TRQA set, the hops of a FRAMES
+                             question).
+        gold_criteria:       Where the dataset's gold criteria come from:
+                             ``"question"`` (the criteria the extractor
+                             takes from the question are the gold: every
+                             clue of a BrowseComp-Plus question, every
+                             requirement of a report request; they are
+                             banked as gold) or ``"annotation"`` (from the
+                             dataset's annotation: a training pool's rows,
+                             ``gold_criteria_path``; TRQA's intermediate
+                             info, made on demand into its gold bank,
+                             ``trqa_gold_criteria``).  A query of
+                             an annotation dataset without gold criteria
+                             (deep_qa's FRAMES) gets silver ones, extracted
+                             from the question by an LLM.
+        criteria_choice:     ``criteria_source`` picks between the gold and
+                             the silver criteria of every query (TRQA);
+                             else it has no effect: the dataset's
+                             queries use their gold, a query without it
+                             silver.
         reachability:        Gold the criteria reachability is measured
                              against (``analysis/criteria_reachability.py``):
                              ``"documents"`` (the gold documents),
@@ -160,7 +180,9 @@ class DatasetSpec:
     relevance_gains: dict[int, int]
     task: str
     query_shape: str
-    max_criteria: int
+    max_criteria: int | None
+    gold_criteria: str
+    criteria_choice: bool
     reachability: str | None
     answer_eval: str | None
     doc_max_length: int
@@ -171,17 +193,19 @@ class DatasetSpec:
 
 
 DATASET_SPECS = {
-    # TRQA passages are short; answers are numeric.
+    # TRQA passages are short; answers are numeric.  Up to 52 criteria, as
+    # the gold: one per member (up to 50), the rest and the aggregate
+    # (training_pool/annotations.py).
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=50, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
     # Long web pages and long multi-clue questions; grades: gold=2, evidence=1.
     # Both are evidence (the owners' qrel_evidence) for the binary metrics; the
     # owners define no gains, so gold (contains the answer) gets gain 2 by choice.
     "browsecomp_plus": DatasetSpec(
         dataset_year=None, subset="test", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
+        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
     # valuable 1).  The trajectory gold is >=3 (the belief state tracks
@@ -192,7 +216,7 @@ DATASET_SPECS = {
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
     "neuclir": DatasetSpec(
         dataset_year="2024", subset="news", query_key="request", min_relevance_score=3,
-        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
@@ -202,7 +226,7 @@ DATASET_SPECS = {
     # the report request (background + problem statement).
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=3,
-        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=5, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
+        relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_chars=2000, report_eval="argue", title_key="title",
     ),
     # Training pools built by this project (experiments/training/build_training_pool.py),
@@ -213,17 +237,16 @@ DATASET_SPECS = {
     # BrowseComp-Plus (long web pages and multi-clue questions).  Multi-hop
     # criteria: one per entity on the chain, as the gold criteria of the pool
     # (InfoSeek's research trees, WebShaper's formalizations; build step 2).
+    # FRAMES has no structure: its criteria are silver, at most 8 hops.
     "deep_qa": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, gold_criteria="annotation", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
     # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
-    # intermediate info merged; TRQA's settings, corpus and indices, but up
-    # to 52 criteria: the gold has one per member (up to 50), the rest and
-    # the aggregate (training_pool/annotations.py).
+    # intermediate info merged; TRQA's settings, corpus and indices.
     "trqa_validation": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
 }
 
@@ -323,11 +346,38 @@ def nuggets_base(data_path: Path | str, split: str) -> Path:
     return Path(data_path) / "nuggets" / f"nuggets_{split}"
 
 
-def criteria_bank_path(dataset: str, split: str) -> Path:
-    """Return the criteria bank of a split, e.g. ``CRITERIA_ROOT/ragtime/criteria_bank/criteria_2025.jsonl``
-    (a training pool: ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/...``)."""
-    root = CRITERIA_ROOT / "training_pool" if dataset in BUILT_DATASETS else CRITERIA_ROOT
-    return root / dataset / "criteria_bank" / f"criteria_{split}.jsonl"
+# The two kinds of criteria (``criteria_source`` of dra_inference and of
+# belief model training): gold (from the question or the dataset's
+# annotation, ``DatasetSpec.gold_criteria``) and silver (extracted from
+# the question by an LLM where the question does not state its structure:
+# the members of a TRQA set, the hops of a FRAMES question).
+GOLD_CRITERIA, SILVER_CRITERIA = "gold", "silver"
+CRITERIA_SOURCES = (GOLD_CRITERIA, SILVER_CRITERIA)
+# Where the gold criteria come from (``DatasetSpec.gold_criteria``).
+QUESTION_GOLD, ANNOTATION_GOLD = "question", "annotation"
+
+
+def extraction_kind(dataset: str) -> str:
+    """The kind of the criteria the extractor (``llm_criteria``) lists for
+    *dataset*: gold where the gold criteria are the question's own
+    (``QUESTION_GOLD``), else silver."""
+    return GOLD_CRITERIA if DATASET_SPECS[dataset].gold_criteria == QUESTION_GOLD else SILVER_CRITERIA
+
+
+def criteria_bank_path(dataset: str, split: str, kind: str | None = None) -> Path:
+    """Return the bank of the criteria the extractor lists for a split
+    (*kind*: ``extraction_kind`` by default), e.g.
+    ``CRITERIA_ROOT/ragtime/criteria_bank/gold/criteria_2025.jsonl`` or
+    ``CRITERIA_ROOT/trqa/criteria_bank/silver/criteria_wiki2_test.jsonl``.
+    A training pool has one bank for all its splits:
+    ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl``.
+    The belief model reads and adds to them (``belief_model_component.criteria_init``)."""
+    kind = kind or extraction_kind(dataset)
+    if kind not in CRITERIA_SOURCES:
+        raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")
+    if dataset in BUILT_DATASETS:
+        return CRITERIA_ROOT / "training_pool" / dataset / "criteria_bank" / kind / f"criteria_{POOL_ALL_SPLIT}.jsonl"
+    return CRITERIA_ROOT / dataset / "criteria_bank" / kind / f"criteria_{split}.jsonl"
 
 
 def is_pool(data_path: Path | str) -> bool:
@@ -346,33 +396,39 @@ def is_pool_view(data_path: Path | str, split: str) -> bool:
 
 def gold_criteria_path(dataset: str) -> Path:
     """Return the gold criteria of a training pool: its queries file, one
-    row per query with its gold annotation, e.g.
+    row per query (every split) with its gold annotation, e.g.
     ``TRAINING_POOL_ROOT/deep_qa/queries/queries_all.jsonl``
-    (``training_pool/annotations.py``)."""
+    (``training_pool/annotations.py``).  TRQA's gold criteria are made on
+    demand into its gold bank (``criteria_bank_path(..., "gold")``,
+    ``trqa_gold_criteria``); the other datasets' are the extractor's."""
     if dataset not in BUILT_DATASETS:
-        raise ValueError(f"gold criteria exist for the training pools only ({sorted(BUILT_DATASETS)}), not {dataset!r}")
+        raise ValueError(f"gold criteria files exist for the training pools only ({sorted(BUILT_DATASETS)}), "
+                         f"not {dataset!r}")
     return queries_base(TRAINING_POOL_ROOT / dataset, POOL_ALL_SPLIT).with_suffix(".jsonl")
 
 
-# Where the belief model's criteria come from (``criteria_source`` of
-# dra_inference): extracted by an LLM (``llm_criteria``, through the
-# criteria bank), or the gold criteria of a training pool.
-LLM_CRITERIA, GOLD_CRITERIA = "llm", "gold"
-CRITERIA_SOURCES = (LLM_CRITERIA, GOLD_CRITERIA)
-
-
 def effective_criteria_source(requested: str, dataset: str) -> str:
-    """The criteria source a run of *dataset* uses: ``gold`` when it is
-    asked for and the dataset has gold criteria (a training pool), else
-    ``llm``."""
+    """The criteria source a run of *dataset* uses: the *requested* one on
+    a dataset with a choice (``DatasetSpec.criteria_choice``, TRQA), else
+    gold (each query's gold criteria, silver for a query without them)."""
     if requested not in CRITERIA_SOURCES:
         raise ValueError(f"unknown criteria source {requested!r}; expected one of {CRITERIA_SOURCES}")
-    return GOLD_CRITERIA if requested == GOLD_CRITERIA and dataset in BUILT_DATASETS else LLM_CRITERIA
+    return requested if DATASET_SPECS[dataset].criteria_choice else GOLD_CRITERIA
 
 
-def criteria_reachability_dir(dataset: str, split: str) -> Path:
-    """Return the criteria-reachability analysis folder of a split, e.g. ``OUTPUT_ROOT/criteria_reachability/ragtime_2025``."""
-    return OUTPUT_ROOT / "criteria_reachability" / f"{dataset}_{split}"
+def criteria_run_tag(requested: str, dataset: str) -> str | None:
+    """The criteria source in the names of a run's folders: the effective
+    source on a dataset with a choice (``-gold``, ``-silver``), else None
+    (no choice, nothing to name)."""
+    source = effective_criteria_source(requested, dataset)
+    return source if DATASET_SPECS[dataset].criteria_choice else None
+
+
+def criteria_reachability_dir(dataset: str, split: str, tag: str | None = None) -> Path:
+    """Return the criteria-reachability analysis folder of a split, e.g.
+    ``OUTPUT_ROOT/criteria_reachability/ragtime_2025``; with the criteria
+    source *tag* (``criteria_run_tag``), e.g. ``.../trqa_wiki2_test-silver``."""
+    return OUTPUT_ROOT / "criteria_reachability" / (f"{dataset}_{split}" + (f"-{tag}" if tag else ""))
 
 
 def corpus_path(data_path: Path | str, name: str = "corpus") -> Path:

@@ -14,7 +14,11 @@ x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t), plus extra saved information
 Module layout:
     types         belief statuses, Criterion, Evidence, CriterionUpdate, Candidate, CandidateUpdate
     criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource,
-                  GoldCriteriaSource, BeliefState (statuses and answer candidates)
+                  GoldCriteriaSource, FallbackCriteriaSource, BeliefState (statuses
+                  and answer candidates)
+    criteria_init the criteria source of a dataset and criteria_source (bank,
+                  gold or silver): check_criteria_inputs, build_criteria_source,
+                  check_max_criteria, prepare_criteria, belief_llm
     agent_turn    the agent's turn as the updater reads it
     judges        LLMBeliefUpdater, LLMQueryScorer, build_belief_judges
     signals       DocNoveltySignal, QueryNoveltySignal, BeliefUpdateSignal,
@@ -44,8 +48,16 @@ from .criteria import (
     CriteriaSource,
     LLMCriteriaSource,
     BankedCriteriaSource,
+    FallbackCriteriaSource,
     GoldCriteriaSource,
     BeliefState,
+)
+from .criteria_init import (
+    belief_llm,
+    build_criteria_source,
+    check_criteria_inputs,
+    check_max_criteria,
+    prepare_criteria,
 )
 from .judges import (
     LLMBeliefUpdater,
@@ -82,8 +94,14 @@ __all__ = [
     "CriteriaSource",
     "LLMCriteriaSource",
     "BankedCriteriaSource",
+    "FallbackCriteriaSource",
     "GoldCriteriaSource",
     "BeliefState",
+    "belief_llm",
+    "build_criteria_source",
+    "check_criteria_inputs",
+    "check_max_criteria",
+    "prepare_criteria",
     "LLMBeliefUpdater",
     "LLMQueryScorer",
     "build_belief_judges",

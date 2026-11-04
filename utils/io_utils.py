@@ -8,7 +8,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 from utils.config import AGENT_META_KEYS
 
@@ -329,18 +329,18 @@ def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> 
     return f"{name}_{backend}_{model_display_name(llm_model)}"
 
 
-def build_belief_config_name(belief_mode: str = "off", criteria_source: str = "llm") -> str:
+def build_belief_config_name(belief_mode: str = "off", criteria_tag: Optional[str] = None) -> str:
     """Build the belief-model directory name (the run's varying knob).
 
     Searcher/retrieval settings are fixed and recorded in run_config.json
     rather than the path.  The belief model mode is surfaced here, and the
-    criteria source a run uses (``layout.effective_criteria_source``) when
-    it is not the default ``llm``.
+    criteria source a run uses on a dataset where it is a choice
+    (*criteria_tag*, ``layout.criteria_run_tag``: TRQA's gold or silver).
 
     Examples: ``belief-off``, ``belief-monitor``, ``belief-inform``,
-    ``belief-monitor-gold``.
+    ``belief-monitor-gold``, ``belief-monitor-silver``.
     """
-    suffix = f"-{criteria_source}" if belief_mode != "off" and criteria_source != "llm" else ""
+    suffix = f"-{criteria_tag}" if belief_mode != "off" and criteria_tag else ""
     return f"belief-{belief_mode}{suffix}"
 
 
@@ -379,7 +379,6 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "max_criteria": DATASET_SPECS[dataset].max_criteria if max_criteria is None else max_criteria,
             "belief_judge_model": judge,
             "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
-            "criteria_bank": bool(kwargs["criteria_bank"]),
             "criteria_source": kwargs["criteria_source"],
             "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
@@ -425,14 +424,22 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
     }
 
 
+# Settings that are no longer options, with the value they now always have:
+# an older run_config that records that value still matches.
+RETIRED_RUN_CONFIG_KEYS = {("belief_model", "criteria_bank"): True}
+
+
 def run_config_diffs(old: Dict[str, Any], new: Dict[str, Any],
                      sections=LOCKED_RUN_CONFIG_SECTIONS) -> List[str]:
-    """``section.key: old -> new`` for every key of *sections* that differs."""
+    """``section.key: old -> new`` for every key of *sections* that differs
+    (a retired key with its fixed value, ``RETIRED_RUN_CONFIG_KEYS``, does
+    not)."""
     diffs = []
     for section in sections:
         a, b = old.get(section) or {}, new.get(section) or {}
         diffs += [f"{section}.{k}: {a.get(k)!r} -> {b.get(k)!r}"
-                  for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)]
+                  for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)
+                  and not (k not in b and RETIRED_RUN_CONFIG_KEYS.get((section, k), a) == a.get(k))]
     return diffs
 
 

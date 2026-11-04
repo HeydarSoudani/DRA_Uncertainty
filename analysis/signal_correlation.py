@@ -70,6 +70,10 @@ Output in ``<run_dir>/analysis/signal_correlation/``:
   the final belief against Recall@N with the tau-b (right).
 - ``final_state_summary.csv``: per target (correctness, Recall@N), the counts
   and the measure with its CI.
+- ``criteria-{kind}/``: the same files for the queries whose criteria are
+  of one kind (``gold``, ``silver``; ``criteria_kind`` of the belief file's
+  criteria info), written only when the run has more than one kind
+  (deep_qa: gold, silver for FRAMES).
 
 Usage::
 
@@ -111,7 +115,7 @@ from utils.cli_setup import (
 )
 from belief_model_component.types import STATUS_LEVEL
 from utils.config import POLICY_MODEL_TO_LLM
-from indexing_corpus_dataset.layout import effective_criteria_source
+from indexing_corpus_dataset.layout import criteria_run_tag
 from utils.io_utils import build_dataset_dir_name, build_run_name_for_pipeline, build_belief_config_name
 
 logger = logging.getLogger(__name__)
@@ -153,15 +157,24 @@ SURFACE = "#fcfcfb"
 # Loading
 # ---------------------------------------------------------------------------
 
-def read_belief(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]]]]:
+def criteria_kind(meta: Dict[str, Any]) -> str:
+    """The kind of a sample's criteria (``gold`` or ``silver``), from its
+    meta line's ``criteria_info``; ``unknown`` when it does not say."""
+    info = meta.get("criteria_info") or {}
+    return info.get("criteria_kind") or ("gold" if info.get("model") == "gold" else "unknown")
+
+
+def read_belief(run_dir: Path, mode: str) -> Tuple[List[Tuple[str, List[Dict[str, Any]]]], Dict[str, str]]:
     """``(query_id, step records)`` per belief file of the run with
-    schema_version >= ``MIN_SCHEMA_VERSION``; empty when the run's belief
-    model (``run_config.json``) is not in the given *mode*."""
+    schema_version >= ``MIN_SCHEMA_VERSION``, and the kind of each query's
+    criteria (``criteria_kind``); empty when the run's belief model
+    (``run_config.json``) is not in the given *mode*."""
     run_mode = (json.loads((run_dir / "run_config.json").read_text()).get("belief_model") or {}).get("mode")
     if run_mode != mode:
         logger.warning("%s: belief model mode %s in run_config.json, not %s; no belief file read", run_dir, run_mode, mode)
-        return []
+        return [], {}
     samples: List[Tuple[str, List[Dict[str, Any]]]] = []
+    kinds: Dict[str, str] = {}
     skipped_schema = 0
     for path in sorted((run_dir / "belief").glob("*.jsonl")):
         with open(path) as f:
@@ -174,9 +187,10 @@ def read_belief(run_dir: Path, mode: str) -> List[Tuple[str, List[Dict[str, Any]
             skipped_schema += 1
             continue
         samples.append((str(meta["query_id"]), [s for s in lines[1:] if s.get("record") == "step"]))
+        kinds[str(meta["query_id"])] = criteria_kind(meta)
     if skipped_schema:
         logger.warning("%s: %d files with schema_version < %d skipped", run_dir, skipped_schema, MIN_SCHEMA_VERSION)
-    return samples
+    return samples, kinds
 
 
 def load_steps(samples: List[Tuple[str, List[Dict[str, Any]]]]) -> pd.DataFrame:
@@ -555,15 +569,29 @@ def analyze_final_state(
 
 
 def analyze_run(run_dir: Path, mode: str, n_bootstrap: int, seed: int) -> None:
-    samples = read_belief(run_dir, mode)
+    """Every query of the run; when its queries' criteria are of more than
+    one kind (deep_qa: gold, silver for FRAMES), also the queries of each
+    kind, in ``criteria-{kind}/`` of the output folder."""
+    samples, kinds = read_belief(run_dir, mode)
     if not samples:
         logger.warning("%s: no belief file to analyze, skipped", run_dir)
         return
     run_label = "/".join(run_dir.resolve().parts[-3:])
     out_dir = run_dir / OUT_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
+    correctness = load_correctness(run_dir)
+    counts = {k: sum(v == k for v in kinds.values()) for k in sorted(set(kinds.values()))}
+    print(f"criteria kinds: {counts}")
     analyze_steps(samples, run_label, out_dir, n_bootstrap, seed)
-    analyze_final_state(samples, load_correctness(run_dir), run_label, out_dir, n_bootstrap, seed)
+    analyze_final_state(samples, correctness, run_label, out_dir, n_bootstrap, seed)
+    if len(counts) > 1:
+        for kind in counts:
+            part = [(qid, steps) for qid, steps in samples if kinds[qid] == kind]
+            kind_dir = out_dir / f"criteria-{kind}"
+            kind_dir.mkdir(parents=True, exist_ok=True)
+            label = f"{run_label} [{kind} criteria]"
+            analyze_steps(part, label, kind_dir, n_bootstrap, seed)
+            analyze_final_state(part, correctness, label, kind_dir, n_bootstrap, seed)
     print(f"-> {out_dir}")
 
 
@@ -619,8 +647,7 @@ def resolve_run_dir(args: argparse.Namespace) -> Path:
         policy_model=args.policy_model, llm_model=args.llm_model, use_plan=args.use_plan,
     )
     dataset_dir = build_dataset_dir_name(args.dataset, file_data_set, args.query_key, args.retriever)
-    belief_config = build_belief_config_name(
-        args.belief_mode, effective_criteria_source(args.criteria_source, args.dataset))
+    belief_config = build_belief_config_name(args.belief_mode, criteria_run_tag(args.criteria_source, args.dataset))
     return Path(args.output) / dataset_dir / run_name / belief_config
 
 

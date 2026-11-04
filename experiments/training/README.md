@@ -73,7 +73,7 @@ then "any other member: <property>", then the aggregation, how the answer follow
 | Phase | Script | Does | Output |
 |---|---|---|---|
 | 0 | `build_training_pool.py --pool P` | builds a training pool, deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_pool/{pool}/` |
-| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the pool's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the gold criteria (the out-of-domain queries of `val`: on its own criteria), `rl` in off mode | `run_outputs/` (dra_inference layout) |
+| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the pool's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the criteria of `shared.criteria_source` (default gold; a query without gold criteria: on its own silver ones), `rl` in off mode. deep_qa runs go to `belief-monitor/`, trqa_validation runs to `belief-monitor-{source}/`; phases 2 and 3 need gold | `run_outputs/` (dra_inference layout) |
 | 2 | `belief_model_training.py --phase 2` | SFT of the student on the gold criteria (init) and the teacher's replies (update) of the `sft` run (LoRA, then merged), validated on the `val` run | `phase2_sft/merged/` |
 | 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on whole belief chains) on the `rl` run, validated on the `val` run | `phase3_rl/final/` |
 
@@ -117,17 +117,18 @@ $r_{\mathrm{ret}}$ and $r_{\mathrm{reas}}$), so the full queries are split with 
 | `sft` | 30% of the full ones | monitor (teacher, gold criteria) | phase 2: SFT samples |
 | `rl` | 60% of the full ones | off | phase 3: RL prompts |
 | `val` | in domain: 10% of the full ones | monitor (teacher, gold criteria) | phase 2: validation loss; phase 3: validation |
-| `val` | OOD: the others (deep_qa: WebShaper, FRAMES) | monitor (teacher, its own criteria) | evaluation only |
+| `val` | OOD: the others (deep_qa: WebShaper, FRAMES) | monitor (teacher; WebShaper on its gold criteria, FRAMES on silver ones) | evaluation only |
 
 A full query without criterion texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
 split until a later build writes its texts. A query keeps the split it has in the queries file, so no query moves
 when the pool grows, and `--limit` on one split never reaches the queries of another. The new full queries of a build
 are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below its
 share, so the shares hold at every pool size (20 full queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3).
-In the OOD part the belief model writes its own criteria (the init call) and builds the belief from them, as on any
-new dataset; its queries have qrels and a judged final answer, so coverage against recall and the final confidence
+In the OOD part WebShaper keeps its gold criteria (they have texts, but no gold intermediate answers: `level`
+partial), and FRAMES, which has no structure, gets silver criteria from the belief model's init call, as on any new
+dataset; its queries have qrels and a judged final answer, so coverage against recall and the final confidence
 against correctness can be measured, but not the candidates (no gold intermediate answers). Since deep_qa has one
-query shape (`multi_hop`), FRAMES gets the multi-hop criteria prompt.
+query shape (`multi_hop`), FRAMES gets the multi-hop criteria prompt (at most 8 criteria).
 
 ### deep_qa
 
@@ -285,7 +286,7 @@ follows the split:
 
 | Split | Mode | Belief model |
 |---|---|---|
-| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source gold`; an OOD query of `val`: the teacher's own, through the criteria bank, `ood: true` and `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates (statuses and candidates); frozen query scorer |
+| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source`, `shared.criteria_source`: gold, or silver on trqa_validation; a query without gold criteria: the teacher's silver ones, through the criteria bank, `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates (statuses and candidates); frozen query scorer |
 | `rl` | off | none |
 
 The query scorer (criteria attempts) runs only in monitor mode; training does not read the attempts. The belief
@@ -480,12 +481,13 @@ COMMON="--dataset browsecomp_plus --policy-model glm --query-scorer-model openro
 python experiments/inference/dra_inference.py $COMMON --belief-mode off
 python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
     --llm-criteria openrouter/qwen/qwen3.6-27b --belief-judge-model openrouter/qwen/qwen3.6-27b
-python experiments/inference/dra_inference.py $COMMON --belief-mode inform --criteria-bank false \
+python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
     --llm-criteria vllm/belief-student --belief-judge-model vllm/belief-student --output <student output dir>
 ```
 
-- `--criteria-bank false` for the student: the bank keys on the model name, which is the same for every served
-  checkpoint, so a new checkpoint would reuse an older one's criteria.
+- The student's criteria are banked under the checkpoint its server loaded (`vllm/belief-student@<path>`, from
+  vLLM's `/models`): every checkpoint is served under the same name, and none reads another's criteria. A checkpoint
+  retrained into the same path reads the older one's; give it a new path.
 - `--query-scorer-model` is the phase 1 scorer in every run; its default is the belief model, which would make the
   student score queries too.
 - Give the student run its own `--output`: teacher and student runs share the agent, dataset and belief mode.

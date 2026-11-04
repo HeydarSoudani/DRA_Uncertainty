@@ -23,7 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, query_max_length
+from indexing_corpus_dataset.layout import DATASET_SPECS, GOLD_CRITERIA, query_max_length
 from utils.config import (
     OPENROUTER_BASE_URL,
     _RetrieverConfig,
@@ -31,7 +31,6 @@ from utils.config import (
     get_reranker_configs,
     resolve_agent_backend,
 )
-from reasoner_component import create_generator, disable_native_thinking
 from reasoner_component.setup import setup_llm
 from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
 from utils.trajectory_logger import TrajectoryLogger
@@ -74,20 +73,10 @@ def setup_retriever_from_args(args):
 NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
 
 
-def _belief_llm(model: str):
-    """LLM client of a belief model call, native reasoning off.  A ``vllm/``
-    model (e.g. a trained belief model) is served locally at
-    ``$BELIEF_VLLM_API_BASE`` (default ``$VLLM_API_BASE``, so it can sit
-    next to a locally served agent); any other model goes through the API."""
-    if model.startswith("vllm/"):
-        return disable_native_thinking(create_generator(model, api_base=os.getenv("BELIEF_VLLM_API_BASE")))
-    return disable_native_thinking(create_generator(model, backend="api"))
-
-
 def build_belief_model(
     mode: str,
     *,
-    max_criteria: int,
+    max_criteria: Optional[int],
     add_intermediate_answer: bool,
     retriever=None,
     qrels=None,
@@ -97,8 +86,8 @@ def build_belief_model(
     agent=None,
     policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
-    criteria_bank: Optional[str] = None,
-    gold_criteria: Optional[str] = None,
+    split: Optional[str] = None,
+    criteria_source: str = GOLD_CRITERIA,
 ):
     """Build the belief model, or None when *mode* is ``"off"``.
 
@@ -111,14 +100,16 @@ def build_belief_model(
             (dense retrievers only; others leave nu^q null).
         qrels: Thresholded relevance judgements, for the new-item precision
             and the recall so far.
-        llm_criteria: Model that extracts each query's criteria.  Without
-            it the criteria-based signals are null.
-        max_criteria: Cap on the number of criteria per query (for a report
-            request, the number the extractor may add, asked in the prompt);
-            resolved from the dataset by ``resolve_dataset_defaults``.
+        llm_criteria: Model that extracts each query's criteria from the
+            question, and writes TRQA's gold criterion texts
+            (``belief_model_component.criteria_init``).  Without it the criteria-based
+            signals are null.
+        max_criteria: Cap on the number of criteria the extractor lists per
+            query, None for uncapped (gold); resolved from the dataset by
+            ``resolve_dataset_defaults``.
         belief_judge_model: LLM behind the belief state and criteria_delta
             (belief updater); "" = *llm_criteria*.  A ``vllm/`` model is
-            served locally (``_belief_llm``), e.g. a trained belief model.
+            served locally (``criteria_init.belief_llm``), e.g. a trained belief model.
         query_scorer_model: LLM behind the criteria attempts (targeting
             scorer); "" = the belief updater's model.
         add_intermediate_answer: Ask the agent for an intermediate answer
@@ -128,17 +119,13 @@ def build_belief_model(
         policy_model: Agent type name (answer format, intermediate answer
             gating).
         dataset: Dataset name; intermediate answers only for ``task == "qa"``.
-        criteria_bank: Criteria bank file (``layout.criteria_bank_path``):
-            a query's criteria are read from it, and extracted and added
-            only when missing.  None: extracted for every sample.
-        gold_criteria: Gold criteria file of a training pool
-            (``layout.gold_criteria_path``), given when the run's criteria
-            source is ``gold`` (``layout.effective_criteria_source``): the
-            criteria of a query with the full gold annotation are its gold
-            ones (no extraction); any other query gets them from
-            *llm_criteria* (through *criteria_bank*), so the belief model
-            always runs.  Needs *llm_criteria*.  The updater and query
-            scorer are still the *belief_judge_model* / *llm_criteria* LLM.
+        split: Split id of the run's queries (the criteria banks).
+        criteria_source: ``gold`` or ``silver``, a choice on TRQA and
+            trqa_validation only (``criteria_init``); a query without gold
+            criteria gets silver ones, so the belief model always runs.
+            The criteria are read from the banks, made and added only when
+            missing.  The updater and query scorer are still the
+            *belief_judge_model* / *llm_criteria* LLM.
     """
     if mode == "off":
         return None
@@ -146,32 +133,18 @@ def build_belief_model(
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from belief_model_component import (
-        BankedCriteriaSource, GoldCriteriaSource, LLMCriteriaSource, LLMQueryScorer, BeliefModel,
-        build_belief_judges, encode_fn_from_retriever,
+        BeliefModel, LLMQueryScorer, belief_llm, build_belief_judges, build_criteria_source, encode_fn_from_retriever,
     )
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
-    criteria_source = None
-    if llm_criteria:
-        criteria_source = LLMCriteriaSource(
-            llm_client=_belief_llm(llm_criteria),
-            max_criteria=max_criteria,
-            model_name=llm_criteria,
-            query_shape=query_shape,
+    if dataset is None or split is None:
+        criteria_source = None
+        logger.warning("No dataset split; criteria-based signals disabled")
+    else:
+        criteria_source = build_criteria_source(
+            dataset, split, llm_criteria=llm_criteria, max_criteria=max_criteria,
+            criteria_source=criteria_source,
         )
-        if criteria_bank:
-            criteria_source = BankedCriteriaSource(criteria_source, criteria_bank)
-            print(f"Belief model: criteria from the bank {criteria_bank}, missing ones from {llm_criteria}")
-        else:
-            print(f"Belief model: criteria from {llm_criteria}")
-    if gold_criteria:
-        if not llm_criteria:
-            raise ValueError("criteria_source gold needs --llm-criteria: the queries without gold "
-                             "criteria get extracted ones")
-        criteria_source = GoldCriteriaSource(gold_criteria, query_shape, fallback=criteria_source)
-        print(f"Belief model: gold criteria from {gold_criteria}, the queries without them from the above")
-    elif not llm_criteria:
-        logger.warning("No --llm-criteria model; criteria-based signals disabled")
 
     encode_fn, _ = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
     if encode_fn is None:
@@ -194,11 +167,11 @@ def build_belief_model(
     if criteria_source is not None:
         judge_model = belief_judge_model or llm_criteria
         belief_updater, query_scorer = build_belief_judges(
-            _belief_llm(judge_model), model=judge_model,
+            belief_llm(judge_model), model=judge_model,
             query_shape=query_shape,
         )
         if query_scorer_model and query_scorer_model != judge_model:
-            query_scorer = LLMQueryScorer(_belief_llm(query_scorer_model), model_name=query_scorer_model)
+            query_scorer = LLMQueryScorer(belief_llm(query_scorer_model), model_name=query_scorer_model)
         print(f"Belief model: belief updater {belief_updater.name}, query scorer {query_scorer.name}")
 
     return BeliefModel(
@@ -485,8 +458,8 @@ def _init_worker(worker_id: int, worker_config: dict):
         agent=agent if hasattr(agent, "belief_model") else None,
         policy_model=policy_model,
         dataset=dataset,
-        criteria_bank=worker_config.get("criteria_bank"),
-        gold_criteria=worker_config.get("gold_criteria"),
+        split=worker_config.get("split"),
+        criteria_source=worker_config.get("criteria_source", GOLD_CRITERIA),
     )
     if belief_model is not None and hasattr(agent, "belief_model"):
         agent.belief_model = belief_model

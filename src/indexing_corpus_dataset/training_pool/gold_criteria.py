@@ -95,11 +95,14 @@ def prompt_hash(shape: str) -> str:
 class CriteriaWriter:
     """The LLM that writes the criterion texts (native reasoning off)."""
 
-    def __init__(self, model: str, max_tokens: int) -> None:
-        from reasoner_component.factory import create_generator, disable_native_thinking
-
+    def __init__(self, model: str, max_tokens: int, llm: Any = None) -> None:
+        """*llm*: a client with ``complete(messages, **kwargs) -> str`` for
+        *model* (None: an API client, reasoning off)."""
         self.model = model
-        self._llm = disable_native_thinking(create_generator(model, backend="api"))
+        if llm is None:
+            from reasoner_component.factory import create_generator, disable_native_thinking
+            llm = disable_native_thinking(create_generator(model, backend="api"))
+        self._llm = llm
         self._max_tokens = max_tokens
 
     def ask(self, system: str, user: str) -> Dict[str, Any]:

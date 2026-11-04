@@ -70,7 +70,8 @@ class CorpusLookup:
                 bar.update(len(line))
         hashes_arr = np.frombuffer(hashes, dtype=np.uint64)
         order = np.argsort(hashes_arr, kind="stable")
-        tmp = self.index_path.with_name(self.index_path.name + ".tmp.npz")
+        # Per process: workers that build the index at once do not share a temp file.
+        tmp = self.index_path.with_name(f"{self.index_path.name}.{os.getpid()}.tmp.npz")
         np.savez(tmp, hashes=hashes_arr[order], offsets=np.frombuffer(offsets, dtype=np.uint64)[order])
         os.replace(tmp, self.index_path)
 
@@ -82,6 +83,11 @@ class CorpusLookup:
             self._build_index()
         with np.load(self.index_path) as index:
             self._hashes, self._offsets = index["hashes"], index["offsets"]
+
+    def ensure_index(self) -> None:
+        """Build the offset index now when it is missing or older than the
+        corpus (e.g. once, before several workers would each build it)."""
+        self._load_index()
 
     def contents(self, doc_ids: Iterable[str]) -> Dict[str, str]:
         """``{doc_id: contents}`` for the ids found in the corpus; ``contents``

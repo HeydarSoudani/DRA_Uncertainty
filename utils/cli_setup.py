@@ -68,8 +68,7 @@ FILE_BACKED_DEFAULTS = {
     "max_criteria": None,
     "belief_judge_model": "",
     "query_scorer_model": "",
-    "criteria_bank": True,
-    "criteria_source": "llm",
+    "criteria_source": "gold",
     "add_intermediate_answer": False,
     # Evaluation
     "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
@@ -96,7 +95,7 @@ _FILE_BACKED_CHOICES = {
     "retrieval_input": ["subquery", "original_query+subquery", "reasoning+subquery"],
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
-    "criteria_source": ["llm", "gold"],
+    "criteria_source": ["gold", "silver"],
 }
 
 
@@ -306,7 +305,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["max_criteria"] = args.max_criteria
     pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
     pipeline_kwargs["query_scorer_model"] = args.query_scorer_model
-    pipeline_kwargs["criteria_bank"] = args.criteria_bank
     pipeline_kwargs["criteria_source"] = args.criteria_source
     pipeline_kwargs["add_intermediate_answer"] = args.add_intermediate_answer
 

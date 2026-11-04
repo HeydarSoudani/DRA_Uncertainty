@@ -9,9 +9,22 @@ status can move up or down); the other criteria keep their status.
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` derives the criteria from the query;
-  ``BankedCriteriaSource`` reads them from a bank file and derives (and
-  adds) only the missing ones, so runs and analyses share one list per query;
-  ``GoldCriteriaSource`` reads a training pool's gold criteria.
+  ``BankedCriteriaSource`` reads them from a bank file and has its
+  producer (the extractor, or TRQA's gold criteria built from the
+  intermediate info, ``indexing_corpus_dataset.trqa_gold_criteria``) make
+  and add only the missing ones, so runs and analyses share one list per
+  query; ``GoldCriteriaSource`` reads a training pool's gold criteria (the
+  pool's queries file is their bank, written by the pool build only);
+  ``FallbackCriteriaSource`` gives a query without gold criteria silver
+  ones.  Which source a dataset and ``criteria_source`` get is decided in
+  ``criteria_init``.
+
+Criteria are gold or silver (``layout.CRITERIA_SOURCES``): gold when they
+come from the question (the extractor's criteria of a BrowseComp-Plus
+question or a report request, ``layout.extraction_kind``) or from the
+dataset's annotation; silver when an LLM extracts structure the question
+does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
+records the kind as ``criteria_kind``.
 - ``BeliefState``: b_t and the evidence attached to each criterion.
 
 Each criterion is closed (one fact) or, in a report request, an aspect of
@@ -37,6 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILVER_CRITERIA
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
@@ -87,10 +101,10 @@ def _kinds(shape: str, texts: List[str]) -> List[str]:
     return [CLOSED] * len(texts)
 
 
-def _set_layout(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
+def _set_layout(items: List[str], cap: Optional[int], info: Dict[str, Any]) -> List[str]:
     """A set query's criteria as the prompt asks: the members, one rest
-    criterion, then the aggregate, within *cap* (at least 3) by leaving out
-    members.  The aggregate is the first item after the rest criterion or,
+    criterion, then the aggregate, within *cap* (at least 3; None:
+    uncapped) by leaving out members.  The aggregate is the first item after the rest criterion or,
     without one, the last item when it is not "<member>: <property>".  A
     missing rest criterion is added with the members' property, a missing
     aggregate with a generic text.  Every change is noted in
@@ -120,7 +134,7 @@ def _set_layout(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
     if aggregate is None:
         aggregate = f"the answer the query computes from every member's {prop or 'value'}"
         warnings.append("aggregate: added the missing aggregate criterion")
-    keep = cap - 2
+    keep = len(members) if cap is None else cap - 2
     if len(members) > keep:
         warnings.append(f"cap: kept {keep} of {len(members)} members, dropped {members[keep:]}")
     if not warnings:
@@ -143,6 +157,10 @@ class CriteriaSource(ABC):
         criteria list with a non-empty ``errors`` means the source failed.
         """
 
+    def prepare(self) -> None:
+        """Set up what ``get`` needs before it is called from several
+        threads (e.g. a corpus index); nothing by default."""
+
 
 class LLMCriteriaSource(CriteriaSource):
     """Derives the criteria of the query with one LLM call.
@@ -155,34 +173,45 @@ class LLMCriteriaSource(CriteriaSource):
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
-            ``max_criteria`` in layout.DATASET_SPECS); at least 3 for a
-            set query (a member, the rest criterion and the aggregate).  For a multi-aspect
-            query it is the number of criteria the model may add to the
-            request's own, asked in the prompt; the list is kept whole, since
-            a cut could drop a criterion the request states.
-        model_name: Saved in the meta line.
+            ``max_criteria`` in layout.DATASET_SPECS), or None (uncapped:
+            gold criteria); at least 3 for a set query (a member, the rest
+            criterion and the aggregate).  A multi-aspect query lists every
+            criterion the request states and is never capped (must be None).
+        model_name: Saved in the meta line and in the bank key
+            (``criteria_init.bank_model_id``: a served checkpoint's path
+            included).
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
         query_shape: ``"single_target"``, ``"multi_hop"``, ``"set"`` or
             ``"multi_aspect"`` (the dataset's ``query_shape`` in
             layout.DATASET_SPECS).
+        kind: ``"gold"`` or ``"silver"``, the kind of the criteria it lists
+            (``layout.extraction_kind``), saved in *info* as
+            ``criteria_kind``.
     """
 
     def __init__(
         self,
         llm_client: Any,
-        max_criteria: int,
+        max_criteria: Optional[int],
         model_name: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
         query_shape: str = "single_target",
+        kind: str = SILVER_CRITERIA,
     ) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
-        if query_shape == SET and max_criteria < 3:
+        if kind not in CRITERIA_SOURCES:
+            raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")
+        if query_shape == MULTI_ASPECT and max_criteria is not None:
+            raise ValueError(f"max_criteria={max_criteria} for a report request; its criteria are every "
+                             "criterion the request states, uncapped (max_criteria null)")
+        if query_shape == SET and max_criteria is not None and max_criteria < 3:
             raise ValueError(f"max_criteria={max_criteria} for a set query; it needs at least 3 "
                              "(a member, the rest criterion and the aggregate)")
         self._shape = query_shape
+        self.kind = kind
         self._system = CRITERIA_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
         self.model_name = model_name
@@ -222,12 +251,14 @@ class LLMCriteriaSource(CriteriaSource):
                                      temperature=self._temperature)
         except Exception as e:
             logger.warning("LLMCriteriaSource: LLM call failed", exc_info=True)
-            return [], {"model": self.model_name, "query_shape": self._shape, "errors": [f"llm_call: {e}"]}
+            return [], {"model": self.model_name, "query_shape": self._shape, "criteria_kind": self.kind,
+                        "errors": [f"llm_call: {e}"]}
         return self.parse(raw)
 
     def parse(self, raw: Optional[str]) -> Tuple[List[Criterion], Dict[str, Any]]:
         """The criteria of the extractor's reply *raw* and the extraction info."""
-        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "errors": []}
+        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "criteria_kind": self.kind,
+                                "errors": []}
         data = parse_json_object(raw or "")
         if data is None or not isinstance(data.get("criteria"), list):
             # Keep the complete items of malformed or truncated output.
@@ -254,7 +285,7 @@ class LLMCriteriaSource(CriteriaSource):
 
         if self._shape == SET:
             items = _set_layout(items, self._max_criteria, info)
-        elif self._shape != MULTI_ASPECT:
+        elif self._max_criteria is not None:
             items = items[:self._max_criteria]
         criteria = [
             Criterion(id=f"c{k + 1}", text=t, kind=kind)
@@ -263,56 +294,95 @@ class LLMCriteriaSource(CriteriaSource):
         return criteria, info
 
 
+# Key of the info a producer returns that goes to the bank only (its
+# record's ``bank_only``), never to a run's criteria info: e.g. the gold
+# annotation row of a TRQA query.
+BANK_ONLY = "bank_only"
+# Key of the info of a producer's empty result that is final (banked, so
+# not asked again): e.g. gold criterion texts that failed for good.
+FINAL = "final"
+
+
+def without_bank_only(info: Dict[str, Any]) -> Dict[str, Any]:
+    """*info* without its bank-only part (``BANK_ONLY``)."""
+    return {k: v for k, v in info.items() if k != BANK_ONLY}
+
+
 class BankedCriteriaSource(CriteriaSource):
     """Reads the criteria of a query from a bank file; a query missing from
-    it gets them from *inner*, and they are added to the bank.
+    it gets them from *inner*, the producer, and they are added to the bank.
+
+    *inner* is any ``CriteriaSource`` with ``bank_fields`` (what, besides
+    the query, decides its criteria): the extractor
+    (``LLMCriteriaSource``: model, query shape, cap, prompt hash) or TRQA's
+    gold producer (``indexing_corpus_dataset.trqa_gold_criteria``: the
+    writer of the texts and its prompt hash).
 
     The bank (``layout.criteria_bank_path``) is a JSONL file, one line per
-    query and setting: the query id and text, ``inner.bank_fields`` (model,
-    query shape, cap, prompt hash), the criteria and the extraction info.
-    A line is used only when all of these match, so a changed prompt or cap
-    extracts the criteria again.  A salvaged extraction (the complete items
-    of a truncated reply) is asked once more and fails when salvaged again,
-    so every criteria list used is banked; a failed extraction (no criteria)
-    is never added.  Lines are appended under a file lock, after the file is
-    read again: when another worker or process added the query meanwhile,
-    its line is used and none is added, so one query has one banked list.
+    query and setting: the query id and text, ``inner.bank_fields``, the
+    criteria, the info and the producer's bank-only data (``BANK_ONLY`` of
+    its info, e.g. a gold annotation row; never returned).  A line is used
+    only when all of these match, so a changed prompt or cap makes the
+    criteria again.  A salvaged extraction (the complete items of a
+    truncated reply) is asked once more and fails when salvaged again, so
+    every criteria list used is banked.  A failed result (no criteria) is
+    never added, unless the producer marks it final (``FINAL``: texts that
+    failed for good), so it is not asked again: it is banked with no
+    criteria.  Lines are appended under a file lock, after reading the lines
+    added since the last read (by another worker or process): when one of
+    them is the query's, it is used and none is added, so one query has one
+    banked list.
 
-    *info* is the stored extraction info with ``bank``: ``"hit"`` (read from
-    the bank), ``"added"`` (extracted and added) or ``"failed"`` (no
-    criteria, not added).
+    *info* is the stored info with ``bank``: ``"hit"`` (read from the
+    bank), ``"added"`` (made and added) or ``"failed"`` (no criteria: not
+    added, or banked as a final failure).
     """
 
-    def __init__(self, inner: LLMCriteriaSource, path: Path | str) -> None:
+    def __init__(self, inner: CriteriaSource, path: Path | str) -> None:
         self._inner = inner
         self.path = Path(path)
         self._fields = inner.bank_fields
         self._lock = threading.Lock()
         self._bank: Dict[str, Dict[str, Any]] = {}
+        # Bytes of the file read so far, up to the end of its last whole line.
+        self._offset = 0
         if self.path.exists():
-            with open(self.path, encoding="utf-8", errors="replace") as f:
-                self._read_lines(f)
+            with open(self.path, "rb") as f:
+                self._read_new(f)
 
-    def _read_lines(self, f) -> None:
-        """Add the bank lines of *f* to the in-memory bank.  A line that is
-        not a whole record (e.g. cut by a killed process) is skipped with a
-        warning."""
-        for n, line in enumerate(f, 1):
+    def prepare(self) -> None:
+        self._inner.prepare()
+
+    def _read_new(self, f) -> None:
+        """Add the whole lines of *f* (binary) after ``_offset`` to the
+        in-memory bank.  A partial last line (being written, or cut by a
+        killed process) is left for the next read; a line that is not a
+        record is skipped with a warning."""
+        f.seek(self._offset)
+        data = f.read()
+        end = data.rfind(b"\n") + 1
+        for line in data[:end].decode("utf-8", errors="replace").splitlines():
             if not line.strip():
                 continue
             try:
                 rec = json.loads(line)
                 self._bank[rec["key"]] = rec
             except (json.JSONDecodeError, KeyError, TypeError):
-                logger.warning("BankedCriteriaSource: %s line %d is not a bank record; skipped",
-                               self.path, n)
+                logger.warning("BankedCriteriaSource: a line of %s is not a bank record; skipped", self.path)
+        self._offset += end
 
     def _key(self, query_id: Optional[str], query: str) -> str:
         fields = {"query_id": query_id, "query": query, **self._fields}
         return hashlib.sha1(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _banked(rec: Dict[str, Any]) -> Tuple[List[Criterion], Dict[str, Any]]:
+        criteria = [Criterion(**c) for c in rec["criteria"]]
+        return criteria, {**rec["info"], "bank": "hit" if criteria else "failed"}
+
     def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
-        """The banked criteria of the query, or None; never extracts."""
+        """The banked criteria of the query (empty: a final failure), or
+        None when it is not banked; never makes them."""
         with self._lock:
             rec = self._bank.get(self._key(query_id, query))
         return None if rec is None else [Criterion(**c) for c in rec["criteria"]]
@@ -322,7 +392,7 @@ class BankedCriteriaSource(CriteriaSource):
         with self._lock:
             rec = self._bank.get(key)
         if rec is not None:
-            return [Criterion(**c) for c in rec["criteria"]], {**rec["info"], "bank": "hit"}
+            return self._banked(rec)
 
         # A salvaged reply is asked once more; salvaged again, the extraction fails.
         for _ in range(2):
@@ -332,97 +402,132 @@ class BankedCriteriaSource(CriteriaSource):
         else:
             info = {**info, "errors": info.get("errors", []) + ["parse: truncated reply twice, not banked"]}
             criteria = []
-        if not criteria:
+        bank_only = info.get(BANK_ONLY)
+        info = without_bank_only(info)
+        if not criteria and not info.get(FINAL):
             return criteria, {**info, "bank": "failed"}
         rec = {
             "key": key, "query_id": query_id, "query": query, **self._fields,
             "criteria": [c.to_dict() for c in criteria], "info": info,
+            **({BANK_ONLY: bank_only} if bank_only is not None else {}),
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a+", encoding="utf-8", errors="replace") as f:
+            with open(self.path, "a+b") as f:
                 fcntl.flock(f, fcntl.LOCK_EX)
                 try:
-                    # Lines another worker or process added since the bank was read.
-                    f.seek(0)
-                    self._read_lines(f)
+                    # Lines another worker or process added since the last read.
+                    self._read_new(f)
                     banked = self._bank.get(key)
                     if banked is None:
                         # A partial last line (a killed writer) must not run
                         # into the new record.
                         size = os.fstat(f.fileno()).st_size
-                        needs_newline = size > 0 and os.pread(f.fileno(), 1, size - 1) != b"\n"
-                        f.write(("\n" if needs_newline else "") + json.dumps(rec, ensure_ascii=False) + "\n")
+                        line = json.dumps(rec, ensure_ascii=False) + "\n"
+                        f.write((("\n" if size > self._offset else "") + line).encode("utf-8"))
                         f.flush()
+                        self._offset = f.tell()
                         self._bank[key] = rec
                 finally:
                     fcntl.flock(f, fcntl.LOCK_UN)
         if banked is not None:
-            return [Criterion(**c) for c in banked["criteria"]], {**banked["info"], "bank": "hit"}
-        return criteria, {**info, "bank": "added"}
+            return self._banked(banked)
+        return criteria, {**info, "bank": "added" if criteria else "failed"}
 
 
 # Model name in the criteria info of gold criteria (``GoldCriteriaSource``).
 GOLD_CRITERIA_MODEL = "gold"
 
 
-# The annotation level of a query whose gold criteria are used (every
-# criterion with gold answers and documents; training_pool/annotations.py).
+# The annotation level of a query whose gold criteria have every gold
+# answer and document (training_pool/annotations.py); belief model training
+# scores only such queries.  The belief model uses the gold criteria of any
+# level.
 GOLD_CRITERIA_LEVEL = "full"
 
 
 class GoldCriteriaSource(CriteriaSource):
-    """Reads each query's gold criteria from a training pool's gold criteria
-    file (``layout.gold_criteria_path``, written by the pool build,
-    ``training_pool/gold_criteria.py``): per query, its criteria with their
-    gold intermediate answers and documents.  Only the criteria (id, text,
-    kind) reach the belief model, and only of a query with the full
-    annotation (``level``) and criterion texts (``texts_ok``).
+    """Reads each query's gold criteria from a training pool's queries file
+    (``layout.gold_criteria_path``, one row per query in the format of
+    ``training_pool/annotations.py``, written by the pool build): per query,
+    its criteria with their gold answers and documents.  Only the criteria
+    (id, text, kind) reach the belief model, of a query whose row has
+    criteria with their texts (``texts_ok``), at any annotation ``level``
+    (WebShaper's ``partial`` rows included); the info records the row's
+    ``level`` as ``gold_level``.
 
-    Any other query (no row, no full annotation, failed texts, or another
-    query text: ``missing``) gets its criteria from *fallback* (the
-    criteria extractor, through the bank, as on any dataset), with ``ood:
-    true`` and the reason (``gold_missing``) in its info, so the belief
-    model always runs; training uses only the queries with gold criteria.
-    Without *fallback* such a query gets none."""
+    Any other query (no row, no criteria such as FRAMES', failed texts, or
+    another query text: ``missing``) gets no criteria, the reason in its
+    ``errors``; ``FallbackCriteriaSource`` gives it silver ones."""
 
-    def __init__(self, path: Path | str, query_shape: str, fallback: Optional[CriteriaSource] = None) -> None:
+    def __init__(self, path: Path | str, query_shape: str) -> None:
         self.path = Path(path)
         self._shape = query_shape
-        self._fallback = fallback
+        # Per query, only what the belief model reads of its row (the rows
+        # also hold the gold answers and documents).
         self._rows: Dict[str, Dict[str, Any]] = {}
         if self.path.exists():
             with open(self.path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
                         row = json.loads(line)
-                        self._rows[str(row["id"])] = row
+                        self._rows[str(row["id"])] = {
+                            "text": row.get("text"), "texts_ok": row.get("texts_ok"), "level": row.get("level"),
+                            "criteria": [Criterion(id=c["id"], text=c["text"], kind=c["kind"])
+                                         for c in row.get("criteria") or []],
+                        }
 
     def missing(self, query_id: Optional[str], query: str) -> Optional[str]:
         """Why the query has no gold criteria to use, or None when it has."""
         row = self._rows.get(str(query_id))
         if row is None:
             return f"no row for query {query_id} in {self.path}"
-        if row.get("level") != GOLD_CRITERIA_LEVEL:
-            return f"annotation level {row.get('level')!r}, not {GOLD_CRITERIA_LEVEL!r}"
-        if not row.get("texts_ok") or not row.get("criteria"):
+        if not row.get("criteria"):
+            return "no gold criteria (the source states no structure)"
+        if not row.get("texts_ok"):
             return "no criterion texts"
         if row.get("text") is not None and row["text"] != query:
             return f"the query of {query_id} in {self.path} differs"
         return None
 
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
+        """The gold criteria of the query, or None."""
+        if self.missing(query_id, query) is not None:
+            return None
+        return list(self._rows[str(query_id)]["criteria"])
+
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+        info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "criteria_kind": GOLD_CRITERIA,
+                                "errors": []}
         reason = self.missing(query_id, query)
-        if reason is None:
-            info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "errors": []}
-            return [Criterion(id=c["id"], text=c["text"], kind=c["kind"])
-                    for c in self._rows[str(query_id)]["criteria"]], info
-        if self._fallback is None:
-            return [], {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape,
-                        "errors": [f"gold criteria: {reason}"]}
-        criteria, info = self._fallback.get(query_id, query)
-        return criteria, {**info, "ood": True, "gold_missing": reason}
+        if reason is not None:
+            return [], {**info, "errors": [f"gold criteria: {reason}"]}
+        return self.lookup(query_id, query), {**info, "gold_level": self._rows[str(query_id)].get("level")}
+
+
+class FallbackCriteriaSource(CriteriaSource):
+    """The gold criteria of a query from *gold* (a training pool's rows, or
+    TRQA's banked gold), and for a query without them (no criteria) the
+    silver ones of *fallback*, with the reason, the gold source's
+    ``errors``, in its info as ``gold_missing``.  The bank-only part of the
+    info (``BANK_ONLY``) is never returned."""
+
+    def __init__(self, gold: CriteriaSource, fallback: CriteriaSource) -> None:
+        self.gold = gold
+        self.fallback = fallback
+
+    def prepare(self) -> None:
+        self.gold.prepare()
+        self.fallback.prepare()
+
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+        criteria, info = self.gold.get(query_id, query)
+        if criteria:
+            return criteria, without_bank_only(info)
+        reason = "; ".join(info.get("errors") or []) or "no gold criteria"
+        criteria, info = self.fallback.get(query_id, query)
+        return criteria, {**without_bank_only(info), "gold_missing": reason}
 
 
 # ---------------------------------------------------------------------------

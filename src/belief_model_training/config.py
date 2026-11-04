@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from utils.sectioned_config import load_sectioned
-from indexing_corpus_dataset.layout import BUILT_DATASETS, OUTPUT_ROOT, POOL_SPLITS, resolve_split_id
+from indexing_corpus_dataset.layout import BUILT_DATASETS, CRITERIA_SOURCES, OUTPUT_ROOT, POOL_SPLITS, resolve_split_id
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,6 +43,12 @@ class SharedConfig:
     # (InfoSeek-Hard, WebShaper, FRAMES) or trqa_validation (TRQA wiki1 +
     # wiki2 validation).
     training_data: str = "deep_qa"
+    # Criteria of the belief model in the monitor runs of phase 1
+    # (dra_inference --criteria-source): gold or silver.  A choice on
+    # trqa_validation only (run folder belief-monitor-{source}); deep_qa
+    # always uses its gold criteria (silver for FRAMES).  Phases 2 and 3
+    # score against the pool's gold criteria, so they need gold.
+    criteria_source: str = "gold"
     # Frozen agent (--policy-model of dra_inference): phase 1 runs it, phases
     # 2 and 3 read its runs and write under {output_root}/{training_data}/{policy_model}.
     policy_model: str = "glm"
@@ -195,6 +201,9 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
     cfg = load_sectioned(TrainingConfig(), SECTIONS, path, overrides)
     if cfg.shared.training_data not in BUILT_DATASETS:
         raise ValueError(f"shared.training_data: expected one of {sorted(BUILT_DATASETS)}, got {cfg.shared.training_data!r}")
+    if cfg.shared.criteria_source not in CRITERIA_SOURCES:
+        raise ValueError(f"shared.criteria_source: expected one of {list(CRITERIA_SOURCES)}, "
+                         f"got {cfg.shared.criteria_source!r}")
     if cfg.trajectories.split not in POOL_SPLITS:
         raise ValueError(f"trajectories.split: expected one of {list(POOL_SPLITS)}, got {cfg.trajectories.split!r}")
     return cfg

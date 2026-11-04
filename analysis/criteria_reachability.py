@@ -43,16 +43,24 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
 
 Per request:
 
-1. Criteria: from the criteria bank of the split
+1. Criteria: as ``dra_inference`` reads them with ``criteria_source``
+   (``--criteria-source``, default the config's).  The extractor's
+   criteria come from the bank of their kind
    (:func:`indexing_corpus_dataset.layout.criteria_bank_path`, shared with
-   ``dra_inference``); a request missing from it gets its criteria from
+   ``dra_inference``; gold for BrowseComp-Plus, NeuCLIR and RAGTIME, whose
+   criteria are the question's own, silver for TRQA); a request missing
+   from it gets its criteria from
    :class:`belief_model_component.criteria.LLMCriteriaSource` with the
    dataset's init prompt and ``max_criteria``, and they are added to it.
-   ``llm_criteria`` and ``max_criteria`` default to the run config
+   TRQA with gold reads its gold bank, made on demand from the
+   intermediate info (:mod:`indexing_corpus_dataset.trqa_gold_criteria`);
+   its criteria name every member, so its entity reachability is near 1 by
+   construction, a check of the gold.  ``llm_criteria``, ``max_criteria`` and
+   ``criteria_source`` default to the run config
    (``--config``, ``dra_inference.yaml``), so the analysis reads the
    criteria the runs use.  A request whose extraction failed (a reply
-   truncated twice included) is left out, so every judgment is of banked
-   criteria.
+   truncated twice included), or without gold criteria, is left out, so
+   every judgment is of the criteria a run uses.
 2. Gold: ``documents``: the qrel documents whose grade is in ``--grades``,
    from the corpus, whole: the qrels judge the whole document.
    ``entities``: the request's entity names.
@@ -75,9 +83,10 @@ every done request.  Gold missing from the corpus or whose judgment failed
 is counted and left out of the rates.
 
 Output in the run outputs, in
-``OUTPUT_ROOT/criteria_reachability/{dataset}_{split}/``
-(:func:`indexing_corpus_dataset.layout.criteria_reachability_dir`;
-``--output`` overrides it):
+``OUTPUT_ROOT/criteria_reachability/{dataset}_{split}[-{source}]/``
+(:func:`indexing_corpus_dataset.layout.criteria_reachability_dir`; the
+criteria source on TRQA, ``-gold`` or ``-silver``; ``--output`` overrides
+it):
 
 - ``judgments.jsonl``: the judgment cache, one line per (request, gold,
   criteria, judge, prompt), shared by every ``--grades`` and ``--tag``.
@@ -98,6 +107,7 @@ Usage::
     python analysis/criteria_reachability.py --dataset neuclir --limit 2
     python analysis/criteria_reachability.py --dataset ragtime --grades 2 3
     python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test
+    python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test --criteria-source silver
     python analysis/criteria_reachability.py --dataset browsecomp_plus
 """
 
@@ -126,11 +136,12 @@ from evaluation.gold import ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gol
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import (
-    DATASET_SPECS, DATASETS, dataset_root, apply_dataset_defaults, criteria_bank_path, criteria_reachability_dir,
-    default_corpus_path, resolve_split_id,
+    CRITERIA_SOURCES, DATASET_SPECS, DATASETS, dataset_root, apply_dataset_defaults, criteria_reachability_dir,
+    criteria_run_tag, default_corpus_path, effective_criteria_source, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
-from belief_model_component.criteria import BankedCriteriaSource, LLMCriteriaSource
+from belief_model_component.criteria import CriteriaSource
+from belief_model_component.criteria_init import check_max_criteria
 from belief_model_component.judges import span_in_passage, split_span
 from belief_model_component.types import CLOSED
 from utils.cli_setup import load_run_config
@@ -157,29 +168,30 @@ LEVELS = ("support", "related")
 # Criteria
 # ---------------------------------------------------------------------------
 
-def criteria_source(args, bank_path: Path) -> BankedCriteriaSource:
-    """The criteria bank of the split, extracting with ``llm_criteria``."""
-    return BankedCriteriaSource(
-        LLMCriteriaSource(
-            llm_client=disable_native_thinking(create_generator(args.llm_criteria, backend="api")),
-            max_criteria=args.max_criteria,
-            model_name=args.llm_criteria,
-            query_shape=DATASET_SPECS[args.dataset].query_shape,
-        ),
-        bank_path,
-    )
+def criteria_source(args, split: str) -> CriteriaSource:
+    """The criteria of the split's requests, as the belief model reads them
+    in dra_inference (``belief_model_component.criteria_init``, ``criteria_source``): the
+    bank of the extractor's criteria (gold or silver), or the gold
+    criteria of an annotation dataset (TRQA: its gold bank, made on demand
+    from the intermediate info); a request without gold criteria gets none
+    and is left out.  Both have ``path``, ``lookup`` and ``get``."""
+    from belief_model_component import build_criteria_source
+    return build_criteria_source(args.dataset, split, llm_criteria=args.llm_criteria, max_criteria=args.max_criteria,
+                                 criteria_source=args.criteria_source, fallback=False)
 
 
-def bank_criteria(args, source: BankedCriteriaSource, queries: Dict[str, str]) -> Tuple[Dict[str, List[Dict]], Dict[str, int]]:
+def bank_criteria(args, source: CriteriaSource, queries: Dict[str, str]) -> Tuple[Dict[str, List[Dict]], Dict[str, int]]:
     """``({qid: criteria}, {bank outcome: count})``, the criteria read from
     the bank or extracted and added to it; a failed extraction gives none."""
     def one(qid: str):
         criteria, info = source.get(qid, queries[qid])
         if not criteria:
             logger.error("Criteria extraction failed for %s: %s", qid, info.get("errors"))
-        return qid, [c.to_dict() for c in criteria], info["bank"]
+        # A pool's gold file is read, never added to: a request has its criteria or none.
+        return qid, [c.to_dict() for c in criteria], info.get("bank", "hit" if criteria else "failed")
 
     criteria, outcomes = {}, {"hit": 0, "added": 0, "failed": 0}
+    source.prepare()
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for qid, crit, outcome in tqdm(pool.map(one, queries), total=len(queries), desc="criteria (bank)"):
             criteria[qid] = crit
@@ -187,7 +199,7 @@ def bank_criteria(args, source: BankedCriteriaSource, queries: Dict[str, str]) -
     return criteria, outcomes
 
 
-def criteria_step(args, source: BankedCriteriaSource, queries: Dict[str, str], qids: List[str],
+def criteria_step(args, source: CriteriaSource, queries: Dict[str, str], qids: List[str],
                   done: Callable[[str, List[Dict]], bool]) -> Dict:
     """Banked criteria of the requests: a request *done* with its banked
     criteria keeps them, the first ``--limit`` of the others get theirs
@@ -329,7 +341,7 @@ def rate(labels: List[str], level: str) -> Optional[float]:
 # Documents: run
 # ---------------------------------------------------------------------------
 
-def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, source: BankedCriteriaSource) -> None:
+def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
     corpus_path = Path(args.corpus_path or default_corpus_path(args.dataset, args.subset))
     grades = sorted(set(args.grades or [max(spec.relevance_gains)]))
     out_dir = run_folder(args, spec, f"grades-{'-'.join(map(str, grades))}")
@@ -437,6 +449,7 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "grades": grades,
             "config": args.config, "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria,
+            "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
             "criteria_bank": str(source.path), "judge_model": args.judge_model, "judge_prompt": PROMPT_HASH,
             "topic_key": spec.title_key, "passage": "full document",
         },
@@ -513,7 +526,7 @@ def match_one(matcher: LLMEntityMatcher, entities: List[str], members: List[Dict
             for i, (j, by) in sorted(matches.items())], None
 
 
-def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, source: BankedCriteriaSource) -> None:
+def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
     out_dir = run_folder(args, spec, "entities")
     queries, _, _ = load_split(data_path, split, query_key=args.query_key,
                                min_relevance_score=spec.min_relevance_score, only_with_qrels=True)
@@ -597,7 +610,9 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
     summary = {
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "config": args.config,
-            "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria, "criteria_bank": str(source.path),
+            "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria,
+            "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
+            "criteria_bank": str(source.path),
             "judge_model": args.judge_model, "judge_prompt": ENTITY_MATCH_PROMPT_HASH,
             "criteria_matched": "member criteria (not the rest and aggregate criteria)",
         },
@@ -647,7 +662,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
 # Bank only
 # ---------------------------------------------------------------------------
 
-def run_bank_only(args: argparse.Namespace, spec, split: str, data_path: Path, source: BankedCriteriaSource) -> None:
+def run_bank_only(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
     queries, _, _ = load_split(data_path, split, query_key=args.query_key,
                                min_relevance_score=spec.min_relevance_score, only_with_qrels=True)
     print(f"{args.dataset} {split}: {len(queries)} requests; no reachability, criteria bank only")
@@ -668,15 +683,17 @@ def run(args: argparse.Namespace) -> None:
     if args.grades and spec.reachability != "documents":
         raise SystemExit(f"--grades is for document reachability; {args.dataset} has reachability {spec.reachability}")
     config = load_run_config(args.config)
-    for field in ("llm_criteria", "max_criteria"):
+    for field in ("llm_criteria", "max_criteria", "criteria_source"):
         if getattr(args, field) is None:
             setattr(args, field, config[field])
     args.judge_model = args.judge_model or args.llm_criteria
     apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_criteria"))
+    check_max_criteria(args.dataset, args.max_criteria)
     split = resolve_split_id(args.dataset, args.dataset_year, args.subset)
     data_path = Path(args.data_path or dataset_root(args.dataset))
-    args.split_dir = Path(args.output or criteria_reachability_dir(args.dataset, split))
-    source = criteria_source(args, criteria_bank_path(args.dataset, split))
+    args.split_dir = Path(args.output or criteria_reachability_dir(
+        args.dataset, split, criteria_run_tag(args.criteria_source, args.dataset)))
+    source = criteria_source(args, split)
     RUNNERS[spec.reachability](args, spec, split, data_path, source)
 
 
@@ -704,16 +721,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus, layout.default_corpus_path).")
 
     # ── Criteria and judge ──────────────────────────────────────────────────
-    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that llm_criteria and max_criteria are read from.")
+    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that llm_criteria, max_criteria and criteria_source are read from.")
+    parser.add_argument("--criteria-source", type=str, default=None, choices=CRITERIA_SOURCES, help="gold | silver (None = the config's criteria_source); a choice on TRQA only (output folder {dataset}_{split}-{source}), elsewhere the dataset's criteria.")
     parser.add_argument("--llm-criteria", type=str, default=None, help="Criteria-extraction LLM (None = the config's llm_criteria).")
-    parser.add_argument("--max-criteria", type=int, default=None, help="Criteria cap (None = the config's max_criteria, else the dataset's).")
+    parser.add_argument("--max-criteria", type=int, default=None, help="Cap on silver criteria only: TRQA with --criteria-source silver (None = the config's max_criteria, else the dataset's; refused on a dataset whose criteria are gold).")
     parser.add_argument("--judge-model", type=str, default=None, help="Reachability judge LLM (None = the criteria-extraction LLM).")
 
     # ── Run control ─────────────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Requests not done yet to do in this run (None = all).")
     parser.add_argument("--workers", type=int, default=16, help="Parallel LLM calls.")
     parser.add_argument("--tag", type=str, default=None, help="Run folder suffix (None = maxc{N} when --max-criteria differs from the dataset's, else none).")
-    parser.add_argument("--output", type=str, default=None, help="Output folder (None = OUTPUT_ROOT/criteria_reachability/{dataset}_{split}).")
+    parser.add_argument("--output", type=str, default=None, help="Output folder (None = OUTPUT_ROOT/criteria_reachability/{dataset}_{split}, with -{criteria source} on TRQA).")
     return parser.parse_args()
 
 

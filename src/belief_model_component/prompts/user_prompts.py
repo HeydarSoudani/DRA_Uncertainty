@@ -1,5 +1,7 @@
 """User prompts of the belief model (the system prompts are the .txt files next to this module)."""
 
+from typing import Optional
+
 from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TAG_FORMAT
 
 from ..types import MULTI_ASPECT
@@ -10,20 +12,27 @@ Query: {query}
 {instruction} This list will be FIXED for the entire search.\
 """
 
-# What the cap limits: every criterion, or (a report request) only the
-# criteria the extractor adds to the ones the request states (asked of the
-# model; the code keeps a report request's list whole).
+# The extractor's instruction: a report request lists every criterion it
+# states, uncapped; any other query lists its criteria within the cap, or
+# uncapped (gold criteria, layout.DatasetSpec.max_criteria None).
 _CRITERIA_INIT_INSTRUCTIONS = {
-    MULTI_ASPECT: "List the criteria of this query: every criterion the query states, then at most {max_criteria} added criteria.",
+    MULTI_ASPECT: "List the criteria of this query: every criterion the query states.",
 }
-_DEFAULT_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query, at most {max_criteria}."
+_DEFAULT_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query."
+_CAPPED_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query, at most {max_criteria}."
 
 
-def criteria_init_user(shape: str, query: str, max_criteria: int) -> str:
-    """The criteria extractor's user message for a *shape* query."""
-    instruction = _CRITERIA_INIT_INSTRUCTIONS.get(shape, _DEFAULT_CRITERIA_INIT_INSTRUCTION)
-    return CRITERIA_INIT_USER_TEMPLATE.format(
-        query=query, instruction=instruction.format(max_criteria=max_criteria))
+def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> str:
+    """The criteria extractor's user message for a *shape* query, within
+    *max_criteria* (None: uncapped; a report request is never capped)."""
+    if shape in _CRITERIA_INIT_INSTRUCTIONS:
+        instruction = _CRITERIA_INIT_INSTRUCTIONS[shape]
+    elif max_criteria is None:
+        instruction = _DEFAULT_CRITERIA_INIT_INSTRUCTION
+    else:
+        instruction = _CAPPED_CRITERIA_INIT_INSTRUCTION.format(max_criteria=max_criteria)
+    return CRITERIA_INIT_USER_TEMPLATE.format(query=query, instruction=instruction)
+
 
 CRITERIA_UPDATE_USER_TEMPLATE = """\
 Query: {query}

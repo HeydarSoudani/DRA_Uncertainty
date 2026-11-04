@@ -2,7 +2,7 @@ The response to this query is a short answer: the one entity or value that the q
 
 ---rules---
 4. Every condition or clue stated in the query leads to one criterion. Copy it as-is from the query, only replacing each word that refers to the answer (such as "it", "its" or "this species") with the answer's type in the query's words, or "the entity" when the query gives no type. Do not summarize, rephrase, merge or split it.
-5. Leave out background on who is asking. When you must leave out criteria to stay within the given number, keep the clues that narrow down the answer most.
+5. Leave out background on who is asking.
 
 ---example---
 Example query: "Tell me the name of this lighthouse based on the following clues: - it was built before 1900 - its light was automated in the 1980s - it stands on an island whose population was under 500 in 2011 - its first keeper later became a painter."

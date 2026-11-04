@@ -67,6 +67,10 @@ class NegativesConfig:
     # Candidates asked from each source per slot (filtered or failed
     # candidates leave slots to the next ones).
     candidate_factor: int = 3
+    # A candidate is skipped when its word 5-gram containment with a document
+    # of the corpus (gold page or kept negative), |A & B| / min(|A|, |B|),
+    # is at least this (``duplicates.py``); step 4 reports with the same.
+    dedup_threshold: float = 0.8
 
 
 @dataclass
@@ -212,6 +216,12 @@ class PoolPaths:
         writer of the texts) and the ``split`` section (shares and per-split
         counts, ``splits.py``)."""
         return self.root / "stats.json"
+
+    @property
+    def duplicates(self) -> Path:
+        """The duplicate documents of the corpus found by step 4, one row per
+        group or pair (``duplicates.py``)."""
+        return self.root / "duplicates.jsonl"
 
     @property
     def page_index(self) -> Path:

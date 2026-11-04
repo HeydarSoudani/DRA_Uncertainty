@@ -59,10 +59,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import (
-    DATASETS, DATASET_SPECS, GOLD_CRITERIA, OUTPUT_ROOT, criteria_bank_path, effective_criteria_source,
-    gold_criteria_path,
-)
+from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_run_tag
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
@@ -116,8 +113,6 @@ class RunPlan:
     graded_qrels: Dict[str, Dict[str, int]]  # every official level with its gain
     answers: Dict[str, str]
     run_dir: str
-    criteria_bank: Optional[str]
-    gold_criteria: Optional[str]
 
 
 def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Optional[str] = None,
@@ -190,34 +185,9 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     all_questions = dict(queries)
 
     belief_mode = kwargs["belief_mode"]
-    # Criteria bank of the split: criteria are read from it, extracted only when missing.
-    criteria_bank = (str(criteria_bank_path(dataset, file_data_set))
-                     if belief_mode != "off" and kwargs["criteria_bank"] else None)
-    # Criteria source: the gold criteria of a training pool replace the
-    # extracted ones; a dataset without gold criteria, and a query without
-    # them, get extracted ones (the belief model always runs).
-    criteria_source = effective_criteria_source(kwargs["criteria_source"], dataset)
-    gold_criteria = None
-    if belief_mode != "off" and kwargs["criteria_source"] == GOLD_CRITERIA:
-        if criteria_source != GOLD_CRITERIA:
-            print(f"[WARNING] criteria_source gold: {dataset} has no gold criteria; the belief model runs "
-                  f"with the criteria of the extraction prompt ({kwargs['llm_criteria']})")
-        else:
-            gold_criteria = str(gold_criteria_path(dataset))
-            if not Path(gold_criteria).exists():
-                raise SystemExit(f"--criteria-source gold: {gold_criteria} not found; build the pool with "
-                                 "experiments/training/build_training_pool.py (deep_qa step 2, or the "
-                                 "trqa_validation build)")
-            if not kwargs["llm_criteria"]:
-                raise SystemExit("--criteria-source gold needs --llm-criteria: the queries without gold "
-                                 "criteria get extracted ones")
-            from belief_model_component import GoldCriteriaSource
-            gold = GoldCriteriaSource(gold_criteria, DATASET_SPECS[dataset].query_shape)
-            without = sum(gold.missing(qid, q) is not None for qid, q in queries.items())
-            if without:
-                print(f"[WARNING] criteria_source gold: {without} of {len(queries)} queries have no gold "
-                      f"criteria; the belief model runs with the criteria of the extraction prompt "
-                      f"({kwargs['llm_criteria']}) for them (ood: true in their criteria_info)")
+    if belief_mode != "off" and not kwargs["eval_only"]:
+        from belief_model_component import check_criteria_inputs
+        check_criteria_inputs(dataset, kwargs["criteria_source"], kwargs["llm_criteria"], kwargs["max_criteria"])
 
     # ==================== Resume: skip already-processed queries ====================
     # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
@@ -226,7 +196,7 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     run_name = build_run_name_for_pipeline(policy_model=policy_model_cli, llm_model=llm_model, **kwargs)
     dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, kwargs["retriever_name"])
     run_dir = str(Path(output_path) / dataset_dir / run_name
-                  / build_belief_config_name(belief_mode, criteria_source))
+                  / build_belief_config_name(belief_mode, criteria_run_tag(kwargs["criteria_source"], dataset)))
 
     print(f"\n{'=' * 80}")
     print(f"[OUTPUT] Loading/saving results from: {run_dir}")
@@ -261,7 +231,7 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     return RunPlan(
         dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
         all_questions=all_questions, qrels=qrels, graded_qrels=graded_qrels, answers=answers,
-        run_dir=run_dir, criteria_bank=criteria_bank, gold_criteria=gold_criteria,
+        run_dir=run_dir,
     )
 
 
@@ -340,8 +310,20 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     # ==================== Inject qrels into worker_config for the multi-GPU belief model ======
     if worker_config is not None and belief_mode != "off":
         worker_config["qrels"] = qrels
-        worker_config["criteria_bank"] = plan.criteria_bank
-        worker_config["gold_criteria"] = plan.gold_criteria
+        worker_config["split"] = plan.split
+        worker_config["criteria_source"] = kwargs["criteria_source"]
+
+    # ==================== Criteria, made and banked before the workers start ====================
+    # The belief model's criteria source (criteria_init); its workers then
+    # read every query's criteria from the bank.  After the vLLM servers are
+    # up: a vllm/ belief model may be served next to the agent.
+    if belief_mode != "off":
+        from belief_model_component import build_criteria_source, prepare_criteria
+        source = build_criteria_source(plan.dataset, plan.split, llm_criteria=kwargs["llm_criteria"],
+                                       max_criteria=kwargs["max_criteria"], criteria_source=kwargs["criteria_source"])
+        if source is not None:
+            prepare_criteria(source, plan.queries)
+
     # The gold answers, for the header of each query's trajectory .md.
     if worker_config is not None:
         worker_config["answers"] = answers
@@ -405,8 +387,8 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
             agent=agent if hasattr(agent, "belief_model") else None,
             policy_model=policy_model,
             dataset=plan.dataset,
-            criteria_bank=plan.criteria_bank,
-            gold_criteria=plan.gold_criteria,
+            split=plan.split,
+            criteria_source=kwargs["criteria_source"],
         )
         if belief_model is not None and hasattr(agent, "belief_model"):
             agent.belief_model = belief_model
@@ -827,9 +809,9 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-gold]/
+#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-{source}]/
 #   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default;
-#   -gold when the run uses gold criteria, criteria_source gold on a training pool)
+#   -gold / -silver: the criteria source, on a dataset where it is a choice (TRQA, trqa_validation))
 #   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_20b_vllm_gpt-oss-20b/belief-monitor/
 #   ({agent} = the --policy-model name)
 #

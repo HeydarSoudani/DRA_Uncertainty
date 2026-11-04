@@ -40,6 +40,7 @@ negatives:
   max_per_gold: 10                  # hard negatives kept per wiki gold page
   sources: [morelike, category]     # fill order: morelike (most similar text), category (siblings in the most specific categories)
   candidate_factor: 3               # candidates asked from each source per slot (skipped / failed ones leave slots to the next)
+  dedup_threshold: 0.8              # skip a candidate whose word 5-gram containment with a corpus doc is >= this (step 4 reports with the same)
 # negatives.* and pages.wiki_lang / min_words must stay those of the earlier
 # step 3 runs (recorded in stats.json); to change them, remove
 # negatives/index.jsonl and the 'step3' section of stats.json.
