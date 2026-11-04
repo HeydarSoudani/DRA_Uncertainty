@@ -231,10 +231,12 @@ The certainty score s_t (`belief_model_component/certainty.py`) turns a belief i
 
 s_T, after the final call, is compared with the correctness of the agent's final answer.
 
-Saved per iteration (`belief/{qid}.jsonl`, schema in `src/evaluation/belief/writer.py`): the passages shown, the
-think and document observations with their notes, the nugget updates, the nuggets after the iteration, the documents supporting each
-criterion (`criteria_sources_after`), the certainty score `certainty` and the raw reply; the meta line has
-`final_certainty`, the score after the final call on the answer turn. For evaluation only, never shown to the agent:
+Saved per iteration (`belief/{qid}.jsonl`, schema in `src/evaluation/belief/writer.py`), one line per iteration: the
+passages shown, the think and document observations with their notes (a document's spans are saved here, once), the
+nugget updates, the nuggets after the iteration (evidence cited by label), the certainty score `certainty` and the raw
+reply; the meta line has `final_certainty`, the score after the final call on the answer turn. The same belief is
+readable in the trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each
+iteration and the final belief before the result. For evaluation only, never shown to the agent:
 
 - `new_item_precision` and `recall_so_far`, against the qrels at the dataset's `min_relevance_score`. NeuCLIR and
   RAGTIME use grade 3 (the very valuable docs), while the end-of-run `GradedRecall@N` counts every official level

@@ -55,7 +55,7 @@ from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
     AGGREGATE, ASPECT, CLOSED, DOC, MAX_NUGGETS, MULTI_ASPECT, NO_DOC_KINDS, QUERY_SHAPES, REST, REST_PAIR, SET,
-    SUPPORTS, Criterion, Evidence, Nugget, NuggetUpdate, Observation, alnum, alnum_index, same_value,
+    Criterion, Evidence, Nugget, NuggetUpdate, Observation, alnum, alnum_index, same_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -683,8 +683,9 @@ class BeliefState:
         one record per observation as written (``Observation.to_dict`` with
         ``grounded`` and ``note``, empty when it entered the belief; the
         notes are the ``NOTE_*`` constants), then
-        one ``{id, written, after, reason, note, issues, [carried]}`` per criterion with a new
-        observation (``written`` the list as written, ``after`` as kept,
+        one ``{id, after, reason, note, issues, [carried]}`` per criterion with a new
+        observation (``after`` the list as kept, null when the update was
+        ignored; the list as written is in the raw reply;
         ``carried`` the values of the current nuggets carried over unchanged;
         such a criterion the reply left out keeps its nuggets, and its new
         observations stay out of the belief), then one per update of an
@@ -730,7 +731,7 @@ class BeliefState:
             if k is None or k not in changed or k in first:
                 issue = (ISSUE_UNKNOWN_CRITERION if k is None else
                          ISSUE_NO_NEW_OBSERVATION if k not in changed else ISSUE_DUPLICATE_UPDATE)
-                extra.append({"id": u.id, "written": [n.to_dict() for n in u.nuggets], "after": None,
+                extra.append({"id": u.id, "after": None,
                               "reason": u.reason, "note": ISSUE_NOTES[issue], "issues": [issue]})
                 continue
             first[k] = u
@@ -740,7 +741,7 @@ class BeliefState:
             c = self.criteria[k]
             u = first.get(k)
             if u is None:
-                records.append({"id": c.id, "written": None, "after": [n.to_dict() for n in self.nuggets[k]],
+                records.append({"id": c.id, "after": [n.to_dict() for n in self.nuggets[k]],
                                 "reason": "", "note": ISSUE_NOTES[ISSUE_NOT_IN_REPLY],
                                 "issues": [ISSUE_NOT_IN_REPLY]})
                 continue
@@ -801,7 +802,7 @@ class BeliefState:
                     kept.append(Nugget(value=n.value, status=n.status, evidence=list(n.evidence) + extra_evidence))
                     carried.append(n.value)
             self.nuggets[k] = kept
-            record = {"id": c.id, "written": [n.to_dict() for n in u.nuggets],
+            record = {"id": c.id,
                       "after": [n.to_dict() for n in kept], "reason": u.reason, "note": "; ".join(notes),
                       "issues": list(dict.fromkeys(issues))}
             if carried:
@@ -813,12 +814,6 @@ class BeliefState:
     def nugget_lists(self) -> List[List[Dict[str, Any]]]:
         """Per criterion, its nuggets (``{value, status, evidence}``)."""
         return [[n.to_dict() for n in nuggets] for nuggets in self.nuggets]
-
-    def sources(self) -> List[int]:
-        """Per criterion, its distinct documents that support one of its nuggets' values."""
-        return [len({e.label for n in nuggets for e in n.evidence
-                     if e.label.startswith("d") and e.stance == SUPPORTS})
-                for nuggets in self.nuggets]
 
 
 def _entry_key(e: Evidence) -> Tuple[str, str, str]:

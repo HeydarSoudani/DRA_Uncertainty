@@ -10,15 +10,14 @@ cap, retriever) are in the run's ``run_config.json``; the per-iteration seen doc
 ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 23::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 24::
 
-    line 1  {"record": "meta", "schema_version": 23, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 24, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
              "final_nuggets": [[{"value": "Osby", "status": "certain",
-                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby",
-                                               "spans": ["..."]},
+                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby"},
                                               {"label": "t2", "stance": "supports", "value": "Osby"}]}], [], ...],
              "final_certainty": 0.5,
              "final_update": {"agent_turn": "...", "think_observations": [...], "nugget_updates": [...],
@@ -33,16 +32,14 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 23::
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
              "docs": [{"doc_id": "doc17", "seen_before": false}, ...],
              "nuggets_after": [[{"value": "Osby", "status": "certain",
-                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby",
-                                               "spans": ["..."]}]}], [], ...],
-             "criteria_sources_after": [1, 0, ...],
+                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby"}]}], [], ...],
              "passages": [{"label": "d1", "doc_id": "doc17"}, ...],
              "think_observations": [{"id": "c1", "label": "t1", "step": 1, "stance": "supports",
                                      "value": "Osby", "grounded": true, "note": ""}],
              "doc_observations": [{"id": "c1", "label": "d1", "step": 1, "stance": "supports", "value": "Osby",
                                    "doc_id": "doc17", "spans": ["..."], "span_verified": [true],
                                    "grounded": true, "note": ""}],
-             "nugget_updates": [{"id": "c1", "written": [...], "after": [...], "reason": "...", "note": "",
+             "nugget_updates": [{"id": "c1", "after": [...], "reason": "...", "note": "",
                                  "issues": [], "carried": [...]}],
              "agent_turn": "Reasoning: ... Search queries: ...",
              "belief_output": "...",
@@ -162,6 +159,15 @@ from past the cut is not verified (``span_verified`` false), and carries
 a current nugget the reply leaves out (or writes invalidly) over
 unchanged: its value is in the record's ``carried`` (only when there is
 one) and its issue ``dropped_value`` stays.
+schema_version 24 makes a step line this iteration's update plus a light
+state: a nugget's evidence entries are ``{label, stance, value}`` (no
+``spans``; a source's spans are saved once, in the ``doc_observations``
+of the step that observed it), in ``nuggets_after``, ``nugget_updates``'
+``after`` and ``final_nuggets``; ``nugget_updates`` drops ``written``
+(the list as written is in ``belief_output``; a criterion the reply left
+out has the issue ``not_in_reply``); ``criteria_sources_after`` is dropped
+(it follows from ``nuggets_after``).  The readable belief is in the
+trajectory md (``belief_model_component.belief_view``).
 ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
@@ -177,7 +183,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

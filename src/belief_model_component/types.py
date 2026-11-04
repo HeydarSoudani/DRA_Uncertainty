@@ -147,17 +147,18 @@ class Evidence:
     """One source of a nugget, as the belief keeps it: the source's
     observation on the criterion (its label, stance and value, and a
     document's verified spans).  The value may be another answer of the
-    criterion (a source that points against the nugget)."""
+    criterion (a source that points against the nugget).  The spans are
+    kept in memory (the prompt and the inform tag show them) but not in
+    ``to_dict``: the saved belief cites a source by its label, and the
+    source's spans are saved once, in the observation record of the step
+    that observed it."""
     label: str
     stance: str
     value: str
     spans: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"label": self.label, "stance": self.stance, "value": self.value}
-        if self.spans:
-            out["spans"] = list(self.spans)
-        return out
+        return {"label": self.label, "stance": self.stance, "value": self.value}
 
 
 @dataclass

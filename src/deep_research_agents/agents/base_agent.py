@@ -18,6 +18,7 @@ from utils.text_utils import passages2string, format_as_json  # noqa: F401 – r
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
 from utils.config import InferenceConfig
 from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_belief  # noqa: F401
+from utils.text_utils import verbose_print_criteria
 from utils.text_utils import get_think as _get_think, get_query as _get_query, get_answer as _get_answer  # noqa: E501
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,26 @@ class AgentVerboseMixin:
         if self._is_verbose:
             verbose_print_search_results(iter_num, docs, agent_name=self._display_name, sub_iter=sub_iter)
 
-    def _vprint_belief(self, iter_num: int, record: dict) -> None:
-        if self._is_verbose:
-            verbose_print_belief(iter_num, record, agent_name=self._display_name)
+    def _vprint_belief(self, iter_num: int, record: dict, *, final: bool = False) -> None:
+        if not self._is_verbose:
+            return
+        try:
+            verbose_print_belief(iter_num, record, getattr(self, "_belief_criteria", None) or [],
+                                 agent_name=self._display_name, final=final)
+        except Exception:
+            logger.warning("Belief log line failed at iteration %s", iter_num, exc_info=True)
+
+    def _log_belief_md(self, record: dict, *, final: bool = False) -> None:
+        """Write the readable belief of one iteration (or the final belief)
+        to the trajectory md only (``belief_model_component.belief_view``);
+        the belief file keeps the data."""
+        if getattr(self, "_traj_logger", None) is None or record is None:
+            return
+        try:
+            from belief_model_component.belief_view import belief_md
+            self._log_block(belief_md(record, getattr(self, "_belief_criteria", None) or [], final=final))
+        except Exception:
+            logger.warning("Belief md block failed", exc_info=True)
 
     # -- Online trajectory logging --
 
@@ -142,6 +160,7 @@ class AgentVerboseMixin:
         if seen_docs is not None:
             self._vprint_docs(iter_num, seen_docs)
         belief_model = getattr(self, "belief_model", None)
+        self._last_belief_record = None
         if belief_model is None:
             return None
         # Same turn number as the stage the agent last reported.
@@ -160,6 +179,7 @@ class AgentVerboseMixin:
                 agent_turn=agent_turn,
                 agent_doc_labels=doc_labels,
             )
+            self._last_belief_record = record
             self._vprint_belief(iter_num, record)
             tag = record.get("belief_state_tag")
         except Exception:
@@ -226,6 +246,9 @@ class AgentVerboseMixin:
                 steps[-1]["belief_state"] = tag
         for step in steps:
             self._record_step(reasoning_path, step)
+        # The iteration's belief, after its steps in the trajectory md.
+        if subqueries or docs:
+            self._log_belief_md(getattr(self, "_last_belief_record", None))
         return tag
 
     # -- inform mode: the <belief_state> tag --
@@ -271,11 +294,24 @@ class AgentVerboseMixin:
         belief_model = getattr(self, "belief_model", None)
         if belief_model is None:
             return
+        self._belief_criteria = []
         self._notify_belief_stage("criteria", 0)
         try:
             belief_model.reset(query_id=query_id, query=query_text)
         except Exception:
             logger.warning("Belief model reset failed for %s", query_id, exc_info=True)
+            return
+        # The criteria, once before the first iteration: console and trajectory md.
+        try:
+            summary = belief_model.criteria_summary()
+            self._belief_criteria = summary["criteria"]
+            if self._is_verbose:
+                verbose_print_criteria(summary, agent_name=self._display_name)
+            if getattr(self, "_traj_logger", None) is not None:
+                from belief_model_component.belief_view import criteria_md
+                self._log_block(criteria_md(summary))
+        except Exception:
+            logger.warning("Belief criteria log failed for %s", query_id, exc_info=True)
 
     def _attach_belief_stats(self, result: dict) -> None:
         belief_model = getattr(self, "belief_model", None)
@@ -292,6 +328,13 @@ class AgentVerboseMixin:
             result["belief_steps"] = list(belief_model.steps)
         except Exception:
             logger.warning("Belief model meta failed", exc_info=True)
+            return
+        # The final belief (after the answer turn): console and trajectory md.
+        if result["belief_meta"].get("final_nuggets") is not None:
+            from belief_model_component.belief_view import final_record
+            final = final_record(result["belief_meta"])
+            self._vprint_belief(None, final, final=True)
+            self._log_belief_md(final, final=True)
 
 
 def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

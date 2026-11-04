@@ -1484,6 +1484,8 @@ class CPMReport(BasicAgent):
     def _build_reasoning_path(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert CPM-Report trajectory into the standardised reasoning_path format."""
         reasoning_path: List[Dict[str, Any]] = []
+        belief_model = getattr(self, "belief_model", None)
+        belief_records = {r.get("agent_iteration"): r for r in getattr(belief_model, "steps", None) or []}
         for entry in state.get("trajectory", []):
             rp_entry: Dict[str, Any] = {
                 # The state machine's step: the iteration the belief model
@@ -1518,6 +1520,10 @@ class CPMReport(BasicAgent):
             rp_entry["_cpm_output"] = entry.get("output", {})
 
             self._record_step(reasoning_path, rp_entry)
+            # The steps reach the trajectory md only now, so the belief of a
+            # search step (its agent_iteration is the step) is written here.
+            if traj_state == "search":
+                self._log_belief_md(belief_records.get(entry.get("step")))
 
         return reasoning_path
 

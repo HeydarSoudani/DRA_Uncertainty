@@ -212,7 +212,7 @@ def _cons_checks(episode: Episode, outcome: Dict[str, Any]) -> Dict[str, List[in
         if r.get("after") is None:
             continue
         check("complete", not issues & set(INCOMPLETE_ISSUES))
-        if r.get("written") is None:
+        if ISSUE_NOT_IN_REPLY in issues:  # the reply wrote nothing for it
             continue
         after = r["after"]
         written = _written(r)
@@ -235,7 +235,7 @@ def _cal_items(episode: Episode, outcome: Dict[str, Any], gold: NuggetGold) -> L
     nuggets the reply wrote as ``(status, is a gold answer)``."""
     out = []
     for r in outcome.get("nugget_updates") or []:
-        if r.get("written") is None or not _written(r):
+        if ISSUE_NOT_IN_REPLY in (r.get("issues") or []) or not _written(r):
             continue
         c = gold_criterion(episode, r["id"])
         if c is None or c["kind"] == AGGREGATE:

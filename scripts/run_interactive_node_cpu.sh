@@ -48,7 +48,7 @@ fi
 set -euo pipefail
 
 PARTITION="${PARTITION:-staging}"
-TIME="${TIME:-1:00:00}"
+TIME="${TIME:-0:30:00}"
 CPUS="${CPUS:-4}"
 # Snellius bills memory as CPUs (7 GB per CPU): asking for more than CPUS*7GB
 # reserves extra CPUs, so the job waits for a node with that many free cores.

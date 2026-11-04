@@ -229,65 +229,39 @@ def verbose_print_search_results(
         print(f"{prefix}{iter_label} [ret result]: ... and {remaining} more docs")
 
 
+def _print_rows(label: str, rows) -> None:
+    """Print (family, row) pairs under *label*, the families in one column."""
+    padding = " " * len(label)
+    for i, (family, row) in enumerate(rows):
+        print(f"{label if i == 0 else padding}{(family + ':') if family else '':<11}{row}")
+
+
+def verbose_print_criteria(summary: Dict[str, Any], *, agent_name: str = "") -> None:
+    """Print the query's criteria once, before the first iteration
+    (``BeliefModel.criteria_summary``; see ``belief_model_component.belief_view``)."""
+    from belief_model_component.belief_view import criteria_lines
+    prefix = f"[{agent_name}] " if agent_name else ""
+    _print_rows(f"{prefix}[criteria]: ", criteria_lines(summary))
+
+
 def verbose_print_belief(
-    iter_num: int,
+    iter_num: Optional[int],
     record: Dict[str, Any],
+    criteria: List[Dict[str, Any]],
     *,
     agent_name: str = "",
+    final: bool = False,
 ) -> None:
     """Print the belief model's record for one search iteration: the belief
-    row (top nugget level per criterion, documents supporting each, new doc
-    ids), the gold row (new-item precision, recall so far, intermediate
-    answer), then any errors.
-
-    ``top`` is the status level of each criterion's most likely nugget
-    (-2 = doubtful, 0 = unknown, ..., 4 = certain; "-" without a nugget),
-    in criterion order, index-aligned with ``sources``."""
+    row (certainty, new doc ids), the gold row (new-item precision, recall
+    so far, intermediate answer), one row per nugget of each criterion
+    (status, value, evidence labels; ``*`` rewritten this iteration), the
+    labels of the iteration's documents, then any errors.  With *final*,
+    the final belief (``belief_view.final_record``), without the gold row."""
+    from belief_model_component.belief_view import belief_lines
     prefix = f"[{agent_name}] " if agent_name else ""
-    label = f"{prefix}[Iter {iter_num}] [belief]: "
-    padding = " " * len(label)
-
-    def _fmt(val, fmt=".3f"):
-        return f"{val:{fmt}}" if val is not None else "—"
-
-    nuggets = record.get("nuggets_after")
-    sources = record.get("criteria_sources_after")
-    from belief_model_component.types import STATUS_LEVEL as levels
-    top = nuggets and [max((levels.get(n.get("status"), -9) for n in ns), default=None) for ns in nuggets]
-    top = top and ["-" if t is None or t == -9 else t for t in top]
-    # Pad the lists to one column width so criterion i lines up across rows.
-    width = max((len(str(x)) for x in (top or []) + (sources or [])), default=1)
-
-    def _list(items):
-        if items is None:
-            return "—"
-        return "[" + ", ".join(f"{x:>{width}}" for x in items) + "]"
-
-    belief = (
-        f"top={_list(top)} | sources={_list(sources)} | "
-        f"{record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new doc ids"
-    )
-    # recall: +new this step -> seen so far / all relevant.
-    gold = (
-        f"new_prec={_fmt(record.get('new_item_precision'))} "
-        f"({_fmt(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)}) | "
-        f"recall={_fmt(record.get('recall_so_far'))} "
-        f"({_fmt(record.get('num_new_relevant'), '+d')} → "
-        f"{_fmt(record.get('num_relevant_seen'), 'd')}/{_fmt(record.get('num_relevant'), 'd')})"
-    )
-    answers = record.get("intermediate_answers")
-    if answers is None:
-        gold += f" | answer=null ({record.get('intermediate_answer_status') or 'disabled'})"
-    else:
-        answers = [a.replace(chr(10), " ") for a in answers]
-        gold += f" | answer={answers if answers else 'none'}"
-
-    rows = [("belief", belief), ("gold", gold)]
-    if record.get("errors"):
-        rows.append(("errors", "; ".join(record["errors"])))
-
-    for i, (family, row) in enumerate(rows):
-        print(f"{label if i == 0 else padding}{family + ':':<11}{row}")
+    label = f"{prefix}[final belief]: " if final else f"{prefix}[Iter {iter_num}] [belief]: "
+    _print_rows(label, belief_lines(record, criteria, final=final))
 
 
 # ===========================================================================

@@ -32,7 +32,7 @@ first, nested detail last::
     certainty,
     intermediate_answers, intermediate_answer_status,
     docs[],
-    nuggets_after, criteria_sources_after,
+    nuggets_after,
     passages[], think_observations[], doc_observations[], nugget_updates[],
     agent_turn, belief_output,
     intermediate_answer_reasoning, errors[],
@@ -50,18 +50,17 @@ was shown in an earlier step); ``num_new_docs`` counts the others.
 ``nuggets_after`` holds, per criterion in ``criteria`` order, its nuggets
 after the step (``[{value, status, evidence}]``: an answer, how likely it
 is correct on the seven-word scale ``types.BELIEF_STATUSES``, and its
-sources, each ``{label, stance, value, [spans]}``, "d<n>" a document,
-"t<step>" the agent's turn); the nuggets before the step are the
-previous step's.
-``criteria_sources_after`` is, per criterion, its distinct documents
-that support one of its nuggets' values.
+sources, each ``{label, stance, value}``, "d<n>" a document, "t<step>"
+the agent's turn); the nuggets before the step are the previous step's.
+A source's spans are saved once, in the ``doc_observations`` of the step
+that observed it.
 ``passages`` are the documents shown to the update call (``{label,
 doc_id}``; a document is labelled when first shown).
 ``think_observations`` / ``doc_observations`` are the observations the
 call wrote this step (``{id, label, step, stance, value, [doc_id, spans,
 span_verified], grounded, note}``; only grounded ones with an empty note
 entered the belief), null when the call was not made or failed;
-``nugget_updates`` has one ``{id, written, after, reason, note, issues,
+``nugget_updates`` has one ``{id, after, reason, note, issues,
 [carried]}`` per criterion with a new observation; the raw reply is ``belief_output``.
 ``agent_turn`` is the agent's reasoning and queries of the iteration
 (``agent_turn.agent_turn_text``).
@@ -174,6 +173,15 @@ class BeliefModel:
                         len(self._criteria), [c.text for c in self._criteria])
         if self._belief is not None:
             self._belief.reset(query, self._criteria)
+
+    def criteria_summary(self) -> Dict[str, Any]:
+        """The sample's criteria for the readable logs (``belief_view``):
+        ``{criteria, criteria_info, num_relevant}``."""
+        return {
+            "criteria": [c.to_dict() for c in self._criteria],
+            "criteria_info": self._criteria_info,
+            "num_relevant": self._retrieval_gain.num_relevant,
+        }
 
     def meta(self) -> Dict[str, Any]:
         """Per-sample information for the meta line of the saved file.  The
@@ -304,7 +312,6 @@ class BeliefModel:
             "intermediate_answer_status": intermediate_answer_status,
             "docs": per_doc,
             "nuggets_after": state.nugget_lists() if state is not None else None,
-            "criteria_sources_after": state.sources() if state is not None else None,
             "passages": update.get("passages") if tracks_state else None,
             "think_observations": update.get("think_observations"),
             "doc_observations": update.get("doc_observations"),
