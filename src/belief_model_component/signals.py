@@ -1,197 +1,66 @@
-"""Per-step signals of the belief model.
+"""Per-step parts of the belief model:
 
-Report (Section "Instantiation"), x_t = (nu^D_t, Delta^D_t, nu^q_t, a_t):
+- ``BeliefUpdateSignal`` b_t: the belief update of the step (one call:
+  observations of the agent's turn and of the documents, then the nuggets).
 
-- ``DocNoveltySignal``   nu^D: fraction of the step's documents whose id was
-  not seen in an earlier step.
-- ``BeliefUpdateSignal`` b_t and Delta^D: the belief update of the step
-  and the change of the status levels it makes; negative when the belief fell.
-- ``QueryNoveltySignal`` nu^q: novelty of the step's queries w.r.t. the
-  queries of earlier steps.
-- ``CriteriaTargetingSignal`` a: per criterion, the number of steps whose
-  queries directly targeted it.
-
-Extra, not part of x_t:
+Extra, for evaluation only (never shown to the agent):
 
 - ``RetrievalGainSignal``: supervised retrieval gain against the qrels
   (new-item precision, recall so far).
 - ``IntermediateAnswerSignal``: the agent's own answer(s) after each turn,
   not evaluated.
-
-Query embeddings come from the retriever's encoder
-(``encode_fn_from_retriever``).  Without one (BM25, SPLADE, endpoint
-retrievers) nu^q is null.  The criteria signals take an LLM judge from ``judges``.
 """
 
+import hashlib
 import logging
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-import numpy as np
-
 from deep_research_agents.prompts.answer_prompts import extract_answer_candidates, extract_bare_answer
 from reasoner_component import REASONING_FALLBACK_PREFIX
-from utils.text_utils import doc_id as _doc_id
+from utils.text_utils import doc_id as _doc_id, doc_text
+from .certainty import certainty
 from .criteria import BeliefState
-from .judges import LLMBeliefUpdater, LLMQueryScorer
+from .updater import LLMBeliefUpdater, Passage, passage_title
 from .prompts import intermediate_answer_instruction
-from .types import STATUS_LEVEL, Criterion
+from .types import Criterion
 
 logger = logging.getLogger(__name__)
 
-EncodeFn = Callable[..., np.ndarray]
-
 
 # ---------------------------------------------------------------------------
-# Helpers
+# b_t: belief update
 # ---------------------------------------------------------------------------
 
-def encode_fn_from_retriever(retriever) -> Tuple[Optional[EncodeFn], Optional[str]]:
-    """Return ``(encode_fn, encoder_name)`` from a retriever.
+def _doc_key(doc: Dict[str, Any], text: str) -> str:
+    """A document's key for its label: its id, else a hash of its text."""
+    return _doc_id(doc) or "text:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
-    ``encode_fn(texts, is_query=True) -> np.ndarray`` of shape (N, D).  Works
-    with ``DenseRetriever`` (has ``.encoder.encode``); ``(None, None)`` for
-    retrievers without a local encoder.
-    """
-    encoder = getattr(retriever, "encoder", None)
-    if encoder is None or not callable(getattr(encoder, "encode", None)):
-        return None, None
-
-    def _encode(texts: List[str], is_query: bool = True) -> np.ndarray:
-        return np.asarray(encoder.encode(texts, is_query=is_query), dtype=np.float32)
-
-    return _encode, getattr(encoder, "model_name", None)
-
-
-def _normalise_rows(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float32).reshape(len(x), -1)
-    norms = np.linalg.norm(x, axis=1, keepdims=True)
-    return x / np.where(norms > 0, norms, 1.0)
-
-
-def _max_sim(emb: np.ndarray, bank: List[np.ndarray]) -> Optional[float]:
-    """Max cosine similarity of a unit vector to a list of unit vectors."""
-    if not bank:
-        return None
-    return float(np.max(np.stack(bank) @ emb))
-
-
-def _novelty(max_sim: Optional[float]) -> float:
-    """1 - max similarity, clipped to [0, 1]; 1 when there is nothing to compare."""
-    if max_sim is None:
-        return 1.0
-    return float(1.0 - min(max(max_sim, 0.0), 1.0))
-
-
-def _mean(values: List[Optional[float]]) -> Optional[float]:
-    values = [v for v in values if v is not None]
-    return float(np.mean(values)) if values else None
-
-
-# ---------------------------------------------------------------------------
-# nu^D: document novelty
-# ---------------------------------------------------------------------------
-
-class DocNoveltySignal:
-    """Fraction of the step's documents whose id was not seen in an earlier step.
-
-    Per document: 1 for a new id, 0 for an id seen in an earlier step.  The
-    step value is the mean, so with k unique documents it is a multiple of 1/k.
-    """
-
-    def __init__(self) -> None:
-        self._seen_ids: Set[str] = set()
-
-    @property
-    def seen_ids(self) -> Set[str]:
-        return self._seen_ids
-
-    def reset(self) -> None:
-        self._seen_ids.clear()
-
-    def score(self, docs: List[Dict[str, Any]]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
-        """Return ``(step_novelty, per_doc)``; ``step_novelty`` is None without docs."""
-        ids: List[str] = []
-        for doc in docs:
-            doc_id = _doc_id(doc)
-            if doc_id and doc_id not in ids:
-                ids.append(doc_id)
-        if not ids:
-            return None, []
-
-        per_doc = [
-            {"doc_id": d, "seen_before": d in self._seen_ids, "novelty": 0.0 if d in self._seen_ids else 1.0}
-            for d in ids
-        ]
-        # Update state after scoring: novelty is w.r.t. earlier steps only.
-        self._seen_ids.update(ids)
-        return _mean([d["novelty"] for d in per_doc]), per_doc
-
-
-# ---------------------------------------------------------------------------
-# nu^q: query novelty
-# ---------------------------------------------------------------------------
-
-class QueryNoveltySignal:
-    """Novelty of the step's queries w.r.t. queries of earlier steps.
-
-    Per query: ``1 - max cosine similarity`` to the queries of earlier steps
-    (1 for the first step).  The step value is the mean over the step's
-    queries.  None without an encoder.
-    """
-
-    def __init__(self, encode_fn: Optional[EncodeFn] = None) -> None:
-        self._encode_fn = encode_fn
-        self._earlier_embs: List[np.ndarray] = []
-
-    def reset(self) -> None:
-        self._earlier_embs.clear()
-
-    def close(self) -> None:
-        """Drop the encoder reference; nu^q is null from then on."""
-        self._encode_fn = None
-
-    def score(self, subqueries: List[str]) -> Tuple[Optional[float], List[Dict[str, Any]]]:
-        """Return ``(step_novelty, per_query)``."""
-        if not subqueries:
-            return None, []
-        if self._encode_fn is None:
-            return None, [{"text": q, "max_sim_to_earlier": None, "novelty": None} for q in subqueries]
-
-        embs = _normalise_rows(self._encode_fn(subqueries, is_query=True))
-        per_query: List[Dict[str, Any]] = []
-        for q, emb in zip(subqueries, embs):
-            max_sim = _max_sim(emb, self._earlier_embs)
-            per_query.append({
-                "text": q,
-                "max_sim_to_earlier": round(max_sim, 4) if max_sim is not None else None,
-                "novelty": round(_novelty(max_sim), 4),
-            })
-        self._earlier_embs.extend(embs)
-        return _mean([p["novelty"] for p in per_query]), per_query
-
-
-# ---------------------------------------------------------------------------
-# b_t and Delta^D: belief update
-# ---------------------------------------------------------------------------
 
 class BeliefUpdateSignal:
-    """Belief update of each step and the change it makes.
+    """Belief update of each step: one call (``updater``) on the agent's
+    turn and the step's documents not judged in an earlier step; each
+    document gets its label when shown (``BeliefState.label_doc``), and the
+    reply is applied by ``BeliefState.apply``.
 
-    The stateful updater sees the current belief with its attached evidence
-    and answer candidates, the agent's turn of the step and the documents of
-    the step it has not judged in an earlier step, and updates the criteria
-    the documents support, contradict or relate to; a status can go up (new
-    or combined evidence) or down (a contradiction or a passage that points
-    against it) by any number of levels.  Delta^D = sum_k (level_t(k) -
-    level_{t-1}(k)) over the status levels (``types.STATUS_LEVEL``, -2 to 4,
-    "unknown" 0) of the criteria with a status; it is positive when the passages cover more of the
-    criteria and negative when they turn against them.  The same call
-    rewrites the answer candidates the turn changes (``BeliefState.revise``),
-    so a step with a turn calls the updater even without a new document
-    (except for a query without candidates).  With nothing to do the updater
-    is not called and Delta^D is 0; when the updater fails the belief and
-    the candidates are unchanged, Delta^D is null, and the step's documents
-    stay unjudged, so a later step that retrieves them shows them again.
+    A call with nothing to read (no turn, no new document with text) is not
+    made.  When the call fails the belief stays as it was, the step's
+    documents stay unjudged (a later step that retrieves them shows them
+    again, with the same labels) and the turn's observations are lost.
+    ``score`` and ``finish`` return the step's outcome::
+
+        {passages, think_observations, doc_observations, nugget_updates,
+         belief_output, errors}
+
+    (``passages`` ``[{label, doc_id}]`` as shown; the records of
+    ``BeliefState.apply``, null when the call was not made or failed; the
+    raw reply, null when not called or the call raised).
+
+    The call is made in two halves, ``passages`` (label the documents) and
+    ``apply`` (the parsed reply), so belief model training can make the
+    LLM calls itself (``belief_model_training.episodes.BeliefTracker``).
+    ``certainty`` is the certainty score s_t of the belief
+    (``certainty.certainty``); after ``finish`` it reads the belief in the
+    agent's answer through the answer turn's label.
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
@@ -199,6 +68,7 @@ class BeliefUpdateSignal:
         self._query = ""
         self._state: Optional[BeliefState] = None
         self._judged: Set[str] = set()
+        self._answer_label: Optional[str] = None
 
     @property
     def active(self) -> bool:
@@ -208,119 +78,87 @@ class BeliefUpdateSignal:
     def state(self) -> Optional[BeliefState]:
         return self._state
 
-    def statuses(self) -> Optional[List[str]]:
-        return list(self._state.statuses) if self._state is not None else None
+    def nuggets(self) -> Optional[List[List[Dict[str, Any]]]]:
+        return self._state.nugget_lists() if self._state is not None else None
 
-    def candidates(self) -> Optional[List[List[Dict[str, Any]]]]:
-        return self._state.candidate_lists() if self._state is not None else None
+    @property
+    def answer_label(self) -> Optional[str]:
+        """The answer turn's label once the final call is marked, else None."""
+        return self._answer_label
+
+    def certainty(self) -> Optional[float]:
+        """s_t of the current belief; None without criteria."""
+        if self._state is None:
+            return None
+        return certainty(self._state.nugget_lists(), [c.kind for c in self._state.criteria],
+                         self.updater.query_shape, self._answer_label)
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._state = BeliefState(criteria) if criteria else None
         self._judged.clear()
-
-    def score(
-        self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None,
-    ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]], Optional[str], List[str]]:
-        """Return ``(delta, updates, candidates, raw, errors)`` for the
-        step's unique *docs* and the agent's turn of the step (*agent_turn*;
-        None: no turn to read); *updates* has one record per criterion
-        (``BeliefState.update``), *candidates* one per criterion whose
-        candidates the call rewrote (``BeliefState.revise``), *raw* is the
-        updater's reply (None when it was not called).  Documents without
-        an id are shown every step."""
-        if self._state is None:
-            return None, [], [], None, []
-        docs = self.unjudged(docs)
-        turn = agent_turn if self.updater.candidates else None
-        if not docs and turn is None:
-            return 0, [], [], None, []
-        updates, cands, raw, errors = self.updater.update(self._query, self._state, docs, step, turn)
-        delta, records, revised = self.apply(docs, updates, cands, raw, turn)
-        return delta, records, revised, raw, errors
+        self._answer_label = None
 
     def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """The documents of *docs* the updater has not judged yet."""
-        return [d for d in docs if _doc_id(d) not in self._judged]
+        """The documents of *docs* not judged yet (documents without an id
+        are shown every step)."""
+        return [d for d in docs if not _doc_id(d) or _doc_id(d) not in self._judged]
 
-    def apply(
-        self, docs: List[Dict[str, Any]], updates: Optional[List[Any]], candidates: Optional[List[Any]],
-        raw: Optional[str], agent_turn: Optional[str] = None,
-    ) -> Tuple[Optional[int], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Apply the updater's result on the unjudged *docs* and the agent's
-        turn shown to it (*agent_turn*, added to the candidates' anchors
-        first): return ``(delta, records, revised)``.  *updates* None
-        (failed call) leaves the belief, the candidates and the judged
-        documents unchanged; *raw* None (not called) only marks *docs*
-        judged; *candidates* None (the reply has no list) leaves the
-        candidates unchanged."""
-        self._state.read_turn(agent_turn)
-        if updates is None:
-            return None, [], []
-        self._judged.update(i for i in map(_doc_id, docs) if i)
-        if raw is None:
-            return 0, [], []
-        before = list(self._state.statuses)
-        records = self._state.update(updates)
-        after = list(self._state.statuses)
-        revised = self._state.revise(candidates) if candidates is not None else []
-        return sum(STATUS_LEVEL[a] - STATUS_LEVEL[b] for b, a in zip(before, after) if b is not None), records, revised
+    def score(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None) -> Dict[str, Any]:
+        """The update of one step from its unique *docs* and the agent's
+        turn (*agent_turn*; None: no turn to read)."""
+        return self._update(self.unjudged(docs), step, agent_turn)
 
-    def finish(self, step: int, agent_turn: str) -> Tuple[List[Dict[str, Any]], Optional[str], List[str]]:
-        """The final call: the candidates read from the agent's answer turn,
-        no document.  Returns ``(revised, raw, errors)``; nothing for a
-        query without candidates."""
-        if self._state is None or not self.updater.candidates:
-            return [], None, []
-        updates, cands, raw, errors = self.updater.update(self._query, self._state, [], step, agent_turn)
-        # No passage: any status the reply writes is ignored.
-        _, _, revised = self.apply([], None if updates is None else [], cands, raw, agent_turn)
-        return revised, raw, errors
+    def finish(self, step: int, agent_turn: str) -> Dict[str, Any]:
+        """The final update: the agent's answer turn (labelled ``t<step>``),
+        no document."""
+        self.mark_final(step)
+        return self._update([], step, agent_turn)
 
+    def mark_final(self, step: int) -> None:
+        """The final call reads the answer turn ``t<step>``: from now on
+        ``certainty`` scores the answer criterion by that turn's nugget."""
+        self._answer_label = f"t{step}"
 
-# ---------------------------------------------------------------------------
-# a: criteria targeting state
-# ---------------------------------------------------------------------------
+    def passages(self, docs: List[Dict[str, Any]]) -> Tuple[List[Passage], List[str]]:
+        """The passages of *docs* (each labelled, ``label_doc``) and the
+        errors of documents without text."""
+        passages: List[Passage] = []
+        errors: List[str] = []
+        for d in docs:
+            text = doc_text(d, max_length=None)
+            if not text:
+                errors.append(f"empty text for doc {_doc_id(d)}")
+                continue
+            passages.append((self._state.label_doc(_doc_key(d, text), passage_title(text)), _doc_id(d), text))
+        return passages, errors
 
-class CriteriaTargetingSignal:
-    """Targeting state: how many steps have aimed a query at each criterion.
+    def apply(self, parsed: Any, passages: List[Passage]) -> Dict[str, Any]:
+        """Apply a parsed reply (``LLMBeliefUpdater.parse``) of a call on
+        *passages*: they are judged now; returns the records of
+        ``BeliefState.apply``."""
+        self._judged.update(doc for _, doc, _ in passages if doc)
+        think, doc_obs, updates = parsed
+        return self._state.apply(think, doc_obs, updates)
 
-    The scorer scores every (query, criterion) pair as 0, 0.5 or 1; one
-    query may target several criteria.  A criterion is targeted in a step
-    when at least one of the step's queries scores 1 on it (0.5 never
-    counts), and its attempt count a_t(k) then grows by 1, once per step
-    however many queries target it, whatever its status.
-    """
+    def _update(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"passages": [], "think_observations": None, "doc_observations": None,
+                               "nugget_updates": [], "belief_output": None, "errors": []}
+        if self._state is None:
+            return out
+        passages, out["errors"] = self.passages(docs)
+        out["passages"] = [{"label": label, "doc_id": doc} for label, doc, _ in passages]
+        turn = agent_turn if agent_turn and agent_turn.strip() else None
+        if not passages and turn is None:
+            return out
 
-    def __init__(self, scorer: LLMQueryScorer) -> None:
-        self.scorer = scorer
-        self._query = ""
-        self._criteria: List[Criterion] = []
-        self._attempts: List[int] = []
-
-    @property
-    def attempts(self) -> List[int]:
-        return list(self._attempts)
-
-    def reset(self, query: str, criteria: List[Criterion]) -> None:
-        self._query = query
-        self._criteria = list(criteria)
-        self._attempts = [0] * len(self._criteria)
-
-    def score(
-        self, subqueries: List[str], state: Optional[BeliefState],
-    ) -> Tuple[Optional[List[str]], List[Dict[str, Any]]]:
-        """Return ``(targeted_ids, per_query)``; per query ``target_scores``
-        (one per criterion).  *state* is b_{t-1}, shown to the scorer.
-        ``targeted_ids`` is None, and the attempts are unchanged, without
-        queries, criteria or state."""
-        if not subqueries or not self._criteria or state is None:
-            return None, []
-        scores = self.scorer.score(self._query, subqueries, state)
-        targeted = [k for k in range(len(self._criteria)) if any(row[k] >= 1.0 for row in scores)]
-        for k in targeted:
-            self._attempts[k] += 1
-        return [self._criteria[k].id for k in targeted], [{"target_scores": row} for row in scores]
+        parsed, raw, errors = self.updater.update(self._query, self._state, step, turn, passages)
+        out["belief_output"] = raw
+        out["errors"].extend(f"belief_update: {e}" for e in errors)
+        if parsed is None:
+            return out
+        out.update(self.apply(parsed, passages))
+        return out
 
 
 # ---------------------------------------------------------------------------

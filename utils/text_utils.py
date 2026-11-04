@@ -235,14 +235,14 @@ def verbose_print_belief(
     *,
     agent_name: str = "",
 ) -> None:
-    """Print the belief model's record for one search iteration, one
-    row per signal family: belief (belief state, criteria delta, doc
-    novelty), queries (criteria attempts, targeted criteria, query novelty),
-    gold (new-item precision, recall so far, intermediate answer), then any errors.
+    """Print the belief model's record for one search iteration: the belief
+    row (top nugget level per criterion, documents supporting each, new doc
+    ids), the gold row (new-item precision, recall so far, intermediate
+    answer), then any errors.
 
-    ``status`` is one status level per criterion (-2 = doubtful,
-    0 = unknown, ..., 4 = certain) in criterion order, index-aligned with
-    ``criteria_attempts``."""
+    ``top`` is the status level of each criterion's most likely nugget
+    (-2 = doubtful, 0 = unknown, ..., 4 = certain; "-" without a nugget),
+    in criterion order, index-aligned with ``sources``."""
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[Iter {iter_num}] [belief]: "
     padding = " " * len(label)
@@ -250,13 +250,13 @@ def verbose_print_belief(
     def _fmt(val, fmt=".3f"):
         return f"{val:{fmt}}" if val is not None else "—"
 
-    state = record.get("belief_after")
-    attempts = record.get("criteria_attempts_after")
-    targeted = record.get("criteria_targeted")
+    nuggets = record.get("nuggets_after")
+    sources = record.get("criteria_sources_after")
     from belief_model_component.types import STATUS_LEVEL as levels
-    # Pad both lists to one column width so criterion i lines up across rows.
-    width = max((len(str(n)) for n in (attempts or []) + [levels.get(s, '?') for s in state or []]),
-                default=1)
+    top = nuggets and [max((levels.get(n.get("status"), -9) for n in ns), default=None) for ns in nuggets]
+    top = top and ["-" if t is None or t == -9 else t for t in top]
+    # Pad the lists to one column width so criterion i lines up across rows.
+    width = max((len(str(x)) for x in (top or []) + (sources or [])), default=1)
 
     def _list(items):
         if items is None:
@@ -264,15 +264,8 @@ def verbose_print_belief(
         return "[" + ", ".join(f"{x:>{width}}" for x in items) + "]"
 
     belief = (
-        f"status=           {_list(state and [levels.get(s, '?') for s in state])} | "
-        f"criteria_delta={_fmt(record.get('criteria_delta'), '+d')} | "
-        f"doc_novelty={_fmt(record.get('doc_novelty'))} "
-        f"({record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new ids)"
-    )
-    queries = (
-        f"criteria_attempts={_list(attempts)} | "
-        f"targeted={targeted if targeted is not None else '—'} | "
-        f"query_novelty={_fmt(record.get('query_novelty'))}"
+        f"top={_list(top)} | sources={_list(sources)} | "
+        f"{record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new doc ids"
     )
     # recall: +new this step -> seen so far / all relevant.
     gold = (
@@ -289,7 +282,7 @@ def verbose_print_belief(
         answers = [a.replace(chr(10), " ") for a in answers]
         gold += f" | answer={answers if answers else 'none'}"
 
-    rows = [("belief", belief), ("queries", queries), ("gold", gold)]
+    rows = [("belief", belief), ("gold", gold)]
     if record.get("errors"):
         rows.append(("errors", "; ".join(record["errors"])))
 

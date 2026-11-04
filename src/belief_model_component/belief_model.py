@@ -1,4 +1,4 @@
-"""BeliefModel: the per-step belief state and signals for deep research agents.
+"""BeliefModel: the per-step belief state for deep research agents.
 
 With ``inform=False`` (``monitor``) it never changes the trajectory; with
 ``inform=True`` (``inform``) each record also carries ``belief_state_tag``, the
@@ -6,19 +6,19 @@ With ``inform=False`` (``monitor``) it never changes the trajectory; with
 sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
-                             the sample) and b_0 gives every criterion
-                             the status "unknown"
+                             the sample); b_0 has no observation
+                             and no nugget
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
 
-Order inside ``observe`` (the targeting scorer sees b_{t-1}; the documents
-then move the belief to b_t):
+Order inside ``observe`` (the step's documents and the agent's turn move
+the belief from b_{t-1} to b_t):
 
-    a (targeting) -> nu^q -> nu^D -> b_t and Delta^D (the belief updater
-    updates the belief from the documents it has not judged in earlier
-    steps) -> retrieval gain
-    -> intermediate answer
+    b_t (one belief update call reads the agent's turn and the documents
+    not judged in earlier steps, records their observations and rewrites
+    the nuggets of the criteria with new observations) ->
+    retrieval gain -> intermediate answer (both for evaluation only)
 
 Step record, one per iteration (saved as one line of
 ``belief/{query_id}.jsonl`` by ``evaluation.belief.save_belief``); flat scalars
@@ -26,18 +26,16 @@ first, nested detail last::
 
     iteration, agent_iteration,
     num_subqueries, num_docs, num_new_docs,
-    doc_novelty, criteria_delta, query_novelty          # x_t, with criteria_attempts_after
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
-    reasoning_confidence,
+    certainty,
     intermediate_answers, intermediate_answer_status,
-    queries[], docs[],
-    belief_before, belief_after, criteria_sources_after,
-    candidates_before, candidates_after,
-    criteria_targeted, criteria_attempts_after, criteria_updates[],
-    candidate_updates[], agent_turn,
-    belief_updater_output, intermediate_answer_reasoning, errors[],
+    docs[],
+    nuggets_after, criteria_sources_after,
+    passages[], think_observations[], doc_observations[], nugget_updates[],
+    agent_turn, belief_output,
+    intermediate_answer_reasoning, errors[],
     belief_state_tag                                  # inform only, not saved (the
                                                       # trajectory step has it)
 
@@ -45,35 +43,35 @@ first, nested detail last::
 every agent; ``agent_iteration`` is the agent's own counter, whose base and
 meaning differ per agent.
 
-A signal that could not be computed is null, never 0; the reason is in
-``errors`` (or a component is not configured: no encoder, no criteria,
-no qrels).  ``criteria_delta`` is negative when the belief fell.
-``belief_before`` / ``belief_after`` hold one belief status per
-criterion (``types.BELIEF_STATUSES``), in ``criteria`` order; null for a
-criterion without a status (an aggregate, ``types.STATUSLESS_KINDS``).
-``criteria_targeted`` lists the ids of the criteria that a query of the
-step targeted directly (score 1); ``criteria_attempts_after`` is, per
-criterion, the number of steps that targeted it so far.  When the targeting
-scorer fails, ``criteria_targeted`` is null and the attempts are unchanged;
-both are null when it is not configured.
-``criteria_sources_after`` is, per criterion, its distinct supporting
-documents so far (null without a criteria state).
-``candidates_before`` / ``candidates_after`` hold, per criterion, its
-answer candidates (``[{value, status}]``, the answers the agent considers
-for it, ``BeliefState.candidates``), read from this step's ``agent_turn``
-(the agent's reasoning and queries of the iteration,
-``agent_turn.agent_turn_text``); ``candidate_updates`` has one ``{id,
-before, after, written, reason, note}`` per criterion whose list the call
-rewrote (``BeliefState.revise``); ``reasoning_confidence`` is R, the mean
-over the criteria of their top candidate's probability
-(``types.candidate_probability``), rest criteria left out
-(``types.REASONING_KINDS_EXCLUDED``).  The answer turn is read in the meta
-line's ``final_update``.  A query without candidates (multi-aspect) has
-empty lists.
-``criteria_updates`` has one ``{id, from, to, written, support[],
-contradict[], reason, note}`` per criterion (``BeliefState.update``);
-``belief_updater_output`` is the updater's raw reply (null when it was not
-called or its call raised).
+A value that could not be computed is null, never 0; the reason is in
+``errors`` (or a component is not configured: no criteria, no qrels).
+``docs`` is, per document of the step, ``{doc_id, seen_before}`` (its id
+was shown in an earlier step); ``num_new_docs`` counts the others.
+``nuggets_after`` holds, per criterion in ``criteria`` order, its nuggets
+after the step (``[{value, status, evidence}]``: an answer, how likely it
+is correct on the seven-word scale ``types.BELIEF_STATUSES``, and its
+sources, each ``{label, stance, value, [spans]}``, "d<n>" a document,
+"t<step>" the agent's turn); the nuggets before the step are the
+previous step's.
+``criteria_sources_after`` is, per criterion, its distinct documents
+that support one of its nuggets' values.
+``passages`` are the documents shown to the update call (``{label,
+doc_id}``; a document is labelled when first shown).
+``think_observations`` / ``doc_observations`` are the observations the
+call wrote this step (``{id, label, step, stance, value, [doc_id, spans,
+span_verified], grounded, note}``; only grounded ones with an empty note
+entered the belief), null when the call was not made or failed;
+``nugget_updates`` has one ``{id, written, after, reason, note, issues,
+[carried]}`` per criterion with a new observation; the raw reply is ``belief_output``.
+``agent_turn`` is the agent's reasoning and queries of the iteration
+(``agent_turn.agent_turn_text``).
+``certainty`` is the certainty score s_t of the belief after the step
+(``certainty.certainty``: the geometric mean over the criteria of their
+most likely nugget's probability, rest and aggregate criteria left out);
+null without criteria.  The answer turn is read in the meta line's
+``final_update``; the meta line's ``final_certainty`` is s_T after it,
+the answer criterion of a multi-hop query scored by the nugget of the
+agent's answer.
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
 ``ok``, ``no_candidate`` (``[]``), ``unparsed`` (reply without answer
@@ -84,22 +82,13 @@ configured, e.g. ``--add-intermediate-answer false``).
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-# unique_docs is re-exported here for belief model training.
-from utils.text_utils import unique_docs  # noqa: F401
+# unique_docs is also imported from here by belief model training.
+from utils.text_utils import doc_id as _doc_id, unique_docs
 
 from .belief_state import render_belief_state
 from .criteria import CriteriaSource
-from .judges import LLMBeliefUpdater, LLMQueryScorer
-from .signals import (
-    AnswerFn,
-    BeliefUpdateSignal,
-    CriteriaTargetingSignal,
-    DocNoveltySignal,
-    EncodeFn,
-    IntermediateAnswerSignal,
-    RetrievalGainSignal,
-    QueryNoveltySignal,
-)
+from .updater import LLMBeliefUpdater
+from .signals import AnswerFn, BeliefUpdateSignal, IntermediateAnswerSignal, RetrievalGainSignal
 from .types import Criterion
 
 logger = logging.getLogger(__name__)
@@ -110,21 +99,17 @@ def _round(value: Optional[float], ndigits: int = 4) -> Optional[float]:
 
 
 class BeliefModel:
-    """Computes and stores the per-step signals of one sample at a time.
+    """Computes and stores the per-step belief of one sample at a time.
 
     Args:
         criteria_source: Produces the fixed criteria list at ``reset``.  None
-            disables the belief and the criteria-based signals.
-        belief_updater: Stateful belief updater (``judges``).  None:
-            b_t, Delta^D and the attempts are null.
-        query_scorer: Targeting scorer of queries vs criteria.  None:
-            the attempts are null.
-        encode_fn: ``(texts, is_query) -> np.ndarray`` from the retriever
-            (``encode_fn_from_retriever``).  None: nu^q is null.
+            disables the belief.
+        belief_updater: The belief update call
+            (``updater.LLMBeliefUpdater``).  None: b_t is null.
         qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
             new-item precision and the recall so far.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
-            asked every step, its answers are saved (extra, not in x_t).
+            asked every step, its answers are saved (evaluation only).
             None disables the intermediate answer.
         policy_model: Agent name; picks the intermediate answer format.
         inform: Render each step's ``<belief_state>`` tag for the agent to
@@ -135,8 +120,6 @@ class BeliefModel:
         self,
         criteria_source: Optional[CriteriaSource] = None,
         belief_updater: Optional[LLMBeliefUpdater] = None,
-        query_scorer: Optional[LLMQueryScorer] = None,
-        encode_fn: Optional[EncodeFn] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         intermediate_answer_fn: Optional[AnswerFn] = None,
         policy_model: str = "",
@@ -145,11 +128,9 @@ class BeliefModel:
         self.inform = inform
         self._criteria_source = criteria_source
 
-        self._doc_novelty = DocNoveltySignal()
-        self._query_novelty = QueryNoveltySignal(encode_fn)
+        self._seen_ids: Set[str] = set()
         self._retrieval_gain = RetrievalGainSignal(qrels)
         self._belief = BeliefUpdateSignal(belief_updater) if belief_updater is not None else None
-        self._targeting = CriteriaTargetingSignal(query_scorer) if query_scorer is not None else None
         self._intermediate_answer = (
             IntermediateAnswerSignal(intermediate_answer_fn, policy_model)
             if intermediate_answer_fn is not None else None
@@ -168,20 +149,15 @@ class BeliefModel:
     @property
     def unique_doc_ids(self) -> Set[str]:
         """All unique document ids observed in the current sample."""
-        return self._doc_novelty.seen_ids
+        return set(self._seen_ids)
 
     @property
     def _tracks_state(self) -> bool:
         return self._belief is not None and self._belief.active
 
-    @property
-    def _tracks_targeting(self) -> bool:
-        return self._tracks_state and self._targeting is not None
-
     def reset(self, query_id: Optional[str], query: str) -> None:
         """Start a new sample: clear all state and create its criteria list."""
-        self._doc_novelty.reset()
-        self._query_novelty.reset()
+        self._seen_ids.clear()
         self._retrieval_gain.reset(query_id)
         self._step = 0
         self.steps = []
@@ -198,8 +174,6 @@ class BeliefModel:
                         len(self._criteria), [c.text for c in self._criteria])
         if self._belief is not None:
             self._belief.reset(query, self._criteria)
-        if self._targeting is not None:
-            self._targeting.reset(query, self._criteria)
 
     def meta(self) -> Dict[str, Any]:
         """Per-sample information for the meta line of the saved file.  The
@@ -213,41 +187,32 @@ class BeliefModel:
             "num_relevant": self._retrieval_gain.num_relevant,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
-            "final_belief": self._belief.statuses() if self._tracks_state else None,
-            "final_candidates": self._belief.candidates() if self._tracks_state else None,
-            "final_reasoning_confidence": (_round(self._belief.state.reasoning_confidence())
-                                           if self._tracks_state else None),
-            "final_criteria_attempts": self._targeting.attempts if self._tracks_targeting else None,
-            "criteria_evidence": self._belief.state.evidence() if self._tracks_state else None,
+            "final_nuggets": self._belief.nuggets() if self._tracks_state else None,
+            "final_certainty": _round(self._belief.certainty()) if self._tracks_state else None,
             "final_update": self._final_update,
         }
 
     def finish(self, answer_turn: Optional[str]) -> None:
-        """Read the answer candidates of the agent's answer turn
-        (``agent_turn.agent_turn_text`` with the answer); the outcome is the
-        meta line's ``final_update``: ``{agent_turn, candidate_updates,
-        belief_updater_output, errors}``, or null when there is no answer
-        turn or the query has no candidates.  Called once, after the last
-        step."""
-        if not self._tracks_state or answer_turn is None or not self._belief.updater.candidates:
+        """Read the agent's answer turn (``agent_turn.agent_turn_text`` with
+        the answer; its label is "t<last step + 1>"); the outcome is the
+        meta line's ``final_update``: ``{agent_turn, think_observations,
+        nugget_updates, belief_output, errors}``, or null
+        when there is no answer turn.  Called once, after the last step."""
+        if not self._tracks_state or answer_turn is None:
             return
-        errors: List[str] = []
-        revised, raw = [], None
         try:
-            revised, raw, updater_errors = self._belief.finish(self._step + 1, answer_turn)
-            errors.extend(f"belief_update: {e}" for e in updater_errors)
+            out = self._belief.finish(self._step + 1, answer_turn)
         except Exception as e:
             logger.warning("BeliefModel: final belief update failed", exc_info=True)
-            errors.append(f"belief_update: {e}")
-        self._final_update = {"agent_turn": answer_turn, "candidate_updates": revised,
-                              "belief_updater_output": raw, "errors": errors}
+            out = {"think_observations": None, "nugget_updates": [], "belief_output": None,
+                   "errors": [f"belief_update: {e}"]}
+        out = {k: out.get(k) for k in ("think_observations", "nugget_updates", "belief_output", "errors")}
+        self._final_update = {"agent_turn": answer_turn, **out}
 
     def close(self) -> None:
-        """Drop every model and callback reference (encoder, judges, the
-        agent's answer hook) so their GPU memory can be freed."""
-        self._query_novelty.close()
+        """Drop every model and callback reference (the updater, the agent's
+        answer hook) so their GPU memory can be freed."""
         self._belief = None
-        self._targeting = None
         self._intermediate_answer = None
 
     # ------------------------------------------------------------------
@@ -262,8 +227,9 @@ class BeliefModel:
         original_query: str,
         trajectory: Any = None,
         agent_turn: Optional[str] = None,
+        agent_doc_labels: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
-        """Compute the signals of one search iteration and store its record.
+        """Update the belief for one search iteration and store its record.
 
         Args:
             subqueries: The iteration's search queries.
@@ -274,60 +240,34 @@ class BeliefModel:
             trajectory: The agent's conversation so far, for the
                 intermediate answer.
             agent_turn: The agent's turn of the iteration
-                (``agent_turn.agent_turn_text``); the answer candidates are
+                (``agent_turn.agent_turn_text``); the turn observations are
                 read from it.  None: no turn to read.
+            agent_doc_labels: Document id -> the label the agent shows the
+                passage with (an agent that labels passages itself); the
+                inform tag cites documents with these labels.
         """
         self._step += 1
         subqueries = [q.strip() for q in subqueries if q and q.strip()]
         errors: List[str] = []
 
         tracks_state = self._tracks_state
-        state_before = self._belief.statuses() if tracks_state else None
-        candidates_before = self._belief.candidates() if tracks_state else None
 
-        # --- a: targeting state (the scorer sees b_{t-1}) -----------------------
-        criteria_targeted, attempts_after, per_target = None, None, []
-        if self._tracks_targeting:
-            try:
-                criteria_targeted, per_target = self._targeting.score(subqueries, self._belief.state)
-            except Exception as e:
-                logger.warning("BeliefModel: criteria targeting failed", exc_info=True)
-                errors.append(f"criteria_targeting: {e}")
-            attempts_after = self._targeting.attempts
-
-        # --- nu^q -------------------------------------------------------------
-        query_novelty, per_query = None, [{"text": q} for q in subqueries]
-        try:
-            query_novelty, per_query = self._query_novelty.score(subqueries)
-        except Exception as e:
-            logger.warning("BeliefModel: query novelty failed", exc_info=True)
-            errors.append(f"query_novelty: {e}")
-        for j, entry in enumerate(per_query):
-            entry.update(per_target[j] if j < len(per_target) else {"target_scores": None})
-
-        # --- nu^D -------------------------------------------------------------
-        doc_novelty, per_doc = None, []
-        try:
-            doc_novelty, per_doc = self._doc_novelty.score(docs)
-        except Exception as e:
-            logger.warning("BeliefModel: doc novelty failed", exc_info=True)
-            errors.append(f"doc_novelty: {e}")
+        per_doc = []
+        for d in unique_docs(docs):
+            i = _doc_id(d)
+            per_doc.append({"doc_id": i, "seen_before": i in self._seen_ids})
+        self._seen_ids.update(d["doc_id"] for d in per_doc if d["doc_id"])
         new_ids = [d["doc_id"] for d in per_doc if not d["seen_before"]]
 
-        # --- b_t and Delta^D (the documents not judged in earlier steps) --------
-        criteria_delta, updates, revised, updater_output = None, None, None, None
-        state_after, candidates_after = state_before, candidates_before
+        # --- b_t (the documents not judged in earlier steps, the turn) ----------
+        update: Dict[str, Any] = {}
         if tracks_state:
             try:
-                criteria_delta, updates, revised, updater_output, updater_errors = self._belief.score(
-                    unique_docs(docs), self._step, agent_turn,
-                )
-                errors.extend(f"belief_update: {e}" for e in updater_errors)
+                update = self._belief.score(unique_docs(docs), self._step, agent_turn)
             except Exception as e:
                 logger.warning("BeliefModel: belief update failed", exc_info=True)
                 errors.append(f"belief_update: {e}")
-            state_after = self._belief.statuses()
-            candidates_after = self._belief.candidates()
+            errors.extend(update.pop("errors", []))
 
         # --- Retrieval gain (extra) ---------------------------------------------
         try:
@@ -351,36 +291,30 @@ class BeliefModel:
                 errors.append(f"intermediate_answer: {e}")
                 intermediate_answer_status = "failed"
 
+        state = self._belief.state if tracks_state else None
         record: Dict[str, Any] = {
             "iteration": self._step,
             "agent_iteration": iter_num,
             "num_subqueries": len(subqueries),
             "num_docs": len(per_doc),
             "num_new_docs": len(new_ids),
-            "doc_novelty": _round(doc_novelty),
-            "criteria_delta": criteria_delta,
-            "query_novelty": _round(query_novelty),
             **gain,
-            "reasoning_confidence": _round(self._belief.state.reasoning_confidence()) if tracks_state else None,
+            "certainty": _round(self._belief.certainty()) if state is not None else None,
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
-            "queries": per_query,
             "docs": per_doc,
-            "belief_before": state_before,
-            "belief_after": state_after,
-            "criteria_sources_after": self._belief.state.sources() if tracks_state else None,
-            "candidates_before": candidates_before,
-            "candidates_after": candidates_after,
-            "criteria_targeted": criteria_targeted,
-            "criteria_attempts_after": attempts_after,
-            "criteria_updates": updates,
-            "candidate_updates": revised,
+            "nuggets_after": state.nugget_lists() if state is not None else None,
+            "criteria_sources_after": state.sources() if state is not None else None,
+            "passages": update.get("passages") if tracks_state else None,
+            "think_observations": update.get("think_observations"),
+            "doc_observations": update.get("doc_observations"),
+            "nugget_updates": update.get("nugget_updates") if tracks_state else None,
             "agent_turn": agent_turn,
-            "belief_updater_output": updater_output,
+            "belief_output": update.get("belief_output"),
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,
             "errors": errors,
         }
         if self.inform:
-            record["belief_state_tag"] = render_belief_state(record, self._criteria)
+            record["belief_state_tag"] = render_belief_state(record, state, agent_doc_labels)
         self.steps.append(record)
         return record

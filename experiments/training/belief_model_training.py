@@ -1,20 +1,23 @@
 """Train the belief model with the agent frozen.
 
 Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model is
-trained, here with the agent frozen.  It is one model with two calls: init
-f(query) -> the criteria, then every step the update
-b_t = f(query, b_{t-1}, o_t) -> their statuses (retriever side) and whether
-the agent's turn used what raised them (reasoner side).  Training uses only
-the queries with gold criteria (each query's ``split`` in the pool's
-queries file).  One
-phase per call (``--phase N``):
+trained, here with the agent frozen.  The trained call is the belief
+update, one per step, b_t = f(query, b_{t-1}, agent turn t, new passages)
+-> the observations of the turn and the passages and the nuggets of the
+criteria they touch, on the pool's gold criteria (the criteria init is not
+trained).  It is rewarded over whole trajectories: valid observations,
+a valid conversion into nuggets, calibrated nuggets, and the certainty
+score of the final belief against the correctness of the agent's answer.
+Training uses only the queries with the full gold annotation (each query's
+``split`` in the pool's queries file).  One phase per call (``--phase N``):
 
     1  dra_inference with the frozen agent on     run_outputs/ (dra_inference layout)
        one split of the training pool (--split):
        sft and val in monitor mode with the
        teacher belief model, rl in off mode
-    2  SFT warm-up of the student (LoRA, merged)  phase2_sft/
-       on the teacher's replies (sft, val runs)
+    2  teacher scores, SFT warm-up of the student phase2_sft/
+       (LoRA, merged) on the teacher's replies
+       (sft, val runs)
     3  RL of the student (GRPO on its whole       phase3_rl/
        belief chains, Agent-BRACE PPO update; rl
        run, validation on the val run)

@@ -1,0 +1,11 @@
+---single_target---
+The response to this query is a short answer: the one entity or value that the query describes by conditions or clues. Every criterion is one condition or clue on the answer; an answer of a criterion is an entity or value that meets it.
+
+---multi_hop---
+The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every criterion is one entity on the chain (a hop), described by its relations to the entities before it; an answer of a criterion is an entity that fits that description, and an answer of the last criterion is an answer to the query.
+
+---set---
+The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members. The criteria are one criterion per known member, "<member>: <property>", whose answer is the member's value; then "any other member: <property>", whose answers are the members without a criterion of their own, each written "<member>: <value>"; then how the answer follows from the members' values, whose answer the agent computes and no document states.
+
+---multi_aspect---
+The response to this query is a report that covers several aspects of a topic. Every criterion is one aspect; its answers are the specific facts on it, such as figures, named cases, findings or measures, each written as one short statement, within the limits the criterion's wording sets: a period, place, group, or what a "..., not ..." leaves out. A mere mention of the topic is no answer.

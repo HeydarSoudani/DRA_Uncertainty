@@ -13,7 +13,8 @@ Each iteration, on one GPU shared by the vLLM engine and the trainer:
               gold criteria; a group whose chains all score alike gives no
               gradient and is replaced, up to REFILL_ROUNDS more rollouts
               (DAPO's dynamic sampling)
-    reward    per chain (rewards.Reward): R = w * sum_k r_step_k + r_final
+    reward    per chain (rewards.Reward): R = w_obs obs + w_cons cons + w_cal cal
+              + w_final r_final (per-step parts averaged over the calls)
     update    GDPO advantages per chain (each term normalized within its
               group), given to every call of the chain -> engine.sleep ->
               trainer.onload -> PPO on all the calls -> save to sync_dir ->
@@ -23,7 +24,8 @@ Validation, before training and every ``val_every`` iterations: one greedy
 chain per val episode (a fixed sample), scored as in training.  ``final/``
 holds the checkpoint with the best mean validation reward (the start model
 when none beats it).  Each record holds the mean reward, its terms and
-``scoring.measures`` over the calls.
+``scoring.measures`` over the calls and final beliefs (the certainty score
+against correctness included).
 
 Outputs (``phase3_rl/``): ``metrics.jsonl`` (one line per iteration),
 ``validation.jsonl`` (one line per validation), ``step_{n}/`` every
@@ -43,16 +45,16 @@ from typing import Any, Dict, List, Optional
 from .config import RunPaths, TrainingConfig
 from .env import Chain, EpisodeSampler, run_chains
 from .episodes import DocumentStore, Episode
-from .rewards import TERMS, Reward, candidate_values
+from .rewards import TERMS, Reward
 from .rollout import VLLMRolloutEngine
-from .runs import candidate_gold, check_same_settings, load_episodes
-from .scoring import measures
+from .runs import check_same_settings, load_episodes, nugget_gold
+from .scoring import chain_values, measures
 from .sft import load_processor
 from .trainer import BeliefPPOTrainer, group_advantages
 
 # Extra rollouts per iteration to replace the groups without spread.
 REFILL_ROUNDS = 2
-LOGGED = ("format", "ret", "reas", "final")
+LOGGED = ("format",)
 
 
 def _mean(values: List[Optional[float]]) -> Optional[float]:
@@ -61,16 +63,19 @@ def _mean(values: List[Optional[float]]) -> Optional[float]:
 
 
 def score_chains(chains: List[Chain], reward_fn: Reward) -> List[Dict[str, Any]]:
-    """The reward of each chain, after the gold of all their candidates is
+    """The reward of each chain, after the gold of all their values is
     resolved in one batch."""
-    reward_fn.gold.resolve([v for c in chains for v in candidate_values(c.episode, [cc.outcome for cc in c.calls])])
+    reward_fn.gold.resolve([v for c in chains
+                            for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.nuggets)])
     return [reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
-                      [cc.finish_reason for cc in c.calls], c.statuses, c.candidates) for c in chains]
+                      [cc.finish_reason for cc in c.calls], c.nuggets, c.answer_label) for c in chains]
 
 
 def score_stats(scores: List[Dict[str, Any]], prefix: str = "") -> Dict[str, Any]:
-    """Mean reward and mean of each logged term (over the chains where it applies)."""
+    """Mean reward, mean of each term and of the logged values (over the
+    chains where they apply)."""
     out = {f"{prefix}reward": _mean([s["reward"] for s in scores])}
+    out.update({f"{prefix}{k}": _mean([s["terms"][k] for s in scores]) for k in TERMS})
     out.update({f"{prefix}{k}": _mean([s[k] for s in scores]) for k in LOGGED})
     return out
 
@@ -91,16 +96,16 @@ def rollout_stats(chains: List[Chain]) -> Dict[str, Any]:
 
 def _has_spread(scores: List[Dict[str, Any]]) -> bool:
     """Some term differs between the chains of a group."""
-    return any(len({round(s["terms"][k], 12) for s in scores}) > 1 for k in TERMS)
+    return any(len({round(s["terms"][k], 12) for s in scores if s["terms"][k] is not None}) > 1 for k in TERMS)
 
 
-def validate_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRolloutEngine, max_new_tokens: int,
+def validate_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRolloutEngine,
                     reward_fn: Reward) -> Dict[str, Any]:
     """One greedy chain per episode, scored."""
-    chains = run_chains(episodes, store, engine, group_size=1, temperature=0.0, max_new_tokens=max_new_tokens)
+    chains = run_chains(episodes, store, engine, group_size=1, temperature=0.0)
     scores = score_chains(chains, reward_fn)
     return {"episodes": len(episodes), **rollout_stats(chains), **score_stats(scores),
-            **measures([row for s in scores for row in s["rows"]])}
+            **measures([row for s in scores for row in s["rows"]], [s["final"] for s in scores])}
 
 
 def _round(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,7 +141,7 @@ def start_over(paths: RunPaths, sync_dir: Path) -> None:
 
 def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     rc = cfg.rl
-    reward_fn = Reward(rc, candidate_gold(cfg))
+    reward_fn = Reward(rc, nugget_gold(cfg))
     check_same_settings(cfg, ["rl", "val"])
     episodes = [ep for ep in load_episodes(cfg, "rl", teacher=False, tag="[phase 3]") if ep.steps]
     if not episodes:
@@ -148,7 +153,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     init = rc.init_belief_model or str(paths.sft_merged)
     print(f"[phase 3] {len(episodes)} rl episodes, {len(val_episodes)} validation episodes; student {init}; "
           f"{rc.num_iterations} iterations of {rc.episodes_per_batch} episodes x {rc.group_size} chains; "
-          f"reward w {rc.reward_weight_step}")
+          f"reward weights {reward_fn.weights}")
 
     store = DocumentStore()
     sampler = EpisodeSampler(episodes, rng)
@@ -164,7 +169,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
     def validate(it: int) -> Optional[float]:
         if not val_episodes:
             return None
-        record = {"iteration": it, **validate_chains(val_episodes, store, engine, rc.max_new_tokens, reward_fn)}
+        record = {"iteration": it, **validate_chains(val_episodes, store, engine, reward_fn)}
         _log(paths.rl_validation, record)
         print(f"[phase 3] validation {json.dumps(_round(record))}", flush=True)
         return record["reward"]
@@ -181,10 +186,13 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
         kept: List[Chain] = []
         kept_scores: List[Dict[str, Any]] = []
         n_groups = skipped = rounds = 0
+        # Episodes drawn in this iteration: a refill draws new ones.
+        drawn: set = set()
         for rounds in range(1, REFILL_ROUNDS + 2):
-            batch = sampler.sample(rc.episodes_per_batch - n_groups)
-            chains = run_chains(batch, store, engine, group_size=rc.group_size, temperature=rc.temperature,
-                                max_new_tokens=rc.max_new_tokens)
+            batch = sampler.sample(rc.episodes_per_batch - n_groups, exclude=drawn)
+            if not batch:
+                break
+            chains = run_chains(batch, store, engine, group_size=rc.group_size, temperature=rc.temperature)
             scores = score_chains(chains, reward_fn)
             generated += chains
             all_scores += scores

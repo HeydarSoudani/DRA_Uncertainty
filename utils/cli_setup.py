@@ -67,7 +67,6 @@ FILE_BACKED_DEFAULTS = {
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
     "belief_judge_model": "",
-    "query_scorer_model": "",
     "criteria_source": "gold",
     "add_intermediate_answer": False,
     # Evaluation
@@ -304,7 +303,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["llm_criteria"] = args.llm_criteria
     pipeline_kwargs["max_criteria"] = args.max_criteria
     pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
-    pipeline_kwargs["query_scorer_model"] = args.query_scorer_model
     pipeline_kwargs["criteria_source"] = args.criteria_source
     pipeline_kwargs["add_intermediate_answer"] = args.add_intermediate_answer
 
@@ -342,7 +340,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "llm_criteria":                  args.llm_criteria,
         "max_criteria":                  args.max_criteria,
         "belief_judge_model":            args.belief_judge_model,
-        "query_scorer_model":            args.query_scorer_model,
         "add_intermediate_answer":       args.add_intermediate_answer,
         "quiet":                         args.quiet,
     }

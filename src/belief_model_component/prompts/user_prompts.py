@@ -34,53 +34,31 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
     return CRITERIA_INIT_USER_TEMPLATE.format(query=query, instruction=instruction)
 
 
-CRITERIA_UPDATE_USER_TEMPLATE = """\
+# The belief update (``updater``): every criterion as "c1 (one answer):
+# <text>" with its current belief (``belief_state.format_belief``), the
+# agent's turn labelled with its step, then the new passages labelled
+# "d<n>"; a missing turn or no passage reads ``NO_TEXT``.
+BELIEF_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current status{candidates}:
-{belief}
+Criteria, with their current belief:
+{criteria}
 
-{agent_turn}New passages:
-{passages}
-
-{instruction}\
-"""
-
-# The agent's turn of the step, before the passages; left out (empty) for a
-# query without answer candidates (multi-aspect) or a call without a turn.
-CRITERIA_UPDATE_TURN_TEMPLATE = """\
-The agent's latest turn:
+The agent's turn [{turn_label}]:
 <agent_turn>
 {agent_turn}
 </agent_turn>
 
+New passages:
+{passages}
+
+Record what the agent's turn and the new passages state about the answers of the criteria, then write the new belief of every criterion with a new observation.\
 """
 
-# The passages section of a call with an agent turn and no new passage.
-CRITERIA_UPDATE_NO_PASSAGES = "(none)"
+NO_TEXT = "(none)"
 
-CRITERIA_UPDATE_INSTRUCTION = (
-    "Decide which criteria each new passage supports, contradicts or relates to, if any, and give their new status."
-)
-CRITERIA_UPDATE_CANDIDATES_INSTRUCTION = (
-    " Then give the new answer candidates of each criterion whose candidates change."
-)
-
-# One passage of the belief updater's user message.
-CRITERIA_UPDATE_PASSAGE_TEMPLATE = "<passage {n}>\n{text}\n</passage {n}>"
-
-QUERY_TARGETING_USER_TEMPLATE = """\
-Query: {query}
-
-Criteria, with their current status and what the search has found so far:
-{criteria}
-
-Search queries:
-{subqueries}
-
-Score how strongly each search query targets each criterion.\
-"""
-
+# One passage of the belief update's user message.
+PASSAGE_TEMPLATE = "<passage {label}>\n{text}\n</passage {label}>"
 
 # Intermediate answer: a user message appended to the agent's conversation at
 # the end of every turn (the agent keeps its own system prompt). The model gives

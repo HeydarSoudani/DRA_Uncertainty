@@ -2,10 +2,9 @@
 
 The report (Section "Instantiation") replaces the hidden state with a fixed
 per-query criteria list C = {c_1, ..., c_K}; the belief state b_t gives each
-criterion a status from Agent-BRACE's seven-level belief scale
-(``types.BELIEF_STATUSES``).  Every step the belief updater updates the
-criteria that the step's new documents support, contradict or relate to (a
-status can move up or down); the other criteria keep their status.
+criterion its nuggets: the answers the documents and the agent's turns
+give for it, each with a status from Agent-BRACE's seven-level belief
+scale (``types.BELIEF_STATUSES``) and the sources it rests on.
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` derives the criteria from the query;
@@ -25,7 +24,7 @@ question or a report request, ``layout.extraction_kind``) or from the
 dataset's annotation; silver when an LLM extracts structure the question
 does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
 records the kind as ``criteria_kind``.
-- ``BeliefState``: b_t and the evidence attached to each criterion.
+- ``BeliefState``: b_t, per criterion its nuggets with their evidence.
 
 Each criterion is closed (one fact) or, in a report request, an aspect of
 the topic.  A set query lists its members as closed criteria, then a rest
@@ -35,7 +34,7 @@ members' values, as in the gold criteria of the training pools.  The kind
 follows from the dataset's query shape and the criterion's position
 (``_kinds``); the extractor only lists the criteria.
 
-The belief updater and the query scorer are in ``judges``.
+The belief update call is in ``updater``.
 """
 
 import fcntl
@@ -47,16 +46,16 @@ import re
 import threading
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILVER_CRITERIA
 from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .types import (
-    AGGREGATE, ASPECT, CLOSED, MAX_CANDIDATES, MULTI_ASPECT, QUERY_SHAPES, REASONING_KINDS_EXCLUDED, REST,
-    REST_PAIR, SET, STATUSLESS_KINDS, Candidate, CandidateUpdate, Criterion, CriterionUpdate, Evidence,
-    candidate_probability, initial_status,
+    AGGREGATE, ASPECT, CLOSED, DOC, MAX_NUGGETS, MULTI_ASPECT, NO_DOC_KINDS, QUERY_SHAPES, REST, REST_PAIR, SET,
+    SUPPORTS, Criterion, Evidence, Nugget, NuggetUpdate, Observation, alnum, alnum_index, same_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,12 +237,6 @@ class LLMCriteriaSource(CriteriaSource):
             {"role": "system", "content": self._system},
             {"role": "user", "content": criteria_init_user(self._shape, query, self._max_criteria)},
         ]
-
-    @staticmethod
-    def target(criteria: List[Criterion]) -> str:
-        """The reply that parses to *criteria*, in the format the prompt asks
-        for (the SFT target of belief model training)."""
-        return json.dumps({"criteria": [c.text for c in criteria]}, ensure_ascii=False)
 
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
         try:
@@ -534,8 +527,9 @@ class FallbackCriteriaSource(CriteriaSource):
 # Belief state
 # ---------------------------------------------------------------------------
 
-def _alnum(text: str) -> str:
-    return "".join(ch for ch in text.lower() if ch.isalnum())
+# The letters-and-digits index of the agent's turns, kept for the few turns
+# a call anchors against (every think observation of a call reads one turn).
+_turn_index = lru_cache(maxsize=8)(alnum_index)
 
 
 # A value whose letters and digits are this short, or only digits, must
@@ -554,18 +548,12 @@ def anchor(value: str, turns: List[str]) -> Optional[str]:
     punctuation ignored, so "12,388" matches "12388"), from the latest turn
     that has it, or None.  A short or numeric value (``SHORT_VALUE_CHARS``)
     matches only whole words or numbers."""
-    target = _alnum(value)
+    target = alnum(value)
     if not target:
         return None
     whole = len(target) <= SHORT_VALUE_CHARS or target.isdigit()
     for turn in reversed(turns):
-        keys, pos = [], []
-        for i, ch in enumerate(turn):
-            for k in ch.lower():
-                if k.isalnum():
-                    keys.append(k)
-                    pos.append(i)
-        joined = "".join(keys)
+        joined, pos = _turn_index(turn)
         j = joined.find(target)
         while j >= 0:
             start, end = pos[j], pos[j + len(target) - 1] + 1
@@ -575,216 +563,265 @@ def anchor(value: str, turns: List[str]) -> Optional[str]:
     return None
 
 
-def anchor_candidate(value: str, kind: str, turns: List[str]) -> Optional[str]:
-    """The candidate *value* as the agent's turns write it (``anchor``), or
-    None.  A rest candidate "<member>: <value>" (``REST_PAIR``) is anchored
-    part by part, since the agent need not write the two together."""
+def anchor_value(value: str, kind: str, turns: List[str]) -> Optional[str]:
+    """*value* as the agent's *turns* write it (``anchor``), or None.  A
+    rest value "<member>: <value>" (``REST_PAIR``) is anchored part by
+    part, since the agent need not write the two together."""
     if kind == REST and REST_PAIR in value:
         member, val = (anchor(part.strip(), turns) for part in value.split(REST_PAIR, 1))
         return f"{member}{REST_PAIR}{val}" if member is not None and val is not None else None
     return anchor(value, turns)
 
 
+# Notes of an observation record (``BeliefState.apply``); an empty note:
+# the observation entered the belief.
+NOTE_UNKNOWN_CRITERION = "unknown criterion id"
+NOTE_NOT_NEW_PASSAGE = "no new passage of the call has this label"
+NOTE_NO_DOC_KIND = "the criterion is computed: no document observation"
+NOTE_NO_SPAN = "no verified span"
+NOTE_NOT_IN_TURN = "value not in the agent's turn"
+NOTE_REPEATED = "repeated observation"
+
+# Issues of a nugget update record (``BeliefState.apply``).
+ISSUE_UNKNOWN_CRITERION = "unknown_criterion"
+ISSUE_NO_NEW_OBSERVATION = "no_new_observation"
+ISSUE_DUPLICATE_UPDATE = "duplicate_update"
+ISSUE_NOT_IN_REPLY = "not_in_reply"
+ISSUE_UNKNOWN_VALUE = "unknown_value"
+ISSUE_NO_STATUS = "no_status"
+ISSUE_REPEATED_VALUE = "repeated_value"
+ISSUE_OVER_CAP = "over_cap"
+ISSUE_UNKNOWN_EVIDENCE = "unknown_evidence"
+ISSUE_UNOBSERVED_VALUE = "unobserved_value"
+ISSUE_DROPPED_VALUE = "dropped_value"
+ISSUE_NOTES = {
+    ISSUE_UNKNOWN_CRITERION: "unknown criterion id",
+    ISSUE_NO_NEW_OBSERVATION: "criterion without a new observation; ignored",
+    ISSUE_DUPLICATE_UPDATE: "duplicate update",
+    ISSUE_NOT_IN_REPLY: "not in the reply; nuggets kept, new observations left out",
+}
+
+
 class BeliefState:
-    """Belief state b_t: per criterion, its belief status and its evidence
-    (retrieval), and its answer candidates (reasoner).
+    """Belief state b_t: per criterion, its nuggets (the answers, each with
+    a status and its evidence, ``types.Nugget``).  It is self-contained: the
+    nuggets and their evidence (each source's own observation, with a
+    document's verified spans) are all that the next update reads of it.
 
-    b_0 gives every criterion ``INITIAL_STATUS`` (an aggregate criterion,
-    ``STATUSLESS_KINDS``, has no status: None) and no candidate.  Each
-    step the belief updater updates the criteria that the step's new
-    passages support, contradict or relate to, from the current belief and
-    those passages (Agent-BRACE style), and ``update`` takes the statuses as
-    written:
+    Each step, the belief update writes the observations of the agent's
+    turn and of the step's new documents, then the new nuggets of the
+    criteria with a new observation; ``apply`` keeps what is valid:
 
-    - the updater lists only the criteria the step's passages support,
-      contradict or relate to; each listed criterion takes the status it gave;
-    - a criterion the updater left out, or gave no valid status, keeps its
-      status (``note`` says why);
-    - an update of a criterion without a status is ignored, its cited
-      passages too (``note``);
-    - a cited passage is attached only with at least one span that occurs
-      in it verbatim (``Evidence.verified_spans``); the others are dropped.
-      This guards the evidence only, never the status;
-    - a passage already attached to the criterion with the same role is not
-      attached again.
+    - an observation enters only when it is grounded (a document
+      observation with a verified span, a think observation whose value
+      occurs in its turn), names a known criterion and a stance, is not a
+      document observation on a criterion no document states
+      (``NO_DOC_KINDS``), and is not a repeat (same source, stance and
+      value as an observation already in the belief or in this step);
+    - the criteria with a new observation take their new nuggets; the
+      other criteria keep theirs.  A nugget is kept only when its value is
+      the value of one of the criterion's current nuggets or new
+      observations, its status is valid and its value is not repeated, at
+      most ``MAX_NUGGETS[kind]`` per criterion.  Its evidence is, per label
+      it cites, that source's observations on the nugget's value (else all
+      of that source's observations on the criterion: a source that points
+      against it), plus every source with an observation on its value.  A
+      current nugget the reply leaves out (or writes invalidly) is carried
+      over unchanged, with this step's sources on its value, so a faulty
+      reply never erases an answer (noted as ``dropped_value``).
 
-    The updater sees the attached evidence in later steps.
-
-    Answer candidates: the same call reads the agent's turn of the step
-    (``read_turn``) and rewrites the candidate list of each criterion whose
-    candidates the turn changes (``revise``): the answers the agent
-    currently considers for it, from its memory or from the passages, each
-    with a status for how likely it is correct.  A candidate is kept only
-    when its value occurs in an agent turn read so far (``anchor_candidate``)
-    and it
-    has a valid status, at most ``MAX_CANDIDATES[kind]`` per criterion; the
-    other criteria keep their list.
+    Documents get their label ("d<n>") when they are shown
+    (``label_doc``).  Criteria are independent: the nuggets of a criterion
+    never refer to another criterion.
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
-        self.statuses: List[Optional[str]] = [initial_status(c.kind) for c in self.criteria]
-        self._evidence: List[List[Evidence]] = [[] for _ in self.criteria]
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
-        self.candidates: List[List[Candidate]] = [[] for _ in self.criteria]
-        # The agent turns read so far, in order (the candidates' anchors).
-        self.turns: List[str] = []
+        self.nuggets: List[List[Nugget]] = [[] for _ in self.criteria]
+        self._doc_labels: Dict[str, str] = {}
+        self._titles: Dict[str, str] = {}
 
-    def attached(self, k: int, limit: Optional[int] = None) -> List[Evidence]:
-        """Evidence of criterion *k*, oldest first; the last *limit* when set."""
-        items = self._evidence[k]
-        return items[-limit:] if limit else list(items)
+    def index(self, criterion_id: str) -> Optional[int]:
+        return self._index.get(criterion_id)
 
-    def update(self, updates: List[CriterionUpdate]) -> List[Dict[str, Any]]:
-        """Apply the statuses the updater wrote for one step.
+    def label_doc(self, key: str, title: str) -> str:
+        """The label of the document *key* (its id, or a key of its text),
+        new ("d<n>", next number) when it was not shown before."""
+        label = self._doc_labels.get(key)
+        if label is None:
+            label = f"d{len(self._doc_labels) + 1}"
+            self._doc_labels[key] = label
+            self._titles[label] = title
+        return label
 
-        Returns one record per criterion, in criteria order, then one per
-        update with an unknown or repeated id: ``{id, from, to, written,
-        support, contradict, reason, note}``.  ``written`` is the status as
-        the updater wrote it (null when left out); ``from`` and ``to`` are
-        null for a criterion without a status; ``support`` and
-        ``contradict`` are the passages as cited, with ``span_verified``.
-        Only the first update of a criterion is used.
-        """
-        first: Dict[int, CriterionUpdate] = {}
+    def doc_titles(self) -> Dict[str, str]:
+        """Per document label, the title line of the document."""
+        return dict(self._titles)
+
+    def doc_keys(self) -> Dict[str, str]:
+        """Per document key (its id, or a key of its text), its label."""
+        return dict(self._doc_labels)
+
+    def entries(self, k: int) -> List[Evidence]:
+        """The distinct evidence of criterion *k*'s nuggets."""
+        out: List[Evidence] = []
+        seen: Set[Tuple[str, str, str]] = set()
+        for n in self.nuggets[k]:
+            for e in n.evidence:
+                key = _entry_key(e)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(e)
+        return out
+
+    def apply(self, think: List[Observation], docs: List[Observation],
+              updates: List[NuggetUpdate]) -> Dict[str, List[Dict[str, Any]]]:
+        """Apply one belief update: the observations of the turn (*think*)
+        and of the documents (*docs*), then the nugget lists (*updates*).
+        Returns ``{think_observations, doc_observations, nugget_updates}``:
+        one record per observation as written (``Observation.to_dict`` with
+        ``grounded`` and ``note``, empty when it entered the belief; the
+        notes are the ``NOTE_*`` constants), then
+        one ``{id, written, after, reason, note, issues, [carried]}`` per criterion with a new
+        observation (``written`` the list as written, ``after`` as kept,
+        ``carried`` the values of the current nuggets carried over unchanged;
+        such a criterion the reply left out keeps its nuggets, and its new
+        observations stay out of the belief), then one per update of an
+        unknown or unchanged criterion, or a repeated update.  ``issues``
+        lists what was wrong with the criterion's update (``ISSUE_*``
+        codes; ``note`` says it in words): also a value of the current
+        belief or a new observation left without a nugget."""
+        new: List[List[Evidence]] = [[] for _ in self.criteria]
+        # Per criterion, the keys of its evidence and of this step's new
+        # entries (built when first needed), for the repeat check.
+        seen: Dict[int, Set[Tuple[str, str, str]]] = {}
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for key, observations in (("think_observations", think), ("doc_observations", docs)):
+            records = []
+            for o in observations:
+                k = self._index.get(o.criterion)
+                note = ""
+                if k is None:
+                    note = NOTE_UNKNOWN_CRITERION
+                elif o.source == DOC and o.doc_id is None:
+                    note = NOTE_NOT_NEW_PASSAGE
+                elif o.source == DOC and self.criteria[k].kind in NO_DOC_KINDS:
+                    note = NOTE_NO_DOC_KIND
+                elif not o.grounded:
+                    note = NOTE_NO_SPAN if o.source == DOC else NOTE_NOT_IN_TURN
+                else:
+                    e = o.evidence()
+                    if k not in seen:
+                        seen[k] = {_entry_key(f) for f in self.entries(k)}
+                    if _entry_key(e) in seen[k]:
+                        note = NOTE_REPEATED
+                    else:
+                        seen[k].add(_entry_key(e))
+                        new[k].append(e)
+                records.append({**o.to_dict(), "grounded": o.grounded, "note": note})
+            out[key] = records
+        changed = [k for k in range(len(self.criteria)) if new[k]]
+
+        first: Dict[int, NuggetUpdate] = {}
         extra: List[Dict[str, Any]] = []
         for u in updates:
             k = self._index.get(u.id)
-            if k is None or k in first:
-                extra.append({
-                    "id": u.id, "from": None, "to": None, "written": u.status,
-                    "support": [e.to_dict() for e in u.support],
-                    "contradict": [e.to_dict() for e in u.contradict],
-                    "reason": u.reason,
-                    "note": "unknown criterion id" if k is None else "duplicate update",
-                })
+            if k is None or k not in changed or k in first:
+                issue = (ISSUE_UNKNOWN_CRITERION if k is None else
+                         ISSUE_NO_NEW_OBSERVATION if k not in changed else ISSUE_DUPLICATE_UPDATE)
+                extra.append({"id": u.id, "written": [n.to_dict() for n in u.nuggets], "after": None,
+                              "reason": u.reason, "note": ISSUE_NOTES[issue], "issues": [issue]})
                 continue
             first[k] = u
 
         records: List[Dict[str, Any]] = []
-        for k, c in enumerate(self.criteria):
+        for k in changed:
+            c = self.criteria[k]
             u = first.get(k)
-            record = {
-                "id": c.id, "from": self.statuses[k], "to": self.statuses[k], "written": None,
-                "support": [], "contradict": [], "reason": "", "note": "",
-            }
-            records.append(record)
             if u is None:
-                record["note"] = "not updated; status kept"
+                records.append({"id": c.id, "written": None, "after": [n.to_dict() for n in self.nuggets[k]],
+                                "reason": "", "note": ISSUE_NOTES[ISSUE_NOT_IN_REPLY],
+                                "issues": [ISSUE_NOT_IN_REPLY]})
                 continue
-            if c.kind in STATUSLESS_KINDS:
-                record.update(written=u.status, reason=u.reason,
-                              note=f"{c.kind} criterion has no status; update ignored")
-                continue
-            record.update(
-                written=u.status, reason=u.reason,
-                support=[e.to_dict() for e in u.support],
-                contradict=[e.to_dict() for e in u.contradict],
-            )
-            notes = []
-            cited = u.support + u.contradict
-            verified = [e for e in cited if e.verified_spans]
-            if len(cited) > len(verified):
-                notes.append(f"{len(cited) - len(verified)} cited passages without a verified span dropped")
-            known = {(e.doc_id, e.role) for e in self._evidence[k]}
-            for e in verified:
-                if (e.doc_id, e.role) not in known:
-                    self._evidence[k].append(e)
-                    known.add((e.doc_id, e.role))
-            if u.status is None:
-                notes.append("no valid status; status kept")
-            else:
-                self.statuses[k] = u.status
-                record["to"] = u.status
-            record["note"] = "; ".join(notes)
-        return records + extra
-
-    def read_turn(self, turn: Optional[str]) -> None:
-        """Add the agent's turn of the step to the candidates' anchors."""
-        if turn and turn.strip():
-            self.turns.append(turn)
-
-    def revise(self, updates: List[CandidateUpdate]) -> List[Dict[str, Any]]:
-        """Apply the candidate lists the updater wrote for one step.
-
-        Returns one record per listed criterion, then one per update with
-        an unknown or repeated id: ``{id, before, after, written, reason,
-        note}``; ``before`` / ``after`` are the lists as kept, ``written``
-        the list as written, each candidate with ``anchored``.  A written
-        candidate is dropped (``note``) when its value occurs in no agent
-        turn read so far, when it has no valid status, when it repeats an
-        earlier value of the list, or beyond the cap of the criterion's kind.
-        Only the first update of a criterion is used.
-        """
-        records: List[Dict[str, Any]] = []
-        seen = set()
-        for u in updates:
-            k = self._index.get(u.id)
-            kind = self.criteria[k].kind if k is not None else CLOSED
-            written = []
-            for c in u.candidates:
-                matched = anchor_candidate(c.value, kind, self.turns)
-                c.anchored = matched is not None
-                c.value = matched or c.value
-                written.append({**c.to_dict(), "anchored": c.anchored})
-            record = {"id": u.id, "before": None, "after": None, "written": written,
-                      "reason": u.reason, "note": ""}
+            pool = self.entries(k) + new[k]
+            known = [n.value for n in self.nuggets[k]] + [e.value for e in new[k]]
+            labels = {e.label for e in pool}
+            cap = MAX_NUGGETS.get(c.kind, 0)
+            kept: List[Nugget] = []
+            notes: List[str] = []
+            issues: List[str] = []
+            for n in u.nuggets:
+                if not any(same_value(v, n.value) for v in known):
+                    notes.append(f"{n.value!r} is no current or observed value; dropped")
+                    issues.append(ISSUE_UNKNOWN_VALUE)
+                    continue
+                if n.status is None:
+                    notes.append(f"{n.value!r} has no valid status; dropped")
+                    issues.append(ISSUE_NO_STATUS)
+                    continue
+                if any(same_value(n.value, m.value) for m in kept):
+                    notes.append(f"{n.value!r} repeated; dropped")
+                    issues.append(ISSUE_REPEATED_VALUE)
+                    continue
+                if len(kept) >= cap:
+                    notes.append(f"{n.value!r} over the cap of {cap}; dropped")
+                    issues.append(ISSUE_OVER_CAP)
+                    continue
+                unknown = [e for e in n.evidence if e not in labels]
+                if unknown:
+                    notes.append(f"{n.value!r}: unknown evidence {unknown} dropped")
+                    issues.append(ISSUE_UNKNOWN_EVIDENCE)
+                chosen = set()
+                for label in dict.fromkeys(e for e in n.evidence if e in labels):
+                    own = [i for i, e in enumerate(pool) if e.label == label and same_value(e.value, n.value)]
+                    chosen.update(own or (i for i, e in enumerate(pool) if e.label == label))
+                chosen.update(i for i, e in enumerate(pool) if same_value(e.value, n.value))
+                kept.append(Nugget(value=n.value, status=n.status, evidence=[pool[i] for i in sorted(chosen)]))
+            # A value is kept when a nugget has it, or cites a source on it
+            # (values that name one answer in other words share a nugget).
+            # A full list (at the cap) may leave the least likely values out.
+            kept_keys = {alnum(v) for n in kept for v in [n.value] + [e.value for e in n.evidence]}
+            full = len(kept) >= cap
+            missing = {} if full else {alnum(e.value): e.value for e in new[k] if alnum(e.value) not in kept_keys}
+            if missing:
+                notes.append(f"observed values without a nugget: {list(missing.values())}")
+                issues.append(ISSUE_UNOBSERVED_VALUE)
+            dropped = [] if full else [n for n in self.nuggets[k] if alnum(n.value) not in kept_keys]
+            carried: List[str] = []
+            if dropped:
+                notes.append(f"values of the current belief without a nugget: {[n.value for n in dropped]}; "
+                             "carried over unchanged")
+                issues.append(ISSUE_DROPPED_VALUE)
+                # The reply never removes an answer: a nugget it left out keeps
+                # its status and evidence (with this step's sources on its value).
+                for n in dropped[:cap - len(kept)]:
+                    seen = {_entry_key(e) for e in n.evidence}
+                    extra_evidence = [e for e in new[k] if same_value(e.value, n.value) and _entry_key(e) not in seen]
+                    kept.append(Nugget(value=n.value, status=n.status, evidence=list(n.evidence) + extra_evidence))
+                    carried.append(n.value)
+            self.nuggets[k] = kept
+            record = {"id": c.id, "written": [n.to_dict() for n in u.nuggets],
+                      "after": [n.to_dict() for n in kept], "reason": u.reason, "note": "; ".join(notes),
+                      "issues": list(dict.fromkeys(issues))}
+            if carried:
+                record["carried"] = carried
             records.append(record)
-            if k is None or k in seen:
-                record["note"] = "unknown criterion id" if k is None else "duplicate update"
-                continue
-            seen.add(k)
-            cap = MAX_CANDIDATES.get(self.criteria[k].kind, 0)
-            kept: List[Candidate] = []
-            notes = []
-            for c in u.candidates:
-                if not c.anchored:
-                    notes.append(f"{c.value!r} not in the agent's turns; dropped")
-                elif c.status is None:
-                    notes.append(f"{c.value!r} has no valid status; dropped")
-                elif any(_alnum(c.value) == _alnum(o.value) for o in kept):
-                    notes.append(f"{c.value!r} repeated; dropped")
-                elif len(kept) >= cap:
-                    notes.append(f"{c.value!r} over the cap of {cap}; dropped")
-                else:
-                    kept.append(c)
-            record["before"] = [c.to_dict() for c in self.candidates[k]]
-            record["after"] = [c.to_dict() for c in kept]
-            record["note"] = "; ".join(notes)
-            self.candidates[k] = kept
-        return records
+        out["nugget_updates"] = records + extra
+        return out
 
-    def candidate_lists(self) -> List[List[Dict[str, Any]]]:
-        """Per criterion, its candidates (``{value, status}``)."""
-        return [[c.to_dict() for c in cands] for cands in self.candidates]
-
-    def reasoning_confidence(self) -> float:
-        """R: the mean over the criteria of the probability of their most
-        likely candidate (``reasoning_confidence``)."""
-        return reasoning_confidence(self.candidate_lists(), [c.kind for c in self.criteria])
+    def nugget_lists(self) -> List[List[Dict[str, Any]]]:
+        """Per criterion, its nuggets (``{value, status, evidence}``)."""
+        return [[n.to_dict() for n in nuggets] for nuggets in self.nuggets]
 
     def sources(self) -> List[int]:
-        """Per criterion, its distinct supporting documents."""
-        return [self.num_sources(k) for k in range(len(self.criteria))]
-
-    def num_sources(self, k: int) -> int:
-        """Distinct documents among the supporting evidence of criterion *k*."""
-        return len({e.doc_id for e in self._evidence[k] if e.role == "support"})
-
-    def evidence(self) -> List[Dict[str, Any]]:
-        """Per criterion, its kind, status and its attached evidence (without
-        text)."""
-        return [
-            {"id": c.id, "kind": c.kind, "status": status, "evidence": [e.to_dict() for e in ev]}
-            for c, status, ev in zip(self.criteria, self.statuses, self._evidence)
-        ]
+        """Per criterion, its distinct documents that support one of its nuggets' values."""
+        return [len({e.label for n in nuggets for e in n.evidence
+                     if e.label.startswith("d") and e.stance == SUPPORTS})
+                for nuggets in self.nuggets]
 
 
-def reasoning_confidence(candidates: List[List[Dict[str, Any]]], kinds: List[str]) -> float:
-    """R of per-criterion candidate lists (``BeliefState.candidate_lists``)
-    of criteria of *kinds*: the mean over the criteria whose kind is not in
-    ``REASONING_KINDS_EXCLUDED`` of their top candidate probability, 0 for a
-    criterion without candidates and for no such criterion."""
-    tops = [max((candidate_probability(c["status"]) for c in cands), default=0.0)
-            for cands, kind in zip(candidates, kinds) if kind not in REASONING_KINDS_EXCLUDED]
-    return sum(tops) / len(tops) if tops else 0.0
+def _entry_key(e: Evidence) -> Tuple[str, str, str]:
+    """What makes an evidence entry one source's one observation: its label,
+    stance and value (letters and digits)."""
+    return e.label, e.stance, alnum(e.value)

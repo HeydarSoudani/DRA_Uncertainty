@@ -14,10 +14,8 @@ of them.  The mode follows the split (``runs.SPLIT_MODE``):
               gold, or silver on trqa_validation), or for a query without
               gold criteria from the teacher's silver ones
               (``--llm-criteria``, through the criteria bank), and the
-              teacher writes the belief updates
-              (statuses and answer candidates), the agent never sees them;
-              the query scorer is frozen (``query_scorer_model`` of the
-              inference config, default the teacher).  Training uses only
+              teacher writes the belief updates (observations and
+              nuggets), the agent never sees them.  Training uses only
               the in-domain queries; the out-of-domain ones are for
               evaluation
     rl        off: no belief model (phase 3 runs the student's chains)

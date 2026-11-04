@@ -5,14 +5,13 @@ merged into full weights for RL).
 The samples come from the monitor runs of phase 1 on the ``sft`` (training)
 and ``val`` (validation) splits (``build_samples``, on the main process,
 written to ``samples.jsonl``).  Only queries with gold criteria are used
-(``runs.load_episodes``).  A sample is one call: an init call (the
-criteria extraction prompt with the query's gold criteria as the target,
-``episodes.teacher_init_call``; only when they parse back) or an updater
-call (the teacher's replies on the gold criteria replayed,
-``episodes.replay_teacher``, the final call on the answer turn included;
-each call within the matched replay that parsed and, with
-``require_verified_spans``, whose cited spans all occur in their passage
-or the agent's turn), in one mixed set, unweighted.
+(``runs.load_episodes``).  A sample is one belief update call: the
+teacher's replies on the gold criteria replayed (``episodes.replay_teacher``,
+the final call on the answer turn included), each call within the matched
+replay that passes the gate (``scoring.format_ok``) and, with
+``require_verified_spans``, whose observations all entered the belief
+(verified spans, values in the agent's turn).  The init call (criteria
+extraction) is not trained: the student runs on the gold criteria.
 The input is the chat-template prompt the inference belief model sends
 (``add_generation_prompt``, native reasoning off, as served by vLLM),
 followed by the teacher's reply and the end-of-turn token: the sequence the
@@ -22,22 +21,21 @@ logits are computed at the reply positions only (a full-vocabulary logit
 row per prompt token would not fit in memory).
 Samples longer than ``shared.max_seq_len`` are dropped.
 
-Validation (the ``val`` samples): the loss on all samples and on the init and update samples separately, after
-every epoch; a checkpoint is saved every epoch and the one with the lowest
-validation loss is merged (``num_epochs`` is an upper bound).  Without
-validation samples the last epoch is merged.
+Validation (the ``val`` samples): the loss after every epoch; a checkpoint
+is saved every epoch and the one with the lowest validation loss is merged
+(``num_epochs`` is an upper bound).  Without validation samples the last
+epoch is merged.
 
 Multi-GPU: launch with ``torchrun --nproc_per_node N`` (data parallel; the
 effective batch is per_device_batch_size x gradient_accumulation_steps x N).
 
 The teacher is scored on the sft and val episodes before training
-(``scoring.assess``: coverage against ``recall_so_far``, its answer
-candidates against the gold intermediate answers, the final confidence
-against correctness),
-so its quality is known: SFT copies its errors.
+(``scoring.assess``: valid observation, valid conversion, nugget
+calibration and the certainty score against correctness, the measures of
+the phase 3 rewards), so its quality is known: SFT copies its errors.
 
 Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, qid,
-dataset, split, call, iteration, messages, completion}),
+dataset, split, iteration, messages, completion}),
 ``teacher_scores.json``, ``checkpoints/`` (LoRA; removed at the start of
 a run), ``adapter/`` and ``merged/`` (full weights, the RL start).
 """
@@ -47,22 +45,21 @@ import io
 import json
 import logging
 import math
-import random
 import shutil
 from collections import Counter
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
 
 from utils.io_utils import read_jsonl, write_jsonl
 
-from .config import RunPaths, TrainingConfig
-from .episodes import DocumentStore, Episode, replay_teacher, teacher_init_call
-from belief_model_component.criteria import GOLD_CRITERIA_MODEL
+from belief_model_component.criteria import NOTE_REPEATED
 
-from .runs import candidate_gold, check_same_settings, load_episodes
-from .scoring import assess
+from .config import RunPaths, TrainingConfig
+from .episodes import DocumentStore, Episode, replay_teacher
+from .runs import check_same_settings, load_episodes, nugget_gold
+from .scoring import assess, format_ok
 
 logger = logging.getLogger(__name__)
 
@@ -124,86 +121,87 @@ class _Collator:
         return {"input_ids": ids, "labels": labels, "attention_mask": mask}
 
 
-def teacher_samples(episode: Episode, store: DocumentStore, teacher: str, require_verified_spans: bool,
-                    counts: Counter) -> List[Dict]:
-    """The SFT samples of one monitor episode; sets its ``replay_steps``,
-    ``replay_error`` and ``shown_doc_ids`` (teacher scores)."""
-    calls, episode.replay_steps, episode.replay_error = replay_teacher(episode, store.docs(episode))
+def _all_grounded(outcome: Dict) -> bool:
+    """Every observation of the call entered the belief or repeats one in
+    it (verified spans, values in the agent's turn)."""
+    obs = (outcome.get("think_observations") or []) + (outcome.get("doc_observations") or [])
+    return all(o.get("note") in ("", NOTE_REPEATED) for o in obs)
+
+
+def teacher_samples(episode: Episode, store: DocumentStore, require_verified_spans: bool,
+                    counts: Counter) -> Tuple[List[Dict], Tuple]:
+    """The SFT samples of one monitor episode and its replay
+    ``(episode, calls, tracker)`` (teacher scores); sets its
+    ``replay_steps`` and ``replay_error``."""
+    calls, episode.replay_steps, episode.replay_error, tracker = replay_teacher(episode, store.docs(episode))
     if episode.replay_error is not None:
         counts["replay_mismatch"] += 1
         logger.warning("[phase 2] %s %s: %s", episode.split.name, episode.qid, episode.replay_error)
     base = {"qid": episode.qid, "dataset": episode.dataset, "split": episode.split.split_id}
     out = []
-    if episode.criteria_model not in (teacher, GOLD_CRITERIA_MODEL):
-        counts["init_not_teacher"] += 1
-    else:
-        init = teacher_init_call(episode)
-        if init["verified"]:
-            out.append({**base, "call": "init", "iteration": 0, "messages": init["messages"],
-                        "completion": init["output"]})
-        else:
-            counts["init_not_reproduced"] += 1
-    for call in calls:
+    for c in calls:
         counts["teacher_calls"] += 1
-        if not call["parsed"]:
-            counts["dropped_unparsed"] += 1
+        if c.output is None:
+            counts["dropped_failed"] += 1
             continue
-        if require_verified_spans and not call["spans_verified"]:
-            counts["dropped_unverified_spans"] += 1
+        if not format_ok(c.outcome, "stop"):
+            counts["dropped_gate"] += 1
             continue
-        out.append({**base, "call": "update", "iteration": call["iteration"], "messages": call["messages"],
-                    "completion": call["output"]})
-    return out
+        if require_verified_spans and not _all_grounded(c.outcome):
+            counts["dropped_ungrounded"] += 1
+            continue
+        out.append({**base, "iteration": c.call.iteration, "messages": c.call.messages, "completion": c.output})
+    return out, (episode, calls, tracker)
 
 
 def build_samples(cfg: TrainingConfig, paths: RunPaths) -> None:
     """``samples.jsonl`` (train: the sft split, val: the val split) and
     ``teacher_scores.json`` from the monitor runs of phase 1."""
     sc = cfg.sft
-    teacher = cfg.trajectories.teacher_belief_model
     check_same_settings(cfg, ["sft", "val"])
     store = DocumentStore()
     rows: List[Dict] = []
     episodes: List[Episode] = []
+    replays: List[Tuple] = []
     for name, set_name in (("sft", "train"), ("val", "val")):
         counts: Counter = Counter()
         for episode in load_episodes(cfg, name, teacher=True, tag="[phase 2]"):
-            samples = teacher_samples(episode, store, teacher, sc.require_verified_spans, counts)
-            counts.update(f"{r['call']}_samples" for r in samples)
+            samples, replay = teacher_samples(episode, store, sc.require_verified_spans, counts)
+            counts["samples"] += len(samples)
             rows += [{"set": set_name, **r} for r in samples]
             episodes.append(episode)
+            replays.append(replay)
         print(f"[phase 2] {name}: {dict(counts)}")
     write_jsonl(paths.sft_samples, rows)
-    scores = assess(episodes, candidate_gold(cfg))
+    scores = assess(episodes, replays, nugget_gold(cfg))
     paths.teacher_scores_file.write_text(json.dumps(scores, indent=2) + "\n")
     print(f"[phase 2] teacher on {len(episodes)} sft + val episodes: "
-          f"{json.dumps({k: round(v, 3) for k, v in scores.items()})}")
+          f"{json.dumps({k: round(v, 3) if isinstance(v, float) else v for k, v in scores.items()})}")
     print(f"[phase 2] wrote {len(rows)} samples to {paths.sft_samples}")
 
 
 def load_samples(tokenizer, rows: List[Dict], max_length: int):
-    """The samples *rows* by call (``init`` / ``update``), tokenized, and the
-    number of those longer than *max_length*, dropped."""
-    out: Dict[str, List[Dict[str, List[int]]]] = {"init": [], "update": []}
+    """The samples *rows*, tokenized, and the number of those longer than
+    *max_length*, dropped."""
+    out: List[Dict[str, List[int]]] = []
     dropped = 0
     for r in rows:
         sample = tokenize_sample(tokenizer, r["messages"], r["completion"])
         if len(sample["input_ids"]) > max_length:
             dropped += 1
             continue
-        out[r.get("call", "update")].append(sample)
+        out.append(sample)
     return out, dropped
 
 
-def _describe(samples: Dict[str, List[Dict[str, List[int]]]], dropped: int, max_length: int) -> str:
-    kept = samples["init"] + samples["update"]
-    if not kept:
+def _describe(samples: List[Dict[str, List[int]]], dropped: int, max_length: int) -> str:
+    if not samples:
         return f"0 ({dropped} longer than {max_length} tokens dropped)"
-    lengths = [len(s["input_ids"]) for s in kept]
-    replies = [sum(t != -100 for t in s["labels"]) for s in kept]
-    return (f"{len(kept)} ({len(samples['init'])} init, {len(samples['update'])} update; "
-            f"{dropped} longer than {max_length} tokens dropped); tokens mean {sum(lengths) / len(kept):.0f}, "
-            f"max {max(lengths)}; reply tokens mean {sum(replies) / len(kept):.0f}, max {max(replies)}")
+    lengths = [len(s["input_ids"]) for s in samples]
+    replies = [sum(t != -100 for t in s["labels"]) for s in samples]
+    return (f"{len(samples)} ({dropped} longer than {max_length} tokens dropped); tokens mean "
+            f"{sum(lengths) / len(samples):.0f}, max {max(lengths)}; reply tokens mean "
+            f"{sum(replies) / len(samples):.0f}, max {max(replies)}")
 
 
 def _quiet_libraries() -> None:
@@ -277,11 +275,9 @@ def run_sft(cfg: TrainingConfig, paths: RunPaths) -> None:
 
     max_len = cfg.shared.max_seq_len
     train, train_dropped = load_samples(tokenizer, [r for r in rows if r["set"] == "train"], max_len)
-    kept = train["init"] + train["update"]
-    random.Random(cfg.shared.seed).shuffle(kept)
     val, val_dropped = load_samples(tokenizer, [r for r in rows if r["set"] == "val"], max_len)
-    # Loss on all validation samples (selects the checkpoint) and per call.
-    eval_sets = {"all": val["init"] + val["update"], **{c: v for c, v in val.items() if v}} if any(val.values()) else None
+    # Loss on the validation samples (selects the checkpoint).
+    eval_sets = {"all": val} if val else None
 
     _quiet_libraries()
     model = load_student(sc.student_belief_model)
@@ -292,7 +288,7 @@ def run_sft(cfg: TrainingConfig, paths: RunPaths) -> None:
     ))
 
     batch = sc.per_device_batch_size * sc.gradient_accumulation_steps * state.num_processes
-    steps = math.ceil(len(kept) / batch) * sc.num_epochs
+    steps = math.ceil(len(train) / batch) * sc.num_epochs
     if state.is_main_process:
         trainable, total = model.get_nb_trainable_parameters()
         print("\n".join([
@@ -333,7 +329,7 @@ def run_sft(cfg: TrainingConfig, paths: RunPaths) -> None:
         seed=cfg.shared.seed,
     )
     trainer = _completion_trainer(Trainer)(
-        model=model, args=args, train_dataset=kept, eval_dataset=eval_sets,
+        model=model, args=args, train_dataset=train, eval_dataset=eval_sets,
         data_collator=_Collator(tokenizer.pad_token_id), processing_class=tokenizer,
     )
     trainer.train()

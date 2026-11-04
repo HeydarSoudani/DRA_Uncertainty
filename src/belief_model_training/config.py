@@ -55,9 +55,8 @@ class SharedConfig:
     # Root of the training runs; null = OUTPUT_ROOT/belief_model_training.
     output_root: Optional[str] = None
     seed: int = 0
-    # Agent, retriever, belief model and query scorer settings of the
-    # inference runs in phase 1 (max_iteration, seen_top_k, ...): never
-    # repeated here.  Its
+    # Agent, retriever and belief model settings of the inference runs in
+    # phase 1 (max_iteration, seen_top_k, ...): never repeated here.  Its
     # ``output`` is where phases 2 and 3 find the runs (null = OUTPUT_ROOT).
     inference_config: str = "experiments/configs/dra_inference.yaml"
     retriever: str = "qwen3_emb_4b"
@@ -125,12 +124,18 @@ class RLConfig:
     # Episodes per iteration, and chains per episode (GRPO group).
     episodes_per_batch: int = 16
     group_size: int = 8
-    # w of R = w * sum_k (r_ret_k + r_reas_k) + r_final (rewards.py).
-    reward_weight_step: float = 1.0
+    # Weights of R = w_obs obs + w_cons cons + w_cal cal + w_final r_final
+    # (rewards.py): valid observation, valid conversion, calibration of the
+    # nuggets (each averaged over the chain's calls) and the certainty score
+    # of the final belief against correctness.
+    reward_weight_obs: float = 1.0
+    reward_weight_cons: float = 1.0
+    reward_weight_cal: float = 1.0
+    reward_weight_final: float = 1.0
     # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
     adv_std_floor: float = 0.05
-    # Judge of the gold of the reasoner side (answer candidates and agent
-    # turns) without a string match (candidate_gold.py; the correctness
+    # Judge of the gold of the belief (values of observations and nuggets,
+    # agent turns) without a string match (nugget_gold.py; the correctness
     # judge); null = matching only.
     answer_judge_model: Optional[str] = "openrouter/qwen/qwen3-32b"
     # Validation every val_every iterations on at most val_max_episodes val
@@ -152,8 +157,6 @@ class RLConfig:
     kl_loss_coef: float = 0.001
     kl_loss_type: str = "low_var_kl"
     temperature: float = 1.0
-    # The inference updater's max_tokens (LLMBeliefUpdater).
-    max_new_tokens: int = 8192
     vllm_gpu_memory_utilization: float = 0.55
     vllm_max_num_seqs: int = 64
     # A step_{n}/ checkpoint every save_every iterations; the last save_total_limit are kept.

@@ -78,11 +78,9 @@ def build_belief_model(
     *,
     max_criteria: Optional[int],
     add_intermediate_answer: bool,
-    retriever=None,
     qrels=None,
     llm_criteria: Optional[str] = None,
     belief_judge_model: str = "",
-    query_scorer_model: str = "",
     agent=None,
     policy_model: Optional[str] = None,
     dataset: Optional[str] = None,
@@ -96,22 +94,18 @@ def build_belief_model(
     Args:
         mode: ``"off"``, ``"monitor"`` (observe only) or ``"inform"``
             (observe and inject a ``<belief_state>`` tag into the trajectory).
-        retriever: Retriever whose encoder gives the novelty embeddings
-            (dense retrievers only; others leave nu^q null).
         qrels: Thresholded relevance judgements, for the new-item precision
             and the recall so far.
         llm_criteria: Model that extracts each query's criteria from the
             question, and writes TRQA's gold criterion texts
-            (``belief_model_component.criteria_init``).  Without it the criteria-based
-            signals are null.
+            (``belief_model_component.criteria_init``).  Without it there is
+            no belief.
         max_criteria: Cap on the number of criteria the extractor lists per
             query, None for uncapped (gold); resolved from the dataset by
             ``resolve_dataset_defaults``.
-        belief_judge_model: LLM behind the belief state and criteria_delta
-            (belief updater); "" = *llm_criteria*.  A ``vllm/`` model is
+        belief_judge_model: LLM behind the belief state (the belief
+            update call); "" = *llm_criteria*.  A ``vllm/`` model is
             served locally (``criteria_init.belief_llm``), e.g. a trained belief model.
-        query_scorer_model: LLM behind the criteria attempts (targeting
-            scorer); "" = the belief updater's model.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
@@ -124,7 +118,7 @@ def build_belief_model(
             trqa_validation only (``criteria_init``); a query without gold
             criteria gets silver ones, so the belief model always runs.
             The criteria are read from the banks, made and added only when
-            missing.  The updater and query scorer are still the
+            missing.  The belief update is still the
             *belief_judge_model* / *llm_criteria* LLM.
     """
     if mode == "off":
@@ -133,22 +127,18 @@ def build_belief_model(
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from belief_model_component import (
-        BeliefModel, LLMQueryScorer, belief_llm, build_belief_judges, build_criteria_source, encode_fn_from_retriever,
+        BeliefModel, belief_llm, build_belief_updater, build_criteria_source,
     )
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
     if dataset is None or split is None:
         criteria_source = None
-        logger.warning("No dataset split; criteria-based signals disabled")
+        logger.warning("No dataset split; belief disabled")
     else:
         criteria_source = build_criteria_source(
             dataset, split, llm_criteria=llm_criteria, max_criteria=max_criteria,
             criteria_source=criteria_source,
         )
-
-    encode_fn, _ = encode_fn_from_retriever(retriever) if retriever is not None else (None, None)
-    if encode_fn is None:
-        logger.warning("Retriever has no local encoder; query_novelty is null")
 
     intermediate_answer_fn = None
     if not add_intermediate_answer:
@@ -163,22 +153,15 @@ def build_belief_model(
         intermediate_answer_fn = agent.answer_from_trajectory
         print(f"Belief model: intermediate answers via {policy_model}.answer_from_trajectory")
 
-    belief_updater, query_scorer = None, None
+    belief_updater = None
     if criteria_source is not None:
         judge_model = belief_judge_model or llm_criteria
-        belief_updater, query_scorer = build_belief_judges(
-            belief_llm(judge_model), model=judge_model,
-            query_shape=query_shape,
-        )
-        if query_scorer_model and query_scorer_model != judge_model:
-            query_scorer = LLMQueryScorer(belief_llm(query_scorer_model), model_name=query_scorer_model)
-        print(f"Belief model: belief updater {belief_updater.name}, query scorer {query_scorer.name}")
+        belief_updater = build_belief_updater(belief_llm(judge_model), model=judge_model, query_shape=query_shape)
+        print(f"Belief model: belief updater {belief_updater.name}")
 
     return BeliefModel(
         criteria_source=criteria_source,
         belief_updater=belief_updater,
-        query_scorer=query_scorer,
-        encode_fn=encode_fn,
         qrels=qrels or {},
         intermediate_answer_fn=intermediate_answer_fn,
         policy_model=policy_model or "",
@@ -448,12 +431,10 @@ def _init_worker(worker_id: int, worker_config: dict):
 
     belief_model = build_belief_model(
         mode=worker_config["belief_mode"],
-        retriever=retriever,
         qrels=worker_config.get("qrels"),
         llm_criteria=worker_config["llm_criteria"],
         max_criteria=worker_config["max_criteria"],
         belief_judge_model=worker_config["belief_judge_model"],
-        query_scorer_model=worker_config["query_scorer_model"],
         add_intermediate_answer=worker_config["add_intermediate_answer"],
         agent=agent if hasattr(agent, "belief_model") else None,
         policy_model=policy_model,

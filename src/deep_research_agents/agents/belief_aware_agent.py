@@ -512,6 +512,7 @@ class BeliefAwareAgent(BasicAgent):
                 reasoning_path, step, query, shown, t, question,
                 seen_docs=shown,
                 trajectory=self._messages(system, transcript),
+                doc_labels=registry.label_of,
             )
             if tag:
                 block.belief_state = tag

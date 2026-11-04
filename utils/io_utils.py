@@ -356,8 +356,8 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
     ``run_dir/run_config.json`` (:func:`check_run_config`).
 
     Every setting that changes what the agent does or what the belief model
-    writes is here, with defaults resolved (the criteria cap, the updater
-    and query scorer models), so the run directory's name stays short and
+    writes is here, with defaults resolved (the criteria cap, the belief
+    judge model), so the run directory's name stays short and
     the per-query files carry no run settings.  With the belief model off,
     ``belief_model`` holds the mode only.  *policy_model* is the CLI
     ``--policy-model`` name (``oss_20b``, not the internal alias ``oss``);
@@ -378,7 +378,6 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "llm_criteria": llm_criteria,
             "max_criteria": DATASET_SPECS[dataset].max_criteria if max_criteria is None else max_criteria,
             "belief_judge_model": judge,
-            "query_scorer_model": (kwargs.get("query_scorer_model") or judge) if judge else None,
             "criteria_source": kwargs["criteria_source"],
             "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),

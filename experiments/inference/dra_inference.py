@@ -377,12 +377,10 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
         # intermediate-answer hook.
         belief_model = build_belief_model(
             mode=belief_mode,
-            retriever=_retriever,
             qrels=qrels,
             llm_criteria=kwargs["llm_criteria"],
             max_criteria=kwargs["max_criteria"],
             belief_judge_model=kwargs["belief_judge_model"],
-            query_scorer_model=kwargs["query_scorer_model"],
             add_intermediate_answer=kwargs["add_intermediate_answer"],
             agent=agent if hasattr(agent, "belief_model") else None,
             policy_model=policy_model,
@@ -548,9 +546,8 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     # collect them before we reclaim the GPUs.
     #
     # Reference chains that keep the encoder model alive:
-    #   1. the belief model: its answer hook (bound method → agent → retriever.encoder),
-    #      the encode closures of the novelty signals, the belief updater and
-    #      the query scorer
+    #   1. the belief model: its answer hook (bound method → agent → retriever.encoder)
+    #      and the belief updater
     #   2. agent.search_tool.retriever → retriever.encoder
     #   3. agent.retriever → retriever.encoder
     #   4. kwargs["retriever"] → retriever.encoder
@@ -622,7 +619,7 @@ def _parse_args():
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (one belief status per criterion) and the per-step signals (doc_novelty, criteria_delta, query_novelty, criteria attempts, new-item precision, recall so far, intermediate answers) to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its belief status and attempts, then doc_novelty, criteria_delta, query_novelty; never gold-based signals) to the trajectory after each iteration's search results.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its nuggets: the answers the documents and the agent's turns give, each with a belief status and its sources) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its nugget sentences, then the cited document titles; never anything gold-based) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")

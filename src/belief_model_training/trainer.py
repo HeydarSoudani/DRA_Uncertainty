@@ -36,7 +36,7 @@ The model and its optimizer state sit on the GPU only during ``update``
 
 import gc
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
@@ -48,22 +48,37 @@ from .ppo import kl_penalty, policy_loss_vanilla
 LOGIT_CHUNK = 1024
 
 
-def group_advantages(terms: List[Dict[str, float]], groups: List[int], weights: Dict[str, float],
+def group_terms(terms: List[Dict[str, Optional[float]]], idxs: List[int], k: str) -> Optional[List[float]]:
+    """Term *k* of the replies *idxs* of one group, a missing value (None:
+    nothing to score) taken as the mean of the others; None when no reply
+    has it."""
+    vals = [terms[i].get(k) for i in idxs]
+    known = [v for v in vals if v is not None]
+    if not known:
+        return None
+    mean = sum(known) / len(known)
+    return [mean if v is None else v for v in vals]
+
+
+def group_advantages(terms: List[Dict[str, Optional[float]]], groups: List[int], weights: Dict[str, float],
                      std_floor: float) -> List[float]:
-    """GDPO advantages: per group (the replies to one prompt, which share
-    their available terms) and term, the term minus its group mean divided
-    by ``max(std, std_floor)`` (0 when the term has zero spread); the
-    weighted sum over the terms, divided by its standard deviation over the
-    replies of groups with spread (its batch mean is 0).  A group with no
-    spread in any term gets 0."""
+    """GDPO advantages: per group (the replies to one prompt) and term, the
+    term minus its group mean divided by ``max(std, std_floor)`` (0 when
+    the term has zero spread; a reply without the term counts as the group
+    mean, ``group_terms``); the weighted sum over the terms, divided by its
+    standard deviation over the replies of groups with spread (its batch
+    mean is 0).  A group with no spread in any term gets 0."""
     by_group: Dict[int, List[int]] = {}
     for i, g in enumerate(groups):
         by_group.setdefault(g, []).append(i)
     adv = [0.0] * len(terms)
     spread: List[int] = []
     for idxs in by_group.values():
-        for k in terms[idxs[0]]:
-            t = torch.tensor([terms[i][k] for i in idxs], dtype=torch.float32)
+        for k in weights:
+            vals = group_terms(terms, idxs, k)
+            if vals is None:
+                continue
+            t = torch.tensor(vals, dtype=torch.float32)
             std = t.std(unbiased=False).item()
             if std < 1e-8:
                 continue

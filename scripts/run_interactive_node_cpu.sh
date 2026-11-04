@@ -21,10 +21,10 @@
 #
 # Reproduces the reference request by default:
 #   srun -p staging -n 1 --ntasks-per-node 1 --cpus-per-task 4 \
-#        -t 3:00:00 --mem=180GB --pty /bin/bash
+#        -t 3:00:00 --mem=28GB --pty /bin/bash
 #
 # Overridable via env:
-#   PARTITION=staging CPUS=8 MEM=240GB TIME=6:00:00 bash scripts/run_interactive_node_cpu.sh
+#   PARTITION=staging CPUS=8 MEM=56GB TIME=6:00:00 bash scripts/run_interactive_node_cpu.sh
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Shared env setup: delegate to the single source of truth (scripts/_activate.sh):
@@ -48,9 +48,12 @@ fi
 set -euo pipefail
 
 PARTITION="${PARTITION:-staging}"
-TIME="${TIME:-2:00:00}"
+TIME="${TIME:-1:00:00}"
 CPUS="${CPUS:-4}"
-MEM="${MEM:-180GB}"
+# Snellius bills memory as CPUs (7 GB per CPU): asking for more than CPUS*7GB
+# reserves extra CPUs, so the job waits for a node with that many free cores.
+# Default = exactly the CPUs' share; raise CPUS (not just MEM) for more memory.
+MEM="${MEM:-$(( CPUS * 7 ))GB}"
 
 echo "[run_interactive_node_cpu] requesting: $PARTITION  cpus=$CPUS  mem=$MEM  time=$TIME  (no GPU)"
 

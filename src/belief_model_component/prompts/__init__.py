@@ -1,22 +1,20 @@
 """Prompts of the belief model.
 
-System prompts are the .txt files next to this module; user prompts are in
+System prompts are the ``*_system.txt`` files next to this module: the
+criteria extractor (its per-shape parts in ``criteria_init/<shape>.txt``)
+and the belief updater (its per-shape context in ``nugget_shapes.txt``).  User prompts are in
 ``user_prompts`` and re-exported here.
 """
 
 import re
 from pathlib import Path
 
-from ..types import MULTI_ASPECT, QUERY_SHAPES
+from ..types import QUERY_SHAPES
 from .user_prompts import (
+    BELIEF_UPDATE_USER_TEMPLATE,
+    NO_TEXT,
+    PASSAGE_TEMPLATE,
     criteria_init_user,
-    CRITERIA_UPDATE_CANDIDATES_INSTRUCTION,
-    CRITERIA_UPDATE_INSTRUCTION,
-    CRITERIA_UPDATE_NO_PASSAGES,
-    CRITERIA_UPDATE_PASSAGE_TEMPLATE,
-    CRITERIA_UPDATE_TURN_TEMPLATE,
-    CRITERIA_UPDATE_USER_TEMPLATE,
-    QUERY_TARGETING_USER_TEMPLATE,
     intermediate_answer_instruction,
 )
 
@@ -38,35 +36,14 @@ def _sections(name: str) -> dict:
     return {"": parts[0].strip(), **{k: body.strip("\n").rstrip() for k, body in zip(parts[1::2], parts[2::2])}}
 
 
-# The answer-candidate parts of the criteria-update prompt (the reasoner
-# side of the belief); a report query (multi-aspect) has no candidates.
-_CANDIDATE_PARTS = _sections("criteria_update_candidates.txt")
-_CANDIDATES = {
-    "candidates_section": _CANDIDATE_PARTS["section"] + "\n\n",
-    "candidates_rules": _CANDIDATE_PARTS["rules"] + "\n\n",
-    "candidates_output": _CANDIDATE_PARTS["output"] + "\n",
-    "candidates_intro_belief": " and answer candidates",
-    "candidates_intro_inputs": "the agent's latest turn, and",
-    "candidates_intro_task": " and the answer candidates of the criteria from the agent's turn",
-    "output_keys": "two keys",
-}
-_NO_CANDIDATES = {**{k: "" for k in _CANDIDATES}, "candidates_rules": "\n", "candidates_intro_inputs": "and",
-                  "output_keys": "one key"}
-
-
 def _compose(stage: str, shape: str) -> str:
     """The shared core ``{stage}_system.txt`` with the sections of one query
-    shape (``{stage}_{shape}.txt``): the text before the first ``---name---``
+    shape (``{stage}/{shape}.txt``): the text before the first ``---name---``
     line fills ``{shape_context}``, the ``example`` section ``{example}`` and
     every other section ``{shape_<name>}``.  A placeholder alone on its line
-    whose section is empty or missing is removed with its line.  The update
-    prompt also gets the answer-candidate parts (none for a report query)."""
-    sections = {}
-    if stage == "criteria_update":
-        # First: the candidate parts hold the {shape_candidates} placeholder.
-        sections.update(_NO_CANDIDATES if shape == MULTI_ASPECT else _CANDIDATES)
-    sections.update({("shape_context" if k == "" else "example" if k == "example" else f"shape_{k}"): body
-                     for k, body in _sections(f"{stage}_{shape}.txt").items()})
+    whose section is empty or missing is removed with its line."""
+    sections = {("shape_context" if k == "" else "example" if k == "example" else f"shape_{k}"): body
+                     for k, body in _sections(f"{stage}/{shape}.txt").items()}
     text = _read(f"{stage}_system.txt")
     for key, body in sections.items():
         if not body:
@@ -75,9 +52,16 @@ def _compose(stage: str, shape: str) -> str:
     return re.sub(r"^\{shape_\w+\}\n", "", text, flags=re.MULTILINE)
 
 
-# One criteria-extraction prompt and one criteria-update prompt per query
-# shape (layout.DATASET_SPECS); the cap on the number of criteria is the
-# extractor's input (``criteria_init_user``).
+# The query shapes as the belief updater reads them (``nugget_shapes.txt``): what a
+# criterion is and what its answers are.
+NUGGET_SHAPES = {k: v for k, v in _sections("nugget_shapes.txt").items() if k}
+
+
+# One criteria-extraction prompt per query shape (layout.DATASET_SPECS);
+# the cap on the number of criteria is the extractor's input
+# (``criteria_init_user``).  One belief update prompt per query shape.
 CRITERIA_INIT_SYSTEMS = {shape: _compose("criteria_init", shape) for shape in QUERY_SHAPES}
-CRITERIA_UPDATE_SYSTEMS = {shape: _compose("criteria_update", shape) for shape in QUERY_SHAPES}
-QUERY_TARGETING_SYSTEM = _read("query_targeting_system.txt")
+BELIEF_UPDATE_SYSTEMS = {
+    shape: _read("belief_update_system.txt").replace("{shape_context}", NUGGET_SHAPES[shape])
+    for shape in QUERY_SHAPES
+}

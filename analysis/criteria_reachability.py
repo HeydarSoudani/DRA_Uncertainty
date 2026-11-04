@@ -142,7 +142,7 @@ from indexing_corpus_dataset.layout import (
 from reasoner_component.factory import create_generator, disable_native_thinking
 from belief_model_component.criteria import CriteriaSource
 from belief_model_component.criteria_init import check_max_criteria
-from belief_model_component.judges import span_in_passage, split_span
+from belief_model_component.updater import span_in_passage, split_span
 from belief_model_component.types import CLOSED
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object

@@ -2,20 +2,18 @@ After the results of each search, you receive a <belief_state> tag that tracks y
 
 <belief_state step="2">
   <criteria>
-    <k1 status="certain" attempts="1">the lighthouse that was built before 1900</k1>
-    <k2 status="possible" attempts="2">the lighthouse whose first keeper later became a painter</k2>
-    <k3 status="unknown" attempts="0">the lighthouse whose light was automated in the 1980s</k3>
+    <k1>the engineer who was born in Osby
+      It is certain that the answer is "Henrik Dahl", given [d1] [t2].
+      It is doubtful that the answer is "Nils Berg", given [t1]; against [d2].
+    </k1>
+    <k2>the lighthouse that the engineer designed</k2>
   </criteria>
-  <signals doc_novelty="0.40" criteria_delta="+2" query_novelty="0.81"/>
+  <sources>[d1] Henrik Dahl | [d2] Nils Berg (engineer)</sources>
 </belief_state>
 
 - `step`: the number of searches so far.
-- <criteria>: the pieces of information a complete response must contain.
-- `status`: how much of the criterion's information the passages found so far give, from lowest to highest: `doubtful`, `unlikely`, `unknown`, `possible`, `probable`, `almost certain`, `certain`. `unknown` means no passage relates to it; `doubtful` and `unlikely` mean the passages are against it.
-- `attempts`: how many of your searches aimed directly at the criterion.
-- `doc_novelty` (0 to 1): the share of your last search's passages that are new to you.
-- `criteria_delta`: how much your last search changed the statuses: +1 per level up, -1 per level down.
-- `query_novelty` (0 to 1): how different your last query is from your earlier ones.
-- A field is left out when it could not be computed.
+- <criteria>: the pieces of information a complete response must contain, each with the answers found for it so far.
+- Each answer line gives how likely the answer is correct, from lowest to highest: `doubtful`, `unlikely`, `unknown`, `possible`, `probable`, `almost certain`, `certain`. `unknown` means no passage relates to it; `doubtful` and `unlikely` mean the passages are against it.
+- `given` lists the sources that support the answer and `against` the other sources on it: [dN] is the passage labeled [dN] in your search results, also listed in <sources>, [tN] is your own reasoning at step N.
 
 If the passages disagree with the tag, trust the passages.

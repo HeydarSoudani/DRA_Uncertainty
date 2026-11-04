@@ -19,11 +19,10 @@ correctness of the run's ``accuracy.jsonl`` and the pool's gold criteria
 (``gold_criteria``; training uses only the queries with the full gold
 annotation and criterion texts: the out-of-domain queries of ``val``, whose
 criteria the teacher wrote, are for evaluation and left out, as is a query
-whose texts failed) with the gold of the reasoner side
-(``candidate_gold.annotate_stated``); with ``teacher``, also the
+whose texts failed) with the criteria each agent turn states the gold
+answer of (``nugget_gold.annotate_stated``); with ``teacher``, also the
 teacher's view (``attach_teacher``), after checking that the run's belief
-model is the teacher on the gold criteria, and the gold of the teacher's
-answer candidates (``candidate_gold``).  Phase 2 replays the teacher
+model is the teacher on the gold criteria.  Phase 2 replays the teacher
 (``replay_teacher``).
 
 ``check_same_settings`` checks that the runs a phase reads share their agent
@@ -50,8 +49,7 @@ from belief_model_component.criteria import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_M
 
 from .config import RunPaths, Split, TrainingConfig
 from .episodes import Episode, annotate_gold, attach_teacher, read_episode
-from .scoring import teacher_candidate_values
-from .candidate_gold import AnswerJudge, CandidateGold, annotate_stated
+from .nugget_gold import AnswerJudge, NuggetGold, annotate_stated
 
 logger = logging.getLogger(__name__)
 
@@ -113,20 +111,6 @@ def check_same_settings(cfg: TrainingConfig, names: List[str]) -> None:
                          f"(run_config.json): {'; '.join(diffs)}; rerun phase 1 with the same inference config")
 
 
-def criteria_cap(cfg: TrainingConfig, split: Split) -> Optional[int]:
-    """The criteria cap of a silver init prompt for the episodes of *split*
-    (a gold one is uncapped, ``Episode.criteria_extractor``): the
-    ``belief_model.max_criteria`` of the teacher's monitor run (the split's
-    own, the val run's for rl, which has no belief model), so every split
-    uses the same; None (the dataset's default) when no monitor run has it."""
-    name = split.subset if SPLIT_MODE[split.subset] == "monitor" else "val"
-    try:
-        config = find_run(cfg, cfg.pool_split(name))[1]
-    except FileNotFoundError:
-        return None
-    return (config.get("belief_model") or {}).get("max_criteria")
-
-
 def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
     """The run's updater model is *teacher*, on the gold criteria."""
     belief = config["belief_model"]
@@ -139,7 +123,7 @@ def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
 
 def require_gold(cfg: TrainingConfig) -> None:
     """Phases 2 and 3 score the belief against the pool's gold criteria
-    (the reasoner's gold answers, per criterion id): they read the runs on
+    (gold answers and documents per criterion id): they read the runs on
     the gold criteria only."""
     source = effective_criteria_source(cfg.shared.criteria_source, cfg.shared.training_data)
     if source != GOLD_CRITERIA:
@@ -169,11 +153,11 @@ def read_gold_criteria(split: Split) -> Tuple[Dict[str, Dict], Set[str]]:
 
 
 _JUDGES: Dict[str, AnswerJudge] = {}
-_GOLD: Dict[Optional[str], CandidateGold] = {}
+_GOLD: Dict[Optional[str], NuggetGold] = {}
 
 
 def answer_judge(cfg: TrainingConfig) -> Optional[AnswerJudge]:
-    """The judge of the gold of the reasoner side (``rl.answer_judge_model``;
+    """The judge of the gold of the belief (``rl.answer_judge_model``;
     None: matching only), its cache under the training run."""
     model = cfg.rl.answer_judge_model
     if not model:
@@ -183,11 +167,11 @@ def answer_judge(cfg: TrainingConfig) -> Optional[AnswerJudge]:
     return _JUDGES[model]
 
 
-def candidate_gold(cfg: TrainingConfig) -> CandidateGold:
-    """The gold of the answer candidates, one per judge model."""
+def nugget_gold(cfg: TrainingConfig) -> NuggetGold:
+    """The gold of the belief's values, one per judge model."""
     model = cfg.rl.answer_judge_model or None
     if model not in _GOLD:
-        _GOLD[model] = CandidateGold(answer_judge(cfg))
+        _GOLD[model] = NuggetGold(answer_judge(cfg))
     return _GOLD[model]
 
 
@@ -234,7 +218,6 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
     mode = SPLIT_MODE[split.subset]
     if teacher:
         check_teacher(run_dir, config, cfg.trajectories.teacher_belief_model)
-    max_criteria = criteria_cap(cfg, split)
     gold = split_gold(split, config)
     gold_criteria, ood = read_gold_criteria(split)
     correctness = read_correctness(run_dir)
@@ -251,11 +234,9 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
             counts["not_run"] += 1
             continue
         episode.policy_model = cfg.shared.policy_model
-        episode.max_criteria = max_criteria
         episode.gold_criteria = gold_criteria[qid]["criteria"]
         episode.source = gold_criteria[qid]["source"]
         episode.gold_names = gold_criteria[qid]["entity_names"]
-        episode.gold_members = gold_criteria[qid]["members"]
         if teacher:
             reason = attach_teacher(episode, run_dir / "belief" / f"{qid}.jsonl")
             if reason is None and episode.criteria_model != GOLD_CRITERIA_MODEL:
@@ -276,10 +257,6 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         episodes.append(episode)
     print(f"{tag} {split.name} ({run_dir}): {len(gold)} queries, {dict(counts)}")
     print(f"{tag} {split.name}: gold answers stated by the agent turns {annotate_stated(episodes, answer_judge(cfg))}")
-    if teacher:
-        counts = candidate_gold(cfg).resolve(
-            [(ep, cid, value) for ep in episodes for cid, value in teacher_candidate_values(ep)])
-        print(f"{tag} {split.name}: gold of the teacher's answer candidates {counts}")
     if counts["not_evaluated"]:
         logger.warning("%s %s: %d episodes have no verdict in %s/accuracy.jsonl (the run stopped before its "
                        "evaluation?); rerun dra_inference with --eval-only to judge them",

@@ -5,51 +5,47 @@ under ``belief/``: a ``meta`` line, then one ``step`` line per search
 iteration.  The files are the input of the offline analysis and of the
 scoring model g_phi.  Every line carries ``query_id``; correctness labels
 stay in the accuracy output (``accuracy.jsonl``, same ``query_id`` key).
-The run settings (agent, mode, criteria and updater models, criteria cap,
-retriever, whose encoder gives the novelty embeddings) are in the run's
-``run_config.json``; the per-iteration seen doc
+The run settings (agent, mode, criteria and belief update models, criteria
+cap, retriever) are in the run's ``run_config.json``; the per-iteration seen doc
 ids, queries and ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 19::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 23::
 
-    line 1  {"record": "meta", "schema_version": 19, "query_id": "q1", "question": "...",
-             "num_criteria": 4, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
+    line 1  {"record": "meta", "schema_version": 23, "query_id": "q1", "question": "...",
+             "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
-             "criteria_info": {"model": ..., "query_shape": "set", "errors": [], "bank": "hit"},
-             "final_belief": ["almost certain", "unknown", ...],
-             "final_candidates": [[{"value": "Osby", "status": "certain"}], [], ...],
-             "final_reasoning_confidence": 0.5,
-             "final_criteria_attempts": [2, 0, ...],
-             "criteria_evidence": [{"id": "c1", "kind": "closed", "status": "almost certain",
-                                    "evidence": [{"doc_id": "d1", "step": 1, "role": "support",
-                                                  "spans": ["..."], "span_verified": [true]}]}, ...],
-             "final_update": {"agent_turn": "...", "candidate_updates": [...],
-                              "belief_updater_output": "...", "errors": []} | null}
+             "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
+             "final_nuggets": [[{"value": "Osby", "status": "certain",
+                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby",
+                                               "spans": ["..."]},
+                                              {"label": "t2", "stance": "supports", "value": "Osby"}]}], [], ...],
+             "final_certainty": 0.5,
+             "final_update": {"agent_turn": "...", "think_observations": [...], "nugget_updates": [...],
+                              "belief_output": "...", "errors": []} | null}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
-             "doc_novelty": 1.0, "criteria_delta": 5, "query_novelty": 1.0,
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
-             "reasoning_confidence": 0.3333,
+             "certainty": 0.3333,
              "intermediate_answers": ["..."], "intermediate_answer_status": "ok",
-             "queries": [{"text": "...", "max_sim_to_earlier": null, "novelty": 1.0,
-                          "target_scores": [1.0, 0.5, ...]}],
-             "docs": [{"doc_id": "d1", "seen_before": false, "novelty": 1.0}, ...],
-             "belief_before": ["unknown", ...], "belief_after": ["almost certain", ...],
+             "docs": [{"doc_id": "doc17", "seen_before": false}, ...],
+             "nuggets_after": [[{"value": "Osby", "status": "certain",
+                                 "evidence": [{"label": "d1", "stance": "supports", "value": "Osby",
+                                               "spans": ["..."]}]}], [], ...],
              "criteria_sources_after": [1, 0, ...],
-             "candidates_before": [[], ...], "candidates_after": [[{"value": "Osby", "status": "unknown"}], ...],
-             "criteria_targeted": ["c1"], "criteria_attempts_after": [1, 0, ...],
-             "criteria_updates": [{"id": "c1", "from": "unknown", "to": "almost certain",
-                                   "written": "almost certain", "support": [{"doc_id": "d1", ...}],
-                                   "contradict": [], "reason": "...", "note": ""}, ...],
-             "candidate_updates": [{"id": "c1", "before": [], "after": [{"value": "Osby", "status": "unknown"}],
-                                    "written": [{"value": "Osby", "status": "unknown", "anchored": true}],
-                                    "reason": "...", "note": ""}],
+             "passages": [{"label": "d1", "doc_id": "doc17"}, ...],
+             "think_observations": [{"id": "c1", "label": "t1", "step": 1, "stance": "supports",
+                                     "value": "Osby", "grounded": true, "note": ""}],
+             "doc_observations": [{"id": "c1", "label": "d1", "step": 1, "stance": "supports", "value": "Osby",
+                                   "doc_id": "doc17", "spans": ["..."], "span_verified": [true],
+                                   "grounded": true, "note": ""}],
+             "nugget_updates": [{"id": "c1", "written": [...], "after": [...], "reason": "...", "note": "",
+                                 "issues": [], "carried": [...]}],
              "agent_turn": "Reasoning: ... Search queries: ...",
-             "belief_updater_output": "...",
+             "belief_output": "...",
              "intermediate_answer_reasoning": "...", "errors": []}
     ...
 
@@ -119,7 +115,53 @@ values; no "complete list" criterion); the aggregate has answer
 candidates only, so its status is null in ``belief_before`` /
 ``belief_after`` / ``final_belief`` and its ``criteria_updates`` record
 has ``from`` / ``to`` null; ``reasoning_confidence`` leaves out the rest
-criterion.
+criterion.  schema_version 20 replaces statuses and candidates with
+nuggets (Agent-BRACE style): per criterion, the observations of the
+documents (retriever judge: a document supports or contradicts a value,
+with verified spans) and of the agent's turns (reasoner judge: the turn
+gives or rejects a value, anchored in the turn), each labelled by its
+source ("d<n>", numbered per query; "t<step>"), and its nuggets (one per
+answer: value, status, evidence labels) rewritten by the belief judge
+from the observation log (``doc_observations``, ``think_observations``,
+``nugget_updates``, ``nuggets_after``; ``retriever_output``,
+``reasoner_output``, ``belief_output``).  Dropped: ``criteria_delta``,
+``belief_before`` / ``belief_after`` / ``final_belief``,
+``candidates_before`` / ``candidates_after`` / ``final_candidates``,
+``criteria_updates``, ``candidate_updates``, ``criteria_evidence``,
+``belief_updater_output``; ``reasoning_confidence`` becomes
+``belief_confidence`` (criteria with one answer only, null for a report).
+The non-belief signals are dropped too: ``doc_novelty``,
+``query_novelty``, ``criteria_targeted``, ``criteria_attempts_after``,
+``final_criteria_attempts``, ``queries`` (the texts are in ``agent_turn``
+and the trajectory) and the ``novelty`` of each ``docs`` entry.
+schema_version 21 makes the belief update one call (the same prompt for
+the prompted teacher and the trained student): it reads the agent's turn
+and the step's new passages and writes the think observations, the
+document observations and the new nuggets of the criteria with a new
+observation; one raw reply ``belief_output`` replaces
+``retriever_output``, ``reasoner_output`` and ``belief_output``.  The
+belief is self-contained, with no observation log: each nugget's
+``evidence`` holds its sources' observations (``{label, stance, value,
+[spans]}``, was a list of labels).  A document is labelled when first
+shown to the call (``passages``, new), not at its first observation, so
+some labels have no observation.  ``criteria_sources_after`` counts the
+documents that support one of the criterion's nuggets' values.
+schema_version 22 replaces ``belief_confidence`` / ``final_belief_confidence``
+with the certainty score ``certainty`` / ``final_certainty``
+(``belief_model_component.certainty``: per criterion its most likely
+nugget's probability, after the final call the nugget of the agent's
+answer for the answer criterion of a multi-hop query, unknown without a
+nugget; the geometric mean over the criteria, rest and aggregate left
+out), adds ``issues`` (codes, ``criteria.ISSUE_*``) to every
+``nugget_updates`` record (a value of the current belief left without a
+nugget is new among them), and keeps a document observation on a label
+that is no new passage of the call (``doc_id`` null, noted).
+schema_version 23 checks a document observation's spans against the
+passage as the call showed it (cut for a short-answer query), so a span
+from past the cut is not verified (``span_verified`` false), and carries
+a current nugget the reply leaves out (or writes invalidly) over
+unchanged: its value is in the record's ``carried`` (only when there is
+one) and its issue ``dropped_value`` stays.
 ``iteration`` counts from 1 for
 every agent; ``agent_iteration`` is the agent's own counter.  A signal that could not be computed is null, never 0,
 and every float is finite and rounded to 4 decimals.  A query without any
@@ -135,7 +177,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 23
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

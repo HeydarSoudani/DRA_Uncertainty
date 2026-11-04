@@ -21,7 +21,7 @@ shared:
                                     # and write to {output_root}/{training_data}/{policy_model}
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
   seed: 0
-  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief/query scorer settings of phase 1; its `output` holds the runs
+  inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief model settings of phase 1; its `output` holds the runs
   retriever: qwen3_emb_4b
   num_gpus: 4                       # dra_inference workers (phase 1)
   gpu_ids: null                     # their GPUs, e.g. "0,1,2,3" (phase 1); null = gpu_ids of the inference config
@@ -58,9 +58,12 @@ rl:
   num_iterations: 200
   episodes_per_batch: 16            # rl episodes per iteration
   group_size: 8                     # chains per episode (GRPO group)
-  reward_weight_step: 1.0           # w of R = w * sum_k (r_ret_k + r_reas_k) + r_final
-  adv_std_floor: 0.05               # GDPO: each term (ret, reas, final) normalized in its group by max(std, floor)
-  answer_judge_model: openrouter/qwen/qwen3-32b  # gold of r_reas when no string match (the correctness judge); null = match only
+  reward_weight_obs: 1.0            # R = w_obs obs + w_cons cons + w_cal cal + w_final r_final (rewards.py):
+  reward_weight_cons: 1.0           #   obs / cons / cal averaged over the chain's calls (valid observation,
+  reward_weight_cal: 1.0            #   valid conversion, nugget calibration); r_final = certainty s_T vs correctness
+  reward_weight_final: 1.0
+  adv_std_floor: 0.05               # GDPO: each term (obs, cons, cal, final) normalized in its group by max(std, floor)
+  answer_judge_model: openrouter/qwen/qwen3-32b  # gold of the belief's values when no string match (the correctness judge); null = match only
   val_every: 20                     # validation (one greedy chain per val episode; selects final/) every N iterations
   val_max_episodes: 50
   learning_rate: 1.0e-5
@@ -74,8 +77,7 @@ rl:
   use_kl_loss: false
   kl_loss_coef: 0.001
   kl_loss_type: low_var_kl
-  temperature: 1.0
-  max_new_tokens: 8192              # the inference updater's max_tokens
+  temperature: 1.0                  # reply budget of a call: the inference updater's max_tokens
   vllm_gpu_memory_utilization: 0.55
   vllm_max_num_seqs: 64
   save_every: 20
