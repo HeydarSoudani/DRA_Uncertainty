@@ -6,7 +6,7 @@ After the results of each search, you receive a <belief_state> tag that tracks y
       It is certain that k1 is covered, by "Henrik Dahl": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. "Nils Berg" (t1) is ruled out: d4 states that he was born in Tirsa.
     </k1>
     <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
-      It is possible that k2 is covered, by "Skarv Lighthouse": d3 names it among the coastal works of Henrik Dahl, d2 states that he was an engineer born in Osby who designed lighthouses, and d5 states that the Varn Folk Museum was founded in Osby; no passage states that he designed this lighthouse. "Hamn Lighthouse" (d3) ties with it: d3 names it the same way.
+      It is possible that k2 is covered, by "Skarv Lighthouse": d3 names it among the coastal works of Henrik Dahl, d2 states that he was an engineer born in Osby who designed lighthouses, and d5 states that the Varn Folk Museum was founded in Osby. "Hamn Lighthouse" (d3) ties with it: d3 names it the same way.
     </k2>
   </criteria>
   <sources>[d2] Henrik Dahl | [d3] Skarv Lighthouse | [d4] Nils Berg (engineer) | [d5] Osby</sources>

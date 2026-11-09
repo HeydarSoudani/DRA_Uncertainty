@@ -44,7 +44,7 @@ One call per step, the same prompt for the prompted teacher and the trained stud
 
 | Call | Input | Output |
 |---|---|---|
-| update (every search step $t$) | $q$, the criteria with $b_{t-1}$ (one statement text each), the agent's turn $t$ (its reasoning), the new passages of step $t$ | `think_observations` (spans of the turn per criterion), `passage_observations` (spans of each passage per criterion), `statements` (`{id, statement}`, the new statement text of every criterion with a new observation) |
+| update (every search step $t$) | $q$, the criteria with $b_{t-1}$ (one statement text each), the agent's turn $t$ (its reasoning), the new passages of step $t$ | `think_observations` (spans of the turn per criterion), `passage_observations` (spans of each passage per criterion), `statements` (`{id, statement}`, the new statement text of every criterion whose belief changes) |
 | final (answer turn) | the same, the answer turn in place of the turn, no passage | the same, no document observation |
 
 A think observation needs a span that occurs in the turn, and a document observation one that occurs in its passage
@@ -323,7 +323,7 @@ their agent and searcher settings (`run_config.json`, the temperature included):
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
 runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
-that the run's criteria are the pool's), that the belief file (schema 31) has one step per search iteration of the
+that the run's criteria are the pool's), that the belief file (schema 32) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
 `recall_so_far` matches the qrels. Episodes without a verdict in `accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
@@ -386,7 +386,7 @@ teacher's reply $z$ (trained). A trajectory with K search steps gives at most K 
 teacher's call judged and the final call on the answer turn. Each teacher reply is replayed through the inference
 belief update to rebuild its exact prompt and check it against the saved records; a call is kept when it passes
 the gate and, with `sft.require_verified_spans`, when it is clean (`criteria.UNCLEAN_REPLY`: all its observations
-entered the trace, no status corrected by code, no `bad_ref`, `missing_statement`, `extra_selected` or `no_selected`). The main process
+entered the trace, no status corrected by code, no `bad_ref`, `extra_selected` or `no_selected`). The main process
 writes the samples to `phase2_sft/samples.jsonl` (`train`: sft split, `val`: val split). The student learns the
 output format and the teacher's transitions, errors included; RL then corrects the transitions.
 

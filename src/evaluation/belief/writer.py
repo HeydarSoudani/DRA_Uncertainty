@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 31::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 32::
 
-    line 1  {"record": "meta", "schema_version": 31, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 32, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"}}
@@ -56,6 +56,16 @@ observations that entered in the step (with their verified spans).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample.  The readable belief is in the
 trajectory md (``belief_model_component.belief_view``).
+
+schema_version 32 (was 31): passages set the status.  The update writes
+a statement only for a criterion whose belief changes, so a criterion
+with a new observation and no statement keeps its own (``missing_statement``
+dropped), and ``changed`` lists the criteria whose statement the reply
+rewrote (was: those with a new observation).  New issue code
+``turn_only_drop``: a status that rested on a passage, lowered in a step
+with no new passage observation on the criterion, is not taken (the old
+statement is kept).  ``unknown_candidate`` also accepts the title of a
+passage observed on the criterion.
 
 schema_version 31 (was 30) keeps the belief at two levels.  Shown: the
 statement of a criterion is free text with a fixed opening (status,
@@ -113,7 +123,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

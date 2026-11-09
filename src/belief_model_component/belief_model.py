@@ -53,8 +53,9 @@ after the step (``{id, status, selected, text, cited, support_cited}``:
 to the next update and to the agent; parsed from it, its status on the
 seven-word scale ``types.BELIEF_STATUSES``, its selected candidate(s), the
 source labels it cites and those its status rests on, "d<n>" a document,
-"t<step>" the agent's turn); ``changed`` the ids of the criteria with a
-new observation in the step (their statement is the reply's).
+"t<step>" the agent's turn); ``changed`` the ids of the criteria whose
+statement the step's reply rewrote (a criterion with a new observation
+and no statement keeps its own).
 ``observations`` are the observations of the turn and of the new documents
 that entered the belief in the step (``{id, label, step, [doc_id],
 spans}``, verified spans only), null when the call was not made or failed;

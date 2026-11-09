@@ -184,12 +184,14 @@ reasoning only, labelled `t<iteration>`; the search queries stay in the trajecto
 judged before, each labelled `d<n>` when first shown. After the last iteration, the agent's answer turn (its
 reasoning and final answer) is read the same way, with no document. The reply has three lists:
 
-1. **Think observations**: per criterion, the spans of the turn that give information about it. A span must occur in
-   the turn; an observation without one is dropped.
+1. **Think observations**: per criterion, the spans of the turn that propose, doubt or reject a candidate of it (not
+   plans, search intents or remarks on the results). A span must occur in the turn; an observation without one is
+   dropped.
 2. **Passage observations**: per new passage and criterion (not a computed one), the spans of the passage that give
    information about it. Each span is checked on its own (a span joined with "..." is split first); an observation
    without a verified span is dropped. A passage may give information about several criteria.
-3. **Statements**: per criterion with a new observation, its new statement, free text with a fixed opening:
+3. **Statements**: per criterion whose belief changes, its new statement, free text with a fixed opening (a criterion
+   with a new observation and no statement keeps its own):
 
 ```
 It is <status> that <id> is covered, by "<selected candidate>": <the observations the status rests on, with their source labels>. <each other candidate, with its source labels, and why it loses or ties>.
@@ -204,25 +206,28 @@ every observation that entered (its verified spans), and per criterion every sou
 Code reads the opening of each statement (status and selected candidates), the labels it cites and those of its
 support part (before the first sentence that starts with a quoted candidate), and checks it against the criterion's
 observations (`BeliefState.apply`): a statement whose opening cannot be read is not taken (`no_opening`); a cited
-source without an observation on the criterion (`bad_ref`), a selected candidate in none of its spans
-(`unknown_candidate`), several selected candidates for a one-answer criterion (`extra_selected`) and a status above
+source without an observation on the criterion (`bad_ref`), a selected candidate in none of its spans and in no title
+of a passage observed on it (`unknown_candidate`), several selected candidates for a one-answer criterion (`extra_selected`) and a status above
 "unknown" without a candidate (`no_selected`) are flagged. A status above "possible" whose support part cites no
 passage observed on the criterion is lowered to "possible", and the status word of the text rewritten (`turn_only`;
-not for a computed criterion). A statement written for a criterion without a new observation is ignored. When the call
+not for a computed criterion). Passages set the status, so the bound holds the other way too: a status that rested on
+a passage and is lowered in a step with no new passage observation on the criterion is not taken, and the old
+statement is kept (`turn_only_drop`; not for a computed criterion). A statement written for a criterion without a new
+observation is ignored. `changed` lists the criteria whose statement the reply rewrote. When the call
 fails the belief stays as it was and the documents are shown again when retrieved again. Every problem goes into the
 step's `issues` list (`criteria.ISSUE_*`).
 
-The statuses, lowest first (when the observations fit several, the lowest):
+The statuses, lowest first (passage observations set the status; reasoning observations only name candidates):
 
 | level | status | the observations ... |
 |---|---|---|
 | -2 | doubtful | passages contradict every candidate, and none supports one |
-| -1 | unlikely | a passage contradicts the selected candidate, or the reasoning rejects every candidate it gave |
+| -1 | unlikely | a passage contradicts the selected candidate |
 | 0 | unknown | give no candidate |
 | 1 | possible | only reasoning supports the selected candidate, or another candidate has as much passage support |
-| 2 | probable | passages meet some parts of the criterion, or another candidate has less passage support |
-| 3 | almost certain | passages meet most parts, none contradicts the selected candidate or supports another |
-| 4 | certain | passages meet all parts, none contradicts the selected candidate or supports another |
+| 2 | probable | passages meet some parts of the criterion for the selected candidate |
+| 3 | almost certain | passages meet most parts, none contradicts the selected candidate, no other candidate has as much passage support |
+| 4 | certain | passages meet all parts, none contradicts the selected candidate, no other candidate has as much passage support |
 
 Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the neutral level 0. "certain" is the paper's
 "confirmed / certain".

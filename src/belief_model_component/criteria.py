@@ -530,28 +530,29 @@ ISSUE_REPEATED = "repeated_observation"            # a source already observed o
 # A statement:
 ISSUE_DUPLICATE_STATEMENT = "duplicate_statement"  # a second statement of one criterion (ignored)
 ISSUE_UNEXPECTED_STATEMENT = "unexpected_statement"  # a criterion without a new observation (ignored)
-ISSUE_MISSING_STATEMENT = "missing_statement"      # a criterion with a new observation, none written
 ISSUE_NO_OPENING = "no_opening"                    # the opening has not the fixed form: the statement is kept
 ISSUE_BAD_REF = "bad_ref"                          # a cited source with no observation on the criterion
 ISSUE_UNKNOWN_CANDIDATE = "unknown_candidate"      # a selected candidate in no span of the criterion
 ISSUE_EXTRA_SELECTED = "extra_selected"            # several selected candidates for a one-answer criterion
 ISSUE_NO_SELECTED = "no_selected"                  # a status above unknown with no selected candidate
 ISSUE_TURN_ONLY = "turn_only"                      # a status above "possible" that no passage supports: lowered
+ISSUE_TURN_ONLY_DROP = "turn_only_drop"            # a passage-backed status lowered with no new passage: kept
 
 # Observations that did not enter for a reason of their own (the reply
 # should not have written them); a repeat is harmless.
 REJECTED_OBSERVATION = (ISSUE_COMPUTED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN)
 # A statement whose status code corrected (the reply's status is not the
 # one kept).
-CORRECTED_STATUS = (ISSUE_TURN_ONLY,)
+CORRECTED_STATUS = (ISSUE_TURN_ONLY, ISSUE_TURN_ONLY_DROP)
 # A reply with one of these is not used as an SFT sample (with
 # ``require_verified_spans``): an observation left out for a reason of its
 # own, a status code corrected, a cited source with no observation on the
-# criterion, a missing statement, or a selection that breaks the
-# criterion's form.  ``unknown_candidate`` is not among them: a candidate
-# the reply writes in other words than its spans (an initial, a computed
-# value) raises it too.
-UNCLEAN_REPLY = (*REJECTED_OBSERVATION, *CORRECTED_STATUS, ISSUE_BAD_REF, ISSUE_MISSING_STATEMENT,
+# criterion, or a selection that breaks the criterion's form.
+# ``unknown_candidate`` is not among them: a candidate the reply writes in
+# other words than its spans (an initial, a computed value) raises it too.
+# A criterion with a new observation and no statement is no issue: its
+# belief did not change, so it keeps its statement.
+UNCLEAN_REPLY = (*REJECTED_OBSERVATION, *CORRECTED_STATUS, ISSUE_BAD_REF,
                  ISSUE_EXTRA_SELECTED, ISSUE_NO_SELECTED)
 # A reply with one of these fails the format gate of training: it names
 # what the call did not show, or writes a statement code cannot read.
@@ -585,16 +586,20 @@ class BeliefState:
       observation on a criterion no document states (``NO_DOC_KINDS``),
       and its source is not observed on the criterion yet;
     - a criterion with a new observation takes the statement the reply
-      wrote; the others keep theirs (a statement written for one of them
-      is ignored).  A statement whose opening code cannot read is not
+      wrote, or keeps its own when the reply wrote none (its belief did
+      not change); the others keep theirs (a statement written for one of
+      them is ignored).  A statement whose opening code cannot read is not
       taken.  The text is checked against the trace and its problems
       flagged (a cited source without an observation on the criterion, a
-      selected candidate in none of its spans, several selected candidates
-      for a one-answer criterion, a status above unknown without one); the
-      status is bounded once: above "possible" the support part must cite
-      a passage observed on the criterion, since the agent's turns alone
-      never show a candidate (``TURN_ONLY_MAX_STATUS``; a computed
-      criterion is exempt), and the status word of the text is rewritten.
+      selected candidate in none of its spans or titles, several selected
+      candidates for a one-answer criterion, a status above unknown
+      without one).  Passages set the status, so it is bounded both ways
+      (a computed criterion is exempt): a status that rested on a passage
+      is not lowered in a step with no new passage observation on the
+      criterion (the old statement is kept), and above "possible" the
+      support part must cite a passage observed on the criterion, since
+      the agent's turns alone never show a candidate
+      (``TURN_ONLY_MAX_STATUS``; the status word of the text is rewritten).
 
     Documents get their label ("d<n>") when they are shown
     (``label_doc``).
@@ -645,8 +650,8 @@ class BeliefState:
 
         Returns ``{observations, changed, issues}``: the observations that
         entered the belief (``Observation.to_dict``), the ids of the
-        criteria with a new observation (their statement is the reply's,
-        or kept when the reply has none or one code cannot read), and one
+        criteria whose statement the reply rewrote (a statement written
+        for a criterion with a new observation that code took), and one
         issue record per thing the reply got wrong (the ``ISSUE_*``
         codes)."""
         issues: List[Dict[str, Any]] = []
@@ -672,7 +677,6 @@ class BeliefState:
                 entered.append(o)
         for k, obs in enumerate(new):
             self.trace[k].extend(obs)
-        changed = [k for k in range(len(self.criteria)) if new[k]]
 
         first: Dict[int, WrittenStatement] = {}
         for w in written:
@@ -681,29 +685,38 @@ class BeliefState:
                 issues.append(_issue(w.id, ISSUE_UNKNOWN_CRITERION, "statement of an unknown criterion id"))
             elif k in first:
                 issues.append(_issue(w.id, ISSUE_DUPLICATE_STATEMENT, "a second statement; ignored"))
-            elif k not in changed:
+            elif not new[k]:
                 issues.append(_issue(w.id, ISSUE_UNEXPECTED_STATEMENT, "no new observation; the statement is ignored"))
             else:
                 first[k] = w
-        for k in changed:
-            w = first.get(k)
-            if w is None:
-                issues.append(_issue(self.criteria[k].id, ISSUE_MISSING_STATEMENT,
-                                     "new observation but no statement; the statement is kept"))
-            else:
-                self.statements[k] = self._checked(k, w, issues)
+        changed = []
+        for k, w in sorted(first.items()):
+            old = self.statements[k]
+            self.statements[k] = self._checked(k, w, issues, new_doc=any(o.source == DOC for o in new[k]))
+            if self.statements[k] is not old:
+                changed.append(k)
         return {"observations": [o.to_dict() for o in entered],
                 "changed": [self.criteria[k].id for k in changed], "issues": issues}
 
-    def _checked(self, k: int, w: WrittenStatement, issues: List[Dict[str, Any]]) -> Statement:
+    def _checked(self, k: int, w: WrittenStatement, issues: List[Dict[str, Any]], new_doc: bool) -> Statement:
         """The statement *w* of criterion *k*, checked against its trace
-        (the old statement when its opening cannot be read)."""
+        (the old statement when its opening cannot be read, or when it
+        lowers a status that rested on a passage and *new_doc* is false:
+        no new passage observation on the criterion in the step)."""
         c, old = self.criteria[k], self.statements[k]
         opening = parse_opening(w.text)
         if opening is None or opening.criterion.lower() != c.id.lower():
             issues.append(_issue(c.id, ISSUE_NO_OPENING, "the opening has not the fixed form; the statement is kept"))
             return old
         text, status, selected = w.text, opening.status, opening.selected
+        # Passages set the status: the agent's turns alone never lower one
+        # that rested on a passage.
+        if (c.kind not in NO_DOC_KINDS and not new_doc and STATUS_LEVEL[status] < STATUS_LEVEL[old.status]
+                and any(self.is_doc_label(lb) for lb in old.support_cited)):
+            issues.append(_issue(c.id, ISSUE_TURN_ONLY_DROP,
+                                 f"status {status!r} below {old.status!r} with no new passage on the criterion; "
+                                 f"the statement is kept"))
+            return old
         observed = {o.label for o in self.trace[k]}
         cited, support = cited_labels(text), support_labels(text)
         bad = [lb for lb in cited if lb not in observed]
@@ -730,15 +743,18 @@ class BeliefState:
 
     def _unknown_candidates(self, k: int, selected: List[str]) -> List[str]:
         """The selected candidates of criterion *k* that occur in none of
-        its verified spans.  Checked for the kinds whose answer is a name or
-        figure a source writes out: a closed or aggregate criterion (the
-        candidate whole), the rest criterion ("<member>: <value>": the
-        member and the value each).  An aspect's answers are statements the
-        update words itself, so they are not checked."""
+        its verified spans and in no title of a passage observed on it (a
+        passage may name its subject in its title only).  Checked for the
+        kinds whose answer is a name or figure a source writes out: a
+        closed or aggregate criterion (the candidate whole), the rest
+        criterion ("<member>: <value>": the member and the value each).  An
+        aspect's answers are statements the update words itself, so they
+        are not checked."""
         kind = self.criteria[k].kind
         if kind == ASPECT:
             return []
         spans = [alnum(sp) for o in self.trace[k] for sp in o.verified_spans]
+        spans += [alnum(self._titles.get(o.label) or "") for o in self.trace[k] if o.source == DOC]
 
         def found(part: str) -> bool:
             key = alnum(part)
