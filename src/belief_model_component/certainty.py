@@ -1,39 +1,35 @@
 """The certainty score s_t of a belief state: one number in [0, 1] for how
-sure the belief is that the agent's answer is correct, compared with the
-correctness y of the agent's final answer (s_T, after the final call on
-the answer turn) or read during the search (s_t, after step t).
+sure the belief is, read from the statuses of its statements only, and
+compared with the correctness y of the agent's final answer (s_T, the
+belief after the answer turn) or read during the search (s_t, after step
+t).
 
-Three fixed steps, nothing learned:
+A fixed function, nothing learned:
 
-1. each nugget's status as a probability (``types.status_probability``:
-   (level + 2) / 6, doubtful 0, unknown 1/3, certain 1);
-2. per criterion a score q_k: for the answer criterion (the last
-   criterion of a multi-hop query) after the final call, the probability
-   of the nugget the answer turn supports (the belief in the answer the
-   agent gave), the unknown probability when no nugget has it; for every
-   other criterion, its most likely nugget's probability; a criterion
-   without a nugget scores as unknown.  The rest and aggregate criteria of
-   a set query are left out (``EXCLUDED_KINDS``): the rest criterion has
-   no gold yet, the aggregate's nuggets rest on the agent's turns only, so
-   they are always "unknown";
-3. s_t = the geometric mean of the q_k (``geometric_mean``): one weak or
-   contradicted criterion pulls it down, a query with many criteria (a set
+1. per criterion a score q_k: its status as a probability
+   (``types.status_probability``: (level + 2) / 6, doubtful 1/12 rather
+   than 0, unknown 1/3, certain 1);
+2. s_t = the geometric mean of the q_k (``geometric_mean``): one weak or
+   contradicted criterion pulls it down (but not to 0, since no status
+   scores 0), a query with many criteria (a set
    query's members) is not pushed to 0 as by a product.
 
-The nuggets are read as saved (``BeliefState.nugget_lists``: per
-criterion ``[{value, status, evidence: [{label, stance, value, ...}]}]``),
-so the same code scores a live belief and a saved one.
+The rest criterion of a set query is left out (``EXCLUDED_KINDS``): it
+stands for the members nobody listed, so it has no gold and no fixed
+answer.
+
+The statements are read as saved (``BeliefState.statement_lists``: per
+criterion ``{id, status, selected, text, ...}``), so the same code scores a
+live belief and a saved one.
 """
 
 import math
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .types import AGGREGATE, MULTI_HOP, REST, SUPPORTS, status_probability
+from .types import REST, UNKNOWN, status_probability
 
 # Criteria left out of the certainty score.
-EXCLUDED_KINDS = (REST, AGGREGATE)
-
-UNKNOWN_P = status_probability("unknown")
+EXCLUDED_KINDS = (REST,)
 
 
 def geometric_mean(scores: Sequence[float]) -> float:
@@ -54,37 +50,15 @@ AGGREGATORS: Dict[str, Callable[[Sequence[float]], float]] = {
 CERTAINTY_AGGREGATOR = "geometric_mean"
 
 
-def answer_criterion(query_shape: str, num_criteria: int) -> Optional[int]:
-    """The index of the criterion whose answer is the query's answer (the
-    last hop of a multi-hop query), or None."""
-    return num_criteria - 1 if query_shape == MULTI_HOP and num_criteria else None
-
-
-def _supported_by(nugget: Dict[str, Any], label: str) -> bool:
-    return any(e.get("label") == label and e.get("stance") == SUPPORTS for e in nugget.get("evidence") or [])
-
-
-def criterion_score(nuggets: List[Dict[str, Any]], answer_label: Optional[str] = None) -> float:
-    """q_k of one criterion's *nuggets*: with *answer_label* (the answer
-    turn's "t<n>"), the probability of the nugget that turn supports, else
-    of its most likely nugget; unknown when there is none."""
-    if answer_label is not None:
-        nuggets = [n for n in nuggets if _supported_by(n, answer_label)]
-    return max((status_probability(n["status"]) for n in nuggets), default=UNKNOWN_P)
-
-
-def criterion_scores(nuggets: List[List[Dict[str, Any]]], kinds: List[str], query_shape: str,
-                     answer_label: Optional[str] = None) -> List[float]:
+def criterion_scores(statements: List[Dict[str, Any]], kinds: List[str]) -> List[float]:
     """q_k of every criterion the score counts, in order."""
-    answer = answer_criterion(query_shape, len(kinds)) if answer_label is not None else None
-    return [criterion_score(ns, answer_label if k == answer else None)
-            for k, (ns, kind) in enumerate(zip(nuggets, kinds)) if kind not in EXCLUDED_KINDS]
+    return [status_probability(s.get("status") or UNKNOWN)
+            for s, kind in zip(statements, kinds) if kind not in EXCLUDED_KINDS]
 
 
-def certainty(nuggets: List[List[Dict[str, Any]]], kinds: List[str], query_shape: str,
-              answer_label: Optional[str] = None, aggregator: str = CERTAINTY_AGGREGATOR) -> Optional[float]:
-    """s_t of a belief (per criterion its *nuggets*, the criteria of
-    *kinds*); *answer_label* the answer turn's label after the final call
-    (None during the search).  None when no criterion counts."""
-    scores = criterion_scores(nuggets, kinds, query_shape, answer_label)
+def certainty(statements: List[Dict[str, Any]], kinds: List[str],
+              aggregator: str = CERTAINTY_AGGREGATOR) -> Optional[float]:
+    """s_t of a belief (per criterion its saved statement, the criteria of
+    *kinds*); None when no criterion counts."""
+    scores = criterion_scores(statements, kinds)
     return AGGREGATORS[aggregator](scores) if scores else None

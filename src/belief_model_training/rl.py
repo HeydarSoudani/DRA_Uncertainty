@@ -13,8 +13,9 @@ Each iteration, on one GPU shared by the vLLM engine and the trainer:
               gold criteria; a group whose chains all score alike gives no
               gradient and is replaced, up to REFILL_ROUNDS more rollouts
               (DAPO's dynamic sampling)
-    reward    per chain (rewards.Reward): R = w_obs obs + w_cons cons + w_cal cal
-              + w_final r_final (per-step parts averaged over the calls)
+    reward    per chain (rewards.Reward): R = w_format format + w_assign assign
+              + w_cal cal + w_final r_final (assign and cal per criterion,
+              then averaged over the criteria)
     update    GDPO advantages per chain (each term normalized within its
               group), given to every call of the chain -> engine.sleep ->
               trainer.onload -> PPO on all the calls -> save to sync_dir ->
@@ -24,8 +25,8 @@ Validation, before training and every ``val_every`` iterations: one greedy
 chain per val episode (a fixed sample), scored as in training.  ``final/``
 holds the checkpoint with the best mean validation reward (the start model
 when none beats it).  Each record holds the mean reward, its terms and
-``scoring.measures`` over the calls and final beliefs (the certainty score
-against correctness included).
+``scoring.measures`` over the chains (per criterion, and the certainty
+score against correctness).
 
 Outputs (``phase3_rl/``): ``metrics.jsonl`` (one line per iteration),
 ``validation.jsonl`` (one line per validation), ``step_{n}/`` every
@@ -54,7 +55,6 @@ from .trainer import BeliefPPOTrainer, group_advantages
 
 # Extra rollouts per iteration to replace the groups without spread.
 REFILL_ROUNDS = 2
-LOGGED = ("format",)
 
 
 def _mean(values: List[Optional[float]]) -> Optional[float]:
@@ -66,17 +66,16 @@ def score_chains(chains: List[Chain], reward_fn: Reward) -> List[Dict[str, Any]]
     """The reward of each chain, after the gold of all their values is
     resolved in one batch."""
     reward_fn.gold.resolve([v for c in chains
-                            for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.nuggets)])
+                            for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.statements)])
     return [reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
-                      [cc.finish_reason for cc in c.calls], c.nuggets, c.answer_label) for c in chains]
+                      [cc.finish_reason for cc in c.calls], c.statements)
+            for c in chains]
 
 
 def score_stats(scores: List[Dict[str, Any]], prefix: str = "") -> Dict[str, Any]:
-    """Mean reward, mean of each term and of the logged values (over the
-    chains where they apply)."""
+    """Mean reward and mean of each term (over the chains where it applies)."""
     out = {f"{prefix}reward": _mean([s["reward"] for s in scores])}
     out.update({f"{prefix}{k}": _mean([s["terms"][k] for s in scores]) for k in TERMS})
-    out.update({f"{prefix}{k}": _mean([s[k] for s in scores]) for k in LOGGED})
     return out
 
 
@@ -105,7 +104,7 @@ def validate_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMR
     chains = run_chains(episodes, store, engine, group_size=1, temperature=0.0)
     scores = score_chains(chains, reward_fn)
     return {"episodes": len(episodes), **rollout_stats(chains), **score_stats(scores),
-            **measures([row for s in scores for row in s["rows"]], [s["final"] for s in scores])}
+            **measures([s["score"] for s in scores])}
 
 
 def _round(record: Dict[str, Any]) -> Dict[str, Any]:

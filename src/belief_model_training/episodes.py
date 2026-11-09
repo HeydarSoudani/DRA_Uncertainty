@@ -3,7 +3,7 @@
 An episode is one query of an inference run (``experiments/inference/dra_inference.py``)
 on a training pool split, in ``monitor`` or ``off`` mode: the query and per
 search iteration the documents the agent was shown, in order, and the
-agent's turn of the iteration (its reasoning and queries,
+agent's turn of the iteration (its reasoning,
 ``agent_turn.agent_turn_text``), then its answer turn
 (``trajectory/{qid}.jsonl`` and ``generation/{qid}.md``, ``read_episode``).  Its steps are numbered as
 the belief model numbers them (``iteration``, from 1, one per search
@@ -16,9 +16,10 @@ and 3).
 A monitor run also has the teacher belief model's view
 (``belief/{qid}.jsonl``, ``attach_teacher``): its criteria and the model
 that wrote them, per iteration the teacher's reply, the agent turn it read
-and the records the reply gave (observations and nugget updates), and the
-final call on the answer turn.  The belief file must have one step per
-search iteration of the trajectory, with the same documents.
+and the records the reply gave (observations, changed criteria, issues
+and the statements after it), and the final call on the answer turn (the
+``final`` line).  The belief file must have one step per search iteration
+of the trajectory, with the same documents.
 
 Document text is read back from the corpus (``CorpusLookup.contents``, the
 field the retrievers return).
@@ -29,7 +30,7 @@ LLM calls made by the caller: the student's chains in phase 3, the
 teacher's saved replies in ``replay_teacher``, which gives the exact prompt
 of every teacher call (the SFT inputs), the final call on the answer turn
 included, and checks the replay against the saved records (span checks
-depend on the passage text, anchors on the agent turns), so an episode
+depend on the passage text and on the agent turns), so an episode
 whose documents or prompts cannot be rebuilt is caught.
 
 The episode also carries the gold of the rewards and scores: per step the
@@ -58,8 +59,8 @@ from utils.io_utils import read_jsonl
 
 from .config import Split
 
-# The records of one belief update (``BeliefState.apply``), as saved.
-RECORD_KEYS = ("think_observations", "doc_observations", "nugget_updates")
+# The records of one belief update (``BeliefUpdateSignal``), as saved.
+RECORD_KEYS = ("observations", "changed", "issues", "statements")
 
 
 @dataclass
@@ -80,7 +81,7 @@ class EpisodeStep:
     teacher_failed: bool = False
     teacher_records: Dict[str, Any] = field(default_factory=dict)
     saved_recall: Optional[float] = None
-    # The agent's turn of the iteration (reasoning and queries): from the
+    # The agent's turn of the iteration (its reasoning): from the
     # trajectory, or as the teacher read it (attach_teacher).
     agent_turn: Optional[str] = None
     # Gold criteria (nugget_gold): the ids of the criteria whose gold
@@ -108,8 +109,6 @@ class Episode:
     # Monitor runs: the run's criteria, the model that wrote them.
     criteria: List[Dict[str, str]] = field(default_factory=list)
     criteria_model: Optional[str] = None
-    # Steps whose teacher replay matched the saved run (all of them when it matched).
-    replay_steps: Optional[int] = None
     replay_error: Optional[str] = None
     # The agent of the run, and the pool source of the query (its gold annotation row).
     policy_model: Optional[str] = None
@@ -145,7 +144,13 @@ class Episode:
 
     @property
     def gold_by_id(self) -> Dict[str, Dict[str, Any]]:
-        return {c["id"]: c for c in self.gold_criteria or []}
+        """Per id, its gold criterion; built once per ``gold_criteria``
+        list (read in every inner loop of the scoring)."""
+        cached = self.__dict__.get("_gold_by_id")
+        if cached is None or cached[0] is not self.gold_criteria:
+            cached = (self.gold_criteria, {c["id"]: c for c in self.gold_criteria or []})
+            self.__dict__["_gold_by_id"] = cached
+        return cached[1]
 
     def gold_criteria_list(self) -> List[Criterion]:
         """The gold criteria, as the belief model reads them."""
@@ -189,7 +194,7 @@ def read_episode(path: Path, split: Split, run_dir: Path) -> Optional[Episode]:
     turns = {}
     for i in docs:
         own = [r for r in steps if _iteration(r["iter"]) == i]
-        turns[i] = agent_turn_text([r.get("think") for r in own], [r.get("search_query") for r in own])
+        turns[i] = agent_turn_text([r.get("think") for r in own])
     qid = str(meta["qid"])
     generation = Path(run_dir) / "generation" / f"{qid}.md"
     answer = generation.read_text(encoding="utf-8") if generation.exists() else ""
@@ -218,6 +223,7 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     documents."""
     lines = read_jsonl(path)
     meta = next((r for r in lines if r.get("record") == "meta"), None)
+    final = next((r for r in lines if r.get("record") == "final"), None)
     if meta is None or meta.get("schema_version") != SCHEMA_VERSION:
         return f"belief file of schema {meta and meta.get('schema_version')}, not {SCHEMA_VERSION}"
     if not meta.get("criteria"):
@@ -240,7 +246,7 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
         doc_ids = list(dict.fromkeys(d["doc_id"] for d in r.get("docs") or []))
         if doc_ids != step.doc_ids:
             return f"belief step {r['iteration']}: documents differ from the trajectory's"
-        step.teacher_output = r.get("belief_output")
+        step.teacher_output = r.get("reply")
         step.teacher_failed = _call_failed(r.get("errors") or [])
         step.teacher_records = _records(r)
         step.saved_recall = r.get("recall_so_far")
@@ -255,14 +261,13 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     episode.criteria = meta["criteria"]
     episode.criteria_model = (meta.get("criteria_info") or {}).get("model")
     episode.num_relevant = meta.get("num_relevant")
-    final = meta.get("final_update")
     # The run made no final call: the answer turn it saw was empty.
     episode.answer_turn = None
     if final is not None:
         episode.answer_turn = final.get("agent_turn")
-        episode.teacher_final_output = final.get("belief_output")
+        episode.teacher_final_output = final.get("reply")
         episode.teacher_final_failed = _call_failed(final.get("errors") or [])
-        episode.teacher_final_records = {**_records(final), "doc_observations": None}
+        episode.teacher_final_records = _records(final)
     return None
 
 
@@ -344,15 +349,6 @@ class UpdaterCall:
     # Per passage, its text as the call showed it (``LLMBeliefUpdater.shown_text``).
     shown: List[str] = field(default_factory=list)
 
-    @property
-    def final(self) -> bool:
-        return self.t is None
-
-    @property
-    def doc_ids(self) -> List[str]:
-        """The documents of the call's passages."""
-        return [doc for _, doc, _ in self.passages]
-
     def shown_text(self) -> Dict[str, str]:
         """Per document of the call, its text as the call showed it."""
         return {doc: text for (_, doc, _), text in zip(self.passages, self.shown)}
@@ -403,26 +399,26 @@ class BeliefTracker:
             raise RuntimeError("the previous call has no reply yet")
         if self.signal.state is None or self.episode.answer_turn is None:
             return None
-        iteration = len(self.episode.steps) + 1
-        self.signal.mark_final(iteration)
-        return self._open(None, iteration, [], self.episode.answer_turn)
+        return self._open(None, len(self.episode.steps) + 1, [], self.episode.answer_turn)
 
     def submit(self, raw: Optional[str]) -> Dict[str, Any]:
         """Apply the reply *raw* (None: the call failed) to the open call;
-        returns the call's outcome: ``{iteration, parsed, think_observations,
-        doc_observations, nugget_updates}`` (no observation records and no
-        nugget update when the reply did not parse)."""
+        returns the call's outcome: ``{iteration, parsed, observations,
+        changed, issues, statements}`` (``statements`` every criterion's
+        statement after the call; no observation and no change when the
+        reply did not parse)."""
         call = self._pending
         if call is None:
             raise RuntimeError("no open call")
         self._pending = None
-        parsed = (self.updater.parse(raw, self.signal.state, call.iteration, call.agent_turn, call.passages)
+        parsed = (self.updater.parse(raw, call.iteration, call.agent_turn, call.passages)
                   if raw is not None else None)
         # As the inference belief model records a call whose reply did not parse.
         out: Dict[str, Any] = {"iteration": call.iteration, "parsed": parsed is not None,
-                               "think_observations": None, "doc_observations": None, "nugget_updates": []}
+                               "observations": None, "changed": [], "issues": []}
         if parsed is not None:
             out.update(self.signal.apply(parsed, call.passages))
+        out["statements"] = self.signal.statements()
         return out
 
 
@@ -440,13 +436,12 @@ class TeacherCall:
 
 
 def replay_teacher(episode: Episode, docs: List[List[Dict[str, Any]]],
-                   ) -> Tuple[List[TeacherCall], int, Optional[str], Optional[BeliefTracker]]:
+                   ) -> Tuple[List[TeacherCall], Optional[str], Optional[BeliefTracker]]:
     """Re-run the belief update of *episode* with the teacher's saved replies.
 
-    Returns ``(calls, matched, error, tracker)``: the teacher's calls before
-    the first step whose replay differs from the saved run (the final call
-    on the answer turn last), the number of steps before it, the reason of
-    the difference (None when every step and the final call match), and the
+    Returns ``(calls, error, tracker)``: the teacher's calls before the
+    first step whose replay differs from the saved run (the final call on
+    the answer turn last), the reason of the difference (None when every step and the final call match), and the
     tracker after the replay (its belief is the teacher's final one when
     everything matched).
     """
@@ -456,20 +451,17 @@ def replay_teacher(episode: Episode, docs: List[List[Dict[str, Any]]],
     steps.append((None, episode.teacher_final_output, episode.teacher_final_failed, episode.teacher_final_records))
     for t, output, failed, saved in steps:
         name = f"iteration {episode.steps[t].iteration}" if t is not None else "the final call"
-        matched = t if t is not None else len(episode.steps)
         call = tracker.open_step(t) if t is not None else tracker.open_final()
         if call is None:
             if output is not None or failed:
-                return calls, matched, f"{name}: the saved run made the call, the replay does not", tracker
+                return calls, f"{name}: the saved run made the call, the replay does not", tracker
             continue
         if output is None and not failed:
-            return calls, matched, f"{name}: the replay makes the call, the saved run did not", tracker
+            return calls, f"{name}: the replay makes the call, the saved run did not", tracker
         reply = None if failed else output
         outcome = tracker.submit(reply)
         for key in RECORD_KEYS:
-            if key == "doc_observations" and call.final:
-                continue
-            if _canonical(outcome[key]) != _canonical(saved.get(key)):
-                return calls, matched, f"{name}: replayed {key} differ from the saved ones", tracker
+            if _canonical(outcome.get(key)) != _canonical(saved.get(key)):
+                return calls, f"{name}: replayed {key} differ from the saved ones", tracker
         calls.append(TeacherCall(call, reply, outcome))
-    return calls, len(episode.steps), None, tracker
+    return calls, None, tracker

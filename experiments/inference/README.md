@@ -74,8 +74,9 @@ The belief model (`src/belief_model_component/`) can be plugged into any agent:
 
 It follows Agent-BRACE (Singh et al., 2026, arXiv:2605.11436), adapted to search: the environment is the retriever,
 the observation of a search iteration is its documents and the agent's turn, and the belief state gives each
-criterion of the query its nuggets: the answers found for it, each with one of the seven statuses of Agent-BRACE's
-verbal belief scale and the sources it rests on. All criteria and belief calls are LLM calls: the criteria extractor
+criterion of the query one statement: one of the seven statuses of Agent-BRACE's verbal belief scale, for how likely
+it is covered, its selected candidate, the sources this rests on and the other candidates with why they lose or tie. All criteria and belief
+calls are LLM calls: the criteria extractor
 uses `llm_criteria`, the belief update (`src/belief_model_component/updater.py`) `belief_judge_model` (default
 `llm_criteria`).
 
@@ -107,9 +108,9 @@ Rules for report criteria:
 Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `rest`, `aggregate` or `aspect` (one
 aspect of a report topic). All clues and hops are closed; a set query's members are closed, its "any other member"
 criterion rest and its last criterion aggregate (each added by code when the model leaves it out); all report
-criteria are aspects. A closed or aggregate criterion has one answer, so its nuggets are alternatives; the others
+criteria are aspects. A closed or aggregate criterion has one answer, so its candidates are alternatives; the others
 have several answers that hold together (members, values, facts). No document states an aggregate (the agent computes
-it), so its nuggets rest on the agent's turns only.
+it), so its candidates rest on the agent's turns only.
 
 **Gold and silver criteria.** Criteria are gold when they come from the question or from the dataset's annotation,
 silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_criteria`, `criteria_choice`):
@@ -175,68 +176,80 @@ Rules of a bank line:
 
 ### Belief update
 
-The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). b_0 has no nugget. Each search iteration
-makes one call (`belief_update_system.txt` in `src/belief_model_component/prompts/`, the per-shape context in
-`nugget_shapes.txt`), the same prompt for the prompted teacher and a trained student, so one training sample is one
-call. It reads every criterion with its current belief, the agent's turn of the iteration (its reasoning and search
-queries, labelled `t<iteration>`; at the end, its reasoning and final answer) and the iteration's documents not judged
-before, each labelled `d<n>` when first shown. Its reply has three lists:
+The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 every statement is "unknown". Each
+search iteration makes one call (`belief_update_system.txt` in `src/belief_model_component/prompts/`, the per-shape
+context in `criterion_shapes.txt`), the same prompt for the prompted teacher and a trained student, so one training
+sample is one call. It reads every criterion with its current statement, the agent's turn of the iteration (its
+reasoning only, labelled `t<iteration>`; the search queries stay in the trajectory) and the iteration's documents not
+judged before, each labelled `d<n>` when first shown. After the last iteration, the agent's answer turn (its
+reasoning and final answer) is read the same way, with no document. The reply has three lists:
 
-1. **Think observations**, from the turn only: the turn gives or rejects one value of one criterion. A value that
-   does not occur in the turn is dropped.
-2. **Document observations**, from the passages only: a passage supports or contradicts one value of one criterion
-   (not the aggregate), with spans copied from the passage. Each span is checked on its own (a span joined with
-   "..." is split first); an observation without a verified span is dropped.
-3. **Beliefs**: per criterion with a new observation, its whole new nugget list: one per answer (values naming one
-   answer in different words share a nugget), each with a status and the labels of its sources. A nugget whose value
-   is neither a current nugget's nor a new observation's, or with no valid status, is dropped. Its evidence is, per
-   cited label, that source's observations (on its value, else all of the source's observations on the criterion),
-   plus every source with an observation on its value.
+1. **Think observations**: per criterion, the spans of the turn that give information about it. A span must occur in
+   the turn; an observation without one is dropped.
+2. **Passage observations**: per new passage and criterion (not a computed one), the spans of the passage that give
+   information about it. Each span is checked on its own (a span joined with "..." is split first); an observation
+   without a verified span is dropped. A passage may give information about several criteria.
+3. **Statements**: per criterion with a new observation, its new statement, free text with a fixed opening:
 
-The belief is self-contained: each nugget keeps its sources' observations (label, stance, value, verified spans), and
-those are all the next call reads of b_{t-1} (the latest five per nugget are listed). When the call fails the belief
-stays as it was and the documents are shown again when retrieved again.
+```
+It is <status> that <id> is covered, by "<selected candidate>": <the observations the status rests on, with their source labels>. <each other candidate, with its source labels, and why it loses or ties>.
+It is unknown whether <id> is covered.
+```
 
-Criteria are independent: no observation or nugget refers to another criterion. The status of a nugget, lowest
-first, is how likely its value is a correct answer:
+The belief is kept at two levels. **Shown**: the statement text, the only thing the next update reads of a criterion
+and the only thing the agent's `<belief_state>` tag shows (in full, with the agent's own passage labels). **Saved**:
+every observation that entered (its verified spans), and per criterion every source ever assigned to it (the
+`references` of the `final` line), whether or not its statement cites it.
 
-| level | status | the documents ... |
+Code reads the opening of each statement (status and selected candidates), the labels it cites and those of its
+support part (before the first sentence that starts with a quoted candidate), and checks it against the criterion's
+observations (`BeliefState.apply`): a statement whose opening cannot be read is not taken (`no_opening`); a cited
+source without an observation on the criterion (`bad_ref`), a selected candidate in none of its spans
+(`unknown_candidate`), several selected candidates for a one-answer criterion (`extra_selected`) and a status above
+"unknown" without a candidate (`no_selected`) are flagged. A status above "possible" whose support part cites no
+passage observed on the criterion is lowered to "possible", and the status word of the text rewritten (`turn_only`;
+not for a computed criterion). A statement written for a criterion without a new observation is ignored. When the call
+fails the belief stays as it was and the documents are shown again when retrieved again. Every problem goes into the
+step's `issues` list (`criteria.ISSUE_*`).
+
+The statuses, lowest first (when the observations fit several, the lowest):
+
+| level | status | the observations ... |
 |---|---|---|
-| -2 | doubtful | contradict the value, and none supports it |
-| -1 | unlikely | point against it without contradicting it (e.g. support another value of a one-answer criterion), and none supports it |
-| 0 | unknown | do not relate to it; only the agent's turns give it |
-| 1 | possible | relate to it but do not show it is an answer, or disagree on it |
-| 2 | probable | show it only in part, indirectly, or by combining several documents |
-| 3 | almost certain | show most of what makes it an answer, and none contradicts it |
-| 4 | certain | show it is an answer, and none contradicts it |
+| -2 | doubtful | passages contradict every candidate, and none supports one |
+| -1 | unlikely | a passage contradicts the selected candidate, or the reasoning rejects every candidate it gave |
+| 0 | unknown | give no candidate |
+| 1 | possible | only reasoning supports the selected candidate, or another candidate has as much passage support |
+| 2 | probable | passages meet some parts of the criterion, or another candidate has less passage support |
+| 3 | almost certain | passages meet most parts, none contradicts the selected candidate or supports another |
+| 4 | certain | passages meet all parts, none contradicts the selected candidate or supports another |
 
-The agent's turns never raise a status above `unknown`: the status rates the documents, and the evidence labels show
-which source each nugget rests on (document observations from the retriever side, think observations from the
-reasoner side). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the neutral level 0. "certain" is
-the paper's "confirmed / certain".
+Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the neutral level 0. "certain" is the paper's
+"confirmed / certain".
 
-The update prompt and the agent read each nugget as one sentence (`belief_state.nugget_sentence`):
+The update prompt reads each criterion with its statement text (`belief_state.format_belief`):
 
 ```
-It is certain that the answer is "Henrik Dahl", given [d3] [t2].
-It is doubtful that the answer is "Nils Berg", given [t1]; against [d2].
+c2 (one answer): the engineer who was born in the town where the Varn Folk Museum was founded
+  It is certain that c2 is covered, by "Henrik Dahl": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. "Nils Berg" (t1) is ruled out: d4 states that he was born in Tirsa.
 ```
 
-The certainty score s_t (`belief_model_component/certainty.py`) turns a belief into one number in [0, 1]:
+The certainty score s_t (`belief_model_component/certainty.py`) is a fixed function of the statuses only:
 
-1. Each status becomes a probability, (level + 2) / 6 (doubtful 0, unknown 1/3, certain 1).
-2. Each criterion is scored by its most likely nugget, or as unknown without a nugget. After the final call, the last
-   criterion of a multi-hop query is scored by the nugget the answer turn supports, i.e. the agent's own answer.
-3. s_t is the geometric mean over the criteria. The rest and aggregate criteria of a set query are left out.
+1. Each criterion's status becomes a probability, (level + 2) / 6 (doubtful 1/12 instead of 0, unknown 1/3,
+   certain 1): q_k. With no status at 0, one doubtful criterion lowers s_t without fixing it at 0.
+2. s_t is the geometric mean over the criteria. The rest criterion of a set query is left out.
 
-s_T, after the final call, is compared with the correctness of the agent's final answer.
+s_T, after the answer turn, is compared with the correctness of the agent's final answer.
 
-Saved per iteration (`belief/{qid}.jsonl`, schema in `src/evaluation/belief/writer.py`), one line per iteration: the
-passages shown, the think and document observations with their notes (a document's spans are saved here, once), the
-nugget updates, the nuggets after the iteration (evidence cited by label), the certainty score `certainty` and the raw
-reply; the meta line has `final_certainty`, the score after the final call on the answer turn. The same belief is
-readable in the trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each
-iteration and the final belief before the result. For evaluation only, never shown to the agent:
+Saved in `belief/{qid}.jsonl` (schema in `src/evaluation/belief/writer.py`): a meta line, one line per iteration and
+one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, the documents
+(`{doc_id, new, label}`), every criterion's statement after the step (`{id, status, selected, text, cited,
+support_cited}`), the criteria it `changed`, the `observations` that entered (with their verified spans), the reply's
+`issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
+criterion every source assigned to it over the sample); its `certainty` is s_T. The same belief is readable in the
+trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each iteration and
+the final belief before the result. For evaluation only, never shown to the agent:
 
 - `new_item_precision` and `recall_so_far`, against the qrels at the dataset's `min_relevance_score`. NeuCLIR and
   RAGTIME use grade 3 (the very valuable docs), while the end-of-run `GradedRecall@N` counts every official level
@@ -254,17 +267,16 @@ results, one `<belief_state>` tag is appended to the trajectory (`src/belief_mod
 ```xml
 <belief_state step="2">
   <criteria>
-    <k1>the engineer who was born in Osby
-      It is certain that the answer is "Henrik Dahl", given [d1] [t2].
-      It is doubtful that the answer is "Nils Berg", given [t1]; against [d2].
+    <k1>the engineer who was born in the town where the Varn Folk Museum was founded
+      It is certain that k1 is covered, by "Henrik Dahl": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. "Nils Berg" (t1) is ruled out: d4 states that he was born in Tirsa.
     </k1>
-    <k2>the lighthouse that the engineer designed</k2>
+    <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded</k2>
   </criteria>
-  <sources>[d1] Henrik Dahl | [d2] Nils Berg (engineer)</sources>
+  <sources>[d2] Henrik Dahl | [d4] Nils Berg (engineer) | [d5] Osby</sources>
 </belief_state>
 ```
 
-The tag is descriptive only: each criterion's nuggets, then the titles of the documents they cite. Gold-based fields
+The tag is descriptive only: each criterion's full statement (its passage labels the agent's own), then the titles of the documents the statements cite. Gold-based fields
 (`new_item_precision`, `recall_so_far`, relevant counts) stay in `belief/{qid}.jsonl` for analysis. Where the tag goes:
 
 | agents | place |

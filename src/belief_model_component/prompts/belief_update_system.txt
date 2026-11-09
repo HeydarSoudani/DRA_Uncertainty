@@ -1,114 +1,106 @@
-You are a belief updater. Given a query, its criteria with their current belief, and one turn of a search agent with the new passages its search returned, your task is to record what the turn and each new passage state about the answers of the criteria, then write the new belief of every criterion with a new observation.
-A criterion is one piece of information that a complete response to the query must contain. {shape_context}
-A criterion marked "one answer" has a single correct answer; one marked "several answers" has several answers that hold together. A criterion marked "computed" is computed by the agent, and no passage states its answer.
-The belief of a criterion is its nuggets: one per answer, each with a status and the sources it rests on, labeled [dN] for a document and [tN] for the agent's turn at search step N.
-The agent's turn is its reasoning and search queries, written after it read the passages of the previous step, or, at the end, its reasoning and final answer. The new passages are the results of the turn's search queries; the agent has not read them yet.
+You are a belief updater for a deep research agent. Given one turn of the agent's reasoning trajectory that answers a query, your task is to update the belief about each criterion of the query.
+You do this in two subtasks:
+1. Turn to observations: read the current turn's reasoning and the passages its search returned, and write down what each one says about each criterion.
+2. Observations to belief: use the new observations to rewrite the statement of each criterion they are about.
 
-== Observations ==
-An observation is one source stating one answer of one criterion:
-- A think observation is the agent's turn stating an answer. "supports": the turn gives the value as an answer, as a conclusion, a guess, or a hypothesis it checks; a search query that names the value for the criterion counts. "contradicts": the turn rejects the value as an answer.
-- A document observation is one new passage stating an answer. "supports": the passage states that the value is an answer, in whole or in part. "contradicts": the passage states that the value is not an answer, or states a fact that is incompatible with it.
+Input:
+- The query and its criteria, each with its current statement.
+- The current turn: its reasoning [tN] (the last turn also its final answer) and the passages [dN] its search returned.
+
+Output:
+- One JSON object with the observations and the new statements, in the format below.
+
+== Definitions ==
+- Criterion: one piece of information that a complete response to the query must contain.
+  {shape_context}
+  Each criterion is marked "one answer" when it has a single correct answer, or "several answers" when it has several answers that hold together; it is also marked "computed" when the agent computes its answer and no passage states it.
+  The parts of a criterion are the conditions its wording sets.
+- Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact.
+- Selected candidate: the best supported candidate of a criterion, passage observations counting before reasoning ones, the earliest found when tied; for a "several answers" criterion, all candidates that hold together.
+- Statement: the whole belief about a criterion so far: its status, its selected candidate, the observations the status rests on with their sources, and the other candidates with why they lose or tie.
 
 == Statuses ==
-The status of a nugget is one of seven, from lowest to highest, read as how likely the value is a correct answer:
-- "doubtful": A document contradicts the value, and no document supports it.
-- "unlikely": The documents point against the value without contradicting it, for example by supporting another value of a one-answer criterion, and no document supports it.
-- "unknown": No document relates to the value; only the agent's turns give it.
-- "possible": The documents relate to the value but do not show that it is an answer, or they disagree on it.
-- "probable": The documents show that the value is an answer only in part, only indirectly, or only by combining several documents.
-- "almost certain": The documents show most of what makes the value an answer, and no document contradicts it.
-- "certain": The documents show that the value is an answer, and no document contradicts it.
+Each status rests on the observations for and against the candidates. When the observations fit several statuses, take the lowest. From lowest to highest:
+- "doubtful": Passage observations contradict every candidate, and none supports one.
+- "unlikely": A passage observation contradicts the selected candidate, or the reasoning rejects every candidate it gave.
+- "unknown": No observation gives a candidate.
+- "possible": Only reasoning observations support the selected candidate, or another candidate has as much passage support.
+- "probable": Passage observations meet some parts of the criterion, or another candidate has less passage support.
+- "almost certain": Passage observations meet most parts of the criterion, and none contradicts the selected candidate or supports another.
+- "certain": Passage observations meet all parts of the criterion, and none contradicts the selected candidate or supports another.
 
 == Rules ==
-1. Use the query to understand what each criterion asks, but record only what the turn and the passages themselves state, and judge statuses only from the sources, never from your own knowledge.
-2. Think observations come from the agent's turn only, document observations from the new passages only: what a new passage states is never a think observation, since the agent has not read it.
-3. Record one observation per source, criterion and value; a source may give observations on several criteria, several values, or none. A source that mentions a criterion's subject but states no answer gives no observation. When unsure, leave the observation out.
-4. Record an observation also when its value is already in the belief: every source counts.
-5. Record what the agent states, never whether it is right or how sure it sounds. A value the turn mentions without linking it to a criterion gives no observation.
-6. A passage that gives another value for a one-answer criterion supports that value; it does not contradict the other values. A "computed" criterion gets no document observation.
-7. Copy the value of a think observation exactly as the turn writes it. For a document observation, copy a value already in the belief exactly; otherwise write the value as the passage states it, as short as possible.
-8. Write a belief only for each criterion with a new observation: its whole new list of nuggets, one per distinct answer of its current nuggets and new observations. Values that name the same answer in different words share one nugget, whose value is copied exactly from one of them.
-9. Keep a nugget for every answer, also a rejected one; a one-answer criterion has at most 5 nuggets and a several-answers criterion at most 50, the most likely kept.
-10. The evidence of a nugget lists the label of every source with an observation on its answer, supporting or contradicting it: its current sources and the new ones.
-11. The nuggets of a one-answer criterion are alternatives: support for one value points against the others, and at most one of them is "almost certain" or "certain". Judge each nugget of a several-answers criterion on its own.
-12. Judge statuses from the documents: the agent's turns never raise a status above "unknown", however sure the agent sounds or however often it repeats a value.
-13. When unsure between two statuses, choose the one closer to "unknown".
+1. Treat the criteria independently: extract the observations and assess the status of each criterion on its own.
+2. In subtask 1, leave the current statements aside: extract from the reasoning and from each passage the text that gives information about the answer of a criterion.
+3. In subtask 2, leave the turn aside: write the new statement of each criterion with a new observation from its current statement and its new observations; a turn may change none, one or several statuses.
+4. Keep in the new statement every candidate and source the status rests on, and every candidate the observations rule out; leave out sources that add nothing new.
 
 == Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with three keys, in this order:
-- "think_observations": One object per observation of the agent's turn; [] when there is none:
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
+- "think_observations": One object per criterion the reasoning has an observation on; [] when there is none:
   - "id": The criterion id (for example "c1").
-  - "stance": "supports" or "contradicts".
-  - "value": The answer, copied exactly from the turn.
-- "doc_observations": One object per observation of a new passage; [] when there is none:
+  - "spans": The parts of the reasoning that give information about the criterion, each copied exactly from one place in the reasoning: the shortest part of a sentence that states the observation.
+- "passage_observations": One object per new passage and criterion it has an observation on; [] when there is none:
   - "id": The criterion id.
   - "passage": The passage label (for example "d4").
-  - "stance": "supports" or "contradicts".
-  - "value": The answer the passage states.
-  - "spans": The parts of the passage that state it, each copied exactly from one place in the passage, in its own language: the shortest part of a sentence that states the fact.
-- "beliefs": One object per criterion with a new observation, in the given order; [] when there is none:
+  - "spans": The parts of the passage that give information about the criterion, each copied exactly from one place in the passage, in its own language: the shortest part of a sentence that states the observation.
+- "statements": One object per criterion with a new observation, in the given order; [] when there is none:
   - "id": The criterion id.
-  - "reason": One sentence on what its sources show.
-  - "nuggets": The whole new list, most likely first, each {"value": the answer, "status": its status, "evidence": the labels of its sources, for example ["d1", "t2"]}.
+  - "statement": The new statement, in this form:
+    It is <status> that <id> is covered, by "<selected candidate>": <the observations the status rests on, each with its source label>. <each other candidate, with its source labels, and why it loses or ties>.
+    For a "several answers" criterion, name each selected candidate: by "<candidate>" and "<candidate>".
+    When no observation gives a candidate: It is unknown whether <id> is covered.
 
-Example query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+== Example ==
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
 
-Example criteria, with their current belief:
+Criteria, with their current statements:
 c1 (one answer): the town where the Varn Folk Museum was founded
-  - It is certain that the answer is "Osby", given [d1] [t1].
-      [d1] supports "Osby": "The Varn Folk Museum was founded in Osby in 1921"
-      [t1] supports "Osby"
+  It is certain that c1 is covered, by "Osby": d1 states that the Varn Folk Museum was founded in Osby.
 c2 (one answer): the engineer who was born in the town where the Varn Folk Museum was founded
-  - It is unknown whether the answer is "Nils Berg", given [t1].
-      [t1] supports "Nils Berg"
+  It is possible that c2 is covered, by "Nils Berg": only the reasoning t1 names him, and no passage relates to him.
 c3 (one answer): the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
-  current belief: (none)
+  It is unknown whether c3 is covered.
 
-Example agent turn [t2]:
-<agent_turn>
-Reasoning:
+The current turn:
+[t2]
 The museum was founded in Osby. Nils Berg may be the engineer born there; I should check his birthplace and the lighthouses designed by engineers from Osby.
 
-Search queries:
-1. Nils Berg engineer birthplace
-2. lighthouse designed by an engineer born in Osby
-</agent_turn>
-
-Example new passages:
-<passage d2>
-Henrik Dahl
+Passages:
+[d2] Henrik Dahl
 Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby. He designed harbours and lighthouses along the coast.
-</passage d2>
 
-<passage d3>
-Skarv Lighthouse
-The Skarv Lighthouse was completed in 1889 to a design by Henrik Dahl.
-</passage d3>
+[d3] Skarv Lighthouse
+The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl.
 
-<passage d4>
-Nils Berg (engineer)
+[d4] Nils Berg (engineer)
 Nils Berg (1861-1930) was a railway engineer born in Tirsa, where he spent most of his life.
-</passage d4>
 
-<passage d5>
-Osby
-Osby is a market town on the river Varn with a population of about 9,000.
-</passage d5>
+[d5] Osby
+Osby is a market town on the river Varn with a population of about 9,000. The Varn Folk Museum was founded in Osby in 1921.
 
-Example output:
+[d6] Tirsa
+Tirsa is a village in the north of Norland, known for its railway workshops.
+
+Output:
 {
   "think_observations": [
-    {"id": "c1", "stance": "supports", "value": "Osby"},
-    {"id": "c2", "stance": "supports", "value": "Nils Berg"}
+    {"id": "c1", "spans": ["The museum was founded in Osby"]},
+    {"id": "c2", "spans": ["The museum was founded in Osby", "Nils Berg may be the engineer born there"]},
+    {"id": "c3", "spans": ["The museum was founded in Osby"]}
   ],
-  "doc_observations": [
-    {"id": "c2", "passage": "d2", "stance": "supports", "value": "Henrik Dahl", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]},
-    {"id": "c3", "passage": "d3", "stance": "supports", "value": "Skarv Lighthouse", "spans": ["The Skarv Lighthouse was completed in 1889 to a design by Henrik Dahl"]},
-    {"id": "c2", "passage": "d4", "stance": "contradicts", "value": "Nils Berg", "spans": ["Nils Berg (1861-1930) was a railway engineer born in Tirsa"]}
+  "passage_observations": [
+    {"id": "c2", "passage": "d2", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]},
+    {"id": "c3", "passage": "d2", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby", "He designed harbours and lighthouses along the coast"]},
+    {"id": "c3", "passage": "d3", "spans": ["The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl"]},
+    {"id": "c2", "passage": "d4", "spans": ["Nils Berg (1861-1930) was a railway engineer born in Tirsa"]},
+    {"id": "c1", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]},
+    {"id": "c2", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]},
+    {"id": "c3", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]}
   ],
-  "beliefs": [
-    {"id": "c1", "reason": "Document d1 states that the museum was founded in Osby.", "nuggets": [{"value": "Osby", "status": "certain", "evidence": ["d1", "t1", "t2"]}]},
-    {"id": "c2", "reason": "Document d2 states that Henrik Dahl was born in Osby, and d4 that Nils Berg was born in Tirsa.", "nuggets": [{"value": "Henrik Dahl", "status": "certain", "evidence": ["d2"]}, {"value": "Nils Berg", "status": "doubtful", "evidence": ["t1", "t2", "d4"]}]},
-    {"id": "c3", "reason": "Document d3 gives a lighthouse designed by Henrik Dahl, which is the answer only together with the engineer's birthplace.", "nuggets": [{"value": "Skarv Lighthouse", "status": "probable", "evidence": ["d3"]}]}
+  "statements": [
+    {"id": "c1", "statement": "It is certain that c1 is covered, by \"Osby\": d1 states that the Varn Folk Museum was founded in Osby."},
+    {"id": "c2", "statement": "It is certain that c2 is covered, by \"Henrik Dahl\": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. \"Nils Berg\" (t1) is ruled out: d4 states that he was born in Tirsa."},
+    {"id": "c3", "statement": "It is possible that c3 is covered, by \"Skarv Lighthouse\": d3 names it among the coastal works of Henrik Dahl, d2 states that he was an engineer born in Osby who designed lighthouses, and d5 states that the Varn Folk Museum was founded in Osby; no passage states that he designed this lighthouse. \"Hamn Lighthouse\" (d3) ties with it: d3 names it the same way."}
   ]
 }

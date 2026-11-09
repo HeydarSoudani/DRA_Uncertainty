@@ -1,136 +1,97 @@
-"""Scores of a belief model against the gold of its episodes.
+"""Scores of a belief model against the gold of its episodes, per
+criterion.
 
-One set of rows and measures, used to assess the teacher on the phase 1
+One set of scores and measures, used to assess the teacher on the phase 1
 episodes (``assess``, on its replayed calls), to reward the student's
-chains in phase 3 (``rewards``) and to validate them.  Each belief update
-call gives one row (``call_row``) with three parts, and each chain one
-final row (``final_row``):
+chains in phase 3 (``rewards``) and to validate them.  A belief chain (the
+calls of one episode) is scored by ``chain_score``.  Each criterion with
+gold answers (``nugget_gold.gold_criterion``: not the rest criterion) is
+its own sequence of statements, one per step of the episode (a step
+without a call, or whose call failed, carries the statement of the step
+before; the answer turn is the last step), and is scored on its own:
 
-    format   the gate f_k (``format_ok``): the reply was not cut off,
-             parses, names known criteria and new passages only, gives
-             each nugget a valid status and evidence labels it knows, and
-             updates each criterion once
-    obs      valid observation (r_obs): the observations the gold decides,
-             as an F1 = 2 TP / (2 TP + FP + FN) over documents and the
-             agent's turn together; per gold criterion with gold answers
-             (``nugget_gold.gold_criterion``):
+    format   the gate (``format_ok``), per call: the reply was not cut
+             off, parses, names known criteria and new passages only, and
+             gives each statement one valid status
+             (``criteria.GATE_ISSUES``); the chain's share of calls that
+             pass it
+    assign   assignment of the sources to the criterion, from the
+             observations (the trace), as an F1 = 2 TP / (2 TP + FP + FN)
+             over the chain's calls, documents and turns together:
                document  a passage among the criterion's gold documents
                          whose text as the call showed it (cut for a
                          short-answer query) has a gold answer should give
-                         a "supports" observation with a gold value: one
-                         does (TP, per passage and criterion) or none does
-                         (FN); on a gold document, one with another value
-                         that supports, or that contradicts a gold value,
-                         is FP
+                         an observation whose spans state it
+                         (``NuggetGold.stated``): one does (TP, per
+                         passage) or none does (FN)
                turn      a turn that states the gold answer
-                         (``Episode.stated_at``) should give a "supports"
-                         think observation with it: TP or FN
-             FP also: an observation that did not enter the belief (no
-             verified span, value not in the turn, a document observation
-             on a computed criterion) and a value that is another
-             criterion's gold answer (misassigned).  Every other
-             observation (another passage, another value) is neutral
-    cons     valid conversion against the call's own observations (r_cons):
-             the share of checks passed, per rewritten criterion (each
-             criterion with a new observation; status and exclusive on
-             the nuggets the reply wrote, not those carried over):
-               complete     it is in the reply, every value of its current
-                            belief and of its new observations keeps a
-                            nugget, no unknown or repeated value
-                            (``BeliefState.apply`` issues)
-               status       per nugget, its status fits its document
-                            evidence (``status_consistent``)
-               exclusive    a one-answer criterion has at most one nugget
-                            at "almost certain" or above
-               observed     a belief written for a criterion without a new
-                            observation is a failed check
-    cal      calibration of the rewritten nuggets (r_cal): per rewritten
-             criterion with gold answers (not the aggregate, whose nuggets
-             are always "unknown"), the mean 1 - (p - g)^2 over the
-             nuggets the reply wrote (p the status probability, g the value is a gold
-             answer), then the mean over the criteria
-    final    the certainty score s_T of the chain's final belief
-             (``belief_model_component.certainty``) against the
-             correctness y of the agent's final answer: r_final =
-             1 - (s_T - y)^2; the measures also report the other
-             aggregators of the criterion scores (information only)
+                         (``Episode.stated_at``) should give a think
+                         observation whose spans state it: TP or FN
+             FP: an observation the reply wrote that did not enter the
+             belief for a reason of its own
+             (``criteria.REJECTED_OBSERVATION``: no verified span, no
+             span of the turn, a document on a computed criterion).
+             Every other observation is neutral (spans that give
+             information about a criterion may name other criteria's
+             answers).  A call whose reply did not parse is not counted
+             here (it is charged in ``format`` only); its passages are
+             shown again by the next call and counted there
+    cal      calibration of the status at every step: 1 - (p - y)^2, p the
+             status probability and y whether the criterion is correctly
+             covered by its statement (``value_gold``: a one-answer
+             criterion, its selected candidate is a gold answer; a
+             several-answers one, the share of its gold answers its selected
+             candidates cover, each answer counted once); the mean over
+             the steps
+    final    the certainty score s_T of the final statements
+             (``belief_model_component.certainty``, a fixed function of
+             the statuses) against the correctness y of the agent's final
+             answer: r_final = 1 - (s_T - y)^2 (0 when the final call fails
+             the gate); the measures also report the other aggregators of
+             the criterion scores (information only)
 
-A part with nothing to score is None (neutral).  ``measures`` pools the
-rows: observation precision / recall / F1 (documents and turns apart),
-the misassigned rate, the violation rate of each consistency check, the
-Brier score, ECE and reliability (gold rate per status) of the nuggets,
-the mean of each reward part, and s_T against y: AUROC, Kendall's tau-b,
-Brier score and ECE (10 equal-width bins).
+The chain's ``assign`` and ``cal`` are the means over its criteria.  Two
+more per-criterion measures are reported, not rewarded: the recall of its
+gold documents among its document observations (``doc_recall_obs``) and
+among the sources its final statement rests on (its support part,
+``doc_recall_statement``), over the gold documents that should give an
+observation; and the share of steps whose selected candidate is correct
+(``value_accuracy``).
+
+A part with nothing to score is None (neutral).  ``measures`` averages the
+chains' per-criterion measures (per criterion over its steps, then over
+the criteria, then over the chains), pools the observation counts
+(precision / recall / F1, documents and turns apart), the (status, y) items of every step (Brier score, ECE, AUROC on
+the items with a binary y, gold rate per status) and the issue codes (rate
+per call), and compares s_T with y: AUROC, Kendall's tau-b, Brier score
+and ECE (10 equal-width bins).
 """
 
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from scipy.stats import kendalltau, rankdata
 
 from belief_model_component.certainty import AGGREGATORS, CERTAINTY_AGGREGATOR, criterion_scores
-from belief_model_component.criteria import (
-    ISSUE_DROPPED_VALUE, ISSUE_DUPLICATE_UPDATE, ISSUE_NO_NEW_OBSERVATION, ISSUE_NO_STATUS, ISSUE_NOT_IN_REPLY,
-    ISSUE_OVER_CAP, ISSUE_REPEATED_VALUE, ISSUE_UNKNOWN_CRITERION, ISSUE_UNKNOWN_EVIDENCE, ISSUE_UNKNOWN_VALUE,
-    ISSUE_UNOBSERVED_VALUE, NOTE_NOT_NEW_PASSAGE, NOTE_REPEATED, NOTE_UNKNOWN_CRITERION, same_value,
-)
+from belief_model_component.criteria import GATE_ISSUES, REJECTED_OBSERVATION
+from belief_model_component.statement_text import unknown_text
 from belief_model_component.types import (
-    AGGREGATE, BELIEF_STATUSES, CONTRADICTS, NO_DOC_KINDS, STATUS_LEVEL, SUPPORTS, exclusive, status_probability,
+    BELIEF_STATUSES, NO_DOC_KINDS, UNKNOWN, Statement, exclusive, status_probability,
 )
 
 from .episodes import Episode, UpdaterCall
-from .nugget_gold import NuggetGold, gold_criterion, matches
+from .nugget_gold import CANDIDATE, SPANS, NuggetGold, gold_criterion, matches, states
 
-# A reply with one of these fails the gate.
-GATE_NOTES = (NOTE_UNKNOWN_CRITERION, NOTE_NOT_NEW_PASSAGE)
-GATE_ISSUES = (ISSUE_UNKNOWN_CRITERION, ISSUE_DUPLICATE_UPDATE, ISSUE_NO_STATUS, ISSUE_UNKNOWN_EVIDENCE)
-# Issues that fail a rewritten criterion's "complete" check.
-INCOMPLETE_ISSUES = (ISSUE_NOT_IN_REPLY, ISSUE_UNKNOWN_VALUE, ISSUE_REPEATED_VALUE, ISSUE_OVER_CAP,
-                     ISSUE_UNOBSERVED_VALUE, ISSUE_DROPPED_VALUE)
-CONS_CHECKS = ("complete", "status", "exclusive", "observed")
-HIGH_LEVEL = STATUS_LEVEL["almost certain"]
-
-
-def _observations(outcome: Dict[str, Any]) -> List[Dict[str, Any]]:
-    return (outcome.get("think_observations") or []) + (outcome.get("doc_observations") or [])
+SIDES = ("doc", "think")
 
 
 def format_ok(outcome: Dict[str, Any], finish_reason: Optional[str]) -> bool:
-    """The gate f_k of one call's *outcome* (``BeliefTracker.submit``)."""
+    """The gate of one call's *outcome* (``BeliefTracker.submit``)."""
     if finish_reason != "stop" or not outcome.get("parsed"):
         return False
-    if any(o.get("note") in GATE_NOTES for o in _observations(outcome)):
-        return False
-    return not any(set(r.get("issues") or []) & set(GATE_ISSUES) for r in outcome.get("nugget_updates") or [])
-
-
-def status_consistent(nugget: Dict[str, Any], others: List[str]) -> bool:
-    """The nugget's status fits its document evidence: "doubtful" needs a
-    document that contradicts its value and none that supports it,
-    "unlikely" a document and none that supports, "possible" a document,
-    "probable" a supporting document, "almost certain" and "certain" a
-    supporting document and none that contradicts; "unknown" always fits
-    (the cautious choice, rule 13).  An entry is on the nugget's value
-    unless its value is another nugget's (*others*): values that name one
-    answer in other words share a nugget."""
-    value, status = nugget["value"], nugget["status"]
-    docs = [e for e in nugget.get("evidence") or [] if str(e.get("label", "")).startswith("d")]
-    own = [e for e in docs if same_value(e["value"], value) or not any(same_value(e["value"], o) for o in others)]
-    support = any(e["stance"] == SUPPORTS for e in own)
-    contra = any(e["stance"] == CONTRADICTS for e in own)
-    if status == "doubtful":
-        return contra and not support
-    if status == "unlikely":
-        return bool(docs) and not support
-    if status == "unknown":
-        return True
-    if status == "possible":
-        return bool(docs)
-    if status == "probable":
-        return support
-    return support and not contra
+    return not any(i.get("code") in GATE_ISSUES for i in outcome.get("issues") or [])
 
 
 def _kinds(episode: Episode) -> Dict[str, str]:
@@ -141,161 +102,239 @@ def _f1(tp: int, fp: int, fn: int) -> Optional[float]:
     return 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else None
 
 
-def _doc_counts(episode: Episode, call: UpdaterCall, outcome: Dict[str, Any], gold: NuggetGold) -> Dict[str, int]:
-    # A gold document is expected to give an observation only when its text
-    # as the call showed it (cut for a short-answer query) has the gold answer.
+def _ratio(num: int, den: int) -> Optional[float]:
+    return num / den if den else None
+
+
+def _mean(values: Iterable[Optional[float]]) -> Optional[float]:
+    vals = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _is_doc(label: Any) -> bool:
+    return str(label or "").startswith("d")
+
+
+def _open_answers(episode: Episode, cid: str, selected: List[str]) -> Tuple[set, List[str], List[str]]:
+    """For a several-answers criterion: the gold answers its *selected*
+    candidates state by string match, the answers none states (open), and
+    the candidates that match no answer (left for the judge, which is
+    asked about the open answers only, so an alias of a matched answer
+    does not count twice)."""
+    c = gold_criterion(episode, cid)
+    found, unmatched = set(), []
+    for v in selected:
+        hit = [a for a in c["answers"] if states(v, [a], episode.gold_names)]
+        if hit:
+            found.update(hit)
+        else:
+            unmatched.append(v)
+    return found, [a for a in c["answers"] if a not in found], unmatched
+
+
+def value_gold(episode: Episode, cid: str, statement: Dict[str, Any], kind: str, gold: NuggetGold) -> float:
+    """y of a statement: whether criterion *cid* is correctly covered by
+    it.  A one-answer criterion: its (first) selected candidate is a gold
+    answer (0 without one); a several-answers criterion: the share of its
+    gold answers its selected candidates cover: the answers they state by
+    string match, plus one per other candidate the judge finds to be one
+    of the answers still open (``_open_answers``), at most as many as are
+    open."""
+    by = list(statement.get("selected") or [])
+    if exclusive(kind):
+        return float(bool(by) and bool(gold.correct(episode, cid, by[0])))
+    found, open_answers, unmatched = _open_answers(episode, cid, by)
+    extra = sum(1 for v in unmatched if open_answers and gold.correct(episode, cid, v, open_answers))
+    total = len(found) + len(open_answers)
+    return (len(found) + min(extra, len(open_answers))) / total
+
+
+def _expected_docs(episode: Episode, call: UpdaterCall, cid: str) -> set:
+    """The gold documents of *cid* in the call whose shown text has a gold
+    answer: each should give an observation with it."""
+    c = gold_criterion(episode, cid)
+    if c is None or c["kind"] in NO_DOC_KINDS:
+        return set()
     shown = call.shown_text()
-    expected = set()
-    for c in episode.gold_criteria or []:
-        if gold_criterion(episode, c["id"]) is not None and c["kind"] not in NO_DOC_KINDS:
-            expected.update((c["id"], d) for d in set(shown) & set(c["doc_ids"]) if matches(episode, c, shown[d]))
-    covered, fp, mis = set(), 0, 0
-    for o in outcome.get("doc_observations") or []:
-        if o.get("note") in GATE_NOTES:
-            continue
-        cid, doc = o["id"], o.get("doc_id")
-        if not o.get("grounded") or o["note"] not in ("", NOTE_REPEATED):
-            fp += 1
-            continue
-        c = gold_criterion(episode, cid)
-        if c is None:
-            continue
-        on_gold_doc = doc in set(c["doc_ids"])
-        if gold.correct(episode, cid, o["value"]):
-            if o["stance"] == SUPPORTS and on_gold_doc:
-                covered.add((cid, doc))
-            elif o["stance"] == CONTRADICTS and on_gold_doc:
-                fp += 1
-        elif gold.misassigned(episode, cid, o["value"]):
-            fp += 1
-            mis += 1
-        elif on_gold_doc and o["stance"] == SUPPORTS:
-            fp += 1
-    return {"tp": len(covered), "fp": fp, "fn": len(expected - covered), "misassigned": mis}
+    return {d for d in set(shown) & set(c["doc_ids"]) if matches(episode, c, shown[d])}
 
 
-def _think_counts(episode: Episode, call: UpdaterCall, outcome: Dict[str, Any], gold: NuggetGold) -> Dict[str, int]:
-    expected = {cid for cid in episode.stated_at(call.t) if gold_criterion(episode, cid) is not None}
-    covered, fp, mis = set(), 0, 0
-    for o in outcome.get("think_observations") or []:
-        if o.get("note") in GATE_NOTES:
+def _call_counts(episode: Episode, call: UpdaterCall, outcome: Dict[str, Any], cid: str,
+                 gold: NuggetGold) -> Dict[str, Counter]:
+    """The observation counts of criterion *cid* in one call, per side
+    (``tp``, ``fp``, ``fn``), the gold documents it observed (TP,
+    ``doc["hits"]``) and those it should have (``doc["expected"]``)."""
+    out = {side: Counter() for side in SIDES}
+    c = gold_criterion(episode, cid)
+    gold_docs = set(c["doc_ids"])
+    expected_docs = _expected_docs(episode, call, cid)
+    expected_turn = cid in episode.stated_at(call.t)
+    docs_hit, turn_hit = set(), False
+    for o in outcome.get("observations") or []:
+        if o["id"] != cid:
             continue
-        cid = o["id"]
-        if not o.get("grounded"):
-            fp += 1
-            continue
-        if gold_criterion(episode, cid) is None:
-            continue
-        if gold.correct(episode, cid, o["value"]):
-            if o["stance"] == SUPPORTS:
-                covered.add(cid)
-        elif gold.misassigned(episode, cid, o["value"]):
-            fp += 1
-            mis += 1
-    return {"tp": len(covered), "fp": fp, "fn": len(expected - covered), "misassigned": mis}
-
-
-def _cons_checks(episode: Episode, outcome: Dict[str, Any]) -> Dict[str, List[int]]:
-    """Per consistency check, ``[passed, total]`` over the call's records."""
-    kinds = _kinds(episode)
-    checks: Dict[str, List[int]] = {name: [0, 0] for name in CONS_CHECKS}
-
-    def check(name: str, ok: bool) -> None:
-        checks[name][0] += int(ok)
-        checks[name][1] += 1
-
-    for r in outcome.get("nugget_updates") or []:
-        issues = set(r.get("issues") or [])
-        if ISSUE_NO_NEW_OBSERVATION in issues:
-            check("observed", False)
-            continue
-        if r.get("after") is None:
-            continue
-        check("complete", not issues & set(INCOMPLETE_ISSUES))
-        if ISSUE_NOT_IN_REPLY in issues:  # the reply wrote nothing for it
-            continue
-        after = r["after"]
-        written = _written(r)
-        for n in written:
-            check("status", status_consistent(n, [m["value"] for m in after if m is not n]))
-        if exclusive(kinds.get(r["id"], "")):
-            check("exclusive", sum(STATUS_LEVEL[n["status"]] >= HIGH_LEVEL for n in written) <= 1)
-    return checks
-
-
-def _written(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The nuggets of a nugget update record that the reply wrote: its
-    ``after`` without the nuggets carried over unchanged (``carried``)."""
-    carried = set(record.get("carried") or [])
-    return [n for n in record.get("after") or [] if n["value"] not in carried]
-
-
-def _cal_items(episode: Episode, outcome: Dict[str, Any], gold: NuggetGold) -> List[List[Tuple[str, bool]]]:
-    """Per rewritten criterion with gold answers (not the aggregate), the
-    nuggets the reply wrote as ``(status, is a gold answer)``."""
-    out = []
-    for r in outcome.get("nugget_updates") or []:
-        if ISSUE_NOT_IN_REPLY in (r.get("issues") or []) or not _written(r):
-            continue
-        c = gold_criterion(episode, r["id"])
-        if c is None or c["kind"] == AGGREGATE:
-            continue
-        out.append([(n["status"], bool(gold.correct(episode, r["id"], n["value"]))) for n in _written(r)])
+        side = "doc" if _is_doc(o["label"]) else "think"
+        # An observation whose spans state the gold answer is a hit; any
+        # other is not scored (its spans may give the criterion's other
+        # parts, or another candidate).
+        if gold.stated(episode, cid, spans_text(o)):
+            if side == "think":
+                turn_hit = True
+            elif o.get("doc_id") in gold_docs:
+                docs_hit.add(o.get("doc_id"))
+    for i in outcome.get("issues") or []:
+        if i.get("id") == cid and i.get("code") in REJECTED_OBSERVATION:
+            out["doc" if _is_doc(i.get("label")) else "think"]["fp"] += 1
+    out["doc"]["tp"] += len(docs_hit & expected_docs)
+    out["doc"]["fn"] += len(expected_docs - docs_hit)
+    if expected_turn:
+        out["think"]["tp" if turn_hit else "fn"] += 1
+    out["doc"]["hits"] = docs_hit & expected_docs  # type: ignore[assignment]
+    out["doc"]["expected"] = expected_docs  # type: ignore[assignment]
     return out
 
 
-def call_row(episode: Episode, call: UpdaterCall, outcome: Dict[str, Any], finish_reason: Optional[str],
-             gold: NuggetGold) -> Dict[str, Any]:
-    """The row of one call: ``format``, the observation counts (``doc``,
-    ``think``), the consistency checks (``cons``), the calibration items
-    (``cal``) and the call's reward parts ``r_obs``, ``r_cons``, ``r_cal``
-    (None: nothing to score).  A call that fails the gate scores 0 on
-    each part."""
-    row: Dict[str, Any] = {"final_call": call.final, "format": format_ok(outcome, finish_reason)}
-    if not row["format"]:
-        return {**row, "r_obs": 0.0, "r_cons": 0.0, "r_cal": 0.0}
-    doc = _doc_counts(episode, call, outcome, gold)
-    think = _think_counts(episode, call, outcome, gold)
-    cons = _cons_checks(episode, outcome)
-    cal = _cal_items(episode, outcome, gold)
-    passed, total = sum(v[0] for v in cons.values()), sum(v[1] for v in cons.values())
-    briers = [sum(1.0 - (status_probability(s) - g) ** 2 for s, g in items) / len(items) for items in cal]
+def _unknown(cid: str) -> Dict[str, Any]:
+    return Statement(text=unknown_text(cid)).to_dict(cid)
+
+
+def spans_text(observation: Dict[str, Any]) -> str:
+    """The spans of a saved observation as one text, for the gold."""
+    return " ... ".join(observation.get("spans") or [])
+
+
+def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[str, Any]],
+                finish_reasons: List[Optional[str]], gold: NuggetGold, statements: List[Dict[str, Any]],
+                complete: bool = True) -> Dict[str, Any]:
+    """The score of one belief chain: its *calls* in order with their
+    *outcomes* (``BeliefTracker.submit``) and finish reasons, and its final
+    *statements* (per criterion).  *complete*: the calls cover the whole
+    episode (a replay that stopped at a mismatch does not; its steps are
+    scored up to the last call, and it has no final score).
+
+    Returns ``{format, assign, cal, final, criteria, issues, calls}``:
+    ``criteria`` per scored criterion ``{kind, doc, think, assign_f1,
+    doc_recall_obs, doc_recall_statement, value_accuracy, cal, items}``
+    (``items`` the (status, y) of every step), ``issues`` the count of
+    each issue code."""
+    kinds = _kinds(episode)
+    scored = [c["id"] for c in episode.gold_criteria or [] if gold_criterion(episode, c["id"]) is not None]
+    gates = [format_ok(o, f) for o, f in zip(outcomes, finish_reasons)]
+    by_t = {c.t: i for i, c in enumerate(calls)}
+    step_calls = [c.t for c in calls if c.t is not None]
+    n_steps = len(episode.steps) if complete else (max(step_calls) + 1 if step_calls else 0)
+    positions: List[Optional[int]] = list(range(n_steps))
+    if complete and None in by_t:
+        positions.append(None)
+
+    per = {cid: {"doc": Counter(), "think": Counter(), "items": [], "hits": set(), "expected": set()}
+           for cid in scored}
+    labels: Dict[str, str] = {}
+    current = {cid: _unknown(cid) for cid in kinds}
+    # y per (criterion, selected candidates): a statement is often carried
+    # over unchanged for many steps.
+    ys: Dict[Tuple[str, Tuple[str, ...]], float] = {}
+    for pos in positions:
+        i = by_t.get(pos)
+        if i is not None:
+            call, outcome = calls[i], outcomes[i]
+            labels.update({label: doc for label, doc, _ in call.passages if doc})
+            # A reply that did not parse is charged in ``format`` only: its
+            # passages stay unjudged and are counted in the call that shows
+            # them again.
+            if outcome.get("parsed"):
+                for cid in scored:
+                    counts = _call_counts(episode, call, outcome, cid, gold)
+                    per[cid]["hits"] |= counts["doc"].pop("hits")
+                    per[cid]["expected"] |= counts["doc"].pop("expected")
+                    for side in SIDES:
+                        per[cid][side].update(counts[side])
+                current.update({s["id"]: s for s in outcome.get("statements") or []})
+        for cid in scored:
+            s = current.get(cid) or _unknown(cid)
+            key = (cid, tuple(s.get("selected") or []))
+            if key not in ys:
+                ys[key] = value_gold(episode, cid, s, kinds[cid], gold)
+            per[cid]["items"].append((s.get("status") or UNKNOWN, ys[key]))
+
+    criteria: Dict[str, Dict[str, Any]] = {}
+    for cid in scored:
+        p = per[cid]
+        doc, think = p["doc"], p["think"]
+        final_s = current.get(cid) or _unknown(cid)
+        cited = {labels.get(lb) for lb in final_s.get("support_cited") or [] if _is_doc(lb)}
+        items = p["items"]
+        criteria[cid] = {
+            "kind": kinds[cid],
+            "doc": {k: doc[k] for k in ("tp", "fp", "fn")},
+            "think": {k: think[k] for k in ("tp", "fp", "fn")},
+            "assign_f1": _f1(doc["tp"] + think["tp"], doc["fp"] + think["fp"], doc["fn"] + think["fn"]),
+            "doc_recall_obs": _ratio(len(p["hits"]), len(p["expected"])),
+            "doc_recall_statement": _ratio(len(cited & p["expected"]), len(p["expected"])),
+            "value_accuracy": _mean(y for _, y in items),
+            "cal": _mean(1.0 - (status_probability(st) - y) ** 2 for st, y in items),
+            "items": items,
+        }
+
+    final: Optional[Dict[str, Any]] = None
+    if complete:
+        final_ok = None not in by_t or gates[by_t[None]]
+        ordered = [next((s for s in statements if s.get("id") == c["id"]), _unknown(c["id"]))
+                   for c in episode.gold_criteria or []]
+        scores = criterion_scores(ordered, [c["kind"] for c in episode.gold_criteria or []])
+        s = {name: (agg(scores) if scores else None) for name, agg in AGGREGATORS.items()}
+        y = episode.correct
+        r = None
+        if y is not None and s[CERTAINTY_AGGREGATOR] is not None:
+            r = (1.0 - (s[CERTAINTY_AGGREGATOR] - float(y)) ** 2) if final_ok else 0.0
+        final = {"s": s, "y": y, "r_final": r}
+
     return {
-        **row, "doc": doc, "think": think, "cons": cons, "cal": cal,
-        "r_obs": _f1(doc["tp"] + think["tp"], doc["fp"] + think["fp"], doc["fn"] + think["fn"]),
-        "r_cons": passed / total if total else None,
-        "r_cal": sum(briers) / len(briers) if briers else None,
+        "format": _ratio(sum(gates), len(gates)),
+        "assign": _mean(c["assign_f1"] for c in criteria.values()),
+        "cal": _mean(c["cal"] for c in criteria.values()),
+        "final": final,
+        "criteria": criteria,
+        "issues": dict(Counter(i.get("code") for o in outcomes for i in o.get("issues") or [])),
+        "calls": len(calls),
     }
 
 
-def final_row(episode: Episode, nuggets: List[List[Dict[str, Any]]], answer_label: Optional[str],
-              final_ok: bool) -> Dict[str, Any]:
-    """The final row of a chain with final belief *nuggets* (per gold
-    criterion), the answer turn's label (None: no final call) and whether
-    the final call passed the gate: s_T per aggregator, y, and r_final
-    (None when y is unknown; 0 when the final call failed the gate)."""
-    kinds = [c["kind"] for c in episode.gold_criteria or []]
-    scores = criterion_scores(nuggets, kinds, episode.query_shape, answer_label)
-    s = {name: (agg(scores) if scores else None) for name, agg in AGGREGATORS.items()}
-    y = episode.correct
-    r = None
-    if y is not None and s[CERTAINTY_AGGREGATOR] is not None:
-        r = (1.0 - (s[CERTAINTY_AGGREGATOR] - float(y)) ** 2) if final_ok else 0.0
-    return {"s": s, "y": y, "r_final": r}
-
-
 def chain_values(episode: Episode, outcomes: Iterable[Dict[str, Any]],
-                 nuggets: Optional[List[List[Dict[str, Any]]]] = None) -> List[Tuple[Episode, str, str]]:
-    """``(episode, criterion id, value)`` of every observation and nugget of
-    *outcomes* and of the final *nuggets*, for ``NuggetGold.resolve``."""
-    out = []
+                 statements: Optional[List[Dict[str, Any]]] = None) -> List[Tuple]:
+    """The texts ``chain_score`` asks the gold about, each once, for
+    ``NuggetGold.resolve``: ``(episode, criterion id, SPANS, text)`` of
+    every observation's spans, and per selected candidate of a statement
+    the call rewrote (``changed``) or of the final *statements*
+    ``(episode, criterion id, CANDIDATE, text[, open answers])`` (a
+    several-answers criterion: judged against its answers still open,
+    ``value_gold``)."""
+    kinds = _kinds(episode)
+    # Each text once (the episode is the same for all: left out of the key).
+    out: Dict[Tuple, None] = {}
+
+    def candidates(s: Dict[str, Any]) -> None:
+        cid, selected = s["id"], list(s.get("selected") or [])
+        if not selected or gold_criterion(episode, cid) is None:
+            return
+        if exclusive(kinds.get(cid, "")):
+            out[(cid, CANDIDATE, selected[0])] = None
+            return
+        _, open_answers, unmatched = _open_answers(episode, cid, selected)
+        for v in unmatched if open_answers else []:
+            out[(cid, CANDIDATE, v, tuple(open_answers))] = None
+
     for o in outcomes:
-        out += [(episode, x["id"], x["value"]) for x in _observations(o)]
-        out += [(episode, r["id"], n["value"]) for r in o.get("nugget_updates") or [] for n in r.get("after") or []]
-    ids = [c["id"] for c in episode.gold_criteria or []]
-    for cid, ns in zip(ids, nuggets or []):
-        out += [(episode, cid, n["value"]) for n in ns]
-    return out
+        for x in o.get("observations") or []:
+            if x.get("spans"):
+                out[(x["id"], SPANS, spans_text(x))] = None
+        changed = set(o.get("changed") or [])
+        for s in o.get("statements") or []:
+            if s["id"] in changed:
+                candidates(s)
+    for s in statements or []:
+        candidates(s)
+    return [(episode, *item) for item in out]
 
 
 # ---------------------------------------------------------------------------
@@ -303,33 +342,33 @@ def chain_values(episode: Episode, outcomes: Iterable[Dict[str, Any]],
 # ---------------------------------------------------------------------------
 
 def _auroc(y: np.ndarray, s: np.ndarray) -> float:
-    """Mann-Whitney AUROC of *s* for y=1 over y=0, a tie counting 1/2; NaN
-    without both classes."""
-    n_pos = int(y.sum())
-    n_neg = len(y) - n_pos
-    if n_pos == 0 or n_neg == 0:
+    """AUROC of score *s* for the binary label *y* (Mann-Whitney U, ties as
+    halves); NaN when one class is missing."""
+    pos, neg = int(y.sum()), int(len(y) - y.sum())
+    if pos == 0 or neg == 0:
         return math.nan
-    return float(rankdata(s)[y == 1].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+    ranks = rankdata(s)
+    return float((ranks[y == 1].sum() - pos * (pos + 1) / 2) / (pos * neg))
 
 
 def _ece(y: np.ndarray, s: np.ndarray, bins: int = 10) -> float:
-    """Expected calibration error over equal-width bins of *s*."""
-    if len(y) == 0:
+    """Expected calibration error over *bins* equal-width bins of *s*."""
+    if not len(y):
         return math.nan
     idx = np.minimum((s * bins).astype(int), bins - 1)
-    return float(sum(abs(y[idx == b].mean() - s[idx == b].mean()) * (idx == b).sum()
+    return float(sum(abs(s[idx == b].mean() - y[idx == b].mean()) * (idx == b).sum()
                      for b in range(bins) if (idx == b).any()) / len(y))
 
 
 def _prf(tp: int, fp: int, fn: int) -> Dict[str, float]:
     p = tp / (tp + fp) if tp + fp else math.nan
     r = tp / (tp + fn) if tp + fn else math.nan
-    return {"precision": p, "recall": r, "f1": 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else math.nan}
+    f = 2 * tp / (2 * tp + fp + fn) if tp + fp + fn else math.nan
+    return {"precision": p, "recall": r, "f1": f}
 
 
-def _mean(values: Iterable[Optional[float]]) -> float:
-    vals = [v for v in values if v is not None]
-    return sum(vals) / len(vals) if vals else math.nan
+def _nan(value: Optional[float]) -> float:
+    return math.nan if value is None else value
 
 
 def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, float]:
@@ -341,42 +380,47 @@ def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, floa
     }
 
 
-def measures(rows: List[Dict[str, Any]], finals: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """The pooled measures over call *rows* (``call_row``) and final rows
-    (``final_row``)."""
-    scored = [r for r in rows if r["format"]]
-    out: Dict[str, Any] = {"calls": len(rows), "format_rate": len(scored) / len(rows) if rows else math.nan}
-    for side in ("doc", "think"):
+# Per-criterion measures, averaged over a chain's criteria, then over the chains.
+CRITERION_MEASURES = ("assign_f1", "doc_recall_obs", "doc_recall_statement", "value_accuracy", "cal")
+
+
+def measures(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The measures over the chain *scores* (``chain_score``)."""
+    calls = sum(s["calls"] for s in scores)
+    out: Dict[str, Any] = {"chains": len(scores), "calls": calls}
+    crits = [c for s in scores for c in s["criteria"].values()]
+    out["criteria_scored"] = len(crits)
+    for side in SIDES:
         c = Counter()
-        for r in scored:
-            c.update(r[side])
+        for x in crits:
+            c.update(x[side])
         out.update({f"obs_{side}_{k}": v for k, v in _prf(c["tp"], c["fp"], c["fn"]).items()})
-        out[f"obs_{side}_misassigned"] = c["misassigned"]
-    cons: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
-    for r in scored:
-        for name, (passed, total) in r["cons"].items():
-            cons[name][0] += passed
-            cons[name][1] += total
-    out.update({f"cons_{name}_violation_rate": (1 - cons[name][0] / cons[name][1]) if cons[name][1] else math.nan
-                for name in CONS_CHECKS})
-    pairs = [(status_probability(s), float(g), s) for r in scored for items in r["cal"] for s, g in items]
+    for name in CRITERION_MEASURES:
+        out[f"crit_{name}"] = _nan(_mean(_mean(c[name] for c in s["criteria"].values()) for s in scores))
+    pairs = [(status_probability(st), float(y), st) for c in crits for st, y in c["items"]]
     p = np.array([x[0] for x in pairs])
     g = np.array([x[1] for x in pairs])
+    binary = [x for x in pairs if x[1] in (0.0, 1.0)]
     out.update({
-        "nuggets_scored": len(pairs),
-        "nugget_brier": float(((p - g) ** 2).mean()) if pairs else math.nan,
-        "nugget_ece": _ece(g, p),
-        "nugget_auroc": _auroc(g, p),
+        "statements_scored": len(pairs),
+        "status_brier": float(((p - g) ** 2).mean()) if pairs else math.nan,
+        "status_ece": _ece(g, p),
+        "status_auroc": _auroc(np.array([x[1] for x in binary]), np.array([x[0] for x in binary])),
     })
     for status in BELIEF_STATUSES:
-        own = [x[1] for x in pairs if x[2] == status]
+        own = [x[1] for x in binary if x[2] == status]
         out[f"gold_rate_{status.replace(' ', '_')}"] = sum(own) / len(own) if own else math.nan
         out[f"count_{status.replace(' ', '_')}"] = len(own)
-    out.update({name: _mean(r[name] for r in rows) for name in ("r_obs", "r_cons", "r_cal")})
+    issues = Counter()
+    for s in scores:
+        issues.update(s["issues"])
+    out.update({f"issue_rate_{code}": n / calls for code, n in sorted(issues.items())} if calls else {})
+    finals = [s["final"] for s in scores if s["final"] is not None]
+    out.update({"format": _nan(_mean(s["format"] for s in scores)), "assign": _nan(_mean(s["assign"] for s in scores)),
+                "cal": _nan(_mean(s["cal"] for s in scores)), "r_final": _nan(_mean(f["r_final"] for f in finals))})
     judged = [f for f in finals if f["y"] is not None and f["s"][CERTAINTY_AGGREGATOR] is not None]
     y = np.array([float(f["y"]) for f in judged])
     out["final_judged"] = len(judged)
-    out["r_final"] = _mean(f["r_final"] for f in finals)
     for name in AGGREGATORS:
         prefix = "certainty" if name == CERTAINTY_AGGREGATOR else f"certainty_{name}"
         out.update(_final_measures(prefix, np.array([f["s"][name] for f in judged]), y))
@@ -386,16 +430,13 @@ def measures(rows: List[Dict[str, Any]], finals: List[Dict[str, Any]]) -> Dict[s
 def assess(episodes: List[Episode], replays: List[Tuple[Episode, list, Any]], gold: NuggetGold) -> Dict[str, Any]:
     """The teacher's measures over its replayed calls: *replays* holds per
     episode ``(episode, calls, tracker)`` (``episodes.replay_teacher``,
-    the calls before the first mismatch); the final row only for an
+    the calls before the first mismatch); the final score only for an
     episode replayed in full.  Resolves the gold of every value first."""
     items = []
     for ep, calls, tracker in replays:
-        items += chain_values(ep, [c.outcome for c in calls], tracker.signal.nuggets())
+        items += chain_values(ep, [c.outcome for c in calls], tracker.signal.statements())
     gold.resolve(items)
-    rows, finals = [], []
-    for ep, calls, tracker in replays:
-        rows += [call_row(ep, c.call, c.outcome, "stop", gold) for c in calls]
-        if ep.replay_error is None:
-            final_ok = not calls or not calls[-1].call.final or format_ok(calls[-1].outcome, "stop")
-            finals.append(final_row(ep, tracker.signal.nuggets(), tracker.signal.answer_label, final_ok))
-    return {"episodes": len(episodes), **measures(rows, finals)}
+    scores = [chain_score(ep, [c.call for c in calls], [c.outcome for c in calls], ["stop"] * len(calls), gold,
+                          tracker.signal.statements() or [], complete=ep.replay_error is None)
+              for ep, calls, tracker in replays]
+    return {"episodes": len(episodes), **measures(scores)}

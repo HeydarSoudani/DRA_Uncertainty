@@ -16,7 +16,7 @@ vision encoder of a vision-language student (Qwen3.5) is not loaded
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence, Union
 
 from .sft import chat_prompt
 
@@ -44,9 +44,10 @@ class VLLMRolloutEngine:
         self.tokenizer = self.llm.get_tokenizer()
 
     def generate(self, prompts: List[List[Dict[str, str]]], *, temperature: float,
-                 max_new_tokens: int, n: int = 1) -> List[List[Generation]]:
+                 max_new_tokens: Union[int, Sequence[int]], n: int = 1) -> List[List[Generation]]:
         """*n* sampled replies per chat prompt (each prompt tokenized and
-        sent once).  A prompt that leaves no room to generate in
+        sent once), within *max_new_tokens* (one budget for every prompt,
+        or one per prompt).  A prompt that leaves no room to generate in
         ``max_model_len`` gets *n* empty replies (``text`` None)."""
         from vllm import SamplingParams
         from vllm.inputs import TokensPrompt
@@ -57,8 +58,9 @@ class VLLMRolloutEngine:
         out = [[Generation(p, [], [], None, "prompt_too_long") for _ in range(n)] for p in prompt_ids]
         if not fits:
             return out
+        budgets = [max_new_tokens] * len(prompts) if isinstance(max_new_tokens, int) else list(max_new_tokens)
         params = [SamplingParams(n=n, temperature=temperature, top_p=1.0, logprobs=0,
-                                 max_tokens=min(max_new_tokens, self.max_model_len - len(prompt_ids[i])))
+                                 max_tokens=min(budgets[i], self.max_model_len - len(prompt_ids[i])))
                   for i in fits]
         results = self.llm.generate([TokensPrompt(prompt_token_ids=prompt_ids[i]) for i in fits],
                                     sampling_params=params, use_tqdm=False)

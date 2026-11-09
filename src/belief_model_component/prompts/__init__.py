@@ -2,7 +2,7 @@
 
 System prompts are the ``*_system.txt`` files next to this module: the
 criteria extractor (its per-shape parts in ``criteria_init/<shape>.txt``)
-and the belief updater (its per-shape context in ``nugget_shapes.txt``).  User prompts are in
+and the belief updater (its per-shape context in ``criterion_shapes.txt``).  User prompts are in
 ``user_prompts`` and re-exported here.
 """
 
@@ -52,9 +52,9 @@ def _compose(stage: str, shape: str) -> str:
     return re.sub(r"^\{shape_\w+\}\n", "", text, flags=re.MULTILINE)
 
 
-# The query shapes as the belief updater reads them (``nugget_shapes.txt``): what a
+# The query shapes as the belief updater reads them (``criterion_shapes.txt``): what a
 # criterion is and what its answers are.
-NUGGET_SHAPES = {k: v for k, v in _sections("nugget_shapes.txt").items() if k}
+CRITERION_SHAPES = {k: v for k, v in _sections("criterion_shapes.txt").items() if k}
 
 
 # One criteria-extraction prompt per query shape (layout.DATASET_SPECS);
@@ -62,6 +62,6 @@ NUGGET_SHAPES = {k: v for k, v in _sections("nugget_shapes.txt").items() if k}
 # (``criteria_init_user``).  One belief update prompt per query shape.
 CRITERIA_INIT_SYSTEMS = {shape: _compose("criteria_init", shape) for shape in QUERY_SHAPES}
 BELIEF_UPDATE_SYSTEMS = {
-    shape: _read("belief_update_system.txt").replace("{shape_context}", NUGGET_SHAPES[shape])
+    shape: _read("belief_update_system.txt").replace("{shape_context}", CRITERION_SHAPES[shape])
     for shape in QUERY_SHAPES
 }

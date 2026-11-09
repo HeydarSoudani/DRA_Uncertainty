@@ -1,7 +1,8 @@
 """Per-step parts of the belief model:
 
 - ``BeliefUpdateSignal`` b_t: the belief update of the step (one call:
-  observations of the agent's turn and of the documents, then the nuggets).
+  observations of the agent's turn and of the documents, then the
+  statements).
 
 Extra, for evaluation only (never shown to the agent):
 
@@ -40,7 +41,8 @@ class BeliefUpdateSignal:
     """Belief update of each step: one call (``updater``) on the agent's
     turn and the step's documents not judged in an earlier step; each
     document gets its label when shown (``BeliefState.label_doc``), and the
-    reply is applied by ``BeliefState.apply``.
+    reply is applied by ``BeliefState.apply``.  The answer turn is one more
+    call (``finish``), with no document.
 
     A call with nothing to read (no turn, no new document with text) is not
     made.  When the call fails the belief stays as it was, the step's
@@ -48,19 +50,19 @@ class BeliefUpdateSignal:
     again, with the same labels) and the turn's observations are lost.
     ``score`` and ``finish`` return the step's outcome::
 
-        {passages, think_observations, doc_observations, nugget_updates,
-         belief_output, errors}
+        {passages, observations, changed, issues, statements, reply, errors}
 
-    (``passages`` ``[{label, doc_id}]`` as shown; the records of
-    ``BeliefState.apply``, null when the call was not made or failed; the
-    raw reply, null when not called or the call raised).
+    (``passages`` ``[{label, doc_id}]`` as shown; ``observations``,
+    ``changed`` and ``issues`` as ``BeliefState.apply`` gives them, null /
+    empty when the call was not made or failed; ``statements`` every
+    criterion's statement after the call; ``reply`` the raw reply, null
+    when not called or the call raised).
 
     The call is made in two halves, ``passages`` (label the documents) and
     ``apply`` (the parsed reply), so belief model training can make the
     LLM calls itself (``belief_model_training.episodes.BeliefTracker``).
     ``certainty`` is the certainty score s_t of the belief
-    (``certainty.certainty``); after ``finish`` it reads the belief in the
-    agent's answer through the answer turn's label.
+    (``certainty.certainty``).
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
@@ -68,7 +70,6 @@ class BeliefUpdateSignal:
         self._query = ""
         self._state: Optional[BeliefState] = None
         self._judged: Set[str] = set()
-        self._answer_label: Optional[str] = None
 
     @property
     def active(self) -> bool:
@@ -78,26 +79,19 @@ class BeliefUpdateSignal:
     def state(self) -> Optional[BeliefState]:
         return self._state
 
-    def nuggets(self) -> Optional[List[List[Dict[str, Any]]]]:
-        return self._state.nugget_lists() if self._state is not None else None
-
-    @property
-    def answer_label(self) -> Optional[str]:
-        """The answer turn's label once the final call is marked, else None."""
-        return self._answer_label
+    def statements(self) -> Optional[List[Dict[str, Any]]]:
+        return self._state.statement_lists() if self._state is not None else None
 
     def certainty(self) -> Optional[float]:
         """s_t of the current belief; None without criteria."""
         if self._state is None:
             return None
-        return certainty(self._state.nugget_lists(), [c.kind for c in self._state.criteria],
-                         self.updater.query_shape, self._answer_label)
+        return certainty(self._state.statement_lists(), [c.kind for c in self._state.criteria])
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._state = BeliefState(criteria) if criteria else None
         self._judged.clear()
-        self._answer_label = None
 
     def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """The documents of *docs* not judged yet (documents without an id
@@ -112,13 +106,7 @@ class BeliefUpdateSignal:
     def finish(self, step: int, agent_turn: str) -> Dict[str, Any]:
         """The final update: the agent's answer turn (labelled ``t<step>``),
         no document."""
-        self.mark_final(step)
         return self._update([], step, agent_turn)
-
-    def mark_final(self, step: int) -> None:
-        """The final call reads the answer turn ``t<step>``: from now on
-        ``certainty`` scores the answer criterion by that turn's nugget."""
-        self._answer_label = f"t{step}"
 
     def passages(self, docs: List[Dict[str, Any]]) -> Tuple[List[Passage], List[str]]:
         """The passages of *docs* (each labelled, ``label_doc``) and the
@@ -133,17 +121,22 @@ class BeliefUpdateSignal:
             passages.append((self._state.label_doc(_doc_key(d, text), passage_title(text)), _doc_id(d), text))
         return passages, errors
 
+    def label_of(self, doc: Dict[str, Any]) -> Optional[str]:
+        """The label of a document once it was shown, else None."""
+        text = doc_text(doc, max_length=None)
+        return self._state.doc_label(_doc_key(doc, text)) if self._state is not None and text else None
+
     def apply(self, parsed: Any, passages: List[Passage]) -> Dict[str, Any]:
         """Apply a parsed reply (``LLMBeliefUpdater.parse``) of a call on
         *passages*: they are judged now; returns the records of
         ``BeliefState.apply``."""
         self._judged.update(doc for _, doc, _ in passages if doc)
-        think, doc_obs, updates = parsed
-        return self._state.apply(think, doc_obs, updates)
+        think, doc_obs, statements = parsed
+        return self._state.apply(think, doc_obs, statements)
 
     def _update(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str]) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"passages": [], "think_observations": None, "doc_observations": None,
-                               "nugget_updates": [], "belief_output": None, "errors": []}
+        out: Dict[str, Any] = {"passages": [], "observations": None, "changed": [], "issues": [],
+                               "statements": self.statements(), "reply": None, "errors": []}
         if self._state is None:
             return out
         passages, out["errors"] = self.passages(docs)
@@ -153,11 +146,12 @@ class BeliefUpdateSignal:
             return out
 
         parsed, raw, errors = self.updater.update(self._query, self._state, step, turn, passages)
-        out["belief_output"] = raw
+        out["reply"] = raw
         out["errors"].extend(f"belief_update: {e}" for e in errors)
         if parsed is None:
             return out
         out.update(self.apply(parsed, passages))
+        out["statements"] = self.statements()
         return out
 
 

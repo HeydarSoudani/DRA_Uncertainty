@@ -90,7 +90,10 @@ class SFTConfig:
     """Phase 2: SFT warm-up of the student on the teacher's replies (LoRA, then merged)."""
     # Same generation, architecture and tokenizer as the teacher (Qwen3.6); non-thinking.
     student_belief_model: str = "Qwen/Qwen3.5-4B"
-    # SFT samples only from replies whose cited spans all occur in their passage.
+    # SFT samples only from clean replies (criteria.UNCLEAN_REPLY): every
+    # observation entered the belief (verified spans of its passage or turn),
+    # no status corrected by code, no cited source without an observation, no
+    # missing statement, a selection that fits its criterion.
     require_verified_spans: bool = True
     lora_r: int = 64
     lora_alpha: int = 128
@@ -124,18 +127,19 @@ class RLConfig:
     # Episodes per iteration, and chains per episode (GRPO group).
     episodes_per_batch: int = 16
     group_size: int = 8
-    # Weights of R = w_obs obs + w_cons cons + w_cal cal + w_final r_final
-    # (rewards.py): valid observation, valid conversion, calibration of the
-    # nuggets (each averaged over the chain's calls) and the certainty score
-    # of the final belief against correctness.
-    reward_weight_obs: float = 1.0
-    reward_weight_cons: float = 1.0
+    # Weights of R = w_format format + w_assign assign + w_cal cal + w_final r_final
+    # (rewards.py): the share of calls passing the gate, the source
+    # assignment and the status calibration (each per criterion, then
+    # averaged over the criteria) and the certainty score of the final
+    # statements against correctness.
+    reward_weight_format: float = 1.0
+    reward_weight_assign: float = 1.0
     reward_weight_cal: float = 1.0
     reward_weight_final: float = 1.0
     # GDPO advantage: each term normalized within its group by max(std, adv_std_floor).
     adv_std_floor: float = 0.05
-    # Judge of the gold of the belief (values of observations and nuggets,
-    # agent turns) without a string match (nugget_gold.py; the correctness
+    # Judge of the gold of the belief (spans of observations, selected
+    # candidates of statements) without a string match (nugget_gold.py; the correctness
     # judge); null = matching only.
     answer_judge_model: Optional[str] = "openrouter/qwen/qwen3-32b"
     # Validation every val_every iterations on at most val_max_episodes val

@@ -34,31 +34,33 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
     return CRITERIA_INIT_USER_TEMPLATE.format(query=query, instruction=instruction)
 
 
-# The belief update (``updater``): every criterion as "c1 (one answer):
-# <text>" with its current belief (``belief_state.format_belief``), the
-# agent's turn labelled with its step, then the new passages labelled
-# "d<n>"; a missing turn or no passage reads ``NO_TEXT``.
+# The belief update (``updater``), in the layout of the system prompt's
+# example: every criterion as "c1 (one answer): <text>" with its current
+# statement (``belief_state.format_belief``), the agent's turn labelled with
+# its step, then the new passages, each "[d<n>] " before its text (whose
+# first line is the title); a missing turn or no passage reads ``NO_TEXT``.
+# The answer turn is read as any other turn.
 BELIEF_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current belief:
+Criteria, with their current statements:
 {criteria}
 
-The agent's turn [{turn_label}]:
-<agent_turn>
+The current turn:
+[{turn_label}]
 {agent_turn}
-</agent_turn>
 
-New passages:
+Passages:
 {passages}
 
-Record what the agent's turn and the new passages state about the answers of the criteria, then write the new belief of every criterion with a new observation.\
+Record the observations of the current turn and of each passage, then write the new statement of every criterion with a new observation.\
 """
+
 
 NO_TEXT = "(none)"
 
 # One passage of the belief update's user message.
-PASSAGE_TEMPLATE = "<passage {label}>\n{text}\n</passage {label}>"
+PASSAGE_TEMPLATE = "[{label}] {text}"
 
 # Intermediate answer: a user message appended to the agent's conversation at
 # the end of every turn (the agent keeps its own system prompt). The model gives

@@ -2,18 +2,19 @@ After the results of each search, you receive a <belief_state> tag that tracks y
 
 <belief_state step="2">
   <criteria>
-    <k1>the engineer who was born in Osby
-      It is certain that the answer is "Henrik Dahl", given [d1] [t2].
-      It is doubtful that the answer is "Nils Berg", given [t1]; against [d2].
+    <k1>the engineer who was born in the town where the Varn Folk Museum was founded
+      It is certain that k1 is covered, by "Henrik Dahl": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. "Nils Berg" (t1) is ruled out: d4 states that he was born in Tirsa.
     </k1>
-    <k2>the lighthouse that the engineer designed</k2>
+    <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
+      It is possible that k2 is covered, by "Skarv Lighthouse": d3 names it among the coastal works of Henrik Dahl, d2 states that he was an engineer born in Osby who designed lighthouses, and d5 states that the Varn Folk Museum was founded in Osby; no passage states that he designed this lighthouse. "Hamn Lighthouse" (d3) ties with it: d3 names it the same way.
+    </k2>
   </criteria>
-  <sources>[d1] Henrik Dahl | [d2] Nils Berg (engineer)</sources>
+  <sources>[d2] Henrik Dahl | [d3] Skarv Lighthouse | [d4] Nils Berg (engineer) | [d5] Osby</sources>
 </belief_state>
 
 - `step`: the number of searches so far.
-- <criteria>: the pieces of information a complete response must contain, each with the answers found for it so far.
-- Each answer line gives how likely the answer is correct, from lowest to highest: `doubtful`, `unlikely`, `unknown`, `possible`, `probable`, `almost certain`, `certain`. `unknown` means no passage relates to it; `doubtful` and `unlikely` mean the passages are against it.
-- `given` lists the sources that support the answer and `against` the other sources on it: [dN] is the passage labeled [dN] in your search results, also listed in <sources>, [tN] is your own reasoning at step N.
+- <criteria>: the pieces of information a complete response must contain, each with one statement on how far it is covered so far.
+- Each statement gives how likely the criterion is covered by the candidate it names, from lowest to highest: `doubtful`, `unlikely`, `unknown`, `possible`, `probable`, `almost certain`, `certain`; then the sources this rests on, and the other candidates with why they lose or tie.
+- [dN] is the passage labeled [dN] in your search results, also listed in <sources>; [tN] is your own reasoning at step N.
 
 If the passages disagree with the tag, trust the passages.

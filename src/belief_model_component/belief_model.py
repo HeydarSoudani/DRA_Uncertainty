@@ -6,21 +6,22 @@ With ``inform=False`` (``monitor``) it never changes the trajectory; with
 sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
-                             the sample); b_0 has no observation
-                             and no nugget
+                             the sample); b_0 has every statement "unknown"
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
+    finish(answer_turn)      once, after the last step: the update on the
+                             agent's answer turn; stores the final record
 
 Order inside ``observe`` (the step's documents and the agent's turn move
 the belief from b_{t-1} to b_t):
 
     b_t (one belief update call reads the agent's turn and the documents
     not judged in earlier steps, records their observations and rewrites
-    the nuggets of the criteria with new observations) ->
+    the statements of the criteria with a new observation) ->
     retrieval gain -> intermediate answer (both for evaluation only)
 
-Step record, one per iteration (saved as one line of
+Step record, one per iteration (saved as one ``step`` line of
 ``belief/{query_id}.jsonl`` by ``evaluation.belief.save_belief``); flat scalars
 first, nested detail last::
 
@@ -31,11 +32,8 @@ first, nested detail last::
     recall_so_far, num_relevant_seen, num_relevant,
     certainty,
     intermediate_answers, intermediate_answer_status,
-    docs[],
-    nuggets_after,
-    passages[], think_observations[], doc_observations[], nugget_updates[],
-    agent_turn, belief_output,
-    intermediate_answer_reasoning, errors[],
+    docs[], statements[], changed[], observations[], issues[],
+    agent_turn, reply, intermediate_answer_reasoning, errors[],
     belief_state_tag                                  # inform only, not saved (the
                                                       # trajectory step has it)
 
@@ -45,32 +43,40 @@ meaning differ per agent.
 
 A value that could not be computed is null, never 0; the reason is in
 ``errors`` (or a component is not configured: no criteria, no qrels).
-``docs`` is, per document of the step, ``{doc_id, seen_before}`` (its id
-was shown in an earlier step); ``num_new_docs`` counts the others.
-``nuggets_after`` holds, per criterion in ``criteria`` order, its nuggets
-after the step (``[{value, status, evidence}]``: an answer, how likely it
-is correct on the seven-word scale ``types.BELIEF_STATUSES``, and its
-sources, each ``{label, stance, value}``, "d<n>" a document, "t<step>"
-the agent's turn); the nuggets before the step are the previous step's.
-A source's spans are saved once, in the ``doc_observations`` of the step
-that observed it.
-``passages`` are the documents shown to the update call (``{label,
-doc_id}``; a document is labelled when first shown).
-``think_observations`` / ``doc_observations`` are the observations the
-call wrote this step (``{id, label, step, stance, value, [doc_id, spans,
-span_verified], grounded, note}``; only grounded ones with an empty note
-entered the belief), null when the call was not made or failed;
-``nugget_updates`` has one ``{id, after, reason, note, issues,
-[carried]}`` per criterion with a new observation; the raw reply is ``belief_output``.
-``agent_turn`` is the agent's reasoning and queries of the iteration
-(``agent_turn.agent_turn_text``).
+``docs`` is, per document of the step, ``{doc_id, new, label}``: ``new``
+when its id was not shown in an earlier step (``num_new_docs`` counts
+them), ``label`` the belief's label of it ("d<n>", given when the document
+is first shown to the belief update; null for a document without text).
+``statements`` holds, per criterion in ``criteria`` order, its statement
+after the step (``{id, status, selected, text, cited, support_cited}``:
+``text`` the statement as the belief update wrote it, the only part shown
+to the next update and to the agent; parsed from it, its status on the
+seven-word scale ``types.BELIEF_STATUSES``, its selected candidate(s), the
+source labels it cites and those its status rests on, "d<n>" a document,
+"t<step>" the agent's turn); ``changed`` the ids of the criteria with a
+new observation in the step (their statement is the reply's).
+``observations`` are the observations of the turn and of the new documents
+that entered the belief in the step (``{id, label, step, [doc_id],
+spans}``, verified spans only), null when the call was not made or failed;
+together over the steps they are every criterion's references (the final
+record gathers them).  ``issues`` one ``{id, code, detail, [label]}`` per
+thing the reply got wrong (``criteria.ISSUE_*``: an observation left out,
+a statement not taken or flagged).
+``agent_turn`` is the agent's reasoning of the iteration as the update read
+it (``agent_turn.agent_turn_text``; the queries are in the trajectory),
+``reply`` the raw reply of the call.
 ``certainty`` is the certainty score s_t of the belief after the step
 (``certainty.certainty``: the geometric mean over the criteria of their
-most likely nugget's probability, rest and aggregate criteria left out);
-null without criteria.  The answer turn is read in the meta line's
-``final_update``; the meta line's ``final_certainty`` is s_T after it,
-the answer criterion of a multi-hop query scored by the nugget of the
-agent's answer.
+status's probability, the rest criterion left out); null without criteria.
+
+The final record (one ``final`` line) is the update on the answer turn
+(``agent_turn.answer_turn``, labelled "t<last step + 1>"), read as any
+other turn: ``{iteration, certainty, statements, changed, observations,
+issues, references, agent_turn, reply, errors}``; its ``certainty`` is
+s_T; ``references`` per criterion every source assigned to it over the
+sample (``BeliefState.reference_lists``: ``{id, references: [{label,
+step, [doc_id, title], spans}]}``), whether or not its statement cites it.
+It is null without an answer turn.
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
 ``ok``, ``no_candidate`` (``[]``), ``unparsed`` (reply without answer
@@ -139,7 +145,7 @@ class BeliefModel:
         self._criteria_info: Dict[str, Any] = {}
         self._step = 0
         self.steps: List[Dict[str, Any]] = []
-        self._final_update: Optional[Dict[str, Any]] = None
+        self.final: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Per-sample lifecycle
@@ -160,7 +166,7 @@ class BeliefModel:
         self._retrieval_gain.reset(query_id)
         self._step = 0
         self.steps = []
-        self._final_update = None
+        self.final = None
 
         self._criteria, self._criteria_info = [], {}
         if self._criteria_source is not None:
@@ -195,27 +201,36 @@ class BeliefModel:
             "num_relevant": self._retrieval_gain.num_relevant,
             "criteria": [c.to_dict() for c in self._criteria],
             "criteria_info": self._criteria_info,
-            "final_nuggets": self._belief.nuggets() if self._tracks_state else None,
-            "final_certainty": _round(self._belief.certainty()) if self._tracks_state else None,
-            "final_update": self._final_update,
         }
 
     def finish(self, answer_turn: Optional[str]) -> None:
         """Read the agent's answer turn (``agent_turn.agent_turn_text`` with
-        the answer; its label is "t<last step + 1>"); the outcome is the
-        meta line's ``final_update``: ``{agent_turn, think_observations,
-        nugget_updates, belief_output, errors}``, or null
-        when there is no answer turn.  Called once, after the last step."""
+        the answer; its label is "t<last step + 1>") as one more update; its
+        record is ``final`` (null without an answer turn).  Called once,
+        after the last step."""
         if not self._tracks_state or answer_turn is None:
             return
+        step = self._step + 1
+        errors: List[str] = []
+        update: Dict[str, Any] = {}
         try:
-            out = self._belief.finish(self._step + 1, answer_turn)
+            update = self._belief.finish(step, answer_turn)
         except Exception as e:
             logger.warning("BeliefModel: final belief update failed", exc_info=True)
-            out = {"think_observations": None, "nugget_updates": [], "belief_output": None,
-                   "errors": [f"belief_update: {e}"]}
-        out = {k: out.get(k) for k in ("think_observations", "nugget_updates", "belief_output", "errors")}
-        self._final_update = {"agent_turn": answer_turn, **out}
+            errors.append(f"belief_update: {e}")
+        errors.extend(update.get("errors") or [])
+        self.final = {
+            "iteration": step,
+            "certainty": _round(self._belief.certainty()),
+            "statements": self._belief.statements(),
+            "changed": update.get("changed") or [],
+            "observations": update.get("observations"),
+            "issues": update.get("issues") or [],
+            "references": self._belief.state.reference_lists() if self._belief.state is not None else None,
+            "agent_turn": answer_turn,
+            "reply": update.get("reply"),
+            "errors": errors,
+        }
 
     def close(self) -> None:
         """Drop every model and callback reference (the updater, the agent's
@@ -260,18 +275,19 @@ class BeliefModel:
 
         tracks_state = self._tracks_state
 
+        docs = unique_docs(docs)
         per_doc = []
-        for d in unique_docs(docs):
+        for d in docs:
             i = _doc_id(d)
-            per_doc.append({"doc_id": i, "seen_before": i in self._seen_ids})
+            per_doc.append({"doc_id": i, "new": i not in self._seen_ids, "label": None})
         self._seen_ids.update(d["doc_id"] for d in per_doc if d["doc_id"])
-        new_ids = [d["doc_id"] for d in per_doc if not d["seen_before"]]
+        new_ids = [d["doc_id"] for d in per_doc if d["new"]]
 
         # --- b_t (the documents not judged in earlier steps, the turn) ----------
         update: Dict[str, Any] = {}
         if tracks_state:
             try:
-                update = self._belief.score(unique_docs(docs), self._step, agent_turn)
+                update = self._belief.score(docs, self._step, agent_turn)
             except Exception as e:
                 logger.warning("BeliefModel: belief update failed", exc_info=True)
                 errors.append(f"belief_update: {e}")
@@ -300,6 +316,9 @@ class BeliefModel:
                 intermediate_answer_status = "failed"
 
         state = self._belief.state if tracks_state else None
+        if state is not None:
+            for d, doc in zip(per_doc, docs):
+                d["label"] = self._belief.label_of(doc)
         record: Dict[str, Any] = {
             "iteration": self._step,
             "agent_iteration": iter_num,
@@ -311,13 +330,12 @@ class BeliefModel:
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
             "docs": per_doc,
-            "nuggets_after": state.nugget_lists() if state is not None else None,
-            "passages": update.get("passages") if tracks_state else None,
-            "think_observations": update.get("think_observations"),
-            "doc_observations": update.get("doc_observations"),
-            "nugget_updates": update.get("nugget_updates") if tracks_state else None,
+            "statements": state.statement_lists() if state is not None else None,
+            "changed": update.get("changed") or [],
+            "observations": update.get("observations"),
+            "issues": update.get("issues") or [],
             "agent_turn": agent_turn,
-            "belief_output": update.get("belief_output"),
+            "reply": update.get("reply"),
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,
             "errors": errors,
         }

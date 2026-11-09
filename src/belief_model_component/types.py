@@ -4,12 +4,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# The status of a nugget: how likely its value is a correct answer of its
-# criterion, one of the seven words of Agent-BRACE's verbal belief scale
-# (arXiv 2605.11436), lowest level first.  The paper ranks "unknown" lowest;
-# here it is the neutral level 0 (no document relates to the value, only the
-# agent's turns give it); "unlikely" (the documents point against the value)
-# and "doubtful" (a document contradicts it) are below it.
+# The status of a criterion: how likely it is covered by the selected
+# candidate(s) its statement names, as the passages show it (the agent's
+# turns propose candidates and mark doubts, but alone never make one more
+# than "possible", ``TURN_ONLY_MAX_STATUS``), one of the seven words of
+# Agent-BRACE's verbal belief scale (arXiv 2605.11436), lowest level first.
+# The paper ranks "unknown" lowest; here it is the neutral level 0 (no
+# observation gives a candidate); "unlikely" and "doubtful" are below it
+# (the sources speak against the candidates).
 BELIEF_STATUSES = (
     "doubtful",
     "unlikely",
@@ -19,9 +21,11 @@ BELIEF_STATUSES = (
     "almost certain",
     "certain",
 )
+# The neutral status: no observation gives a candidate (b_0).
+UNKNOWN = "unknown"
 # Signed level of each status (-2 to 4), for analysis.
 STATUS_LEVEL: Dict[str, int] = {
-    status: k - BELIEF_STATUSES.index("unknown") for k, status in enumerate(BELIEF_STATUSES)
+    status: k - BELIEF_STATUSES.index(UNKNOWN) for k, status in enumerate(BELIEF_STATUSES)
 }
 # The paper's "confirmed or certain": "confirmed" read as "certain".
 _STATUS_SYNONYMS = {"confirmed": "certain"}
@@ -34,44 +38,49 @@ def parse_status(text: Any) -> Optional[str]:
     return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
 
 
+# The highest status a statement keeps when it cites no passage for its
+# selected candidate (only the agent's turns support it); a computed
+# criterion (``NO_DOC_KINDS``) is exempt.
+TURN_ONLY_MAX_STATUS = "possible"
+
+# The probability of "doubtful": above 0, so that one contradicted
+# criterion lowers the geometric mean of the certainty score without
+# fixing it at 0 (``certainty.geometric_mean``).
+DOUBTFUL_PROBABILITY = 1 / 12
+
+
 def status_probability(status: str) -> float:
-    """A nugget's status as a probability that its value is correct:
-    (level + 2) / 6, doubtful 0, unknown 1/3, certain 1."""
-    return (STATUS_LEVEL[status] + 2) / 6
+    """A status as a probability that the criterion is covered:
+    (level + 2) / 6, doubtful ``DOUBTFUL_PROBABILITY`` (1/12, not 0),
+    unlikely 1/6, unknown 1/3, certain 1."""
+    return max((STATUS_LEVEL[status] + 2) / 6, DOUBTFUL_PROBABILITY)
 
 
-# Criterion kinds: a closed criterion is one fact with one answer; an open
-# one has several answers that hold together; the rest criterion of a set
-# query ("any other member: <property>") stands for the members the
-# extractor did not list; an aggregate criterion of a set query is how its
+# Criterion kinds: a closed criterion is one fact with one answer; the rest
+# criterion of a set query ("any other member: <property>") stands for the
+# members the extractor did not list; an aggregate criterion of a set query is how its
 # answer follows from the members' values (computed, no document states
 # it); an aspect criterion is one aspect of a report topic, whose answers
 # are the facts on it.
 CLOSED = "closed"
-OPEN = "open"
 REST = "rest"
 AGGREGATE = "aggregate"
 ASPECT = "aspect"
 
-# Exclusive kinds have one correct answer, so the nuggets of such a
-# criterion are alternatives; the nuggets of the other (cumulative) kinds
+# Exclusive kinds have one correct answer, so the values of such a
+# criterion are alternatives; the values of the other (cumulative) kinds
 # are answers that hold together (members, values, facts).
 EXCLUSIVE_KINDS = (CLOSED, AGGREGATE)
 # Kinds no document can state (the agent computes an aggregate): the
-# belief update takes no document observation on them, so their nuggets
+# belief update takes no document observation on them, so their values
 # rest on the agent's turns only.
 NO_DOC_KINDS = (AGGREGATE,)
-# Nuggets kept per criterion, by kind: the most likely first.
-MAX_NUGGETS: Dict[str, int] = {CLOSED: 5, AGGREGATE: 5, OPEN: 50, REST: 50, ASPECT: 50}
 
 
 def exclusive(kind: str) -> bool:
     """Whether a criterion of *kind* has one correct answer."""
     return kind in EXCLUSIVE_KINDS
 
-
-# The separator of a rest value's member and value ("<member>: <value>").
-REST_PAIR = ": "
 
 # Query shapes (layout.DATASET_SPECS): one entity or value described by clues,
 # one entity reached through a chain of other entities (hops), a value
@@ -106,12 +115,6 @@ def alnum(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
-def same_value(a: str, b: str) -> bool:
-    """Whether two values are the same text, case, whitespace and
-    punctuation ignored."""
-    return alnum(a) == alnum(b)
-
-
 @dataclass
 class Criterion:
     """One criterion c_k of the per-query criteria list."""
@@ -129,57 +132,24 @@ class Criterion:
 # the belief model's step (the answer turn: the last step + 1).
 DOC = "doc"
 THINK = "think"
-SUPPORTS = "supports"
-CONTRADICTS = "contradicts"
-STANCES = (SUPPORTS, CONTRADICTS)
-
-
-def parse_stance(text: Any) -> Optional[str]:
-    """``supports`` or ``contradicts`` as *text* names it ("support",
-    "contradict" accepted), or None."""
-    key = str(text or "").strip().lower()
-    key = {"support": SUPPORTS, "contradict": CONTRADICTS}.get(key, key)
-    return key if key in STANCES else None
-
-
-@dataclass
-class Evidence:
-    """One source of a nugget, as the belief keeps it: the source's
-    observation on the criterion (its label, stance and value, and a
-    document's verified spans).  The value may be another answer of the
-    criterion (a source that points against the nugget).  The spans are
-    kept in memory (the prompt and the inform tag show them) but not in
-    ``to_dict``: the saved belief cites a source by its label, and the
-    source's spans are saved once, in the observation record of the step
-    that observed it."""
-    label: str
-    stance: str
-    value: str
-    spans: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"label": self.label, "stance": self.stance, "value": self.value}
 
 
 @dataclass
 class Observation:
-    """One source stating one answer of one criterion, as the belief update
-    wrote it.
+    """What one source says about one criterion, as the belief update
+    wrote it: the ``spans`` of the source (the passage, or the agent's
+    turn) that give information about the criterion.  It has no stance and
+    no candidate: the statement judges what the observations show.
 
-    A document observation (``source`` ``doc``) cites ``spans`` of the
-    document; ``span_verified[i]`` says whether ``spans[i]`` occurs in it
-    verbatim (then it is the document's own words).  A think observation
-    (``source`` ``think``) has no spans; its ``value`` is the agent's own
-    text when it occurs in the turn.  ``grounded``: a document observation
-    has a verified span, a think observation's value occurs in its turn.
-    Only grounded observations enter the belief, as ``Evidence``.
-    """
+    ``span_verified[i]`` says whether ``spans[i]`` occurs in the source as
+    the call showed it (then it is the source's own words); ``grounded``:
+    one span is verified.  Only grounded observations enter the belief;
+    ``to_dict`` is the saved record of one that entered (its verified
+    spans only)."""
     criterion: str
     source: str
     label: str
     step: int
-    stance: str
-    value: str
     spans: List[str] = field(default_factory=list)
     span_verified: List[bool] = field(default_factory=list)
     doc_id: Optional[str] = None
@@ -189,50 +159,36 @@ class Observation:
     def verified_spans(self) -> List[str]:
         return [s for s, ok in zip(self.spans, self.span_verified) if ok]
 
-    def evidence(self) -> Evidence:
-        return Evidence(label=self.label, stance=self.stance, value=self.value, spans=self.verified_spans)
-
     def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"id": self.criterion, "label": self.label, "step": self.step,
-                               "stance": self.stance, "value": self.value}
+        out: Dict[str, Any] = {"id": self.criterion, "label": self.label, "step": self.step}
         if self.source == DOC:
-            out.update(doc_id=self.doc_id, spans=list(self.spans), span_verified=list(self.span_verified))
+            out["doc_id"] = self.doc_id
+        out["spans"] = self.verified_spans
         return out
 
 
 @dataclass
-class Nugget:
-    """One answer of a criterion in the belief: ``value``, its ``status``
-    and its ``evidence``, the sources with an observation on it (each
-    source's own observation, ``Evidence``).  The belief is self-contained:
-    the nuggets and their evidence are all the belief update reads of b_{t-1}."""
-    value: str
-    status: str
-    evidence: List[Evidence] = field(default_factory=list)
+class Statement:
+    """The belief of one criterion: one statement in free text with a fixed
+    opening (``statement_text``), as the belief update wrote it (its status
+    word lowered by code when the turn-only cap applies).  Parsed from it:
+    ``status``, the ``selected`` candidate(s) the opening names, the labels
+    it cites (``cited``) and those of the part the status rests on, before
+    the first other-candidate sentence (``support_cited``).  The text is
+    all that the next update and the agent read of the criterion."""
+    text: str
+    status: str = UNKNOWN
+    selected: List[str] = field(default_factory=list)
+    cited: List[str] = field(default_factory=list)
+    support_cited: List[str] = field(default_factory=list)
 
-    @property
-    def labels(self) -> List[str]:
-        return list(dict.fromkeys(e.label for e in self.evidence))
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"value": self.value, "status": self.status, "evidence": [e.to_dict() for e in self.evidence]}
-
-
-@dataclass
-class WrittenNugget:
-    """One nugget as the belief update wrote it: ``status`` None when the
-    reply names no belief status, ``evidence`` the labels it cites."""
-    value: str
-    status: Optional[str]
-    evidence: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"value": self.value, "status": self.status, "evidence": list(self.evidence)}
+    def to_dict(self, criterion_id: str) -> Dict[str, Any]:
+        return {"id": criterion_id, "status": self.status, "selected": list(self.selected), "text": self.text,
+                "cited": list(self.cited), "support_cited": list(self.support_cited)}
 
 
 @dataclass
-class NuggetUpdate:
-    """The nugget list the belief update wrote for one criterion."""
+class WrittenStatement:
+    """The statement text the update wrote for one criterion."""
     id: str
-    nuggets: List[WrittenNugget]
-    reason: str = ""
+    text: str

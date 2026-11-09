@@ -254,10 +254,11 @@ def verbose_print_belief(
 ) -> None:
     """Print the belief model's record for one search iteration: the belief
     row (certainty, new doc ids), the gold row (new-item precision, recall
-    so far, intermediate answer), one row per nugget of each criterion
-    (status, value, evidence labels; ``*`` rewritten this iteration), the
-    labels of the iteration's documents, then any errors.  With *final*,
-    the final belief (``belief_view.final_record``), without the gold row."""
+    so far, intermediate answer), per criterion its statement row (status,
+    selected candidate(s), the labels it rests on; ``*`` rewritten this
+    iteration), the labels of the iteration's
+    documents, then the reply's issues and any errors.  With *final*, the
+    final record (``BeliefModel.final``), without the gold row."""
     from belief_model_component.belief_view import belief_lines
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[final belief]: " if final else f"{prefix}[Iter {iter_num}] [belief]: "

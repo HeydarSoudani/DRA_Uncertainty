@@ -15,12 +15,12 @@ Only criteria with gold answers have gold (``gold_criterion``); the rest
 criterion of a set query has none until members are masked into it (the
 gold lists every member as its own criterion), so it is left out.
 
-- ``NuggetGold``: a value of a criterion (an observation's or a nugget's)
-  is correct when it matches the criterion's gold (judge question: is the
-  value the gold answer?); the values of any belief chain are resolved in
-  batches (``resolve``), then read with ``correct``.  ``misassigned``: the
-  value is not a gold answer of its criterion but matches another
-  criterion's (string match only).
+- ``NuggetGold``: a selected candidate of a criterion is correct when it
+  matches the criterion's gold (judge question: is the candidate the gold
+  answer?, ``correct``); an observation's spans state the gold when they
+  match it (judge question: does the text state the gold answer?,
+  ``stated``).  The texts of any belief chain are resolved in batches
+  (``resolve``), then read.
 - ``annotate_stated``: per agent turn, the criteria whose gold answer it
   states (``Episode.steps[t].stated``, ``Episode.answer_stated``): the
   think observations a call should record.  The judge is asked only when
@@ -109,6 +109,15 @@ def gold_criterion(episode: Episode, cid: str) -> Optional[Dict[str, Any]]:
     return c if c is not None and c["answers"] and c["kind"] != REST else None
 
 
+def _criterion(episode: Episode, cid: str, answers: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """The gold criterion *cid* (``gold_criterion``), with only *answers*
+    as its gold answers when given (None when *answers* is empty)."""
+    c = gold_criterion(episode, cid)
+    if c is None or answers is None:
+        return c
+    return {**c, "answers": list(answers)} if answers else None
+
+
 def matches(episode: Episode, criterion: Dict[str, Any], text: str) -> bool:
     """*text* (an agent turn or a value) matches the gold of *criterion*."""
     return states(text, criterion["answers"], episode.gold_names)
@@ -135,6 +144,11 @@ class AnswerJudge:
     def key(self, kind: str, criterion: Dict[str, Any], text: str) -> str:
         blob = json.dumps([self.model, kind, criterion["text"], criterion["answers"], text], ensure_ascii=False)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+    def uncached(self, items: List[Tuple[str, Dict[str, Any], str]]) -> int:
+        """How many distinct pairs of *items* are not cached yet (the ones
+        ``resolve`` sends to the judge)."""
+        return len({self.key(*item) for item in items} - self._cache.keys())
 
     def resolve(self, items: List[Tuple[str, Dict[str, Any], str]]) -> Dict[str, bool]:
         """The verdict of each ``(kind, criterion, text)``, by its ``key``;
@@ -164,57 +178,68 @@ class AnswerJudge:
         return {k: self._cache.get(k, False) for k in keyed}
 
 
+# The kinds of text ``NuggetGold`` resolves: a selected candidate (is it
+# the gold answer?) and an observation's spans (do they state it?).
+CANDIDATE = "candidate"
+SPANS = "turn"
+
+
 class NuggetGold:
-    """Whether a value of a criterion is a gold answer: the match, else the
-    judge's verdict (``resolve`` asks it in one batch)."""
+    """Whether a text of a criterion has its gold: the match, else the
+    judge's verdict (``resolve`` asks it in one batch).  A candidate
+    (``CANDIDATE``) is asked whether it is the gold answer, an
+    observation's spans (``SPANS``, the judge's "turn" question) whether
+    they state it."""
 
     def __init__(self, judge: Optional[AnswerJudge] = None) -> None:
         self.judge = judge
         self._verdicts: Dict[str, bool] = {}
 
-    def resolve(self, items: Iterable[Tuple[Episode, str, str]]) -> Dict[str, int]:
-        """Ask the judge about every ``(episode, criterion id, value)`` the
-        match does not decide; returns counts (items, matched, asked)."""
+    def resolve(self, items: Iterable[Tuple]) -> Dict[str, int]:
+        """Ask the judge about every ``(episode, criterion id, kind, text[,
+        answers])`` the match does not decide (*answers*: judge against
+        these gold answers of the criterion only, ``_criterion``); returns
+        counts (items, matched, asked: pairs not cached yet)."""
         counts = {"items": 0, "matched": 0, "asked": 0}
         todo = []
-        for episode, cid, value in items:
-            c = gold_criterion(episode, cid)
+        for episode, cid, kind, text, *rest in items:
+            c = _criterion(episode, cid, rest[0] if rest else None)
             if c is None:
                 continue
             counts["items"] += 1
-            if matches(episode, c, value):
+            if matches(episode, c, text):
                 counts["matched"] += 1
             elif self.judge is not None:
-                todo.append(("candidate", c, value))
+                todo.append((kind, c, text))
         if todo:
-            verdicts = self.judge.resolve(todo)
-            self._verdicts.update(verdicts)
-            counts["asked"] = len(verdicts)
+            counts["asked"] = self.judge.uncached(todo)
+            self._verdicts.update(self.judge.resolve(todo))
         return counts
 
-    def correct(self, episode: Episode, cid: str, value: str) -> Optional[bool]:
-        """The *value* of criterion *cid* is a gold answer; None when the
-        criterion has no gold.  A value the judge was not asked about
-        (``resolve``) counts as wrong unless it matches."""
-        c = gold_criterion(episode, cid)
+    def _has_gold(self, episode: Episode, cid: str, kind: str, text: str,
+                  answers: Optional[List[str]] = None) -> Optional[bool]:
+        c = _criterion(episode, cid, answers)
         if c is None:
             return None
-        if matches(episode, c, value):
+        if matches(episode, c, text):
             return True
         if self.judge is None:
             return False
-        return self._verdicts.get(self.judge.key("candidate", c, value), False)
+        return self._verdicts.get(self.judge.key(kind, c, text), False)
 
-    @staticmethod
-    def misassigned(episode: Episode, cid: str, value: str) -> bool:
-        """*value*, given for criterion *cid*, matches the gold of another
-        criterion and not its own (string match only: the judge is not
-        asked per pair of criteria)."""
-        own = gold_criterion(episode, cid)
-        if own is not None and matches(episode, own, value):
-            return False
-        return any(matches(episode, c, value) for c in episode.gold_criteria or []
-                   if c["id"] != cid and gold_criterion(episode, c["id"]) is not None)
+    def correct(self, episode: Episode, cid: str, value: str,
+                answers: Optional[List[str]] = None) -> Optional[bool]:
+        """The candidate *value* of criterion *cid* is a gold answer (one of
+        *answers* when given); None when the criterion has no gold (or
+        *answers* is empty).  A candidate the judge was not asked about
+        (``resolve``, with the same *answers*) counts as wrong unless it
+        matches."""
+        return self._has_gold(episode, cid, CANDIDATE, value, answers)
+
+    def stated(self, episode: Episode, cid: str, text: str) -> Optional[bool]:
+        """The spans *text* of an observation on *cid* state its gold answer
+        (likewise)."""
+        return self._has_gold(episode, cid, SPANS, text)
 
 
 def annotate_stated(episodes: List[Episode], judge: Optional[AnswerJudge] = None) -> Dict[str, int]:
@@ -251,8 +276,8 @@ def annotate_stated(episodes: List[Episode], judge: Optional[AnswerJudge] = None
                     pending.append(("turn", c, turn))
                     where.append((stated, c["id"], judge.key("turn", c, turn)))
     if judge is not None and pending:
+        counts["asked"] = judge.uncached(pending)
         verdicts = judge.resolve(pending)
-        counts["asked"] = len(verdicts)
         for stated, cid, key in where:
             if verdicts[key]:
                 stated.add(cid)

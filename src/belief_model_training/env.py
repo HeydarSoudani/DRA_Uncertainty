@@ -45,14 +45,12 @@ class ChainCall:
 @dataclass
 class Chain:
     """The student's belief chain over one episode; ``group`` indexes the
-    episode in the batch.  ``nuggets`` is the belief after the last call
-    (per gold criterion), ``answer_label`` the answer turn's label (None
-    without a final call)."""
+    episode in the batch.  ``statements`` is the belief after the last
+    call (per gold criterion)."""
     episode: Episode
     group: int
     calls: List[ChainCall] = field(default_factory=list)
-    nuggets: List[List[Dict[str, Any]]] = field(default_factory=list)
-    answer_label: Optional[str] = None
+    statements: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -97,7 +95,7 @@ def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRollou
         if not pending:
             break
         gens = engine.generate([c.messages for _, c in pending], temperature=temperature,
-                               max_new_tokens=max(run.tracker.max_tokens for run, _ in pending))
+                               max_new_tokens=[run.tracker.max_tokens for run, _ in pending])
         for (run, call), g in zip(pending, gens):
             gen = g[0]
             outcome = run.tracker.submit(gen.text)
@@ -105,8 +103,7 @@ def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRollou
                                              gen.finish_reason, outcome))
         active = [run for run, _ in pending]
     for run in runs:
-        run.chain.nuggets = run.tracker.signal.nuggets() or []
-        run.chain.answer_label = run.tracker.signal.answer_label
+        run.chain.statements = run.tracker.signal.statements() or []
     return [run.chain for run in runs]
 
 

@@ -9,8 +9,10 @@ written to ``samples.jsonl``).  Only queries with gold criteria are used
 teacher's replies on the gold criteria replayed (``episodes.replay_teacher``,
 the final call on the answer turn included), each call within the matched
 replay that passes the gate (``scoring.format_ok``) and, with
-``require_verified_spans``, whose observations all entered the belief
-(verified spans, values in the agent's turn).  The init call (criteria
+``require_verified_spans``, that is clean (``criteria.UNCLEAN_REPLY``:
+every observation entered the belief, no status corrected, no cited source
+without an observation, no missing statement, a selection that fits its
+criterion).  The init call (criteria
 extraction) is not trained: the student runs on the gold criteria.
 The input is the chat-template prompt the inference belief model sends
 (``add_generation_prompt``, native reasoning off, as served by vLLM),
@@ -30,9 +32,10 @@ Multi-GPU: launch with ``torchrun --nproc_per_node N`` (data parallel; the
 effective batch is per_device_batch_size x gradient_accumulation_steps x N).
 
 The teacher is scored on the sft and val episodes before training
-(``scoring.assess``: valid observation, valid conversion, nugget
-calibration and the certainty score against correctness, the measures of
-the phase 3 rewards), so its quality is known: SFT copies its errors.
+(``scoring.assess``: per criterion the source assignment and the status
+calibration, the share of well-formed calls and the certainty score
+against correctness, the measures of the phase 3 rewards), so its quality
+is known: SFT copies its errors.
 
 Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, qid,
 dataset, split, iteration, messages, completion}),
@@ -54,7 +57,7 @@ import torch.nn.functional as F
 
 from utils.io_utils import read_jsonl, write_jsonl
 
-from belief_model_component.criteria import NOTE_REPEATED
+from belief_model_component.criteria import UNCLEAN_REPLY
 
 from .config import RunPaths, TrainingConfig
 from .episodes import DocumentStore, Episode, replay_teacher
@@ -121,19 +124,21 @@ class _Collator:
         return {"input_ids": ids, "labels": labels, "attention_mask": mask}
 
 
-def _all_grounded(outcome: Dict) -> bool:
-    """Every observation of the call entered the belief or repeats one in
-    it (verified spans, values in the agent's turn)."""
-    obs = (outcome.get("think_observations") or []) + (outcome.get("doc_observations") or [])
-    return all(o.get("note") in ("", NOTE_REPEATED) for o in obs)
+def _clean(outcome: Dict) -> bool:
+    """The reply has no issue of ``criteria.UNCLEAN_REPLY``: every
+    observation entered the belief or repeats one in it, no status was
+    corrected by code, every cited source is observed on its criterion,
+    every criterion with a new observation has a statement, and every
+    selection fits its criterion; so the reply is the belief it trains."""
+    return not any(i.get("code") in UNCLEAN_REPLY for i in outcome.get("issues") or [])
 
 
 def teacher_samples(episode: Episode, store: DocumentStore, require_verified_spans: bool,
                     counts: Counter) -> Tuple[List[Dict], Tuple]:
     """The SFT samples of one monitor episode and its replay
     ``(episode, calls, tracker)`` (teacher scores); sets its
-    ``replay_steps`` and ``replay_error``."""
-    calls, episode.replay_steps, episode.replay_error, tracker = replay_teacher(episode, store.docs(episode))
+    ``replay_error``."""
+    calls, episode.replay_error, tracker = replay_teacher(episode, store.docs(episode))
     if episode.replay_error is not None:
         counts["replay_mismatch"] += 1
         logger.warning("[phase 2] %s %s: %s", episode.split.name, episode.qid, episode.replay_error)
@@ -147,8 +152,8 @@ def teacher_samples(episode: Episode, store: DocumentStore, require_verified_spa
         if not format_ok(c.outcome, "stop"):
             counts["dropped_gate"] += 1
             continue
-        if require_verified_spans and not _all_grounded(c.outcome):
-            counts["dropped_ungrounded"] += 1
+        if require_verified_spans and not _clean(c.outcome):
+            counts["dropped_unclean"] += 1
             continue
         out.append({**base, "iteration": c.call.iteration, "messages": c.call.messages, "completion": c.output})
     return out, (episode, calls, tracker)

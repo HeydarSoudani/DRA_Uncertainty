@@ -3,27 +3,25 @@ the final belief.
 
 One renderer feeds the console (``utils.text_utils.verbose_print_*``) and
 the trajectory markdown (the md-only blocks the agent mixin writes), so the
-two never drift apart.  It reads the saved shapes only: the step record of
-``BeliefModel.observe``, ``BeliefModel.criteria_summary`` and the meta line
-(``final_record``).
+two never drift apart.  It reads the saved shapes only: the step and final
+records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
 
-Per criterion, its nuggets are shown most likely first: the status as a
-word, the value, and the evidence labels ("d<n>" a document, "t<step>" an
-agent turn; "!" marks a source that contradicts).  ``*`` marks a criterion
-the update rewrote this iteration; a criterion without a nugget is
-``unknown``.  The documents labelled in the iteration are listed with
-their ids, so a label in the evidence can be traced to its document.
+Per criterion, one row with its status, its selected candidate(s) and the
+sources its status rests on ("d<n>" a document, "t<step>" an agent turn;
+the support part of its statement, ``statement_text.support_labels``).
+``*`` marks a criterion whose statement the update rewrote this iteration.
+The md also gives the full text of each statement rewritten in the
+iteration and the reply's issues.  The documents labelled in the
+iteration are listed with their ids, so a label can be traced to its
+document.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .criteria import ISSUE_NOT_IN_REPLY
-from .types import CONTRADICTS, STATUS_LEVEL
-
-# Values are cut to this length in the console; the md shows them in full.
+# Candidates are cut to this length in the console; the md shows them in full.
 CONSOLE_VALUE_CHARS = 40
 
-Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, value, evidence
+Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, selected, sources
 
 
 def _num(val: Any, fmt: str = ".3f") -> str:
@@ -35,40 +33,34 @@ def _value(text: Any, limit: Optional[int]) -> str:
     return text if limit is None or len(text) <= limit else text[:limit - 1] + "…"
 
 
-def _evidence(nugget: Dict[str, Any]) -> str:
-    labels = dict.fromkeys(("!" if e.get("stance") == CONTRADICTS else "") + str(e.get("label", "?"))
-                           for e in nugget.get("evidence") or [])
-    return " ".join(labels) or "—"
-
-
-def _changed(updates: Optional[List[Dict[str, Any]]]) -> set:
-    """Ids of the criteria whose nuggets the update rewrote."""
-    return {u["id"] for u in updates or []
-            if u.get("after") is not None and ISSUE_NOT_IN_REPLY not in (u.get("issues") or [])}
-
-
 def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
                 value_chars: Optional[int] = None) -> List[Row]:
-    """One row per nugget, most likely first within each criterion; a
-    criterion without a nugget gets one ``unknown`` row.  Empty when the
-    record has no belief (``nuggets_after`` null)."""
-    nuggets = record.get("nuggets_after")
-    if nuggets is None:
+    """Per criterion its row: status, selected candidate(s), the sources the
+    status rests on.  Empty when the record has no belief (``statements``
+    null)."""
+    statements = record.get("statements")
+    if statements is None:
         return []
-    changed = _changed(record.get("nugget_updates"))
+    changed = set(record.get("changed") or [])
     rows: List[Row] = []
     for i, c in enumerate(criteria):
         cid = c.get("id", f"c{i + 1}")
-        mark = "*" if cid in changed else ""
-        ranked = sorted(nuggets[i] if i < len(nuggets) else [],
-                        key=lambda n: -STATUS_LEVEL.get(n.get("status"), -9))
-        if not ranked:
-            rows.append((cid, mark, "unknown", "—", "—"))
-            continue
-        for j, n in enumerate(ranked):
-            rows.append((cid if j == 0 else "", mark if j == 0 else "", str(n.get("status")),
-                         _value(n.get("value", ""), value_chars), _evidence(n)))
+        s = statements[i] if i < len(statements) else {}
+        selected = ", ".join(f'"{_value(v, value_chars)}"' for v in s.get("selected") or []) or "—"
+        rows.append((cid, "*" if cid in changed else "", str(s.get("status") or "unknown"), selected,
+                     " ".join(s.get("support_cited") or []) or "—"))
     return rows
+
+
+def _rewritten(record: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """``(criterion id, text)`` of the statements the iteration rewrote."""
+    changed = set(record.get("changed") or [])
+    return [(s["id"], " ".join(str(s.get("text") or "").split())) for s in record.get("statements") or []
+            if s.get("id") in changed and s.get("text")]
+
+
+def _issues(record: Dict[str, Any]) -> List[str]:
+    return [f"{i.get('id')}: {i.get('code')} ({i.get('detail')})" for i in record.get("issues") or []]
 
 
 def gold_summary(record: Dict[str, Any]) -> str:
@@ -95,18 +87,14 @@ def _summary(record: Dict[str, Any], final: bool) -> str:
     return out
 
 
+def _new_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The documents of the step with a label, first shown in it."""
+    return [d for d in record.get("docs") or [] if d.get("new") and d.get("label")]
+
+
 def _labels(record: Dict[str, Any], md: bool) -> str:
     fmt = "{} `{}`" if md else "{} {}"
-    return " · ".join(fmt.format(p.get("label"), p.get("doc_id")) for p in record.get("passages") or [])
-
-
-def final_record(meta: Dict[str, Any]) -> Dict[str, Any]:
-    """The final belief of the meta line in the shape of a step record:
-    ``certainty``, ``nuggets_after``, the answer turn's ``nugget_updates``
-    and ``errors``."""
-    update = meta.get("final_update") or {}
-    return {"certainty": meta.get("final_certainty"), "nuggets_after": meta.get("final_nuggets"),
-            "nugget_updates": update.get("nugget_updates"), "errors": update.get("errors") or []}
+    return " · ".join(fmt.format(d.get("label"), d.get("doc_id")) for d in _new_labels(record))
 
 
 # ---------------------------------------------------------------------------
@@ -147,13 +135,13 @@ def belief_lines(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
         rows.append(("gold", gold_summary(record)))
     table = belief_rows(record, criteria, CONSOLE_VALUE_CHARS)
     status_w = max((len(r[2]) for r in table), default=0)
-    value_w = max((len(r[3]) + 2 for r in table), default=0)
-    for cid, mark, status, value, evidence in table:
-        family = f"{cid} {mark}".rstrip() if cid else ""
-        quoted = f'"{value}"' if value != "—" else value
-        rows.append((family, f"{status:<{status_w}}  {quoted:<{value_w}}  ← {evidence}"))
-    if not final and record.get("passages"):
+    value_w = max((len(r[3]) for r in table), default=0)
+    for cid, mark, status, value, sources in table:
+        rows.append((f"{cid} {mark}".rstrip(), f"{status:<{status_w}}  {value:<{value_w}}  ← {sources}"))
+    if not final and _new_labels(record):
         rows.append(("labels", _labels(record, md=False)))
+    if record.get("issues"):
+        rows.append(("issues", "; ".join(_issues(record))))
     if record.get("errors"):
         rows.append(("errors", "; ".join(map(str, record["errors"]))))
     return rows
@@ -195,11 +183,16 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
     table = belief_rows(record, criteria)
     if table:
-        lines += [""] + _md_table(("criterion", "status", "value", "evidence"),
-                                  [(f"{cid} {mark}".strip(), status, _cell(value), evidence)
-                                   for cid, mark, status, value, evidence in table])
-    if not final and record.get("passages"):
+        lines += [""] + _md_table(("criterion", "status", "selected", "sources"),
+                                  [(f"{cid} {mark}".strip(), status, _cell(value), sources)
+                                   for cid, mark, status, value, sources in table])
+    rewritten = _rewritten(record)
+    if rewritten:
+        lines += [""] + [f"- **{cid}**: {_cell(text)}" for cid, text in rewritten]
+    if not final and _new_labels(record):
         lines += ["", f"labels: {_labels(record, md=True)}"]
+    if record.get("issues"):
+        lines += ["", f"*issues: {_cell('; '.join(_issues(record)))}*"]
     if record.get("errors"):
         lines += ["", f"*errors: {'; '.join(map(str, record['errors']))}*"]
     return "\n".join(lines)

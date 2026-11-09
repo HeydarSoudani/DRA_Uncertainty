@@ -138,8 +138,8 @@ class AgentVerboseMixin:
         Called once per iteration, after all its searches, with the
         iteration's queries, the documents the agent was shown, its
         conversation so far (*trajectory*, for the intermediate answer) and
-        its turn (*agent_turn*: reasoning and queries, from which the belief
-        model reads the answers the agent gives or rejects).  *doc_labels*
+        its turn (*agent_turn*: its reasoning, from which the belief model
+        reads what the agent says about each criterion).  *doc_labels*
         (document id -> the agent's own passage label, for an agent that
         labels its passages) makes the inform tag cite the agent's labels.
         *seen_docs*, when given, are printed in verbose mode.
@@ -232,11 +232,10 @@ class AgentVerboseMixin:
         tag = None
         if subqueries or docs:
             from belief_model_component.agent_turn import agent_turn_text
-            queries = [subqueries] if isinstance(subqueries, str) else list(subqueries)
             tag = self._observe_step(
                 subqueries, docs, iter_num, original_query,
                 seen_docs=seen_docs, trajectory=trajectory,
-                agent_turn=agent_turn_text([s.get("think") for s in steps], queries),
+                agent_turn=agent_turn_text([s.get("think") for s in steps]),
                 doc_labels=doc_labels,
             )
         if tag:
@@ -326,15 +325,14 @@ class AgentVerboseMixin:
         try:
             result["belief_meta"] = belief_model.meta()
             result["belief_steps"] = list(belief_model.steps)
+            result["belief_final"] = belief_model.final
         except Exception:
             logger.warning("Belief model meta failed", exc_info=True)
             return
         # The final belief (after the answer turn): console and trajectory md.
-        if result["belief_meta"].get("final_nuggets") is not None:
-            from belief_model_component.belief_view import final_record
-            final = final_record(result["belief_meta"])
-            self._vprint_belief(None, final, final=True)
-            self._log_belief_md(final, final=True)
+        if belief_model.final is not None:
+            self._vprint_belief(None, belief_model.final, final=True)
+            self._log_belief_md(belief_model.final, final=True)
 
 
 def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
