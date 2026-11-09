@@ -11,8 +11,8 @@ the final call on the answer turn included), each call within the matched
 replay that passes the gate (``scoring.format_ok``) and, with
 ``require_verified_spans``, that is clean (``criteria.UNCLEAN_REPLY``:
 every observation entered the belief, no status corrected, no cited source
-without an observation, no missing statement, a selection that fits its
-criterion).  The init call (criteria
+without an observation, no reason that misreads the belief, no removal
+code did not take, no competing one-answer candidates).  The init call (criteria
 extraction) is not trained: the student runs on the gold criteria.
 The input is the chat-template prompt the inference belief model sends
 (``add_generation_prompt``, native reasoning off, as served by vLLM),
@@ -127,9 +127,11 @@ class _Collator:
 def _clean(outcome: Dict) -> bool:
     """The reply has no issue of ``criteria.UNCLEAN_REPLY``: every
     observation entered the belief or repeats one in it, no status was
-    corrected by code, every cited source is observed on its criterion,
-    every criterion with a new observation has a statement, and every
-    selection fits its criterion; so the reply is the belief it trains."""
+    corrected by code, every reason opens with the candidate's current
+    status (or "New:") and cites sources observed on its criterion, every
+    removal names a listed candidate and was taken, and no one-answer
+    criterion is left with competing candidates; so the reply is the
+    belief it trains."""
     return not any(i.get("code") in UNCLEAN_REPLY for i in outcome.get("issues") or [])
 
 

@@ -6,7 +6,7 @@ criteria (the criteria init call is not trained).  It is rewarded over
 whole trajectories, per criterion: the assignment of the sources to it
 (its gold documents, the turns that state its gold answer) and the
 calibration of its status at every step; plus the share of well-formed
-calls and, at the end, the certainty score of the final statements
+calls and, at the end, the certainty score of the final beliefs
 against the correctness of the agent's final answer.
 
 Entry point: ``experiments/training/belief_model_training.py --phase N``.

@@ -4,29 +4,30 @@ per-step signals, for deep research agents.
 Plugged into any agent with ``--belief-mode monitor`` (observe only) or
 ``inform`` (also inject a ``<belief_state>`` tag into the trajectory).  The
 belief state b_t gives each criterion of a fixed per-query criteria list
-one statement, in text: an Agent-BRACE belief status (how likely it is
-covered), its selected candidate(s), the observations the status rests on
-with their sources ("d<n>" a document, "t<step>" the agent's turn) and the
-other candidates with why they lose or tie.  At the end of each search
-iteration one call updates it (b_t = f(query, b_{t-1}, o_t)): it records
-the spans of the agent's turn (think observations) and of the new
-documents (document observations) that give information about each
-criterion, kept as the criterion's references, then rewrites the
-statements of the criteria with a new observation.  Only the statements
-are shown (to the next update and to the agent); the observations and
-references are saved.  The answer turn is one more update, and
-the certainty score s_T is a fixed function of the final statuses.  For
+its candidates (possible answers), each with an Agent-BRACE belief status
+(how likely it is an answer) and its basis ("passage" when a passage
+observation bears on it, "reasoning" when only the agent's turns name it).
+At the end of each search iteration one call updates it (b_t = f(query,
+b_{t-1}, o_t)): it records the spans of the agent's turn (think
+observations) and of the new documents (document observations) that give
+information about each criterion, kept as the criterion's references,
+then gives, with its reason, the status of every candidate that is new,
+removed or whose status changes.  Code keeps every other candidate as it
+was.  Only the candidates are shown (to the next update and to
+the agent); the observations, references and reasons are saved.  The
+answer turn is one more update, and the certainty score s_T is a fixed
+function of the final statuses.  For
 evaluation only, it also saves the retrieval gain against the qrels and the
 agent's intermediate answers.
 
 Module layout:
-    types         belief statuses, criterion kinds, Criterion, Observation, Statement,
-                  WrittenStatement
-    statement_text the fixed opening of a statement text and its source labels
+    types         belief statuses, criterion kinds, Criterion, Observation, Candidate,
+                  CandidateUpdate
+    reason_text   the opening of a candidate update's reason and its source labels
     certainty     the certainty score s_t of a belief (status probabilities, geometric mean)
     criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource,
                   GoldCriteriaSource, FallbackCriteriaSource, BeliefState
-                  (the statements, their trace of observations, the references)
+                  (the candidates, their trace of observations, the references)
     criteria_init the criteria source of a dataset and criteria_source (bank,
                   gold or silver): check_criteria_inputs, build_criteria_source,
                   check_max_criteria, prepare_criteria, belief_llm
@@ -43,6 +44,7 @@ from .types import (
     BELIEF_STATUSES,
     STATUS_LEVEL,
     UNKNOWN,
+    REMOVED,
     EXCLUSIVE_KINDS,
     NO_DOC_KINDS,
     exclusive,
@@ -50,8 +52,9 @@ from .types import (
     status_probability,
     Criterion,
     Observation,
-    Statement,
-    WrittenStatement,
+    Candidate,
+    CandidateUpdate,
+    RemovedCandidate,
 )
 from .criteria import (
     CriteriaSource,
@@ -81,6 +84,7 @@ __all__ = [
     "BELIEF_STATUSES",
     "STATUS_LEVEL",
     "UNKNOWN",
+    "REMOVED",
     "EXCLUSIVE_KINDS",
     "NO_DOC_KINDS",
     "exclusive",
@@ -88,8 +92,9 @@ __all__ = [
     "status_probability",
     "Criterion",
     "Observation",
-    "Statement",
-    "WrittenStatement",
+    "Candidate",
+    "CandidateUpdate",
+    "RemovedCandidate",
     "CriteriaSource",
     "LLMCriteriaSource",
     "BankedCriteriaSource",

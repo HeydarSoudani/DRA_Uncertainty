@@ -1,0 +1,172 @@
+---single_target---
+Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
+
+Criteria, with their current candidates:
+c1 (one answer): the painter who was born in a coastal town
+  (no candidate)
+c2 (one answer): the painter who won the Ostra Prize in the 1920s
+  "Anna Holm": possible (reasoning)
+
+The current turn:
+[t2]
+Anna Holm won the Ostra Prize, but I am not sure about the decade. Erik Lind could also fit, so I should check the list of winners.
+
+Passages:
+[d2] Ostra Prize
+The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927.
+
+[d3] Anna Holm
+Anna Holm (1890-1960) was a painter born in the port town of Vik. She won the Ostra Prize in 1934.
+
+Output:
+{
+  "think_observations": [
+    {"id": "c2", "spans": ["Anna Holm won the Ostra Prize, but I am not sure about the decade", "Erik Lind could also fit"]}
+  ],
+  "passage_observations": [
+    {"id": "c2", "passage": "d2", "spans": ["The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927"]},
+    {"id": "c1", "passage": "d3", "spans": ["Anna Holm (1890-1960) was a painter born in the port town of Vik"]},
+    {"id": "c2", "passage": "d3", "spans": ["She won the Ostra Prize in 1934"]}
+  ],
+  "candidates": [
+    {"id": "c1", "candidate": "Anna Holm", "reason": "New: d3 states that she was a painter born in the port town of Vik, so a passage meets all parts of the criterion, and no other candidate meets a part.", "status": "certain"},
+    {"id": "c2", "candidate": "Anna Holm", "reason": "Was possible: d3 states that she won the Ostra Prize in 1934, not in the 1920s, so a passage rules her out.", "status": "removed"},
+    {"id": "c2", "candidate": "Erik Lind", "reason": "New: t2 names him and d2 states that he won the Ostra Prize for painting in 1924, so a passage meets all parts of the criterion, but Maja Strand meets as many.", "status": "possible"},
+    {"id": "c2", "candidate": "Maja Strand", "reason": "New: d2 states that she won the Ostra Prize for painting in 1927, so a passage meets all parts of the criterion, but Erik Lind meets as many.", "status": "possible"}
+  ]
+}
+
+---multi_hop---
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+
+Criteria, with their current candidates:
+c1 (one answer): the town where the Varn Folk Museum was founded
+  "Osby": certain (passage)
+c2 (one answer): the engineer who was born in the town where the Varn Folk Museum was founded
+  "Nils Berg": possible (reasoning)
+c3 (one answer): the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
+  (no candidate)
+
+The current turn:
+[t2]
+I am not fully sure the museum was founded in Osby. Nils Berg may be the engineer born there. The last search did not show his birthplace, so I should check it and search for lighthouses designed by engineers from Osby.
+
+Passages:
+[d2] Henrik Dahl
+Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby. He designed harbours and lighthouses along the coast.
+
+[d3] Skarv Lighthouse
+The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl.
+
+[d4] Nils Berg (engineer)
+Nils Berg (1861-1930) was a railway engineer born in Tirsa, where he spent most of his life.
+
+[d5] Osby
+Osby is a market town on the river Varn with a population of about 9,000. The Varn Folk Museum was founded in Osby in 1921.
+
+[d6] Varn estuary
+The Varn reaches the sea at Kalvik, where a lighthouse has guarded the harbour entrance since 1870.
+
+Output:
+{
+  "think_observations": [
+    {"id": "c1", "spans": ["I am not fully sure the museum was founded in Osby"]},
+    {"id": "c2", "spans": ["Nils Berg may be the engineer born there"]}
+  ],
+  "passage_observations": [
+    {"id": "c2", "passage": "d2", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]},
+    {"id": "c3", "passage": "d2", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby", "He designed harbours and lighthouses along the coast"]},
+    {"id": "c3", "passage": "d3", "spans": ["The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl"]},
+    {"id": "c2", "passage": "d4", "spans": ["Nils Berg (1861-1930) was a railway engineer born in Tirsa"]},
+    {"id": "c1", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]},
+    {"id": "c2", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]},
+    {"id": "c3", "passage": "d5", "spans": ["The Varn Folk Museum was founded in Osby in 1921"]}
+  ],
+  "candidates": [
+    {"id": "c2", "candidate": "Henrik Dahl", "reason": "New: d2 states that he was an engineer born in Osby and d5 states that the Varn Folk Museum was founded in Osby, so passages meet all parts of the criterion, and no other candidate meets a part.", "status": "certain"},
+    {"id": "c2", "candidate": "Nils Berg", "reason": "Was possible: d4 states that he was born in Tirsa, not in Osby, where d5 places the museum, so a passage rules him out; t2 names him again, but reasoning does not keep a candidate a passage rules out.", "status": "removed"},
+    {"id": "c3", "candidate": "Skarv Lighthouse", "reason": "New: d3 names it among the works of Henrik Dahl, whom d2 states was an engineer born in Osby, where d5 places the museum, so passages meet all parts of the criterion, but the Hamn Lighthouse meets as many.", "status": "possible"},
+    {"id": "c3", "candidate": "Hamn Lighthouse", "reason": "New: d3 names it among the works of Henrik Dahl in the same way as the Skarv Lighthouse, so passages meet all parts of the criterion, but the Skarv Lighthouse meets as many.", "status": "possible"}
+  ]
+}
+
+---set---
+Query: What is the total length of the bridges over the river Varn that were built before 1900?
+
+Criteria, with their current candidates:
+c1 (one answer): Osby Bridge: length
+  "120 m": certain (passage)
+c2 (one answer): Kalvik Bridge: length
+  "85 m": possible (reasoning)
+c3 (several answers): any other member: length
+  (no candidate)
+c4 (computed): the total length of the bridges over the river Varn that were built before 1900
+  "205 m": possible (reasoning)
+
+The current turn:
+[t4]
+Osby Bridge is 120 m and Kalvik Bridge is about 85 m, so the total is 205 m. I should check whether other old bridges cross the Varn.
+
+Passages:
+[d6] Kalvik Bridge
+The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long.
+
+[d7] Tirsa footbridge
+The Tirsa footbridge crosses the Varn at Tirsa. It was built in 1895 and is 40 metres long.
+
+Output:
+{
+  "think_observations": [
+    {"id": "c1", "spans": ["Osby Bridge is 120 m"]},
+    {"id": "c2", "spans": ["Kalvik Bridge is about 85 m"]},
+    {"id": "c4", "spans": ["so the total is 205 m"]}
+  ],
+  "passage_observations": [
+    {"id": "c2", "passage": "d6", "spans": ["The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long"]},
+    {"id": "c3", "passage": "d7", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895 and is 40 metres long"]}
+  ],
+  "candidates": [
+    {"id": "c2", "candidate": "85 m", "reason": "Was possible: d6 states that the Kalvik Bridge is 92 metres long, not 85 m, so a passage rules it out; t4 names it again, but reasoning does not keep a candidate a passage rules out.", "status": "removed"},
+    {"id": "c2", "candidate": "92 m", "reason": "New: d6 states that the Kalvik Bridge is 92 metres long, so a passage meets all parts of the criterion, and no other candidate meets a part.", "status": "certain"},
+    {"id": "c3", "candidate": "Tirsa footbridge: 40 m", "reason": "New: d7 states that the Tirsa footbridge crosses the Varn, was built in 1895 and is 40 metres long, so a passage meets all parts of the criterion.", "status": "certain"},
+    {"id": "c4", "candidate": "205 m", "reason": "Was possible: t4 computes it from 120 m and 85 m, but the answer of c2 is now 92 m and the computation leaves out the Tirsa footbridge, so it uses only one of the answers it is computed from.", "status": "unlikely"}
+  ]
+}
+
+---multi_aspect---
+Query: Write a report on the effects of the 2022 drought on farming in Norland, not including livestock.
+
+Criteria, with their current candidates:
+c1 (several answers): crop yield losses in Norland in 2022
+  "Wheat yields fell by about a third": probable (passage)
+  "Potato yields fell by half": possible (reasoning)
+c2 (several answers): support measures for farmers in Norland in 2022, not livestock subsidies
+  (no candidate)
+
+The current turn:
+[t3]
+The harvest report should confirm the wheat figure. I also recall that potato yields fell by half, but I have not seen a source for it. Next I will look for drought relief.
+
+Passages:
+[d7] Norland harvest report 2022
+In 2022, wheat yields in Norland fell 31% below the five-year average and barley yields fell 18%. Potato yields were close to normal.
+
+[d8] Drought relief
+In September 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief and extended feed subsidies for livestock farms.
+
+Output:
+{
+  "think_observations": [
+    {"id": "c1", "spans": ["I also recall that potato yields fell by half, but I have not seen a source for it"]}
+  ],
+  "passage_observations": [
+    {"id": "c1", "passage": "d7", "spans": ["In 2022, wheat yields in Norland fell 31% below the five-year average and barley yields fell 18%", "Potato yields were close to normal"]},
+    {"id": "c2", "passage": "d8", "spans": ["In September 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief"]}
+  ],
+  "candidates": [
+    {"id": "c1", "candidate": "Wheat yields fell by about a third", "reason": "Was probable: d7 states that wheat yields in Norland fell 31% in 2022, so a passage meets all parts of the criterion.", "status": "certain"},
+    {"id": "c1", "candidate": "Potato yields fell by half", "reason": "Was possible: d7 states that potato yields were close to normal in 2022, so a passage rules it out.", "status": "removed"},
+    {"id": "c1", "candidate": "Barley yields fell by 18%", "reason": "New: d7 states that barley yields in Norland fell 18% in 2022, so a passage meets all parts of the criterion.", "status": "certain"},
+    {"id": "c2", "candidate": "Drought relief of 40 euros per hectare for crop farmers", "reason": "New: d8 states that in 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief, so a passage meets all parts of the criterion; the feed subsidies for livestock farms are left out by the criterion.", "status": "certain"}
+  ]
+}

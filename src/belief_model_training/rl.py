@@ -66,9 +66,9 @@ def score_chains(chains: List[Chain], reward_fn: Reward) -> List[Dict[str, Any]]
     """The reward of each chain, after the gold of all their values is
     resolved in one batch."""
     reward_fn.gold.resolve([v for c in chains
-                            for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.statements)])
+                            for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.beliefs)])
     return [reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
-                      [cc.finish_reason for cc in c.calls], c.statements)
+                      [cc.finish_reason for cc in c.calls], c.beliefs)
             for c in chains]
 
 

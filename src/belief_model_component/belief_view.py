@@ -6,12 +6,12 @@ the trajectory markdown (the md-only blocks the agent mixin writes), so the
 two never drift apart.  It reads the saved shapes only: the step and final
 records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
 
-Per criterion, one row with its status, its selected candidate(s) and the
-sources its status rests on ("d<n>" a document, "t<step>" an agent turn;
-the support part of its statement, ``statement_text.support_labels``).
-``*`` marks a criterion whose statement the update rewrote this iteration.
-The md also gives the full text of each statement rewritten in the
-iteration and the reply's issues.  The documents labelled in the
+Per criterion, one row with its status, its selected candidate(s) and
+the number of its candidates (a removed candidate leaves the list).
+``*`` marks a criterion with a candidate added, removed or whose status
+changed this iteration.  The md also gives every
+candidate update of the iteration (previous status -> status, and its
+reason) and the reply's issues.  The documents labelled in the
 iteration are listed with their ids, so a label can be traced to its
 document.
 """
@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # Candidates are cut to this length in the console; the md shows them in full.
 CONSOLE_VALUE_CHARS = 40
 
-Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, selected, sources
+Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, selected, number of candidates
 
 
 def _num(val: Any, fmt: str = ".3f") -> str:
@@ -35,28 +35,41 @@ def _value(text: Any, limit: Optional[int]) -> str:
 
 def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
                 value_chars: Optional[int] = None) -> List[Row]:
-    """Per criterion its row: status, selected candidate(s), the sources the
-    status rests on.  Empty when the record has no belief (``statements``
-    null)."""
-    statements = record.get("statements")
-    if statements is None:
+    """Per criterion its row: status, selected candidate(s), number of
+    candidates.  Empty when the record has no belief (``beliefs`` null)."""
+    beliefs = record.get("beliefs")
+    if beliefs is None:
         return []
     changed = set(record.get("changed") or [])
     rows: List[Row] = []
     for i, c in enumerate(criteria):
         cid = c.get("id", f"c{i + 1}")
-        s = statements[i] if i < len(statements) else {}
-        selected = ", ".join(f'"{_value(v, value_chars)}"' for v in s.get("selected") or []) or "—"
-        rows.append((cid, "*" if cid in changed else "", str(s.get("status") or "unknown"), selected,
-                     " ".join(s.get("support_cited") or []) or "—"))
+        b = beliefs[i] if i < len(beliefs) else {}
+        selected = ", ".join(f'"{_value(v, value_chars)}"' for v in b.get("selected") or []) or "—"
+        n = len(b.get("candidates") or [])
+        rows.append((cid, "*" if cid in changed else "", str(b.get("status") or "unknown"), selected,
+                     f"{n} candidate" + ("" if n == 1 else "s")))
     return rows
 
 
-def _rewritten(record: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """``(criterion id, text)`` of the statements the iteration rewrote."""
-    changed = set(record.get("changed") or [])
-    return [(s["id"], " ".join(str(s.get("text") or "").split())) for s in record.get("statements") or []
-            if s.get("id") in changed and s.get("text")]
+def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """``(criterion id, text)`` of each candidate update of the reply:
+    ``"<candidate>": <previous> -> <status> (<reason>)``, "new" for an
+    added candidate, "removed" for a removed one, "not taken" when code did
+    not take it, and the status written when code corrected it (a removal
+    code did not take: ``<status> -> <status> (wrote removed)``)."""
+    out = []
+    for u in record.get("updates") or []:
+        kept, written = u.get("status"), u.get("written")
+        if kept is None:
+            move = f"not taken (wrote {written})" if written else "not taken"
+        else:
+            move = f"{u.get('previous') or 'new'} -> {kept}"
+            if written and written != kept:
+                move += f" (wrote {written})"
+        reason = " ".join(str(u.get("reason") or "").split())
+        out.append((str(u.get("id")), f'"{u.get("candidate")}": {move}' + (f" ({reason})" if reason else "")))
+    return out
 
 
 def _issues(record: Dict[str, Any]) -> List[str]:
@@ -136,8 +149,8 @@ def belief_lines(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
     table = belief_rows(record, criteria, CONSOLE_VALUE_CHARS)
     status_w = max((len(r[2]) for r in table), default=0)
     value_w = max((len(r[3]) for r in table), default=0)
-    for cid, mark, status, value, sources in table:
-        rows.append((f"{cid} {mark}".rstrip(), f"{status:<{status_w}}  {value:<{value_w}}  ← {sources}"))
+    for cid, mark, status, value, count in table:
+        rows.append((f"{cid} {mark}".rstrip(), f"{status:<{status_w}}  {value:<{value_w}}  ({count})"))
     if not final and _new_labels(record):
         rows.append(("labels", _labels(record, md=False)))
     if record.get("issues"):
@@ -183,12 +196,12 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
     table = belief_rows(record, criteria)
     if table:
-        lines += [""] + _md_table(("criterion", "status", "selected", "sources"),
-                                  [(f"{cid} {mark}".strip(), status, _cell(value), sources)
-                                   for cid, mark, status, value, sources in table])
-    rewritten = _rewritten(record)
-    if rewritten:
-        lines += [""] + [f"- **{cid}**: {_cell(text)}" for cid, text in rewritten]
+        lines += [""] + _md_table(("criterion", "status", "selected", "candidates"),
+                                  [(f"{cid} {mark}".strip(), status, _cell(value), count)
+                                   for cid, mark, status, value, count in table])
+    updates = _updates(record)
+    if updates:
+        lines += [""] + [f"- **{cid}** {_cell(text)}" for cid, text in updates]
     if not final and _new_labels(record):
         lines += ["", f"labels: {_labels(record, md=True)}"]
     if record.get("issues"):

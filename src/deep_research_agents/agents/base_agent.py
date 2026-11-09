@@ -131,7 +131,6 @@ class AgentVerboseMixin:
         seen_docs: Optional[List[Dict[str, Any]]] = None,
         trajectory: Any = None,
         agent_turn: Optional[str] = None,
-        doc_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Pass one finished search iteration to the belief model.
 
@@ -139,9 +138,7 @@ class AgentVerboseMixin:
         iteration's queries, the documents the agent was shown, its
         conversation so far (*trajectory*, for the intermediate answer) and
         its turn (*agent_turn*: its reasoning, from which the belief model
-        reads what the agent says about each criterion).  *doc_labels*
-        (document id -> the agent's own passage label, for an agent that
-        labels its passages) makes the inform tag cite the agent's labels.
+        reads what the agent says about each criterion).
         *seen_docs*, when given, are printed in verbose mode.
 
         Returns the iteration's ``<belief_state>`` tag in ``inform`` mode, which
@@ -177,7 +174,6 @@ class AgentVerboseMixin:
                 original_query=original_query or "",
                 trajectory=trajectory,
                 agent_turn=agent_turn,
-                agent_doc_labels=doc_labels,
             )
             self._last_belief_record = record
             self._vprint_belief(iter_num, record)
@@ -203,12 +199,10 @@ class AgentVerboseMixin:
         seen_docs: Optional[List[Dict[str, Any]]] = None,
         trajectory: Any = None,
         messages: Optional[List[Any]] = None,
-        doc_labels: Optional[Dict[str, str]] = None,
     ) -> Optional[str]:
         """Close one search iteration: observe it, then stamp and record its steps.
 
-        1. passes the iteration to the belief model (``_observe_step``; an
-           agent that labels its passages passes its *doc_labels*);
+        1. passes the iteration to the belief model (``_observe_step``);
         2. sets ``iteration`` to *iter_num* on each of *steps* (the
            iteration's search steps, not yet in *reasoning_path*; their
            ``sub_iter`` is kept), so the trajectory label and the belief
@@ -236,7 +230,6 @@ class AgentVerboseMixin:
                 subqueries, docs, iter_num, original_query,
                 seen_docs=seen_docs, trajectory=trajectory,
                 agent_turn=agent_turn_text([s.get("think") for s in steps]),
-                doc_labels=doc_labels,
             )
         if tag:
             if messages is not None:

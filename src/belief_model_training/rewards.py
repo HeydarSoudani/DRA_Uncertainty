@@ -12,8 +12,8 @@ belief (``scoring.chain_score``).
              the criteria
     cal      per criterion, the mean over the episode's steps of
              1 - (p - y)^2 (p its status probability, y whether its
-             statement covers it correctly); the mean over the criteria
-    r_final  1 - (s_T - y)^2: the certainty score of the final statements
+             selected candidate covers it correctly); the mean over the criteria
+    r_final  1 - (s_T - y)^2: the certainty score of the final beliefs
              against the correctness y of the agent's final answer (0 when
              the final call fails the gate)
 
@@ -47,12 +47,12 @@ class Reward:
         self.gold = gold
 
     def __call__(self, episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[str, Any]],
-                 finish_reasons: List[Optional[str]], statements: List[Dict[str, Any]]) -> Dict[str, Any]:
+                 finish_reasons: List[Optional[str]], beliefs: List[Dict[str, Any]]) -> Dict[str, Any]:
         """The reward of one chain: its *calls* in order with their
         *outcomes* (``BeliefTracker.submit``) and finish reasons, and its
-        final *statements*.  Returns ``{reward, terms, score}``
+        final *beliefs*.  Returns ``{reward, terms, score}``
         (``score``: ``scoring.chain_score``)."""
-        score = chain_score(episode, calls, outcomes, finish_reasons, self.gold, statements)
+        score = chain_score(episode, calls, outcomes, finish_reasons, self.gold, beliefs)
         terms = {"format": score["format"], "assign": score["assign"], "cal": score["cal"],
                  "final": score["final"]["r_final"] if score["final"] else None}
         return {

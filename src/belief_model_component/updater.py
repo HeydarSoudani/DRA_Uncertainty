@@ -4,15 +4,16 @@ One call per step implements b_t = f(query, b_{t-1}, o_t) (Agent-BRACE
 style), the observation o_t being the agent's turn of the step (its
 reasoning; at the end, its reasoning and final answer) and the new
 passages its search returned.  The call reads every criterion with its
-current statement (text only) and replies with three lists:
+current candidates (name, status, basis) and replies with three lists:
 
 - ``think_observations``: per criterion, the spans of the turn that give
   information about it; a span counts when it occurs in the turn;
 - ``passage_observations``: per new passage and criterion, the spans of
   the passage that give information about it; a span counts when it
   occurs in the passage as the call showed it (``span_in_passage``);
-- ``statements``: the new statement text of every criterion with a new
-  observation (``statement_text`` reads its opening).
+- ``candidates``: per candidate that is new, removed or whose status
+  changes, its reason ("Was <status>: ..." or "New: ...", ``reason_text``)
+  and its new status, or "removed".
 
 The answer turn is read as any other turn (its reasoning and final answer,
 no passage).
@@ -31,7 +32,7 @@ from .belief_state import format_belief
 from .criteria import BeliefState
 from .prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER_TEMPLATE, NO_TEXT, PASSAGE_TEMPLATE
 from .types import (
-    DOC, MULTI_ASPECT, QUERY_SHAPES, SET, SINGLE_TARGET, THINK, Observation, WrittenStatement,
+    DOC, MULTI_ASPECT, QUERY_SHAPES, SET, SINGLE_TARGET, THINK, CandidateUpdate, Observation,
     alnum, alnum_index,
 )
 
@@ -42,13 +43,13 @@ logger = logging.getLogger(__name__)
 SHORT_ANSWER_PASSAGE_CHARS = 3000
 
 # Output tokens of one call; a set query (up to ~50 member criteria, each
-# with its statement) gets more, since a reply cut at the limit cannot be
+# with its candidates) gets more, since a reply cut at the limit cannot be
 # parsed and the step's update is lost.
 DEFAULT_MAX_TOKENS = 12288
 SET_MAX_TOKENS = 16384
 
 # The three lists of a reply, in order.
-REPLY_KEYS = ("think_observations", "passage_observations", "statements")
+REPLY_KEYS = ("think_observations", "passage_observations", "candidates")
 
 
 def cut_passage(text: str, max_chars: Optional[int]) -> str:
@@ -144,8 +145,8 @@ class LLMBeliefUpdater:
         ]
 
     def parse(self, raw: str, step: int, agent_turn: Optional[str], passages: List[Passage],
-              ) -> Optional[Tuple[List[Observation], List[Observation], List[WrittenStatement]]]:
-        """``(think, docs, statements)`` of the reply *raw*: the spans of a
+              ) -> Optional[Tuple[List[Observation], List[Observation], List[CandidateUpdate]]]:
+        """``(think, docs, updates)`` of the reply *raw*: the spans of a
         think observation checked against *agent_turn*, those of a
         document observation against its passage as the call showed it
         (``shown_text``: a span from past the cut is not verified), the
@@ -185,9 +186,12 @@ class LLMBeliefUpdater:
                 indexes[label] = alnum_index(text)
             _add_spans(o, item.get("spans"), text if doc is not None else "", indexes.get(label))
 
-        statements = [WrittenStatement(id=str(item.get("id", "")).strip(), text=" ".join(str(item.get("statement") or "").split()))
-                      for item in data["statements"] if isinstance(item, dict)]
-        return list(think.values()), list(docs.values()), statements
+        updates = [CandidateUpdate(id=str(item.get("id", "")).strip(),
+                                   candidate=" ".join(str(item.get("candidate") or "").split()),
+                                   reason=" ".join(str(item.get("reason") or "").split()),
+                                   status=str(item.get("status") or "").strip())
+                   for item in data["candidates"] if isinstance(item, dict)]
+        return list(think.values()), list(docs.values()), updates
 
     def update(self, query: str, state: BeliefState, step: int, agent_turn: Optional[str],
                passages: List[Passage]) -> Tuple[Any, Optional[str], List[str]]:

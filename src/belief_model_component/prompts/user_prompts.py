@@ -36,14 +36,14 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
 
 # The belief update (``updater``), in the layout of the system prompt's
 # example: every criterion as "c1 (one answer): <text>" with its current
-# statement (``belief_state.format_belief``), the agent's turn labelled with
+# candidates (``belief_state.format_belief``), the agent's turn labelled with
 # its step, then the new passages, each "[d<n>] " before its text (whose
 # first line is the title); a missing turn or no passage reads ``NO_TEXT``.
 # The answer turn is read as any other turn.
 BELIEF_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
-Criteria, with their current statements:
+Criteria, with their current candidates:
 {criteria}
 
 The current turn:
@@ -53,7 +53,7 @@ The current turn:
 Passages:
 {passages}
 
-Record the observations of the current turn and of each passage, then write the new statement of every criterion with a new observation.\
+Record the observations of the current turn and of each passage, then give, with its reason, the status of every candidate that is new, removed or whose status changes.\
 """
 
 

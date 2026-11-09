@@ -3,18 +3,19 @@ After the results of each search, you receive a <belief_state> tag that tracks y
 <belief_state step="2">
   <criteria>
     <k1>the engineer who was born in the town where the Varn Folk Museum was founded
-      It is certain that k1 is covered, by "Henrik Dahl": d2 states that he was an engineer born in Osby, and d5 states that the Varn Folk Museum was founded in Osby. "Nils Berg" (t1) is ruled out: d4 states that he was born in Tirsa.
+      "Henrik Dahl": certain (passage)
     </k1>
     <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
-      It is possible that k2 is covered, by "Skarv Lighthouse": d3 names it among the coastal works of Henrik Dahl, d2 states that he was an engineer born in Osby who designed lighthouses, and d5 states that the Varn Folk Museum was founded in Osby. "Hamn Lighthouse" (d3) ties with it: d3 names it the same way.
+      "Skarv Lighthouse": possible (passage)
+      "Hamn Lighthouse": possible (passage)
     </k2>
+    <k3>the year that lighthouse was completed</k3>
   </criteria>
-  <sources>[d2] Henrik Dahl | [d3] Skarv Lighthouse | [d4] Nils Berg (engineer) | [d5] Osby</sources>
 </belief_state>
 
 - `step`: the number of searches so far.
-- <criteria>: the pieces of information a complete response must contain, each with one statement on how far it is covered so far.
-- Each statement gives how likely the criterion is covered by the candidate it names, from lowest to highest: `doubtful`, `unlikely`, `unknown`, `possible`, `probable`, `almost certain`, `certain`; then the sources this rests on, and the other candidates with why they lose or tie.
-- [dN] is the passage labeled [dN] in your search results, also listed in <sources>; [tN] is your own reasoning at step N.
+- <criteria>: the pieces of information a complete response must contain, each with its candidates so far; a criterion without candidates has none yet.
+- Each candidate is a possible answer of its criterion, with how likely it is an answer, from lowest to highest: `unlikely`, `possible`, `probable`, `almost certain`, `certain`. A candidate the passages rule out is removed.
+- `(passage)`: the passages of your searches bear on the candidate; `(reasoning)`: only your own reasoning names it.
 
 If the passages disagree with the tag, trust the passages.

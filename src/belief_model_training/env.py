@@ -45,12 +45,12 @@ class ChainCall:
 @dataclass
 class Chain:
     """The student's belief chain over one episode; ``group`` indexes the
-    episode in the batch.  ``statements`` is the belief after the last
+    episode in the batch.  ``beliefs`` is the belief after the last
     call (per gold criterion)."""
     episode: Episode
     group: int
     calls: List[ChainCall] = field(default_factory=list)
-    statements: List[Dict[str, Any]] = field(default_factory=list)
+    beliefs: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -103,7 +103,7 @@ def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRollou
                                              gen.finish_reason, outcome))
         active = [run for run, _ in pending]
     for run in runs:
-        run.chain.statements = run.tracker.signal.statements() or []
+        run.chain.beliefs = run.tracker.signal.beliefs() or []
     return [run.chain for run in runs]
 
 

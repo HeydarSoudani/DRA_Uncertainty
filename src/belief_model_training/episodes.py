@@ -16,8 +16,8 @@ and 3).
 A monitor run also has the teacher belief model's view
 (``belief/{qid}.jsonl``, ``attach_teacher``): its criteria and the model
 that wrote them, per iteration the teacher's reply, the agent turn it read
-and the records the reply gave (observations, changed criteria, issues
-and the statements after it), and the final call on the answer turn (the
+and the records the reply gave (observations, candidate updates, changed
+criteria, issues and the beliefs after it), and the final call on the answer turn (the
 ``final`` line).  The belief file must have one step per search iteration
 of the trajectory, with the same documents.
 
@@ -60,7 +60,7 @@ from utils.io_utils import read_jsonl
 from .config import Split
 
 # The records of one belief update (``BeliefUpdateSignal``), as saved.
-RECORD_KEYS = ("observations", "changed", "issues", "statements")
+RECORD_KEYS = ("observations", "updates", "changed", "issues", "beliefs")
 
 
 @dataclass
@@ -404,8 +404,8 @@ class BeliefTracker:
     def submit(self, raw: Optional[str]) -> Dict[str, Any]:
         """Apply the reply *raw* (None: the call failed) to the open call;
         returns the call's outcome: ``{iteration, parsed, observations,
-        changed, issues, statements}`` (``statements`` every criterion's
-        statement after the call; no observation and no change when the
+        updates, changed, issues, beliefs}`` (``beliefs`` every criterion's
+        belief after the call; no observation and no change when the
         reply did not parse)."""
         call = self._pending
         if call is None:
@@ -415,10 +415,10 @@ class BeliefTracker:
                   if raw is not None else None)
         # As the inference belief model records a call whose reply did not parse.
         out: Dict[str, Any] = {"iteration": call.iteration, "parsed": parsed is not None,
-                               "observations": None, "changed": [], "issues": []}
+                               "observations": None, "updates": [], "changed": [], "issues": []}
         if parsed is not None:
-            out.update(self.signal.apply(parsed, call.passages))
-        out["statements"] = self.signal.statements()
+            out.update(self.signal.apply(parsed, call.passages, call.iteration))
+        out["beliefs"] = self.signal.beliefs()
         return out
 
 

@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 32::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 35::
 
-    line 1  {"record": "meta", "schema_version": 32, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 35, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"}}
@@ -27,9 +27,11 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 32::
              "certainty": 0.4807,
              "intermediate_answers": null, "intermediate_answer_status": "disabled",
              "docs": [{"doc_id": "doc17", "new": true, "label": "d1"}, ...],
-             "statements": [{"id": "c1", "status": "certain", "selected": ["Osby"],
-                             "text": "It is certain that c1 is covered, by \"Osby\": d1 states ...",
-                             "cited": ["d1"], "support_cited": ["d1"]}, ...],
+             "beliefs": [{"id": "c1", "status": "certain", "selected": ["Osby"],
+                          "candidates": [{"name": "Osby", "status": "certain", "basis": "passage",
+                                          "added_step": 1}, ...]}, ...],
+             "updates": [{"id": "c1", "candidate": "Osby", "reason": "New: d1 states ...",
+                          "written": "certain", "previous": null, "status": "certain"}, ...],
              "changed": ["c1"],
              "observations": [{"id": "c1", "label": "t1", "step": 1, "spans": ["..."]},
                               {"id": "c1", "label": "d1", "step": 1, "doc_id": "doc17", "spans": ["..."]}],
@@ -39,9 +41,11 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 32::
              "intermediate_answer_reasoning": null, "errors": []}
     ...
     last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.6934,
-             "statements": [...], "changed": [...], "observations": [...], "issues": [...],
+             "beliefs": [...], "updates": [...], "changed": [...], "observations": [...], "issues": [...],
              "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
-                                                          "title": "...", "spans": ["..."]}, ...]}, ...],
+                                                          "title": "...", "spans": ["..."]}, ...],
+                             "removed": [{"name": "Nils Berg", "status": "possible", "basis": "reasoning",
+                                          "added_step": 1, "removed_step": 2, "reason": "Was possible: ..."}]}, ...],
              "agent_turn": "... Final answer: ...", "reply": "...", "errors": []}
 
 The fields are described in ``belief_model_component.belief_model``
@@ -50,12 +54,70 @@ The fields are described in ``belief_model_component.belief_model``
 ``closed`` (one fact with one answer), ``rest`` (the members of a set the
 extractor did not list), ``aggregate`` (how a set query's answer follows
 from the members' values) or ``aspect`` (one aspect of a report topic).  A
-step line is the iteration's update plus the light state: ``statements``
-is every criterion's statement after the step, ``observations`` the
+step line is the iteration's update plus the light state: ``beliefs``
+is every criterion's belief after the step, ``updates`` the reply's
+candidate updates with their reasons, ``observations`` the
 observations that entered in the step (with their verified spans).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
-criterion's observations over the sample.  The readable belief is in the
+criterion's observations over the sample, and the candidates the update
+removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.belief_view``).
+
+schema_version 35 (was 34): the status of a candidate is defined per
+criterion type, in the prompt of the dataset's query shape
+(``prompts/belief_update/criterion_statuses.txt``): "one answer" (its
+candidates compete: the status counts the other candidates, "certain" only
+when no other meets a part), "several answers" (the passages on the
+candidate only) and "computed" (the agent's computation).  Prompt Rule 5
+is dropped.  "doubtful" is no longer a status (scale "unlikely" ..
+"certain", levels -1 .. 4): a candidate a passage rules out, or a
+reasoning-only one the turn rejects, is removed (the update writes
+"removed"; ``updates`` record ``status: "removed"``), kept in the final
+line's ``references[].removed``; a removal without the observation that
+can make it is kept and flagged (``bad_removal``, ``remove_unlisted``), a
+removed candidate added again is flagged (``readded``).  A listed passage
+candidate of a one-answer criterion may change without a new passage when
+another of its "passage" candidates changes in the step.  ``competing_candidates``
+flags more than one candidate above "possible".  The certainty score's q_k
+is the criterion's status probability (no share between candidates).
+
+schema_version 34 (was 33): the candidates of a one-answer criterion
+compete (prompt Rule 5: a candidate is at most "possible" when another
+meets as many parts of the criterion, at most "unlikely" when another
+meets more).  A reasoning-only candidate, and a new one in a step with
+no new passage, is moved into "unlikely" .. "possible" (``turn_only``;
+was: set to "possible"), so a reasoning rejection is kept; a listed
+reasoning-only candidate may move in that range, a listed passage one
+still keeps its status without a new passage (``turn_only_change``).
+``competing_candidates`` flags a candidate above "possible" with another
+at "possible" or above (was: two above "possible").  The certainty score
+divides a one-answer criterion's q_k by max(1, the summed probability of
+its candidates at "possible" or above).  Same record fields.
+
+schema_version 33 (was 32) replaces the statement of a criterion by its
+candidates: per criterion a list of candidates, each with its status, its
+basis ("passage" or "reasoning", set by code) and the step it was added
+in; the update writes, per candidate that is new or whose status changes,
+a reason ("Was <status>: ..." or "New: ...", saved in ``updates``, never
+shown) and the new status, and code keeps every other candidate, so the
+list only grows.  ``statements`` becomes ``beliefs`` (``{id, status,
+selected, candidates}``: the criterion's status is the highest of its
+candidates, "unknown" without one; candidates are listed highest status
+first, then "passage" before "reasoning", then in the order added; the
+selected candidates are those at "possible" or above, for a one-answer
+criterion only the first listed); new ``updates``; ``changed`` the
+criteria with a candidate added or whose status changed.  The agent's tag
+shows the candidates, no ``<sources>``.  Reasoning only names candidates: a
+reasoning-only candidate is "possible" (``turn_only``); in a step with no
+new passage on the criterion, a new candidate is "possible" too
+(``turn_only``) and a listed one keeps its status, up or down, whatever
+its basis (``turn_only_change``, replaces ``turn_only_drop``).  A
+candidate's name is matched in spans and titles as whole words.  New issue codes: ``empty_candidate``, ``bad_status``,
+``duplicate_candidate``, ``unexpected_candidate``, ``no_reason_opening``,
+``wrong_previous``, ``not_listed``, ``listed_as_new``, ``near_duplicate``,
+``unchanged``, ``competing_candidates``; ``no_opening``,
+``extra_selected``, ``no_selected``, ``duplicate_statement`` and
+``unexpected_statement`` dropped.
 
 schema_version 32 (was 31): passages set the status.  The update writes
 a statement only for a criterion whose belief changes, so a criterion
@@ -123,7 +185,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 35
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

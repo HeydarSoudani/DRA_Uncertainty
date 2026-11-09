@@ -4,16 +4,18 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# The status of a criterion: how likely it is covered by the selected
-# candidate(s) its statement names, as the passages show it (the agent's
-# turns propose candidates and mark doubts, but alone never make one more
-# than "possible", ``TURN_ONLY_MAX_STATUS``), one of the seven words of
-# Agent-BRACE's verbal belief scale (arXiv 2605.11436), lowest level first.
-# The paper ranks "unknown" lowest; here it is the neutral level 0 (no
-# observation gives a candidate); "unlikely" and "doubtful" are below it
-# (the sources speak against the candidates).
+# The status of a candidate: how likely it is an answer of its criterion,
+# as the passages show it (the agent's turns propose candidates, but alone
+# never make one more than "possible", ``TURN_ONLY_MAX_STATUS``); the
+# status of a criterion is derived from its candidates (the highest one;
+# "unknown" without candidates).  One of the seven words of
+# Agent-BRACE's verbal belief scale (arXiv 2605.11436), lowest level first,
+# without its "doubtful": a candidate a passage rules out is removed
+# (``REMOVED``), not kept at a lowest status.  The paper ranks "unknown"
+# lowest; here it is the neutral level 0 (no observation gives a candidate);
+# "unlikely" is below it (a passage speaks against the candidate, or another
+# candidate of a one-answer criterion meets more of it).
 BELIEF_STATUSES = (
-    "doubtful",
     "unlikely",
     "unknown",
     "possible",
@@ -23,7 +25,7 @@ BELIEF_STATUSES = (
 )
 # The neutral status: no observation gives a candidate (b_0).
 UNKNOWN = "unknown"
-# Signed level of each status (-2 to 4), for analysis.
+# Signed level of each status (-1 to 4), for analysis.
 STATUS_LEVEL: Dict[str, int] = {
     status: k - BELIEF_STATUSES.index(UNKNOWN) for k, status in enumerate(BELIEF_STATUSES)
 }
@@ -38,22 +40,31 @@ def parse_status(text: Any) -> Optional[str]:
     return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
 
 
-# The highest status a statement keeps when it cites no passage for its
-# selected candidate (only the agent's turns support it); a computed
-# criterion (``NO_DOC_KINDS``) is exempt.
+# What the update writes in place of a status to remove a candidate: a
+# passage rules it out, or, when only the agent's turns name it, the turns
+# reject it.  An action, not a status: ``parse_status`` does not accept it.
+REMOVED = "removed"
+
+
+def is_removed(text: Any) -> bool:
+    """Whether a reply's status *text* is ``REMOVED`` (case and spaces ignored)."""
+    return str(text or "").strip().lower() == REMOVED
+
+
+# The range of the status of a candidate whose basis is "reasoning" (only
+# the agent's turns name it): "possible" when they name it, "unlikely" when
+# another candidate outweighs it (turns that reject it remove it); a
+# computed criterion (``NO_DOC_KINDS``) is exempt.
 TURN_ONLY_MAX_STATUS = "possible"
-
-# The probability of "doubtful": above 0, so that one contradicted
-# criterion lowers the geometric mean of the certainty score without
-# fixing it at 0 (``certainty.geometric_mean``).
-DOUBTFUL_PROBABILITY = 1 / 12
-
+TURN_ONLY_MIN_STATUS = "unlikely"
 
 def status_probability(status: str) -> float:
     """A status as a probability that the criterion is covered:
-    (level + 2) / 6, doubtful ``DOUBTFUL_PROBABILITY`` (1/12, not 0),
-    unlikely 1/6, unknown 1/3, certain 1."""
-    return max((STATUS_LEVEL[status] + 2) / 6, DOUBTFUL_PROBABILITY)
+    (level + 2) / 6: unlikely 1/6, unknown 1/3, possible 1/2, probable 2/3,
+    almost certain 5/6, certain 1.  No status scores 0, so one weak
+    criterion lowers the geometric mean of the certainty score without
+    fixing it at 0 (``certainty.geometric_mean``)."""
+    return (STATUS_LEVEL[status] + 2) / 6
 
 
 # Criterion kinds: a closed criterion is one fact with one answer; the rest
@@ -115,6 +126,36 @@ def alnum(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum())
 
 
+def _unspaced(ch: str) -> bool:
+    """Whether *ch* is of a script written without spaces between words
+    (CJK ideographs, kana), where any character may start a word."""
+    o = ord(ch)
+    return 0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
+
+
+def _word_edge(text: str, i: int, inner: str) -> bool:
+    """Whether a match whose edge character is *inner* ends at a word
+    boundary when *text*[i] is the character just outside it."""
+    return not 0 <= i < len(text) or not text[i].isalnum() or _unspaced(text[i]) or _unspaced(inner)
+
+
+def contains_words(text: str, name: str) -> bool:
+    """Whether *name* occurs in *text* as whole words: compared on letters
+    and digits only (``alnum``), and the match must start and end at a word
+    boundary of *text*, so "12" is not found in "1912" nor "Ann" in "Anne"."""
+    key = alnum(name)
+    if not key or not text:
+        return False
+    keys, pos = alnum_index(text)
+    j = keys.find(key)
+    while j >= 0:
+        a, b = pos[j], pos[j + len(key) - 1]
+        if _word_edge(text, a - 1, text[a]) and _word_edge(text, b + 1, text[b]):
+            return True
+        j = keys.find(key, j + 1)
+    return False
+
+
 @dataclass
 class Criterion:
     """One criterion c_k of the per-query criteria list."""
@@ -139,7 +180,7 @@ class Observation:
     """What one source says about one criterion, as the belief update
     wrote it: the ``spans`` of the source (the passage, or the agent's
     turn) that give information about the criterion.  It has no stance and
-    no candidate: the statement judges what the observations show.
+    no candidate: the candidate updates judge what the observations show.
 
     ``span_verified[i]`` says whether ``spans[i]`` occurs in the source as
     the call showed it (then it is the source's own words); ``grounded``:
@@ -167,28 +208,54 @@ class Observation:
         return out
 
 
-@dataclass
-class Statement:
-    """The belief of one criterion: one statement in free text with a fixed
-    opening (``statement_text``), as the belief update wrote it (its status
-    word lowered by code when the turn-only cap applies).  Parsed from it:
-    ``status``, the ``selected`` candidate(s) the opening names, the labels
-    it cites (``cited``) and those of the part the status rests on, before
-    the first other-candidate sentence (``support_cited``).  The text is
-    all that the next update and the agent read of the criterion."""
-    text: str
-    status: str = UNKNOWN
-    selected: List[str] = field(default_factory=list)
-    cited: List[str] = field(default_factory=list)
-    support_cited: List[str] = field(default_factory=list)
-
-    def to_dict(self, criterion_id: str) -> Dict[str, Any]:
-        return {"id": criterion_id, "status": self.status, "selected": list(self.selected), "text": self.text,
-                "cited": list(self.cited), "support_cited": list(self.support_cited)}
-
+# The basis of a candidate (code sets it from the observations, the
+# update never writes it): "passage" when a passage observation on the
+# criterion bears on it (it names the candidate in a span or its title, or
+# the reason of an update of the candidate cites it); "reasoning" when only
+# the agent's turns name it.  A candidate's basis never goes back from
+# passage to reasoning.
+PASSAGE = "passage"
+REASONING = "reasoning"
 
 @dataclass
-class WrittenStatement:
-    """The statement text the update wrote for one criterion."""
+class Candidate:
+    """One candidate of a criterion in the belief: its name, its status,
+    its basis and the step it was added in.  A candidate the update does
+    not name keeps its status; one the update removes (``REMOVED``) leaves
+    the list, and is kept in the hidden removal log of its criterion
+    (``RemovedCandidate``)."""
+    name: str
+    status: str
+    basis: str = REASONING
+    added_step: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "status": self.status, "basis": self.basis, "added_step": self.added_step}
+
+
+@dataclass
+class RemovedCandidate:
+    """One candidate the update removed: its name, its status and basis
+    when removed, the step it was added in and the step it was removed in,
+    and the reason.  Saved, never shown to the update."""
+    name: str
+    status: str
+    basis: str
+    added_step: int
+    removed_step: int
+    reason: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"name": self.name, "status": self.status, "basis": self.basis, "added_step": self.added_step,
+                "removed_step": self.removed_step, "reason": self.reason}
+
+
+@dataclass
+class CandidateUpdate:
+    """One item of the reply's ``candidates`` list, as written: the
+    criterion id, the candidate, the reason of the change ("Was <status>:
+    ..." or "New: ...") and the new status (raw text)."""
     id: str
-    text: str
+    candidate: str
+    reason: str
+    status: str

@@ -6,7 +6,7 @@ With ``inform=False`` (``monitor``) it never changes the trajectory; with
 sample:
 
     reset(query_id, query)   the criteria list C is created once (fixed for
-                             the sample); b_0 has every statement "unknown"
+                             the sample); b_0 has no candidate ("unknown")
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
@@ -17,8 +17,9 @@ Order inside ``observe`` (the step's documents and the agent's turn move
 the belief from b_{t-1} to b_t):
 
     b_t (one belief update call reads the agent's turn and the documents
-    not judged in earlier steps, records their observations and rewrites
-    the statements of the criteria with a new observation) ->
+    not judged in earlier steps, records their observations and gives the
+    status of every candidate that is new, removed or whose status
+    changes, with its reason) ->
     retrieval gain -> intermediate answer (both for evaluation only)
 
 Step record, one per iteration (saved as one ``step`` line of
@@ -32,7 +33,7 @@ first, nested detail last::
     recall_so_far, num_relevant_seen, num_relevant,
     certainty,
     intermediate_answers, intermediate_answer_status,
-    docs[], statements[], changed[], observations[], issues[],
+    docs[], beliefs[], updates[], changed[], observations[], issues[],
     agent_turn, reply, intermediate_answer_reasoning, errors[],
     belief_state_tag                                  # inform only, not saved (the
                                                       # trajectory step has it)
@@ -47,22 +48,24 @@ A value that could not be computed is null, never 0; the reason is in
 when its id was not shown in an earlier step (``num_new_docs`` counts
 them), ``label`` the belief's label of it ("d<n>", given when the document
 is first shown to the belief update; null for a document without text).
-``statements`` holds, per criterion in ``criteria`` order, its statement
-after the step (``{id, status, selected, text, cited, support_cited}``:
-``text`` the statement as the belief update wrote it, the only part shown
-to the next update and to the agent; parsed from it, its status on the
-seven-word scale ``types.BELIEF_STATUSES``, its selected candidate(s), the
-source labels it cites and those its status rests on, "d<n>" a document,
-"t<step>" the agent's turn); ``changed`` the ids of the criteria whose
-statement the step's reply rewrote (a criterion with a new observation
-and no statement keeps its own).
+``beliefs`` holds, per criterion in ``criteria`` order, its belief after
+the step (``{id, status, selected, candidates}``: ``candidates`` its
+candidates as shown to the next update and to the agent, highest status
+first, each ``{name, status, basis, added_step}``; derived from them, the
+criterion's status on the scale ``types.BELIEF_STATUSES`` and
+its selected candidate(s), ``BeliefState.belief_lists``).  ``updates``
+are the reply's candidate updates (``{id, candidate, reason, written,
+previous, status}``: the reason is saved here only, never shown; ``status``
+the one code kept, "removed" for a removed candidate, null when the
+update was not taken); ``changed`` the ids of the criteria with a
+candidate added, removed or whose status changed.
 ``observations`` are the observations of the turn and of the new documents
 that entered the belief in the step (``{id, label, step, [doc_id],
 spans}``, verified spans only), null when the call was not made or failed;
 together over the steps they are every criterion's references (the final
 record gathers them).  ``issues`` one ``{id, code, detail, [label]}`` per
 thing the reply got wrong (``criteria.ISSUE_*``: an observation left out,
-a statement not taken or flagged).
+a candidate update not taken, corrected or flagged).
 ``agent_turn`` is the agent's reasoning of the iteration as the update read
 it (``agent_turn.agent_turn_text``; the queries are in the trajectory),
 ``reply`` the raw reply of the call.
@@ -72,11 +75,13 @@ status's probability, the rest criterion left out); null without criteria.
 
 The final record (one ``final`` line) is the update on the answer turn
 (``agent_turn.answer_turn``, labelled "t<last step + 1>"), read as any
-other turn: ``{iteration, certainty, statements, changed, observations,
-issues, references, agent_turn, reply, errors}``; its ``certainty`` is
+other turn: ``{iteration, certainty, beliefs, updates, changed,
+observations, issues, references, agent_turn, reply, errors}``; its ``certainty`` is
 s_T; ``references`` per criterion every source assigned to it over the
-sample (``BeliefState.reference_lists``: ``{id, references: [{label,
-step, [doc_id, title], spans}]}``), whether or not its statement cites it.
+sample and the candidates the update removed
+(``BeliefState.reference_lists``: ``{id, references: [{label, step,
+[doc_id, title], spans}], removed: [{name, status, basis, added_step,
+removed_step, reason}]}``).
 It is null without an answer turn.
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
@@ -223,7 +228,8 @@ class BeliefModel:
         self.final = {
             "iteration": step,
             "certainty": _round(self._belief.certainty()),
-            "statements": self._belief.statements(),
+            "beliefs": self._belief.beliefs(),
+            "updates": update.get("updates") or [],
             "changed": update.get("changed") or [],
             "observations": update.get("observations"),
             "issues": update.get("issues") or [],
@@ -251,7 +257,6 @@ class BeliefModel:
         original_query: str,
         trajectory: Any = None,
         agent_turn: Optional[str] = None,
-        agent_doc_labels: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Update the belief for one search iteration and store its record.
 
@@ -266,9 +271,6 @@ class BeliefModel:
             agent_turn: The agent's turn of the iteration
                 (``agent_turn.agent_turn_text``); the turn observations are
                 read from it.  None: no turn to read.
-            agent_doc_labels: Document id -> the label the agent shows the
-                passage with (an agent that labels passages itself); the
-                inform tag cites documents with these labels.
         """
         self._step += 1
         subqueries = [q.strip() for q in subqueries if q and q.strip()]
@@ -331,7 +333,8 @@ class BeliefModel:
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
             "docs": per_doc,
-            "statements": state.statement_lists() if state is not None else None,
+            "beliefs": state.belief_lists() if state is not None else None,
+            "updates": update.get("updates") or [],
             "changed": update.get("changed") or [],
             "observations": update.get("observations"),
             "issues": update.get("issues") or [],
@@ -341,6 +344,6 @@ class BeliefModel:
             "errors": errors,
         }
         if self.inform:
-            record["belief_state_tag"] = render_belief_state(record, state, agent_doc_labels)
+            record["belief_state_tag"] = render_belief_state(record, state)
         self.steps.append(record)
         return record

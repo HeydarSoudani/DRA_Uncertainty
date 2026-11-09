@@ -1,0 +1,19 @@
+---one_answer---
+"one answer" criterion: it has a single correct answer, so its candidates compete. The status of a candidate depends on the observations on it and on the other candidates:
+- "unlikely": Another candidate meets more parts of the criterion, or a passage observation speaks against the candidate without ruling it out.
+- "possible": No passage observation meets a part of the criterion for the candidate, or another candidate meets as many parts.
+- "probable": Passage observations meet some parts of the criterion for the candidate, and every other candidate meets fewer.
+- "almost certain": Passage observations meet most or all parts of the criterion for the candidate, none speaks against it, and every other candidate meets fewer.
+- "certain": Passage observations meet all parts of the criterion for the candidate, none speaks against it, and no other candidate meets a part.
+When a candidate of a "one answer" criterion is added, removed or changes, also give every other candidate of it whose status changes as a result.
+
+---several_answers---
+"several answers" criterion: it has several answers that hold together, so its candidates do not compete. The status of a candidate depends only on the observations on it:
+- "unlikely": A passage observation speaks against the candidate without ruling it out.
+- "possible": No passage observation meets a part of the criterion for the candidate.
+- "probable": Passage observations meet some parts of the criterion for the candidate.
+- "almost certain": Passage observations meet most parts of the criterion for the candidate, and none speaks against it.
+- "certain": Passage observations meet all parts of the criterion for the candidate, and none speaks against it.
+
+---computed---
+"computed" criterion: the agent computes its answer and no passage states it. The reasoning sets the status of a candidate: how completely the agent's computation uses the answers of the criteria it is computed from.
