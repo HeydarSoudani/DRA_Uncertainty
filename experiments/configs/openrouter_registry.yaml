@@ -20,8 +20,8 @@
 #
 # Fill in the exact slugs as you confirm them at https://openrouter.ai/models
 models:
-  oss_20b:  openai/gpt-oss-20b:free
-  oss_120b: openai/gpt-oss-120b:free
+  oss_20b:  openai/gpt-oss-20b
+  oss_120b: openai/gpt-oss-120b
   glm: z-ai/glm-4.7-flash
   # tongyi: alibaba/tongyi-deepresearch-30b-a3b
   belief_aware: qwen/qwen3.6-27b

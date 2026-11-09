@@ -100,7 +100,7 @@ def _parse_args() -> argparse.Namespace:
 
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--training-data", type=str, default="deep_qa", choices=["deep_qa", "trqa_validation"], help="Training pool (dataset of dra_inference).")
-    parser.add_argument("--policy-model", type=str, default="glm", help="Frozen agent (--policy-model of dra_inference), e.g. glm, oss_20b: phase 1 runs it, phases 2-3 read its runs and write under {output root}/{training data}/{policy model}.")
+    parser.add_argument("--policy-model", type=str, default="oss_20b", help="Frozen agent (--policy-model of dra_inference), e.g. glm, oss_20b, oss_120b: phase 1 runs it, phases 2-3 read its runs and write under {output root}/{training data}/{policy model}.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phase 1).")
     parser.add_argument("--output-root", type=str, default=None, help="Root of the phase 2-3 runs (None = OUTPUT_ROOT/belief_model_training).")
     parser.add_argument("--num-gpus", type=int, default=4, help="dra_inference workers (phase 1).")
@@ -121,9 +121,11 @@ def _parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
     # The defaults above document the standard values; only the flags given
-    # on the command line override the --config file.
+    # on the command line override the --config file.  --policy-model is the
+    # exception: its default always applies (the agent is chosen here).
     for action in parser._actions:
-        action.default = argparse.SUPPRESS
+        if action.dest != "policy_model":
+            action.default = argparse.SUPPRESS
     args.given = set(vars(parser.parse_args()))
     return args
 

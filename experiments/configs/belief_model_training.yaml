@@ -17,8 +17,8 @@ shared:
   criteria_source: gold             # gold | silver: the belief model's criteria in the phase 1 monitor runs (dra_inference --criteria-source);
                                     # a choice on trqa_validation only (belief-monitor-{source}); deep_qa always gold (silver for FRAMES);
                                     # phases 2-3 score against the pool's gold criteria and need gold
-  policy_model: glm                 # frozen agent (--policy-model): phase 1 runs it, phases 2-3 read its runs
-                                    # and write to {output_root}/{training_data}/{policy_model}
+  # policy_model (the frozen agent) is set by the --policy-model default of
+  # experiments/training/belief_model_training.py, not here.
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
   seed: 0
   inference_config: experiments/configs/dra_inference.yaml  # agent/retriever/belief model settings of phase 1; its `output` holds the runs

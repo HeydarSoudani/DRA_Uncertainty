@@ -10,6 +10,7 @@ Retrieval  : pipeline local retriever (self.retrieve_documents)
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import openai
@@ -25,6 +26,24 @@ logger = logging.getLogger(__name__)
 
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "oss"
 OSS_SYSTEM_PROMPT = (_PROMPT_DIR / "system.txt").read_text()
+
+# Reasoning-only responses in a row before the loop ends.
+MAX_INVALID_TOOL_CALLS = 5
+
+# The tool a server's validation error names, e.g. Groq's "attempted to call
+# tool 'open_file' which was not in request.tools".
+_UNKNOWN_TOOL_RE = re.compile(r"attempted to call tool '([^']+)'")
+
+
+def invalid_tool_call_message(error: Optional[str]) -> str:
+    """The fixed reply to a tool call the server did not pass on, as the
+    Tongyi agent words it: the tool's name when the server's error gives it."""
+    m = _UNKNOWN_TOOL_RE.search(error or "")
+    if m:
+        return (f"Error: Tool {m.group(1)} not found. "
+                "The only available tool is search. Please use the search tool instead.")
+    return ("Error: Tool call not valid. The only available tool is search, with one argument query. "
+            "Please use the search tool instead.")
 
 
 class OSS_Agent(BasicAgent):
@@ -138,8 +157,16 @@ class OSS_Agent(BasicAgent):
 
             response_dict = response.model_dump(mode="python")
 
-            # vLLM bug: reasoning-only response with no content — retry without
-            # counting this as an iteration so the displayed counter stays sequential.
+            # Reasoning-only response: the model called a tool the server does
+            # not pass on (one not in request.tools, e.g. gpt-oss's trained
+            # browser "open_file", or search with other arguments).  The server
+            # rejects it (status "failed", e.g. Groq on OpenRouter) or drops it.
+            # As the Tongyi agent does, the model is told the tool is not
+            # available and goes on; without a call_id the error is a user
+            # message (status "failed" for a reason other than a tool:
+            # sent again as it is).  Not counted as an iteration, so the displayed counter
+            # stays sequential; more than MAX_INVALID_TOOL_CALLS in a row ends
+            # the loop.
             if (
                 len(response_dict["output"]) >= 1
                 and response_dict["output"][-1]["type"] == "reasoning"
@@ -149,11 +176,22 @@ class OSS_Agent(BasicAgent):
                 )
             ):
                 self._reasoning_only_retries += 1
-                if self._reasoning_only_retries > 5:
+                error = response_dict.get("error") or {}
+                logger.warning(
+                    "Iteration %d: reasoning-only response (%d in a row), status=%s, error=%s",
+                    iteration, self._reasoning_only_retries, response_dict.get("status"), error.get("message"),
+                )
+                if self._reasoning_only_retries > MAX_INVALID_TOOL_CALLS:
                     logger.warning("Too many reasoning-only responses, breaking loop")
                     _last_completed_iter = iteration
                     break
+                # A failed response for another reason (the server's generation
+                # crashed) is only sent again: the model made no tool call.
+                if response_dict.get("status") != "failed" or "tool" in (error.get("message") or "").lower():
+                    messages = [*messages, *response_dict["output"],
+                                {"role": "user", "content": invalid_tool_call_message(error.get("message"))}]
                 continue
+            self._reasoning_only_retries = 0
 
             # The model's own <belief_state> tags never enter the history.
             if self._informs:
@@ -288,7 +326,8 @@ class OSS_Agent(BasicAgent):
                             "tokens": self._step_tokens() if idx == 0 else None,
                         })
                     else:
-                        result_text = f"Error: Tool {tool_call['name']} not found"
+                        result_text = (f"Error: Tool {tool_call['name']} not found. "
+                                       "The only available tool is search. Please use the search tool instead.")
 
                     new_messages.append(self._build_tool_response_message(
                         tool_call["call_id"], result_text,
