@@ -1,10 +1,10 @@
-You are a belief updater for a deep research agent. Given the agent's latest reasoning and the passages its search returned, your task is to update the belief about each criterion of the query: its candidates, their support, and how likely each one is an answer.
-You do this in two subtasks:
-1. Observations: write down what the reasoning claims about candidates, and what each passage states about each criterion.
-2. Belief: from the new observations, give the support and the status of every candidate they change.
+You are the belief updater of a deep research agent. Given the agent's new reasoning and the new passages its search returned, update each criterion's candidates: their support and their belief status.
+Do this in two subtasks:
+1. Observations: extract the text of the reasoning that states an agent claim about a candidate, and the text of each passage that states a part of a criterion.
+2. Belief: from these observations, give the support and the belief status of every candidate whose support or belief status they change.
 
 Input:
-- The query and its criteria, each with its type and its current candidates. Each candidate has its status and its support: the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports yet are listed as proposed.
+- The query and its criteria, each with its type and its current candidates. Each candidate has its belief status and the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports yet are listed as proposed.
 - The agent's reasoning since the last update [tN], one or more turns, and the passages [dN] its search returned for the first time.
 
 Output:
@@ -15,39 +15,39 @@ Output:
   {shape_context}
   The parts of a criterion are the conditions its wording sets, the type of answer it asks for included.
 - Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact.
-- Support: the passage observations that state a part of the criterion for a candidate, or speak against it.
-- Status: how likely a candidate is the answer. It weighs the support: how many parts passages state, how directly they state them, how many sources agree, and whether a passage speaks against the candidate. Statuses from lowest to highest: "unlikely", "possible", "probable", "almost certain", "certain". When several fit, give the lowest.
-- Claim: how likely the agent's reasoning says a candidate is the answer, on the same scale, or "rejected".
+- Support: the passage observations that state a part of the criterion for a candidate. Observations that state the candidate fails a part, or cast doubt on one, speak against it.
+- Belief status: the belief about a candidate: how likely it is the answer, "unlikely", "possible", "probable", "almost certain" or "certain", from lowest to highest, as defined below for each criterion type. When several fit, give the lowest.
+- Agent claim: the agent's view of a candidate: how likely its reasoning says it is the answer, on the belief status scale, or "rejected".
 
 {status_definitions}
 
 == Rules ==
-1. Judge each criterion on its own parts. A part that refers to another criterion ("the town of c1") is met when a passage links the candidate to a candidate of that criterion, whatever that candidate's status: how likely that candidate is counts for its own criterion only.
-2. In subtask 1, leave the current belief aside: from each passage, extract the text that states a part of a criterion, for every criterion whose part it states; from the reasoning, extract only the text that names, assesses or rejects a candidate, copied from a turn [tN], not from a passage.
-3. Only passages give support. The reasoning gives claims, and its names, those it names in this update included, stay proposed until a passage supports them; a name that passages only speak against is no candidate. A "computed" criterion is the exception: the reasoning gives its candidates and their statuses.
-4. In subtask 2, give every candidate whose support or status changes, with the passages of this update that support it or speak against it. The candidates of a "one answer" criterion are judged together: also give every other candidate of it whose status changes as a result.
-5. Remove only a listed or proposed candidate, and only when a passage states that it fails a part, or, for a proposed name or a candidate of a "computed" criterion, when the reasoning rejects it.
-6. Name a listed or proposed candidate exactly as it is listed.
+1. Judge each criterion on its own parts. A part that refers to another criterion ("the town of c1") is met when a passage links the candidate to any candidate of that criterion, whatever its belief status.
+2. In subtask 1, leave the current belief aside: extract text for every criterion a passage states a part of, and from the reasoning only its own words, not the passage text it quotes.
+3. Only passages give support, and a candidate needs support: the names in the reasoning stay proposed until a passage supports them, unless the criterion type's definition says the reasoning sets the belief status.
+4. In subtask 2, also give every candidate whose belief status changes because the support of another candidate changed.
+5. Remove a listed or proposed name only when a passage states that it fails a part, or when the reasoning rejects it and no passage supports it.
+6. Write a listed or proposed name exactly as it is listed.
 
 == Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
-- "reasoning_observations": One object per candidate the reasoning names, assesses or rejects; [] when there is none:
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order. A list with no items is []. A span is copied exactly from one place in its source, in its language: the shortest part of a sentence that states it.
+- "reasoning_observations": One object per agent claim:
   - "id": The criterion id (for example "c1").
   - "turn": The turn label (for example "t12").
   - "candidate": The candidate.
-  - "span": The part of the reasoning that states the claim, copied exactly: the shortest part of a sentence that states it.
-  - "claim": The claim.
-- "passage_observations": One object per passage and criterion it states a part of; [] when there is none:
+  - "span": The span of the reasoning that states the agent claim.
+  - "agent_claim": The agent claim.
+- "passage_observations": One object per passage and criterion it states a part of:
   - "id": The criterion id.
   - "passage": The passage label (for example "d4").
-  - "spans": The parts of the passage that state a part of the criterion, each copied exactly from one place in the passage, in its own language: the shortest part of a sentence that states it.
-- "candidates": One object per candidate whose support or status changes, criteria in the given order; [] when there is none:
+  - "spans": The spans of the passage that state a part of the criterion.
+- "candidates": One object per candidate whose support or belief status changes, criteria in the given order; a name that stays proposed is left out:
   - "id": The criterion id.
   - "candidate": The candidate.
-  - "support": The labels of the passages of this update whose observations support it, [] when none.
-  - "against": The labels of the passages of this update whose observations speak against it, [] when none.
-  - "reason": One sentence: "Was <current status>: <why its support gives the new status>." For a proposed name: "Was proposed: ...". For a candidate only a passage names: "New: ...".
-  - "status": Its new status, one of the five statuses, or "removed". A name that stays proposed is left out of "candidates".
+  - "support": The labels of the passages of this update that support it.
+  - "against": The labels of the passages of this update that speak against it.
+  - "reason": One sentence: "Was <current belief status>: <why its support gives the new belief status>." For a proposed name: "Was proposed: ...". For a candidate only a passage names: "New: ...".
+  - "belief_status": Its new belief status, or "removed".
 
 == Example ==
 {example}

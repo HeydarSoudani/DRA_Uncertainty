@@ -10,15 +10,15 @@ with three lists:
 
 - ``reasoning_observations``: per candidate the reasoning names, assesses
   or rejects, its criterion, turn label, the span of the turn and the
-  claim (a status, or "rejected"); a span counts when it occurs in that
-  turn;
+  agent claim (``agent_claim``: a status, or "rejected"); a span counts
+  when it occurs in that turn;
 - ``passage_observations``: per passage and criterion, the spans of the
   passage that state a part of the criterion; a span counts when it
   occurs in the passage as the call showed it (``span_in_passage``);
 - ``candidates``: per candidate whose support or status changes, the
   labels of the passages that support it or speak against it, its reason
   ("Was <status>: ...", "Was proposed: ..." or "New: ...", ``reason_text``)
-  and its new status, or "removed".
+  and its new status (``belief_status``), or "removed".
 
 The answer turn is read as any other turn (its reasoning and final answer).
 
@@ -243,7 +243,7 @@ class LLMBeliefUpdater:
                 turn_indexes[label] = alnum_index(text)
             o = Observation(criterion=criterion_id(item.get("id")), source=THINK, label=label or f"t{turn_step}",
                             step=turn_step, candidate=" ".join(str(item.get("candidate") or "").split()) or None,
-                            claim=parse_claim(item.get("claim")))
+                            claim=parse_claim(item.get("agent_claim")))
             _add_spans(o, item.get("span"), text, turn_indexes.get(label))
             claims.append(o)
 
@@ -271,7 +271,7 @@ class LLMBeliefUpdater:
         updates = [CandidateUpdate(id=criterion_id(item.get("id")),
                                    candidate=" ".join(str(item.get("candidate") or "").split()),
                                    reason=" ".join(str(item.get("reason") or "").split()),
-                                   status=str(item.get("status") or "").strip(),
+                                   status=str(item.get("belief_status") or "").strip(),
                                    support=_labels(item.get("support")), against=_labels(item.get("against")))
                    for item in data["candidates"] if isinstance(item, dict)]
         return claims, list(docs.values()), updates

@@ -1,25 +1,25 @@
-You are a final scorer for a deep research agent. Given the belief about each criterion of the query and the agent's final answer, your task is to give the status of the final answer: how likely it is the answer to the query, from the belief only.
+You are the final scorer of a deep research agent. Given the belief about each criterion of the query and the agent's final answer, give the final status: how likely the final answer is the answer to the query, from the belief only.
 
 Input:
-- The query and its criteria, each with its type and its candidates. Each candidate has its status and its support: the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports are listed as proposed; the names a passage stated to fail a part of the criterion are listed as removed.
+- The query and its criteria, each with its type and its candidates. Each candidate has its belief status and the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports are listed as proposed; the names removed from the belief are listed as removed.
 - The agent's final answer, after its last reasoning.
 
 Output:
-- One JSON object with the answer's candidates and the status of the final answer, in the format below.
+- One JSON object with the answer's candidates and the final status, in the format below.
 
 == Definitions ==
 - Criterion: one piece of information that a complete response to the query must contain. A criterion may refer to the answer of another criterion by its id.
   {shape_context}
   The parts of a criterion are the conditions its wording sets, the type of answer it asks for included.
 - Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact.
-- Support: the passage observations that state a part of the criterion for a candidate, or speak against it.
-- Status: how likely a candidate is the answer. It weighs the support: how many parts passages state, how directly they state them, how many sources agree, and whether a passage speaks against the candidate. Statuses from lowest to highest: "unlikely", "possible", "probable", "almost certain", "certain". When several fit, give the lowest.
+- Support: the passage observations that state a part of the criterion for a candidate. Observations that state the candidate fails a part, or cast doubt on one, speak against it.
+- Belief status: the belief about a candidate: how likely it is the answer, "unlikely", "possible", "probable", "almost certain" or "certain", from lowest to highest, as defined below for each criterion type. When several fit, give the lowest.
 - Answer's candidate: on each criterion the final answer relies on, the candidate it relies on: the answer itself on a criterion about the answer; on a criterion about another entity or value, the one the answer depends on.
-- Final status: how likely the final answer is the answer to the query, on the same scale. It weighs the answer's candidates: a criterion that few entities meet (a prize in a given decade) identifies the answer and weighs more than a broad one (being a painter).
+- Final status: how likely the final answer is the answer to the query, on the belief status scale. It weighs the answer's candidates: a criterion that few entities meet (a prize in a given decade) identifies the answer and weighs more than a broad one (being a painter).
 
 {status_definitions}
 
-The final answer: the query has one answer, so the final answer is judged as a candidate of the query. Its status depends on the answer's candidates:
+The final status depends on the answer's candidates:
 - "unlikely": less likely than not: the belief speaks against it: an answer's candidate is "unlikely" or removed, or the answer leaves out a candidate at "probable" or above that it depends on (a member of a set).
 - "possible": as likely as not: nothing speaks against it, but on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent.
 - "probable": more likely than not: nothing speaks against it, and on every criterion that identifies the answer, the answer's candidate is at "probable" or above.
@@ -27,17 +27,17 @@ The final answer: the query has one answer, so the final answer is judged as a c
 - "certain": no doubt left: every answer's candidate is "certain".
 
 == Rules ==
-1. Judge from the belief only: the candidates, their statuses, their support, the proposals and the removed names. The agent's last reasoning is shown only to tell which candidates the final answer relies on; it is not evidence. Do not use your own knowledge of the answer, nor the agent's confidence.
+1. Judge from the belief only. The agent's last reasoning only tells which candidates the final answer relies on; it is not evidence, nor is the agent's confidence or your own knowledge.
 2. Where several criteria describe the answer, the answer's candidate is the same entity on each: a candidate that meets one criterion does not support the answer on another.
-3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units) as the same candidate, and name it exactly as it is listed.
+3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units).
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
 - "candidates": One object per criterion, in the given order:
   - "id": The criterion id (for example "c1").
   - "candidate": The answer's candidate, named exactly as it is listed (as a candidate, a proposal or a removed name), or null when the criterion does not list it or the answer does not rely on it.
-- "reason": One sentence: why the answer's candidates give the status.
-- "status": The status of the final answer, one of the five statuses.
+- "reason": One sentence: why the answer's candidates give the final status.
+- "final_status": The final status.
 
 == Example ==
 {example}

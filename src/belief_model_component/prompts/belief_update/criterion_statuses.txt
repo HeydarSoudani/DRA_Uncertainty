@@ -1,18 +1,18 @@
 ---one_answer---
-"one answer" criterion: it has a single correct answer, so its candidates compete. The status of a candidate depends on its support and on the support of the other candidates:
-- "unlikely": less likely than not: another candidate has clearly stronger support, or a passage speaks against it without stating that it fails a part.
+"one answer" criterion: it has a single correct answer, so its candidates compete. A candidate's belief status depends on its passages and on the support of the other candidates:
+- "unlikely": less likely than not: another candidate has clearly stronger support, or a passage casts doubt on a part for it.
 - "possible": as likely as not: no passage states a part for it, or another candidate has support as strong.
 - "probable": more likely than not: passages state some parts for it, and its support is stronger than every other candidate's.
-- "almost certain": little doubt left: passages state every part for it, though some only by inference or in part, none speaks against it, and every other candidate has clearly weaker support.
-- "certain": no doubt left: passages state every part for it, none speaks against it, and no other candidate has support.
+- "almost certain": little doubt left: passages state every part for it, some perhaps only by inference or in part, none speaks against it, and every other candidate has clearly weaker support.
+- "certain": no doubt left: passages state every part for it directly, none speaks against it, and no other candidate has support.
 
 ---several_answers---
-"several answers" criterion: it may have several answers that hold together, so its candidates do not compete. The status of a candidate depends only on its support:
-- "unlikely": a passage speaks against it without stating that it fails a part.
+"several answers" criterion: it may have several answers that hold together, so its candidates do not compete. A candidate's belief status depends only on its own passages:
+- "unlikely": a passage casts doubt on a part for it.
 - "possible": no passage states a part for it.
 - "probable": passages state some parts for it.
-- "almost certain": passages state every part for it, though some only by inference or in part, and none speaks against it.
-- "certain": passages state every part for it, and none speaks against it.
+- "almost certain": passages state every part for it, some perhaps only by inference or in part, and none speaks against it.
+- "certain": passages state every part for it directly, and none speaks against it.
 
 ---computed---
-"computed" criterion: the agent computes its answer and no passage states it. The reasoning sets the status of a candidate: how completely the agent's computation uses the answers of the criteria it is computed from.
+"computed" criterion: the agent computes its answer and no passage states it. The reasoning gives its candidates and sets their belief status: how completely the agent's computation uses the answers of the criteria it is computed from.

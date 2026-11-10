@@ -1,11 +1,11 @@
 ---single_target---
-The response to this query is a short answer: the one entity or value that the query describes by conditions or clues. Every criterion is one condition or clue on the answer; an answer of a criterion is an entity or value that meets it.
+The query describes one entity or value by clues; every criterion is one clue on it.
 
 ---multi_hop---
-The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every criterion is one entity on the chain (a hop), described by its own relations, the entity before it referred to by its criterion id; an answer of a criterion is an entity that fits that description (a hop before the last may have several), and an answer of the last criterion is an answer to the query.
+The query reaches one entity or value through a chain of entities; every criterion is one hop on the chain, and the answer of the last one is the answer to the query.
 
 ---set---
-The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members. The criteria are one criterion per known member, "<member>: <property>", whose answer is the member's value; then "any other member: <property>", whose answers are the members without a criterion of their own, each written "<member>: <value>"; then how the answer follows from the members' values, whose answer the agent computes and no document states.
+The query asks for a value computed over the members of a set, such as a count; the criteria are one per known member, "<member>: <property>", then "any other member: <property>", whose answers are written "<member>: <value>", then the computation.
 
 ---multi_aspect---
-The response to this query is a report that covers several aspects of a topic. Every criterion is one aspect; its answers are the specific facts on it, such as figures, named cases, findings or measures, each written as one short statement, within the limits the criterion's wording sets: a period, place, group, or what a "..., not ..." leaves out. A mere mention of the topic is no answer.
+The query asks for a report on several aspects of a topic; every criterion is one aspect, and its answers are specific facts on it, each written as one short statement.

@@ -3,7 +3,7 @@ Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
 Criteria, with their candidates:
 c1 (one answer): the painter who was born in a coastal town
-  "Anna Holm": certain
+  "Anna Holm": almost certain
     + "Anna Holm (1890-1960) was a painter born in the port town of Vik" [Anna Holm]
 c2 (one answer): the painter who won the Ostra Prize in the 1920s
   "Erik Lind": possible
@@ -24,8 +24,8 @@ Output:
     {"id": "c1", "candidate": "Anna Holm"},
     {"id": "c2", "candidate": "Anna Holm"}
   ],
-  "reason": "Anna Holm is certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so the belief speaks against her.",
-  "status": "unlikely"
+  "reason": "Anna Holm is almost certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so the belief speaks against her.",
+  "final_status": "unlikely"
 }
 
 ---multi_hop---
@@ -61,7 +61,7 @@ Output:
     {"id": "c3", "candidate": "Skarv Lighthouse"}
   ],
   "reason": "The first two hops are certain, but the last, which identifies the answer, is only probable, since the Hamn Lighthouse is also among the engineer's works.",
-  "status": "probable"
+  "final_status": "probable"
 }
 
 ---set---
@@ -96,5 +96,5 @@ Output:
     {"id": "c4", "candidate": "212 m"}
   ],
   "reason": "The total leaves out the Tirsa footbridge, a member that is certain on c3, so the answer misses a member of the set it depends on.",
-  "status": "unlikely"
+  "final_status": "unlikely"
 }

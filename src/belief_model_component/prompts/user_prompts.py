@@ -53,7 +53,7 @@ The agent's reasoning since the last update:
 Passages:
 {passages}
 
-Record the claims of the reasoning and what each passage states about each criterion, then give the support and the status of every candidate they change.\
+Extract the agent claims of the reasoning and the text of each passage that states a part of a criterion, then give the support and the belief status of every candidate they change.\
 """
 
 NO_TEXT = "(none)"
@@ -71,7 +71,7 @@ Criteria, with their candidates:
 The agent's final answer:
 {answer}
 
-Find the answer's candidate on each criterion, then give the status of the final answer.\
+Find the answer's candidate on each criterion, then give the final status.\
 """
 
 # One turn of the belief update's user message.

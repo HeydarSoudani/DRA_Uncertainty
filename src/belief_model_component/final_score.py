@@ -10,7 +10,7 @@ answer turn (``agent_turn.answer_turn``), and replies with one JSON object:
 - ``candidates``: per criterion, the answer's candidate (the one the
   answer relies on, or null);
 - ``reason``: one sentence;
-- ``status``: the status of the final answer, on the belief's scale
+- ``final_status``: the status of the final answer, on the belief's scale
   (``FINAL_STATUSES``: the five candidate statuses, no "unknown", no
   "removed"), read as a probability as a candidate's status is
   (``types.status_probability``).
@@ -94,7 +94,7 @@ def parse_final_score(raw: str) -> Optional[FinalScore]:
     data = parse_json_object(raw or "")
     if data is None:
         return None
-    status = parse_final_status(data.get("status"))
+    status = parse_final_status(data.get("final_status"))
     if status is None:
         return None
     candidates = []
@@ -163,13 +163,13 @@ class LLMFinalScorer:
         (``updater.complete_with_repair``)."""
         return complete_with_repair(
             "LLMFinalScorer", self._llm, self.prompt(query, state, answer_turn), parse_final_score,
-            FINAL_SCORE_REPAIR, f"no JSON object with a status of {list(FINAL_STATUSES)}", self._parse_retries,
+            FINAL_SCORE_REPAIR, f"no JSON object with a final_status of {list(FINAL_STATUSES)}", self._parse_retries,
             max_tokens=self.max_tokens, temperature=self._temperature)
 
 
 # The retry message after a reply that did not parse.
 FINAL_SCORE_REPAIR = ("Your reply could not be read. Respond with ONLY a raw JSON object with the keys "
-                      "\"candidates\", \"reason\" and \"status\", the status one of: "
+                      "\"candidates\", \"reason\" and \"final_status\", the final status one of: "
                       + ", ".join(f'"{t}"' for t in FINAL_STATUSES) + ".")
 
 

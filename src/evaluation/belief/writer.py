@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 40::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
 
-    line 1  {"record": "meta", "schema_version": 40, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 42, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"}}
@@ -277,7 +277,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 42
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)
