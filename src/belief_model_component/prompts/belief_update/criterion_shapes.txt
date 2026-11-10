@@ -2,7 +2,7 @@
 The response to this query is a short answer: the one entity or value that the query describes by conditions or clues. Every criterion is one condition or clue on the answer; an answer of a criterion is an entity or value that meets it.
 
 ---multi_hop---
-The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every criterion is one entity on the chain (a hop), described by its relations to the entities before it; an answer of a criterion is an entity that fits that description, and an answer of the last criterion is an answer to the query.
+The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every criterion is one entity on the chain (a hop), described by its own relations, the entity before it referred to by its criterion id; an answer of a criterion is an entity that fits that description (a hop before the last may have several), and an answer of the last criterion is an answer to the query.
 
 ---set---
 The response to this query is a short answer computed over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members. The criteria are one criterion per known member, "<member>: <property>", whose answer is the member's value; then "any other member: <property>", whose answers are the members without a criterion of their own, each written "<member>: <value>"; then how the answer follows from the members' values, whose answer the agent computes and no document states.

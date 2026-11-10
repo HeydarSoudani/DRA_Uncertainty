@@ -45,7 +45,8 @@ from indexing_corpus_dataset.layout import (
 from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
-from belief_model_component.criteria import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL
+from belief_model_component.criteria import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, shape_kinds
+from belief_model_component.types import MULTI_ASPECT
 
 from .config import RunPaths, Split, TrainingConfig
 from .episodes import Episode, annotate_gold, attach_teacher, read_episode
@@ -208,6 +209,24 @@ def read_correctness(run_dir: Path) -> Dict[str, Optional[bool]]:
     return out
 
 
+# Before the shared cut (schema 38) the belief update cut a short-answer
+# document at 3000 characters and read a report document whole.
+LEGACY_PASSAGE_CHARS = 3000
+
+
+def passage_chars(config: Dict, query_shape: str) -> Optional[int]:
+    """Characters of one document the belief update of a run read (or, a
+    run without the belief model, will read in training), from its
+    ``run_config.json`` *config*: the belief section's
+    ``max_passage_chars``, else the agent's (the shared cut, the same
+    value), else the cut of the runs before it was recorded."""
+    for section in ("belief_model", "agent"):
+        values = config.get(section) or {}
+        if "max_passage_chars" in values:
+            return values["max_passage_chars"]
+    return None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS
+
+
 def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "") -> List[Episode]:
     """The episodes of split *name*'s run, one per finished query.  With
     *teacher* (a monitor run), each also has the teacher's view; an episode
@@ -233,8 +252,11 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         if episode is None:
             counts["not_run"] += 1
             continue
-        episode.policy_model = cfg.shared.policy_model
-        episode.gold_criteria = gold_criteria[qid]["criteria"]
+        episode.max_passage_chars = passage_chars(config, episode.query_shape)
+        # The kinds as the belief reads them (a multi-hop query's hops, ``shape_kinds``).
+        rows = gold_criteria[qid]["criteria"]
+        kinds = shape_kinds(episode.query_shape, [c["kind"] for c in rows])
+        episode.gold_criteria = [{**c, "kind": kind} for c, kind in zip(rows, kinds)]
         episode.source = gold_criteria[qid]["source"]
         episode.gold_names = gold_criteria[qid]["entity_names"]
         if teacher:

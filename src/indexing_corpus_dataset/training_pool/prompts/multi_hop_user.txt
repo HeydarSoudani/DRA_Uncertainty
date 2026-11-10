@@ -3,4 +3,4 @@ Question: {question}
 Chain:
 {chain}
 
-Write one criterion per placeholder.{retry}
+Write one criterion per placeholder, in your order.{retry}

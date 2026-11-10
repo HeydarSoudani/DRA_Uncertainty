@@ -144,7 +144,7 @@ class DrTulu_Agent(BasicAgent):
 
     def _format_docs_as_snippets(self, docs: List[Dict[str, Any]], snippet_offset: int) -> Tuple[str, List[str]]:
         """Render retrieved documents as DR-Tulu <snippet id="..."> XML."""
-        return format_as_snippets(docs, self.seen_top_k, snippet_offset)
+        return format_as_snippets(docs, self.seen_top_k, snippet_offset, self.max_passage_chars)
 
     # ── Tool execution ────────────────────────────────────────────────────────
 

@@ -15,9 +15,13 @@ Each iteration, on one GPU shared by the vLLM engine and the trainer:
               (DAPO's dynamic sampling)
     reward    per chain (rewards.Reward): R = w_format format + w_assign assign
               + w_cal cal + w_final r_final (assign and cal per criterion,
-              then averaged over the criteria)
-    update    GDPO advantages per chain (each term normalized within its
-              group), given to every call of the chain -> engine.sleep ->
+              then averaged over the criteria); on a short-answer query
+              r_final is the final scorer's, and each of the group_size
+              replies to a chain's scorer call has its own
+    update    GDPO advantages in two streams (rewards.py): per chain (each
+              term normalized within its group of chains), given to every
+              belief update call of the chain; per scorer reply (r_final
+              normalized within the replies to one scorer call) -> engine.sleep ->
               trainer.onload -> PPO on all the calls -> save to sync_dir ->
               trainer.offload -> engine.load_weights(sync_dir)
 
@@ -49,7 +53,7 @@ from .episodes import DocumentStore, Episode
 from .rewards import TERMS, Reward
 from .rollout import VLLMRolloutEngine
 from .runs import check_same_settings, load_episodes, nugget_gold
-from .scoring import chain_values, measures
+from .scoring import chain_values, mean_or_none, measures
 from .sft import load_processor
 from .trainer import BeliefPPOTrainer, group_advantages
 
@@ -57,25 +61,23 @@ from .trainer import BeliefPPOTrainer, group_advantages
 REFILL_ROUNDS = 2
 
 
-def _mean(values: List[Optional[float]]) -> Optional[float]:
-    vals = [v for v in values if v is not None]
-    return sum(vals) / len(vals) if vals else None
-
-
 def score_chains(chains: List[Chain], reward_fn: Reward) -> List[Dict[str, Any]]:
     """The reward of each chain, after the gold of all their values is
-    resolved in one batch."""
+    resolved in one batch, with ``scorer_terms`` the terms of each reply
+    to its scorer call (empty without one)."""
     reward_fn.gold.resolve([v for c in chains
                             for v in chain_values(c.episode, [cc.outcome for cc in c.calls], c.beliefs)])
-    return [reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
-                      [cc.finish_reason for cc in c.calls], c.beliefs)
+    return [{**reward_fn(c.episode, [cc.call for cc in c.calls], [cc.outcome for cc in c.calls],
+                         [cc.finish_reason for cc in c.calls], c.beliefs),
+             "scorer_terms": reward_fn.scorer_terms(c.episode, [cc.outcome for cc in c.scorer],
+                                                    [cc.finish_reason for cc in c.scorer])}
             for c in chains]
 
 
 def score_stats(scores: List[Dict[str, Any]], prefix: str = "") -> Dict[str, Any]:
     """Mean reward and mean of each term (over the chains where it applies)."""
-    out = {f"{prefix}reward": _mean([s["reward"] for s in scores])}
-    out.update({f"{prefix}{k}": _mean([s["terms"][k] for s in scores]) for k in TERMS})
+    out = {f"{prefix}reward": mean_or_none(s["reward"] for s in scores)}
+    out.update({f"{prefix}{k}": mean_or_none(s["terms"][k] for s in scores) for k in TERMS})
     return out
 
 
@@ -90,12 +92,43 @@ def rollout_stats(chains: List[Chain]) -> Dict[str, Any]:
         "prompt_too_long": sum(cc.finish_reason == "prompt_too_long" for cc in calls),
         "mean_response_tokens": sum(len(cc.response_ids) for cc in calls) / n,
         "mean_prompt_tokens": sum(len(cc.prompt_ids) for cc in calls) / n,
+        "scorer_replies": len(replies := [cc for c in chains for cc in c.scorer]),
+        "scorer_parsed_rate": (sum(cc.outcome.get("parsed", False) for cc in replies) / len(replies)
+                               if replies else None),
     }
 
 
+def _spread(terms: List[Dict[str, Optional[float]]], keys) -> bool:
+    return any(len({round(t[k], 12) for t in terms if t.get(k) is not None}) > 1 for k in keys)
+
+
 def _has_spread(scores: List[Dict[str, Any]]) -> bool:
-    """Some term differs between the chains of a group."""
-    return any(len({round(s["terms"][k], 12) for s in scores if s["terms"][k] is not None}) > 1 for k in TERMS)
+    """Some term of the update calls differs between the chains of a group,
+    or r_final between the replies to one of their scorer calls."""
+    if _spread([s["chain_terms"] for s in scores], TERMS):
+        return True
+    return any(_spread(s["scorer_terms"], ("final",)) for s in scores if s["scorer_terms"])
+
+
+def training_calls(chains: List[Chain], scores: List[Dict[str, Any]], reward_fn: Reward, std_floor: float):
+    """``(call, advantage, reward)`` of every call trained: each belief update
+    call with its chain's advantage (``chain_terms`` within the chains'
+    groups), each scorer reply with its own (r_final within the replies to
+    its call)."""
+    chain_adv = group_advantages([s["chain_terms"] for s in scores], [c.group for c in chains],
+                                 reward_fn.weights, std_floor)
+    out = [(cc, a, s["reward"]) for c, a, s in zip(chains, chain_adv, scores) for cc in c.update_calls]
+    replies, terms, groups = [], [], []
+    for i, (c, s) in enumerate(zip(chains, scores)):
+        own = s["scorer_terms"]
+        if not own:
+            continue
+        replies += c.scorer
+        terms += own
+        groups += [i] * len(own)
+    scorer_adv = group_advantages(terms, groups, {"final": reward_fn.weights["final"]}, std_floor)
+    out += [(cc, a, t["final"] if t["final"] is not None else 0.0) for cc, a, t in zip(replies, scorer_adv, terms)]
+    return out
 
 
 def validate_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRolloutEngine,
@@ -207,10 +240,7 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
                 n_groups += 1
             if n_groups >= rc.episodes_per_batch:
                 break
-        chain_adv = group_advantages([s["terms"] for s in kept_scores], [c.group for c in kept],
-                                     reward_fn.weights, rc.adv_std_floor)
-        # Every call of a chain takes the chain's advantage.
-        calls = [(cc, a, s["reward"]) for c, a, s in zip(kept, chain_adv, kept_scores) for cc in c.calls]
+        calls = training_calls(kept, kept_scores, reward_fn, rc.adv_std_floor)
         rollout_seconds = time.monotonic() - started
 
         update_seconds = sync_seconds = 0.0
@@ -221,6 +251,10 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
             metrics = trainer.update([cc.prompt_ids for cc, _, _ in calls], [cc.response_ids for cc, _, _ in calls],
                                      [cc.rollout_log_probs for cc, _, _ in calls], [a for _, a, _ in calls],
                                      [r for _, _, r in calls])
+            # The two streams' rewards are on other scales (R of the chain,
+            # r_final of a scorer reply): logged apart, not as one mean.
+            for key in ("reward_mean", "reward_std"):
+                metrics.pop(key, None)
             update_seconds = time.monotonic() - update_started
             sync_started = time.monotonic()
             trainer.save(str(sync_dir), processor)
@@ -233,6 +267,8 @@ def run_rl(cfg: TrainingConfig, paths: RunPaths) -> None:
 
         record = {"iteration": it, "groups": n_groups, "skipped_groups": skipped, "rollout_rounds": rounds,
                   **rollout_stats(generated), **score_stats(all_scores), **metrics,
+                  "update_reward_mean": mean_or_none(r for cc, _, r in calls if not cc.call.is_scorer),
+                  "scorer_reward_mean": mean_or_none(r for cc, _, r in calls if cc.call.is_scorer),
                   "rollout_seconds": round(rollout_seconds, 1), "update_seconds": round(update_seconds, 1),
                   "sync_seconds": round(sync_seconds, 1), "seconds": round(time.monotonic() - started, 1)}
         _log(paths.rl_metrics, record)

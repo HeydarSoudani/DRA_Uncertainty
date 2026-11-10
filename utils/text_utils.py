@@ -287,8 +287,19 @@ def doc_title(doc: Dict[str, Any], default: str = "Untitled Document") -> str:
     return doc.get("title") or default
 
 
-def doc_text(doc: Dict[str, Any], max_length: Optional[int] = 300) -> str:
-    """Extract document text, truncated to *max_length* (``None`` = full text)."""
+#: Characters of one document shown to an agent and to the belief model
+#: (``max_passage_chars`` of a run, one shared setting): both read the same
+#: text, cut by :func:`cut_passage`.
+MAX_PASSAGE_CHARS = 1000
+
+
+def cut_passage(text: str, max_chars: Optional[int]) -> str:
+    """*text* cut to *max_chars*, ending in ``...`` when cut (None keeps it whole)."""
+    return text[:max_chars] + "..." if max_chars is not None and len(text) > max_chars else text
+
+
+def doc_text(doc: Dict[str, Any], max_length: Optional[int] = MAX_PASSAGE_CHARS) -> str:
+    """Extract document text, cut to *max_length* (``None`` = full text)."""
     text = (
         doc.get("relevant_text")
         or doc.get("text")
@@ -296,10 +307,7 @@ def doc_text(doc: Dict[str, Any], max_length: Optional[int] = 300) -> str:
         or doc.get("snippet")
         or ""
     )
-    text = str(text).strip()
-    if max_length is not None and len(text) > max_length:
-        text = text[:max_length] + "..."
-    return text
+    return cut_passage(str(text).strip(), max_length)
 
 
 # Backwards-compatible private alias (existing call sites).
@@ -396,7 +404,7 @@ def _collect_cited_docs(result: dict) -> List[Dict[str, Any]]:
 # Documents: formatting — convert doc dicts to strings for the LLM prompt
 # ===========================================================================
 
-def passages2string(passages: List[Dict[str, Any]], max_text_length: int = 300) -> str:
+def passages2string(passages: List[Dict[str, Any]], max_text_length: int = MAX_PASSAGE_CHARS) -> str:
     """Convert passage dicts to a numbered, human-readable string.
 
     Format: ``[1] Title\\ntext``
@@ -408,17 +416,12 @@ def passages2string(passages: List[Dict[str, Any]], max_text_length: int = 300) 
 
     parts = []
     for idx, passage in enumerate(passages, start=1):
-        metadata = passage.get("metadata", {})
-        title = metadata.get("title", "Untitled Document")
-        text = passage.get("relevant_text", "")
-        if len(text) > max_text_length:
-            text = text[:max_text_length] + "..."
-        parts.append(f"[{idx}] {title}\n{text}")
+        parts.append(f"[{idx}] {doc_title(passage)}\n{doc_text(passage, max_text_length)}")
 
     return "\n\n".join(parts)
 
 
-def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = 1000) -> str:
+def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = MAX_PASSAGE_CHARS) -> str:
     """Convert docs to markdown format with ``## Web Results`` header.
 
     Used by: Tongyi-DR agent.
@@ -429,16 +432,7 @@ def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_leng
     parts = []
     for i, doc in enumerate(docs[:top_k], 1):
         title = _doc_title(doc)
-        text = (
-            doc.get("relevant_text")
-            or doc.get("text")
-            or doc.get("contents")
-            or doc.get("snippet")
-            or ""
-        )
-        text = str(text).strip()
-        if len(text) > max_text_length:
-            text = text[:max_text_length] + "..."
+        text = doc_text(doc, max_text_length)
         if title and text:
             parts.append(f"{i}. [{title}]\n{text}")
         elif text:
@@ -451,22 +445,17 @@ def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_leng
     return "## Web Results\n" + "\n\n".join(parts)
 
 
-def format_as_json(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = 500) -> str:
+def format_as_json(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = MAX_PASSAGE_CHARS) -> str:
     """Convert docs to JSON format with docid/title/snippet.
 
     Used by: GLM and OSS agents.
     """
     formatted = []
     for doc in docs[:top_k]:
-        text = doc.get(
-            "relevant_text", doc.get("text", doc.get("contents", doc.get("snippet", "")))
-        )
-        if len(text) > max_text_length:
-            text = text[:max_text_length] + "..."
         formatted.append({
             "docid": doc.get("doc_id", ""),
             "title": _doc_title(doc),
-            "snippet": text,
+            "snippet": doc_text(doc, max_text_length),
         })
     return json.dumps(formatted)
 
@@ -475,6 +464,7 @@ def format_as_snippets(
     docs: List[Dict[str, Any]],
     top_k: int = 5,
     snippet_offset: int = 0,
+    max_text_length: int = MAX_PASSAGE_CHARS,
 ) -> tuple:
     """Convert docs to DR-Tulu ``<snippet id="SN">…</snippet>`` XML format.
 
@@ -490,9 +480,9 @@ def format_as_snippets(
         sid = f"S{snippet_offset + i + 1}"
         ids.append(sid)
 
-        title = doc.get("title", "")
+        title = doc_title(doc, default="")
         url = doc.get("url", doc.get("doc_id", ""))
-        body = doc.get("text", doc.get("snippet", "")).strip()
+        body = doc_text(doc, max_text_length)
         content = f"Title: {title}\nURL: {url}\n{body}".strip()
 
         parts.append(f'<snippet id="{sid}">{content}</snippet>')
@@ -732,6 +722,7 @@ def build_evidence_summary(
     reasoning_path: List[Dict[str, Any]],
     seen_top_k: int = 5,
     keep_last: int = 3,
+    max_text_length: int = MAX_PASSAGE_CHARS,
 ) -> str:
     """Build windowed evidence summary from reasoning_path.
 
@@ -754,7 +745,7 @@ def build_evidence_summary(
                 entry += f"\n  Reasoning: {think}"
         else:
             docs = step.get("docs", [])
-            doc_text = passages2string(docs[:seen_top_k])
+            doc_text = passages2string(docs[:seen_top_k], max_text_length)
             entry = f"- Search: {sq}"
             if think:
                 entry += f"\n  Reasoning: {think}"

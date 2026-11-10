@@ -94,7 +94,8 @@ class SFTConfig:
     # observation entered the belief (verified spans of its passage or turn),
     # no status corrected by code, no reason that misreads the belief or cites
     # a source without an observation, no removal code did not take, no
-    # competing one-answer candidates.
+    # update code ignored (no observation on its criterion, only passages
+    # against a new name), no competing one-answer candidates.
     require_verified_spans: bool = True
     lora_r: int = 64
     lora_alpha: int = 128
@@ -131,8 +132,11 @@ class RLConfig:
     # Weights of R = w_format format + w_assign assign + w_cal cal + w_final r_final
     # (rewards.py): the share of calls passing the gate, the source
     # assignment and the status calibration (each per criterion, then
-    # averaged over the criteria) and the certainty score of the final
-    # beliefs against correctness.
+    # averaged over the criteria) and s_T against correctness (the final
+    # scorer's on a short-answer query, the final beliefs' on a report).
+    # On a short-answer query r_final is the scorer replies' own stream,
+    # normalized alone, so w_final there changes only the logged and
+    # validation R, not the advantages (the two streams weigh 1:1).
     reward_weight_format: float = 1.0
     reward_weight_assign: float = 1.0
     reward_weight_cal: float = 1.0

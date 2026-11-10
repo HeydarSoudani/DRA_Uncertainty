@@ -32,7 +32,7 @@ from utils.config import (
     resolve_agent_backend,
 )
 from reasoner_component.setup import setup_llm
-from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
+from utils.text_utils import MAX_PASSAGE_CHARS, _build_cited_docs_ranked_list, build_references_section
 from utils.trajectory_logger import TrajectoryLogger
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ def build_belief_model(
     dataset: Optional[str] = None,
     split: Optional[str] = None,
     criteria_source: str = GOLD_CRITERIA,
+    max_passage_chars: int = MAX_PASSAGE_CHARS,
 ):
     """Build the belief model, or None when *mode* is ``"off"``.
 
@@ -120,6 +121,8 @@ def build_belief_model(
             The criteria are read from the banks, made and added only when
             missing.  The belief update is still the
             *belief_judge_model* / *llm_criteria* LLM.
+        max_passage_chars: Characters of one document the belief update
+            reads, the agents' own (the run's shared setting).
     """
     if mode == "off":
         return None
@@ -127,7 +130,7 @@ def build_belief_model(
         raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
 
     from belief_model_component import (
-        BeliefModel, belief_llm, build_belief_updater, build_criteria_source,
+        BeliefModel, belief_llm, build_belief_updater, build_criteria_source, build_final_scorer,
     )
 
     query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
@@ -153,11 +156,17 @@ def build_belief_model(
         intermediate_answer_fn = agent.answer_from_trajectory
         print(f"Belief model: intermediate answers via {policy_model}.answer_from_trajectory")
 
-    belief_updater = None
+    belief_updater = final_scorer = None
     if criteria_source is not None:
         judge_model = belief_judge_model or llm_criteria
-        belief_updater = build_belief_updater(belief_llm(judge_model), model=judge_model, query_shape=query_shape)
+        judge_llm = belief_llm(judge_model)
+        belief_updater = build_belief_updater(judge_llm, model=judge_model, query_shape=query_shape,
+                                              max_passage_chars=max_passage_chars)
         print(f"Belief model: belief updater {belief_updater.name}")
+        # s_T: the final scorer on the same model (a short-answer query;
+        # a report keeps the certainty of its final belief).
+        final_scorer = build_final_scorer(judge_llm, model=judge_model, query_shape=query_shape)
+        print(f"Belief model: final scorer {final_scorer.name if final_scorer else 'none (report: s_T from the belief)'}")
 
     return BeliefModel(
         criteria_source=criteria_source,
@@ -166,6 +175,7 @@ def build_belief_model(
         intermediate_answer_fn=intermediate_answer_fn,
         policy_model=policy_model or "",
         inform=mode == "inform",
+        final_scorer=final_scorer,
     )
 
 
@@ -191,7 +201,7 @@ def build_agent(
     max_extend_steps: int = 5,
     max_retries: int = 3,
     hard_mode: bool = True,
-    max_passage_chars: int = 4000,
+    max_passage_chars: int = MAX_PASSAGE_CHARS,
 ):
     """Instantiate an agent and attach its search tool.
 
@@ -249,10 +259,8 @@ def build_agent(
         _reasoning_extra["max_extend_steps"] = max_extend_steps
         _reasoning_extra["max_retries"] = max_retries
         _reasoning_extra["hard_mode"] = hard_mode
-        _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["model_name"] = llm_model
     elif policy_model == "belief_aware":
-        _reasoning_extra["max_passage_chars"] = max_passage_chars
         _reasoning_extra["max_retries"] = max_retries
         # Report datasets get the report prompts (task from the dataset).
         if dataset is not None:
@@ -268,6 +276,9 @@ def build_agent(
         verbose=verbose,
         **_reasoning_extra,
     )
+    # One document length for every agent (and the belief model):
+    # ``max_passage_chars``, the run's shared setting.
+    agent.max_passage_chars = max_passage_chars
 
     # Inject search tool into agents that inherit from BasicAgent
     # (avoids modifying every subclass constructor).
@@ -441,6 +452,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         dataset=dataset,
         split=worker_config.get("split"),
         criteria_source=worker_config.get("criteria_source", GOLD_CRITERIA),
+        max_passage_chars=worker_config["max_passage_chars"],
     )
     if belief_model is not None and hasattr(agent, "belief_model"):
         agent.belief_model = belief_model

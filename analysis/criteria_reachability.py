@@ -115,6 +115,7 @@ import argparse
 import hashlib
 import json
 import logging
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -143,7 +144,7 @@ from reasoner_component.factory import create_generator, disable_native_thinking
 from belief_model_component.criteria import CriteriaSource
 from belief_model_component.criteria_init import check_max_criteria
 from belief_model_component.updater import span_in_passage, split_span
-from belief_model_component.types import CLOSED
+from belief_model_component.types import CLOSED, HOP
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object
 
@@ -492,10 +493,29 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
 # Entities
 # ---------------------------------------------------------------------------
 
+_CRITERION_REF_RE = re.compile(r"\bc(\d+)\b")
+
+
+def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> str:
+    """*text* with each reference to another criterion ("the town of c1")
+    followed by that criterion's own text, resolved the same way, in
+    brackets, so the text reads without the list."""
+    def sub(m: "re.Match") -> str:
+        cid = m.group(0)
+        if cid not in by_id or cid in seen:
+            return cid
+        return f"{cid} [{_resolved(by_id[cid], by_id, seen + (cid,))}]"
+    return _CRITERION_REF_RE.sub(sub, text)
+
+
 def members_of(criteria: List[Dict]) -> List[Dict]:
-    """The member criteria (closed): not the rest criterion, the aggregate
-    or an older bank's set criterion."""
-    return [c for c in criteria if c.get("kind", CLOSED) == CLOSED]
+    """The member criteria (closed, and a multi-hop query's hops): not the
+    rest criterion, the aggregate or an older bank's set criterion; a text
+    that refers to another criterion by id has that criterion's text
+    spelled out (``_resolved``)."""
+    by_id = {c["id"]: c["text"] for c in criteria}
+    return [{**c, "text": _resolved(c["text"], by_id, (c["id"],))}
+            for c in criteria if c.get("kind", CLOSED) in (CLOSED, HOP)]
 
 
 def entity_key(qid: str, entities: List[str], criteria: List[Dict], judge: str) -> str:

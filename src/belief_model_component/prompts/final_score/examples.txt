@@ -1,0 +1,100 @@
+---single_target---
+Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
+
+Criteria, with their candidates:
+c1 (one answer): the painter who was born in a coastal town
+  "Anna Holm": certain
+    + "Anna Holm (1890-1960) was a painter born in the port town of Vik" [Anna Holm]
+c2 (one answer): the painter who won the Ostra Prize in the 1920s
+  "Erik Lind": possible
+    + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
+  "Maja Strand": possible
+    + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
+  removed: "Anna Holm"
+
+The agent's final answer:
+Anna Holm was born in the port town of Vik and is a well-known winner of the Ostra Prize, so she fits both clues.
+
+Final answer:
+Anna Holm
+
+Output:
+{
+  "candidates": [
+    {"id": "c1", "candidate": "Anna Holm"},
+    {"id": "c2", "candidate": "Anna Holm"}
+  ],
+  "reason": "Anna Holm is certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so the belief speaks against her.",
+  "status": "unlikely"
+}
+
+---multi_hop---
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+
+Criteria, with their candidates:
+c1 (several answers): the town where the Varn Folk Museum was founded
+  "Osby": certain
+    + "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
+    + "The Varn Folk Museum was founded in Osby" [Varn Folk Museum]
+c2 (several answers): the engineer who was born in the town of c1
+  "Henrik Dahl": certain
+    + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
+  removed: "Nils Berg"
+c3 (one answer): the lighthouse that was designed by the engineer of c2
+  "Skarv Lighthouse": probable
+    + "The Skarv Lighthouse, completed in 1889, was designed by Henrik Dahl" [Skarv Lighthouse]
+    + "The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl" [Skarv Lighthouse]
+  "Hamn Lighthouse": possible
+    + "The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl" [Skarv Lighthouse]
+
+The agent's final answer:
+The museum was founded in Osby, Henrik Dahl was born there, and he designed the Skarv Lighthouse.
+
+Final answer:
+Skarv Lighthouse
+
+Output:
+{
+  "candidates": [
+    {"id": "c1", "candidate": "Osby"},
+    {"id": "c2", "candidate": "Henrik Dahl"},
+    {"id": "c3", "candidate": "Skarv Lighthouse"}
+  ],
+  "reason": "The first two hops are certain, but the last, which identifies the answer, is only probable, since the Hamn Lighthouse is also among the engineer's works.",
+  "status": "probable"
+}
+
+---set---
+Query: What is the total length of the bridges over the river Varn that were built before 1900?
+
+Criteria, with their candidates:
+c1 (one answer): Osby Bridge: length
+  "120 m": certain
+    + "The Osby Bridge, built in 1862, is 120 metres long" [Osby Bridge]
+c2 (one answer): Kalvik Bridge: length
+  "92 metres": certain
+    + "The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long" [Kalvik Bridge]
+  removed: "85 m"
+c3 (several answers): any other member: length
+  "Tirsa footbridge: 40 metres": certain
+    + "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
+c4 (computed): the total length of the bridges over the river Varn that were built before 1900
+  "212 m": probable
+
+The agent's final answer:
+Osby Bridge is 120 m and Kalvik Bridge is 92 m, so the total is 212 m.
+
+Final answer:
+212 m
+
+Output:
+{
+  "candidates": [
+    {"id": "c1", "candidate": "120 m"},
+    {"id": "c2", "candidate": "92 metres"},
+    {"id": "c3", "candidate": null},
+    {"id": "c4", "candidate": "212 m"}
+  ],
+  "reason": "The total leaves out the Tirsa footbridge, a member that is certain on c3, so the answer misses a member of the set it depends on.",
+  "status": "unlikely"
+}

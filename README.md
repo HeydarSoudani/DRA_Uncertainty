@@ -48,7 +48,7 @@ experiments/
 ├── inference/                dra_inference.py
 ├── training/                 build_training_pool.py, belief_model_training.py
 └── configs/                  YAML defaults of every script
-analysis/                     criteria reachability, signal correlation
+analysis/                     criteria reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)
 data/                         criteria banks, training pools
 ```

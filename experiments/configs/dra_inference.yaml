@@ -55,7 +55,7 @@ post_fusion_reranker_input: "original_query"  # original_query | original_query+
 use_plan: false                 # Enable planning in ReAct agent (only --policy-model=react)
 max_extend_steps: 5             # Max outline extensions (cpm_report)
 hard_mode: true                 # Enforce strict validation rules (cpm_report)
-max_passage_chars: 4000         # Chars of one retrieved passage shown to the agent (cpm_report, belief_aware)
+max_passage_chars: 1000         # Chars of one retrieved document shown to every agent and to the belief model
 
 # ── Belief model (the rest; --belief-mode is CLI) ─────────
 llm_criteria: "openrouter/qwen/qwen3.6-27b"  # LLM that extracts each query's criteria (once per query, then read from the bank of their kind, CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl; a training pool: CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl; shared with analysis/criteria_reachability.py; a vllm/ model is keyed by its served checkpoint); same backbone as the belief-aware agent, reasoning off

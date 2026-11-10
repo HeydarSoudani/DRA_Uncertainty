@@ -36,31 +36,49 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
 
 # The belief update (``updater``), in the layout of the system prompt's
 # example: every criterion as "c1 (one answer): <text>" with its current
-# candidates (``belief_state.format_belief``), the agent's turn labelled with
-# its step, then the new passages, each "[d<n>] " before its text (whose
-# first line is the title); a missing turn or no passage reads ``NO_TEXT``.
-# The answer turn is read as any other turn.
+# candidates, their support and its proposals (``belief_state.format_belief``),
+# the agent's turns since the last update, each "[t<step>]" on its own line
+# before its text, then the passages new to the belief, each "[d<n>]" before
+# its text (whose first line is the title); no turn or no
+# passage reads ``NO_TEXT``.  The answer turn is read as any other turn.
 BELIEF_UPDATE_USER_TEMPLATE = """\
 Query: {query}
 
 Criteria, with their current candidates:
 {criteria}
 
-The current turn:
-[{turn_label}]
-{agent_turn}
+The agent's reasoning since the last update:
+{turns}
 
 Passages:
 {passages}
 
-Record the observations of the current turn and of each passage, then give, with its reason, the status of every candidate that is new, removed or whose status changes.\
+Record the claims of the reasoning and what each passage states about each criterion, then give the support and the status of every candidate they change.\
 """
-
 
 NO_TEXT = "(none)"
 
+# The final scorer (``final_score``): the query, the belief before the
+# answer turn in the update's layout, the names a passage ruled out
+# included (``format_belief(state, removed=True)``), and the agent's answer
+# turn (its last reasoning, then "Final answer:" and the answer).
+FINAL_SCORE_USER_TEMPLATE = """\
+Query: {query}
+
+Criteria, with their candidates:
+{criteria}
+
+The agent's final answer:
+{answer}
+
+Find the answer's candidate on each criterion, then give the status of the final answer.\
+"""
+
+# One turn of the belief update's user message.
+TURN_TEMPLATE = "[{label}]\n{text}"
 # One passage of the belief update's user message.
 PASSAGE_TEMPLATE = "[{label}] {text}"
+
 
 # Intermediate answer: a user message appended to the agent's conversation at
 # the end of every turn (the agent keeps its own system prompt). The model gives

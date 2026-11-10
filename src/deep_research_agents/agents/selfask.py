@@ -15,7 +15,7 @@ from deep_research_agents.prompts.selfask.user_prompt import USER_PROMPT as _SEL
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import SELFASK_FORMAT
-from utils.text_utils import unique_docs
+from utils.text_utils import doc_text, unique_docs
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class SelfAsk_Agent(BasicAgent):
         """Convert retrieval results to context string."""
         format_reference = ""
         for idx, doc_item in enumerate(retrieval_result):
-            text = doc_item.get("relevant_text", "")
+            text = doc_text(doc_item, self.max_passage_chars)
             format_reference += f"Context{idx+1}: {text}\n"
         return format_reference
 

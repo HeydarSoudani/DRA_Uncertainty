@@ -5,26 +5,33 @@ Plugged into any agent with ``--belief-mode monitor`` (observe only) or
 ``inform`` (also inject a ``<belief_state>`` tag into the trajectory).  The
 belief state b_t gives each criterion of a fixed per-query criteria list
 its candidates (possible answers), each with an Agent-BRACE belief status
-(how likely it is an answer) and its basis ("passage" when a passage
-observation bears on it, "reasoning" when only the agent's turns name it).
-At the end of each search iteration one call updates it (b_t = f(query,
-b_{t-1}, o_t)): it records the spans of the agent's turn (think
-observations) and of the new documents (document observations) that give
-information about each criterion, kept as the criterion's references,
-then gives, with its reason, the status of every candidate that is new,
-removed or whose status changes.  Code keeps every other candidate as it
-was.  Only the candidates are shown (to the next update and to
-the agent); the observations, references and reasons are saved.  The
-answer turn is one more update, and the certainty score s_T is a fixed
-function of the final statuses.  For
-evaluation only, it also saves the retrieval gain against the qrels and the
-agent's intermediate answers.
+(how likely it is an answer) and its support (the passage observations
+that support it or speak against it), and the names the agent proposed
+that no passage supports yet.  A step with a new passage makes one call
+(b_t = f(query, b_{t-1}, o_t)):
+it records the claims of the agent's turns since the last call (reasoning
+observations: they only propose or reject names) and the spans of the
+passages that state a part of each criterion (passage observations), kept
+as the criterion's references, then gives, with the passages that support
+or speak against it and its reason, the status of every candidate they
+change.  Code keeps every other candidate as it was and enforces the hard
+limits (no support: at most "possible").  Other steps carry the belief
+forward.  The candidates, their support and the proposals are shown to the
+next update (the agent sees the candidates and proposals); the claims and
+reasons are saved.  The certainty s_t of each step is a fixed function of
+the statuses.  On a short-answer query, the final scorer reads b_{T-1}
+and the agent's answer turn and judges how likely the answer is correct
+(s_T, a word of estimative probability); on a report the answer turn is
+one more update and s_T the certainty of the final belief.  For evaluation only,
+it also saves the retrieval gain against the qrels and the agent's
+intermediate answers.
 
 Module layout:
-    types         belief statuses, criterion kinds, Criterion, Observation, Candidate,
-                  CandidateUpdate
+    types         belief statuses, criterion kinds, Criterion, Observation, Support,
+                  Candidate, Proposal, CandidateUpdate
     reason_text   the opening of a candidate update's reason and its source labels
     certainty     the certainty score s_t of a belief (status probabilities, geometric mean)
+    final_score   LLMFinalScorer, build_final_scorer: s_T from b_{T-1} and the answer turn
     criteria      CriteriaSource, LLMCriteriaSource, BankedCriteriaSource,
                   GoldCriteriaSource, FallbackCriteriaSource, BeliefState
                   (the candidates, their trace of observations, the references)
@@ -54,7 +61,9 @@ from .types import (
     Observation,
     Candidate,
     CandidateUpdate,
+    Proposal,
     RemovedCandidate,
+    Support,
 )
 from .criteria import (
     CriteriaSource,
@@ -72,6 +81,7 @@ from .criteria_init import (
     prepare_criteria,
 )
 from .updater import LLMBeliefUpdater, build_belief_updater
+from .final_score import FINAL_STATUSES, FinalScore, LLMFinalScorer, build_final_scorer, parse_final_score
 from .signals import (
     BeliefUpdateSignal,
     RetrievalGainSignal,
@@ -94,7 +104,9 @@ __all__ = [
     "Observation",
     "Candidate",
     "CandidateUpdate",
+    "Proposal",
     "RemovedCandidate",
+    "Support",
     "CriteriaSource",
     "LLMCriteriaSource",
     "BankedCriteriaSource",
@@ -108,6 +120,11 @@ __all__ = [
     "prepare_criteria",
     "LLMBeliefUpdater",
     "build_belief_updater",
+    "FINAL_STATUSES",
+    "FinalScore",
+    "LLMFinalScorer",
+    "build_final_scorer",
+    "parse_final_score",
     "BeliefUpdateSignal",
     "RetrievalGainSignal",
     "IntermediateAnswerSignal",

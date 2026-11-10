@@ -44,7 +44,7 @@ class SearchO1_Agent(BasicAgent):
         if is_stripped:
             search_result = "(earlier search results omitted for brevity)"
         else:
-            search_result = step.get("reason_in_docs") or passages2string(docs[:self.seen_top_k])
+            search_result = step.get("reason_in_docs") or passages2string(docs[:self.seen_top_k], self.max_passage_chars)
 
         return (
             f"\n{think}\n"
@@ -144,7 +144,7 @@ class SearchO1_Agent(BasicAgent):
                 else:
                     search_docs = self.retrieve_documents(tmp_query, original_query=question)
                 # seen_top_k docs are passed to the LLM; all retrieved docs go to TREC
-                docs_text = passages2string(search_docs[:self.seen_top_k])
+                docs_text = passages2string(search_docs[:self.seen_top_k], self.max_passage_chars)
             else:
                 search_docs, docs_text = [], ''
 

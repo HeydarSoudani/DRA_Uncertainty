@@ -6,7 +6,9 @@ per-shape parts in ``<shape>.txt``)
 and the belief updater (``belief_update/``: the shared core ``system.txt``,
 the per-shape context in ``criterion_shapes.txt``, the status definitions of
 each criterion type in ``criterion_statuses.txt`` and the per-shape example
-in ``examples.txt``).  User prompts are in
+in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
+with the same per-shape context and its own per-shape example in
+``examples.txt``; short-answer shapes only).  User prompts are in
 ``user_prompts`` and re-exported here.
 """
 
@@ -16,8 +18,10 @@ from pathlib import Path
 from ..types import MULTI_ASPECT, MULTI_HOP, QUERY_SHAPES, SET, SINGLE_TARGET
 from .user_prompts import (
     BELIEF_UPDATE_USER_TEMPLATE,
+    FINAL_SCORE_USER_TEMPLATE,
     NO_TEXT,
     PASSAGE_TEMPLATE,
+    TURN_TEMPLATE,
     criteria_init_user,
     intermediate_answer_instruction,
 )
@@ -62,12 +66,13 @@ CRITERION_SHAPES = {k: v for k, v in _sections("belief_update/criterion_shapes.t
 
 # The status definitions of each criterion type (``belief_update/criterion_statuses.txt``)
 # and the criterion types each query shape has (``criteria._kinds``):
-# closed criteria are "one answer", rest and aspect criteria "several
-# answers", the aggregate of a set query "computed".
+# closed criteria are "one answer", hops (a multi-hop query's criteria
+# before its answer), rest and aspect criteria "several answers", the
+# aggregate of a set query "computed".
 CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/criterion_statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
     SINGLE_TARGET: ("one_answer",),
-    MULTI_HOP: ("one_answer",),
+    MULTI_HOP: ("one_answer", "several_answers"),
     SET: ("one_answer", "several_answers", "computed"),
     MULTI_ASPECT: ("several_answers",),
 }
@@ -96,3 +101,26 @@ def _belief_update_system(shape: str) -> str:
 # (``criteria_init_user``).  One belief update prompt per query shape.
 CRITERIA_INIT_SYSTEMS = {shape: _compose("criteria_init", shape) for shape in QUERY_SHAPES}
 BELIEF_UPDATE_SYSTEMS = {shape: _belief_update_system(shape) for shape in QUERY_SHAPES}
+
+# One worked example of the final scorer per query shape
+# (``final_score/examples.txt``); a shape without one (a report) has no
+# final scorer.
+FINAL_SCORE_EXAMPLES = {k: v for k, v in _sections("final_score/examples.txt").items() if k and v}
+
+
+def _final_score_system(shape: str) -> str:
+    """The final scorer prompt of a *shape* query: its core with the
+    shape's context, the status definitions of its criterion types (the
+    belief update's) and its example."""
+    fills = {
+        "shape_context": CRITERION_SHAPES[shape],
+        "status_definitions": "\n\n".join(CRITERION_STATUSES[t] for t in SHAPE_CRITERION_TYPES[shape]),
+        "example": FINAL_SCORE_EXAMPLES[shape],
+    }
+    text = _read("final_score/system.txt")
+    for key, body in fills.items():
+        text = text.replace("{" + key + "}", body)
+    return text
+
+
+FINAL_SCORE_SYSTEMS = {shape: _final_score_system(shape) for shape in FINAL_SCORE_EXAMPLES}

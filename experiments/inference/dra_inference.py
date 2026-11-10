@@ -387,6 +387,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
             dataset=plan.dataset,
             split=plan.split,
             criteria_source=kwargs["criteria_source"],
+            max_passage_chars=kwargs["max_passage_chars"],
         )
         if belief_model is not None and hasattr(agent, "belief_model"):
             agent.belief_model = belief_model
@@ -619,7 +620,7 @@ def _parse_args():
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its basis, passage or reasoning) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses and bases; never anything gold-based) to the trajectory after each iteration's search results.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its passage support, and the names the agent proposed) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses, and the agent's proposals as unverified; never anything gold-based) to the trajectory after each iteration's search results.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")

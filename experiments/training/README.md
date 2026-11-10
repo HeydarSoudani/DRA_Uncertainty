@@ -7,16 +7,17 @@ Training plan of the belief model, with the deep research agent frozen.
 The goal is to report an uncertainty score for the deep research agent (DRA), both during its search and for its
 final answer. The uncertainty is kept in a belief state, maintained by a separate belief model next to the agent:
 a fixed list of criteria that a complete answer must satisfy, and per criterion its candidates (possible answers),
-each with a status (how likely it is an answer, Agent-BRACE's verbal scale) and a basis: "passage" when the passages
-(documents [dN], the retriever side) bear on it, "reasoning" when only the agent's turns ([tN], the reasoner side)
-name it. The status rests on what the passages show and, for a one-answer criterion, on the other candidates (its
-definition counts them: "probable" or above only when every other candidate meets fewer parts, "certain" only when
-no other meets a part; per criterion type in `prompts/belief_update/criterion_statuses.txt`); the agent's turns propose or reject candidates, but alone keep them in "unlikely" .. "possible" (code
-bounds such a status, `turn_only`, `turn_only_change`). Only the candidates are shown (to the next
-update and to the agent); the observations, every source assigned to a criterion and the reasons of the updates are
-saved. A candidate the update does not name keeps its status; one a passage rules out (or, named by reasoning only,
-the reasoning rejects) is removed. A criterion's status is the
-highest of its candidates. Each criterion is its own sequence of beliefs over the steps, and is scored on its own.
+each with a status (how likely it is an answer, Agent-BRACE's verbal scale) and its support: the passage observations
+(documents [dN], the retriever side) that support it or speak against it. The agent's turns ([tN], the reasoner side)
+only propose names (proposals, no status, not rivals) and make claims, saved but never shown to the update; a
+passage that supports a proposal makes it a candidate. The model writes the status from the support and, for a
+one-answer criterion, from the other candidates' support (per criterion type in
+`prompts/belief_update/criterion_statuses.txt`); code enforces only hard limits (no support: at most "possible",
+`no_support`; no new support: the status kept, `no_new_support`). The candidates with their support (quoted spans
+and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
+candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call
+only when it has a new passage; otherwise the belief is carried forward. A
+criterion's status is the highest of its candidates. Each criterion is its own sequence of beliefs over the steps, and is scored on its own.
 
 The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/certainty.py`),
 a fixed function of the statuses:
@@ -31,30 +32,37 @@ s_t = \Big(\prod_{k \in \mathcal{C}'} q_k\Big)^{1/|\mathcal{C}'|}
 $$
 
 The geometric mean lets one weak or contradicted criterion pull the score down, but unlike a product it does not
-push a query with many criteria (a set query's members) to 0. The final score $s_T$, after the answer turn, is
-compared with the correctness $y \in \{0, 1\}$ of the agent's final answer.
+push a query with many criteria (a set query's members) to 0. The final score $s_T$ is compared with the
+correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
+(`belief_model_component/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
+answer is correct and writes the status of the final answer on the belief's scale, read as a probability as a
+candidate's status is; on a report it is $s_T$ of the final
+belief.
 
-The belief model is trained to learn two skills, rewarded per criterion over whole trajectories:
+The belief model is trained on two tasks (two prompts, one model):
 
-- **source assignment**: which documents and which agent turns bear on each criterion, and what they state;
-- **WEP labelling**: the status of each criterion from its sources, calibrated at every step, so that $s_T$
-  predicts $y$.
+- **belief update**, rewarded per criterion over whole trajectories: **source assignment** (which documents and
+  which agent turns bear on each criterion, and what they state) and **WEP labelling** (the status of each
+  criterion from its sources, calibrated at every step);
+- **final scoring**: the status of the agent's answer (how likely it is correct), from the belief, so that $s_T$ predicts $y$.
 
 Only the belief model is trained; the agent stays frozen.
 
 ## Model
 
-One call per step, the same prompt for the prompted teacher and the trained student
-(`belief_model_component/prompts/belief_update/system.txt`):
+One call per step with a new passage, then the final call, the same prompts for
+the prompted teacher and the trained student (`belief_model_component/prompts/belief_update/system.txt`,
+`prompts/final_score/system.txt`):
 
 | Call | Input | Output |
 |---|---|---|
-| update (every search step $t$) | $q$, the criteria with $b_{t-1}$ (their candidates, each with status and basis), the agent's turn $t$ (its reasoning), the new passages of step $t$ | `think_observations` (spans of the turn per criterion), `passage_observations` (spans of each passage per criterion), `candidates` (`{id, candidate, reason, status}`, every candidate that is new or whose status changes, the reason first) |
-| final (answer turn) | the same, the answer turn in place of the turn, no passage | the same, no document observation |
+| update (a search step $t$ with a new passage) | $q$, the criteria with $b_{t-1}$ (their candidates, each with status and support, and their proposals), the agent's turns since the last call (its reasoning), the new passages of step $t$ | `reasoning_observations` (claims: `{id, turn, candidate, span, claim}`), `passage_observations` (spans of each passage per criterion), `candidates` (`{id, candidate, support, against, reason, status}`, every candidate whose support or status changes) |
+| final scorer (answer turn, short-answer query) | $q$, the criteria with $b_{T-1}$ (as above, plus the names a passage ruled out), the answer turn (last 2000 characters of reasoning, final answer) | `candidates` (`{id, candidate}` per criterion, the answer's candidate), `reason`, `status` (one of the five statuses) |
+| final update (answer turn, report) | the update's input, with the answer turn and no passage | the update's output |
 
-A think observation needs a span that occurs in the turn, and a document observation one that occurs in its passage
-(checked in code); other observations do not enter the belief. Observations have no stance and no candidate; the
-candidate updates judge them. Code checks each reason's opening against the candidate's current status and flags a
+A claim needs a span that occurs in its turn, and a document observation one that occurs in its passage (checked in
+code); other observations do not enter the belief. Passage observations have no stance and no candidate; the
+candidate updates say which passages support or speak against which candidate. Code checks each reason's opening against the candidate's current status and flags a
 cited source without an observation on the criterion. The criteria are the pool's
 gold criteria; the criteria init call is not trained.
 
@@ -256,7 +264,9 @@ answers, documents and level come from the source (`training_pool/gold_criteria.
 `training_pool/prompts/`, one system and one user prompt per query shape:
 
 - multi-hop (InfoSeek, WebShaper): one text per criterion, from its relations, with only the details the question
-  states (a relation may hold more, such as a year).
+  states (a relation may hold more, such as a year). The writer orders the criteria so that each refers only to
+  criteria before it ("the town of c1"), the answer last; the row's criteria are reordered and renumbered in that
+  order (saved as `order` in `criterion_texts.jsonl`). An invalid order is asked once more with the problem named.
 - set (TRQA): the property phrase (what is looked up per member, with its year and unit, no condition) and the
   aggregation (what the answer computes over "the members": the property, the conditions on its values and how many
   members it takes, not what selects the members, which the member criteria carry), from the question, TRQA's property label
@@ -268,8 +278,8 @@ with their texts; step 2 and the trqa_validation build need `OPENROUTER_API_KEY`
 names none of the gold answers (a name inside a longer entity name, such as Groningen in "University of Groningen",
 does not count; set queries: neither the phrase nor the aggregation names a member, a value or the final answer that
 the question does not name; multi-hop queries: no number or capitalized word the question does not state), or when
-the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak or an unstated word
-after one retry with them given, no text for a criterion); null when the writer call failed (an error, a reply
+the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak, an unstated word or an
+invalid order after one retry with them given, no text for a criterion); null when the writer call failed (an error, a reply
 that is not JSON), and the next run asks again. The number of criteria is the source's (no cap). Final texts are
 appended to `criterion_texts.jsonl` as they are written, so a stopped run keeps them; a run reuses them for unchanged
 criteria and writes only the new queries' texts. Another `gold_criteria.model` or other prompts than those of
@@ -293,7 +303,7 @@ follows the split:
 
 The belief does not change what the agent does, so the documents and agent turns of every step are fixed, and
 phase 3 can run the student over the steps of an off-mode run. The runs go to dra_inference's output root in its
-usual layout (`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-monitor-gold/` for `sft` and `val`,
+usual layout (`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-monitor/` for `sft` and `val`,
 `belief-off/` for `rl`), and phase 1 writes nothing else.
 
 **Episodes.** Phases 2 and 3 read a split's run at their start (`belief_model_training/runs.py`), one episode per
@@ -305,7 +315,7 @@ finished in-domain query (`level` full, `texts_ok`, at least one criterion; the 
 | step | `doc_ids`: documents shown in the search iteration (all its searches; none when they returned nothing); `iteration`, the belief model's step number (from 1), and `agent_iteration`, the agent's own (`iter`) | `trajectory/{qid}.jsonl` (`seen_docs`) | SFT replay, RL chains |
 | step | `agent_turn`: the agent's reasoning and queries of the iteration (as the teacher read it in monitor runs) | `trajectory/{qid}.jsonl`, `belief/{qid}.jsonl` | the update prompt |
 | step | `new_gold_ids`, `recall_so_far`: relevant documents first seen in the step, share seen so far | qrels | statistics, check of the saved run |
-| step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `nugget_gold.py` | assign (expected think observations) |
+| step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `nugget_gold.py` | assign (expected claims) |
 | step | `teacher_output`, `teacher_records`: the teacher's reply and its saved observations, candidate updates, changed criteria, issues and beliefs (monitor runs) | `belief/{qid}.jsonl` | SFT, replay check |
 | episode | `answer_turn`: reasoning after the last search and the final answer; the teacher's final call on it (monitor runs, the `final` line) | `trajectory/{qid}.jsonl`, `generation/{qid}.md`, `belief/{qid}.jsonl` | final call |
 | episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{final}}$ |
@@ -328,7 +338,7 @@ their agent and searcher settings (`run_config.json`, the temperature included):
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
 runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
-that the run's criteria are the pool's), that the belief file (schema 32) has one step per search iteration of the
+that the run's criteria are the pool's), that the belief file (schema 40, `SCHEMA_VERSION`) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
 `recall_so_far` matches the qrels. Episodes without a verdict in `accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
@@ -341,27 +351,30 @@ is its own sequence of beliefs, one per step of the episode: a step without a ca
 the belief of the step before, and the answer turn is the last step. Each criterion is scored on its own, then
 the scores are averaged over the criteria, so neither a long episode nor a criterion with many updates weighs more.
 
-**Gate** $f \in \{0, 1\}$ per call: 1 if the reply is not cut off and parses, names known criteria and new passages
+**Gate** $f \in \{0, 1\}$ per call: 1 if the reply is not cut off and parses, names known criteria and passages of the call
 only, and gives each candidate update a name and a candidate status, once per candidate (`criteria.GATE_ISSUES`). The chain's `format` is the share of its
-calls that pass.
+update calls that pass. The final scorer's gate: not cut off, and a status parses.
 
 **Source assignment** $\mathrm{assign}_k$: an F1, $2\,TP / (2\,TP + FP + FN)$, of criterion $k$'s observations
 over the chain's calls, documents and turns together:
 
 | Case | TP | FN | FP |
 |---|---|---|---|
-| passage $d$ shown, $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at 3000 characters for a short-answer query) has a gold answer of $k$ | an observation whose spans state it | none | |
-| the turn states the gold answer of $k$ | a think observation whose spans state it | none | |
-| an observation that did not enter the belief (no verified span of its passage or turn, a document observation on a computed criterion) | | | yes |
+| passage $d$ new in the call (a judged passage is never shown again), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_chars`; 3000, reports whole, for runs before it was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
+| a turn of the call states the gold answer of $k$ (a call reads the turns of the steps before it that made none) | a claim whose span states it | none | |
+| an observation that did not enter the belief (no verified span of its passage or turn, a claim without a candidate or valid claim, a document observation on a computed criterion) | | | yes |
 | any other observation | neutral | | |
 
 **WEP calibration** $\mathrm{cal}_k$: the mean over the steps of $1 - (p_{k,t} - y_{k,t})^2$, $p_{k,t}$ the
 probability of the criterion's status and $y_{k,t}$ whether its selected candidate(s) cover the criterion correctly: a one-answer
 criterion, whether its selected candidate is a gold answer (0 without one); a several-answers criterion, the share
-of its gold answers among its selected candidates.
+of its gold answers among its selected candidates. A hop of a multi-hop query is a several-answers criterion with one
+gold answer, so $y$ is whether its selected candidates include it; another valid answer (two entities that both fit
+the hop) is not counted against it.
 
-**Final** $r_{\mathrm{final}} = 1 - (s_T - y)^2$, the certainty score of the final beliefs against the
-correctness of the agent's final answer; 0 when the final call fails the gate.
+**Final** $r_{\mathrm{final}} = 1 - (s_T - y)^2$, $s_T$ against the correctness of the agent's final answer; 0
+when the final call fails its gate. On a short-answer query $s_T$ is the final scorer's, so $r_{\mathrm{final}}$
+rewards the scorer's reply only (its own GRPO stream, phase 3).
 
 A part with nothing to score (no gold criterion, no expected or written observation, $y$ unknown) is None, not 1.
 
@@ -378,20 +391,23 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 |---|---|
 | gate | share of calls that pass; the rate of each issue code per call |
 | per criterion | mean over the chains of the mean over their criteria: `crit_assign_f1`, `crit_doc_recall_obs`, `crit_value_accuracy`, `crit_cal` |
-| observation | precision, recall and F1 of document and think observations, pooled |
+| observation | precision, recall and F1 of document observations and claims, pooled |
 | calibration | Brier score, ECE and AUROC (on the items with a binary $y$) of the statuses of every (criterion, step) against $y_{k,t}$; gold rate and count per status (reliability) |
-| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins); the same for the mean, product and min of the criterion scores (information only) |
+| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`, and its mean, product and min) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
 | rewards | mean `format`, `assign`, `cal`, $r_{\mathrm{final}}$ |
 
 ## Phase 2: SFT
 
 A sample is one belief update call of the `sft` monitor run: its prompt $x$ (masked from the loss) and the
-teacher's reply $z$ (trained). A trajectory with K search steps gives at most K + 1 samples: one per step the
-teacher's call judged and the final call on the answer turn. Each teacher reply is replayed through the inference
+teacher's reply $z$ (trained). A trajectory with K search steps gives at most K + 1 samples: one per step that made
+a call (a new passage) and the final call on the answer turn (task `score` on a short-answer query: kept when it
+parses, its answer's candidates have no issue, and its probability is within 0.5 of $y$, inclusive so "possible" is kept for both $y$; rejection sampling so the student does
+not copy the teacher's miscalibration; the counts per $y$ are printed). Each teacher reply is replayed through the inference
 belief update to rebuild its exact prompt and check it against the saved records; a call is kept when it passes
 the gate and, with `sft.require_verified_spans`, when it is clean (`criteria.UNCLEAN_REPLY`: all its observations
-entered the trace, no status corrected by code, no `no_reason_opening`, `wrong_previous`, `not_listed`, `bad_ref`,
-`remove_unlisted`, `bad_removal` or `competing_candidates`). The main process
+entered the trace, no status corrected by code (`no_support`, `no_new_support`), no `no_reason_opening`,
+`wrong_previous`, `not_listed`, `bad_ref`, `remove_unlisted`, `bad_removal`, `unexpected_candidate`, `against_only`,
+`certain_with_rival` or `unequal_tie`). The main process
 writes the samples to `phase2_sft/samples.jsonl` (`train`: sft split, `val`: val split). The student learns the
 output format and the teacher's transitions, errors included; RL then corrects the transitions.
 
@@ -415,7 +431,10 @@ $$
 
 **Chains.** A chain is the student's belief update run over a whole `rl` episode from its gold criteria: one call
 per step with a document not judged yet or an agent turn, then the final call on the answer turn, each prompt built
-from the chain's own $b_{t-1}$, as at inference. The agent is frozen, so the documents and agent turns of every
+from the chain's own $b_{t-1}$, as at inference. On a short-answer query the final call is the scorer's: it gets
+$G$ replies on the chain's own $b_{T-1}$, the first one the chain's $s_T$; each reply takes its own advantage from
+its $r_{\mathrm{final}}$, normalized within those $G$ replies, and the update calls take the chain's advantage
+from format, assign and cal only, so neither task is credited with the other's reply. The agent is frozen, so the documents and agent turns of every
 step are fixed. Training on the student's own states, not the teacher's, keeps it ready for its own earlier errors
 (exposure bias; DAgger, Ross et al. 2011). A call's reply budget is the inference updater's (12,288 tokens, 16,384
 for a set query).
@@ -432,7 +451,8 @@ R = w_{\mathrm{format}}\,\mathrm{format} + w_{\mathrm{assign}}\,\overline{\mathr
 $$
 
 where $\overline{x_k}$ is the mean over the chain's criteria that have the part. All weights are 1
-(`rl.reward_weight_{format,assign,cal,final}`). $R$ is the logged reward and the validation measure.
+(`rl.reward_weight_{format,assign,cal,final}`). $R$ is the logged reward and the validation measure. On a
+short-answer query $r_{\mathrm{final}}$ is the final scorer's, trained as its own stream (below).
 
 **Advantage.** Each of the four terms is normalized within the episode's group (GDPO, arXiv 2601.05242), a chain
 without the term counting as the group mean, then weighted and summed, so a term with a small spread is not
@@ -442,9 +462,14 @@ $$
 \hat{A}_i = \frac{\sum_{m} w_m\, \dfrac{r_{m,i} - \operatorname{mean}_m}{\max(\operatorname{std}_m, \sigma_{\min})}}{\operatorname{std}_{\text{batch}}\left(\sum_{m} w_m\, \cdots\right)},
 $$
 
-with mean and std over the $G$ chains of the group, a term with zero spread counting 0. Every call of chain $i$
-takes $\hat{A}_i$: a chain is judged against the other chains over the same episode, so the belief terms also reach
-the observation tokens of the reply.
+with mean and std over the $G$ chains of the group, a term with zero spread counting 0. There are two streams.
+Every belief update call of chain $i$ takes $\hat{A}_i$ over the terms of the chain (format, assign, cal, and on a
+report $r_{\mathrm{final}}$): a chain is judged against the other chains over the same episode, so the belief terms
+also reach the observation tokens of the reply. On a short-answer query the final scorer gets $G$ replies on the
+chain's own $b_{T-1}$, and each reply takes its advantage from its $r_{\mathrm{final}}$ alone, normalized within
+those $G$ replies: the update calls are not credited with the scorer's reply, nor the scorer with the chain's belief.
+Each stream is normalized on its own, so the two weigh 1:1 and $w_{\mathrm{final}}$ changes only the logged and
+validation $R$ there. The two streams' rewards are logged apart (`update_reward_mean`, `scorer_reward_mean`).
 
 **Objective.** The PPO update of Agent-BRACE with dual clipping, no critic and no KL term, with DAPO's clip-higher,
 over the calls of the chains. Calls with a zero advantage are left out of the update; the loss of a mini-batch
@@ -481,7 +506,7 @@ whether a precision term is needed. The rest criterion joins the rewards once me
 The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent with no,
 teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
 Scores are the run's `summary.json`: answer accuracy, Recall@N, GradedRecall@N. The belief files carry the
-certainty score per step (`certainty`) and after the final call (`final_certainty`), to compare with the
+certainty score per step (`certainty`) and the final line's s_T (`certainty`, with its baselines), to compare with the
 correctness in `accuracy.jsonl`. Belief quality itself is measured in phase 3 validation. The student is trained on the `multi_hop` (deep_qa) or `set` (trqa_validation) prompts; a
 dataset of another query shape (browsecomp_plus: `single_target`) gives it prompts it was not trained on.
 
@@ -498,8 +523,9 @@ python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
     --llm-criteria openrouter/qwen/qwen3.6-27b --belief-judge-model vllm/belief-student --output <student output dir>
 ```
 
-- The student is trained on the belief update only, so its runs take the teacher's criteria (`--llm-criteria`,
-  read from the criteria bank) and only the updates come from the student.
+- The student is trained on the belief update and the final scorer, not the criteria init, so its runs take the
+  teacher's criteria (`--llm-criteria`, read from the criteria bank) and only the updates and the final score
+  come from the student.
 - `--query-scorer-model` is the phase 1 scorer in every run; its default is the belief model, which would make the
   student score queries too.
 - Give the student run its own `--output`: teacher and student runs share the agent, dataset and belief mode.

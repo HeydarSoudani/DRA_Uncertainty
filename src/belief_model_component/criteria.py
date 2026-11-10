@@ -4,7 +4,8 @@ The report (Section "Instantiation") replaces the hidden state with a fixed
 per-query criteria list C = {c_1, ..., c_K}; the belief state b_t gives each
 criterion its candidates (possible answers), each with a status from
 Agent-BRACE's belief scale (``types.BELIEF_STATUSES``) for how likely it is
-an answer, and its basis (passage or reasoning).
+an answer and its support (the passage observations on it), and the names
+the agent proposed that no passage supports yet.
 
 - ``CriteriaSource``: produces C once, at the start of each sample.
   ``LLMCriteriaSource`` derives the criteria from the query;
@@ -24,12 +25,16 @@ question or a report request, ``layout.extraction_kind``) or from the
 dataset's annotation; silver when an LLM extracts structure the question
 does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
 records the kind as ``criteria_kind``.
-- ``BeliefState``: b_t, per criterion its candidates (shown), and the trace,
-  references and candidate updates behind them (saved).
+- ``BeliefState``: b_t, per criterion its candidates with their support
+  and its proposals (shown), and the trace, references and candidate
+  updates behind them (saved).
 
-Each criterion is closed (one fact) or, in a report request, an aspect of
-the topic.  A set query lists its members as closed criteria, then a rest
-criterion, "any other member: <property>", for the members the extractor
+Each criterion is closed (one fact), a hop of a multi-hop query before its
+answer (which may have several answers), or, in a report request, an
+aspect of the topic.  A multi-hop criterion names only its own hop and
+refers to hops before it by their ids ("the town of c1"), never to a
+later one (``forward_refs``).  A set
+query lists its members as closed criteria, then a rest criterion, "any other member: <property>", for the members the extractor
 did not list, then an aggregate criterion, how the answer follows from the
 members' values, as in the gold criteria of the training pools.  The kind
 follows from the dataset's query shape and the criterion's position
@@ -55,9 +60,11 @@ from utils.text_utils import parse_json_object
 from .prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
 from .reason_text import parse_reason, reason_labels
 from .types import (
-    AGGREGATE, ASPECT, CLOSED, DOC, MULTI_ASPECT, NO_DOC_KINDS, PASSAGE, QUERY_SHAPES, REASONING, REST, SET,
-    REMOVED, STATUS_LEVEL, THINK, TURN_ONLY_MAX_STATUS, TURN_ONLY_MIN_STATUS, UNKNOWN, Candidate, CandidateUpdate,
-    Criterion, Observation, RemovedCandidate, alnum, contains_words, exclusive, is_removed, parse_status,
+    AGGREGATE, ASPECT, CLOSED, CRITERION_REF_RE, DOC, HOP, MULTI_ASPECT, MULTI_HOP, NAMED_KINDS, NO_DOC_KINDS,
+    NO_SUPPORT_MAX_STATUS,
+    QUERY_SHAPES, REASONING, REJECTED, REMOVED, REST, SET, STATUS_LEVEL, THINK, UNKNOWN, Candidate, CandidateUpdate,
+    Criterion, Observation, Proposal, RemovedCandidate, Support, alnum, contains_words, exclusive, is_removed,
+    parse_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,14 +99,25 @@ def _is_rest(text: str) -> bool:
 
 def _kinds(shape: str, texts: List[str]) -> List[str]:
     """Kind of each criterion of a *shape* query: every clue of a single
-    target and every hop of a multi-hop query is closed; a set query's list
-    (``_set_layout``) is its members (closed), the rest criterion and the
-    aggregate; every report criterion is an aspect."""
+    target is closed; a multi-hop query's hops before its answer are hops
+    (several answers), its answer closed (``shape_kinds``); a set query's
+    list (``_set_layout``) is its members (closed), the rest criterion and
+    the aggregate; every report criterion is an aspect."""
     if shape == MULTI_ASPECT:
         return [ASPECT] * len(texts)
     if shape == SET and len(texts) >= 2:
         return [CLOSED] * (len(texts) - 2) + [REST, AGGREGATE]
-    return [CLOSED] * len(texts)
+    return shape_kinds(shape, [CLOSED] * len(texts))
+
+
+def shape_kinds(shape: str, kinds: List[str]) -> List[str]:
+    """The *kinds* of a *shape* query's criteria as the belief reads them: in
+    a multi-hop query every closed criterion but the last (the answer) is a
+    hop, which may have several answers; any other shape is unchanged.
+    Gold rows record every hop as closed, so their kinds are mapped too."""
+    if shape != MULTI_HOP:
+        return list(kinds)
+    return [HOP if kind == CLOSED and k < len(kinds) - 1 else kind for k, kind in enumerate(kinds)]
 
 
 def _set_layout(items: List[str], cap: Optional[int], info: Dict[str, Any]) -> List[str]:
@@ -286,6 +304,12 @@ class LLMCriteriaSource(CriteriaSource):
             Criterion(id=f"c{k + 1}", text=t, kind=kind)
             for k, (t, kind) in enumerate(zip(items, _kinds(self._shape, items)))
         ]
+        bad = forward_refs(items)
+        if bad:
+            # A criterion refers only to criteria before it; the extraction
+            # is asked once more (``BankedCriteriaSource``), then kept.
+            info["warnings"] = info.get("warnings", []) + [f"order: {'; '.join(bad)}"]
+            info["bad_order"] = True
         return criteria, info
 
 
@@ -382,12 +406,14 @@ class BankedCriteriaSource(CriteriaSource):
         if rec is not None:
             return self._banked(rec)
 
-        # A salvaged reply is asked once more; salvaged again, the extraction fails.
+        # A salvaged reply is asked once more; salvaged again, the extraction
+        # fails.  A reply whose criteria refer to a later one is asked once
+        # more too, then kept (with its warning).
         for _ in range(2):
             criteria, info = self._inner.get(query_id, query)
-            if not info.get("salvaged"):
+            if not info.get("salvaged") and not info.get("bad_order"):
                 break
-        else:
+        if info.get("salvaged"):
             info = {**info, "errors": info.get("errors", []) + ["parse: truncated reply twice, not banked"]}
             criteria = []
         bank_only = info.get(BANK_ONLY)
@@ -440,7 +466,8 @@ class GoldCriteriaSource(CriteriaSource):
     (``layout.gold_criteria_path``, one row per query in the format of
     ``training_pool/annotations.py``, written by the pool build): per query,
     its criteria with their gold answers and documents.  Only the criteria
-    (id, text, kind) reach the belief model, of a query whose row has
+    (id, text, kind; a multi-hop query's hops as ``shape_kinds`` reads
+    them) reach the belief model, of a query whose row has
     criteria with their texts (``texts_ok``), at any annotation ``level``
     (WebShaper's ``partial`` rows included); the info records the row's
     ``level`` as ``gold_level``.
@@ -460,10 +487,12 @@ class GoldCriteriaSource(CriteriaSource):
                 for line in f:
                     if line.strip():
                         row = json.loads(line)
+                        criteria = row.get("criteria") or []
+                        kinds = shape_kinds(query_shape, [c["kind"] for c in criteria])
                         self._rows[str(row["id"])] = {
                             "text": row.get("text"), "texts_ok": row.get("texts_ok"), "level": row.get("level"),
-                            "criteria": [Criterion(id=c["id"], text=c["text"], kind=c["kind"])
-                                         for c in row.get("criteria") or []],
+                            "criteria": [Criterion(id=c["id"], text=c["text"], kind=kind)
+                                         for c, kind in zip(criteria, kinds)],
                         }
 
     def missing(self, query_id: Optional[str], query: str) -> Optional[str]:
@@ -521,55 +550,64 @@ class FallbackCriteriaSource(CriteriaSource):
 # ``{id, code, detail, [label]}`` per thing the reply got wrong.
 # An observation that did not enter the belief:
 ISSUE_UNKNOWN_CRITERION = "unknown_criterion"      # also a candidate update of an unknown criterion
-ISSUE_NOT_NEW_PASSAGE = "not_new_passage"          # its label is no new passage of the call
-ISSUE_COMPUTED = "computed_criterion"              # a document observation on a computed criterion
-ISSUE_NO_SPAN = "no_span"                          # a document observation without a verified span
-ISSUE_NOT_IN_TURN = "not_in_turn"                  # a think observation without a span of the turn
-ISSUE_REPEATED = "repeated_observation"            # a source already observed on the criterion
+ISSUE_NOT_NEW_PASSAGE = "not_new_passage"          # its label is no passage of the call
+ISSUE_COMPUTED = "computed_criterion"              # a passage observation on a computed criterion
+ISSUE_NO_SPAN = "no_span"                          # a passage observation without a verified span
+ISSUE_NOT_IN_TURN = "not_in_turn"                  # a reasoning observation without a span of its turn
+ISSUE_BAD_CLAIM = "bad_claim"                      # a reasoning observation without a candidate or a valid claim
 # A candidate update that is not taken:
 ISSUE_EMPTY_CANDIDATE = "empty_candidate"          # no candidate name
 ISSUE_BAD_STATUS = "bad_status"                    # no status of the scale nor "removed", or "unknown"
 ISSUE_DUPLICATE_CANDIDATE = "duplicate_candidate"  # a second update of one candidate in the reply
 ISSUE_UNEXPECTED_CANDIDATE = "unexpected_candidate"  # a criterion without a new observation
-ISSUE_REMOVE_UNLISTED = "remove_unlisted"          # "removed" on a candidate that is not listed
-ISSUE_BAD_REMOVAL = "bad_removal"                  # "removed" without the observation that can remove it: kept
-# A candidate update that is taken, with a flaw in its reason or name:
-ISSUE_NO_REASON = "no_reason_opening"              # the reason opens with neither "Was <status>:" nor "New:"
-ISSUE_WRONG_PREVIOUS = "wrong_previous"            # "Was <X>:" with X not the candidate's current status
+ISSUE_REMOVE_UNLISTED = "remove_unlisted"          # "removed" on a name that is neither listed nor proposed
+ISSUE_BAD_REMOVAL = "bad_removal"                  # "removed" without a passage that speaks against it: kept
+ISSUE_AGAINST_ONLY = "against_only"                # a status for a name only passages against: not added (a proposal stays one)
+# A candidate update that is taken, with a flaw in its reason, its labels or its name:
+ISSUE_NO_REASON = "no_reason_opening"              # the reason opens with none of "Was <status>:", "Was proposed:", "New:"
+ISSUE_WRONG_PREVIOUS = "wrong_previous"            # "Was <X>:" with X not the candidate's current status (or not proposed)
 ISSUE_NOT_LISTED = "not_listed"                    # "Was <X>:" on a candidate that is not listed (added)
 ISSUE_LISTED_AS_NEW = "listed_as_new"              # "New:" on a listed candidate (its status updated)
-ISSUE_BAD_REF = "bad_ref"                          # a cited source with no observation on the criterion
-ISSUE_UNKNOWN_CANDIDATE = "unknown_candidate"      # a new candidate in no span or title of the criterion
+ISSUE_BAD_REF = "bad_ref"                          # a support label, or a source of the reason, with no observation on the criterion
+ISSUE_UNKNOWN_CANDIDATE = "unknown_candidate"      # a new candidate in no span or title of the criterion's passages
 ISSUE_NEAR_DUPLICATE = "near_duplicate"            # a new candidate whose name contains a listed one, or the reverse
-ISSUE_UNCHANGED = "unchanged"                      # the status written is the current one
-ISSUE_READDED = "readded"                          # a new candidate the update removed before (information only)
-# A status code corrected:
-ISSUE_TURN_ONLY = "turn_only"                      # a reasoning-only candidate, or one new in a step with no new passage, outside "unlikely".."possible": moved into it
-ISSUE_TURN_ONLY_CHANGE = "turn_only_change"        # a listed passage candidate changed with no new passage (nor, one answer, a passage rival change): kept
-# The belief after the reply:
-ISSUE_COMPETING = "competing_candidates"           # a one-answer criterion with more than one candidate above "possible"
+ISSUE_UNCHANGED = "unchanged"                      # no new support and the status written is the current one
+ISSUE_READDED = "readded"                          # a name the belief dropped before (information only)
+# A status code corrected (the hard limits):
+ISSUE_NO_SUPPORT = "no_support"                    # no passage supports the candidate: at most "possible", or a new name kept as proposed
+ISSUE_NO_NEW_SUPPORT = "no_new_support"            # a status change without new support (nor, one answer, another candidate's support changed): kept
+# The belief after the reply (flags; the statuses are kept):
+ISSUE_CERTAIN_WITH_RIVAL = "certain_with_rival"    # a one-answer candidate "certain" while another candidate has support
+ISSUE_UNEQUAL_TIE = "unequal_tie"                  # one-answer candidates with the same support but different statuses
 
 # Observations that did not enter for a reason of their own (the reply
-# should not have written them); a repeat is harmless.
-REJECTED_OBSERVATION = (ISSUE_COMPUTED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN)
+# should not have written them).
+REJECTED_OBSERVATION = (ISSUE_COMPUTED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN, ISSUE_BAD_CLAIM)
 # A candidate update whose status code corrected (the reply's status is
 # not the one kept).
-CORRECTED_STATUS = (ISSUE_TURN_ONLY, ISSUE_TURN_ONLY_CHANGE)
+CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT)
 # A reply with one of these is not used as an SFT sample (with
 # ``require_verified_spans``): an observation left out for a reason of its
-# own, a status code corrected, a reason that misreads the belief or cites
-# a source with no observation on the criterion, a removal code did not
-# take, or a one-answer criterion left with competing candidates.
-# ``unknown_candidate`` is not among them: a candidate the reply writes in
-# other words than its spans (an initial, a computed value) raises it too;
-# nor are ``near_duplicate``, ``listed_as_new``, ``unchanged`` and
-# ``readded`` (harmless for the belief).
+# own, a status code corrected, a reason or label that misreads the belief
+# or cites a source with no observation on the criterion, a removal code
+# did not take, a candidate update code ignored (no observation on its
+# criterion in the call, or only passages against a name not listed), or
+# a one-answer criterion whose statuses do not follow its support
+# (``certain_with_rival``, ``unequal_tie``).  ``unknown_candidate`` is not
+# among them: a candidate the reply writes in other words than its spans
+# (an initial, a computed value) raises it too; nor are
+# ``near_duplicate``, ``listed_as_new``, ``unchanged`` and ``readded``
+# (harmless for the belief).
 UNCLEAN_REPLY = (*REJECTED_OBSERVATION, *CORRECTED_STATUS, ISSUE_NO_REASON, ISSUE_WRONG_PREVIOUS,
-                 ISSUE_NOT_LISTED, ISSUE_BAD_REF, ISSUE_REMOVE_UNLISTED, ISSUE_BAD_REMOVAL, ISSUE_COMPETING)
+                 ISSUE_NOT_LISTED, ISSUE_BAD_REF, ISSUE_REMOVE_UNLISTED, ISSUE_BAD_REMOVAL,
+                 ISSUE_UNEXPECTED_CANDIDATE, ISSUE_AGAINST_ONLY, ISSUE_CERTAIN_WITH_RIVAL, ISSUE_UNEQUAL_TIE)
 # A reply with one of these fails the format gate of training: it names
 # what the call did not show, or writes an update code cannot take.
 GATE_ISSUES = (ISSUE_UNKNOWN_CRITERION, ISSUE_NOT_NEW_PASSAGE, ISSUE_EMPTY_CANDIDATE, ISSUE_BAD_STATUS,
-               ISSUE_DUPLICATE_CANDIDATE)
+               ISSUE_DUPLICATE_CANDIDATE, ISSUE_BAD_CLAIM)
+
+# Proposals kept per criterion (beyond it the least recently claimed is dropped).
+MAX_PROPOSALS = 8
 
 
 def _issue(cid: str, code: str, detail: str, o: Optional[Observation] = None) -> Dict[str, Any]:
@@ -583,86 +621,107 @@ def _level(status: str) -> int:
     return STATUS_LEVEL[status]
 
 
+def _cap(status: str) -> str:
+    """*status* at most ``NO_SUPPORT_MAX_STATUS``."""
+    return min(status, NO_SUPPORT_MAX_STATUS, key=_level)
+
+
+
+def forward_refs(texts: List[str]) -> List[str]:
+    """The references of criterion *texts* (ids "c1", "c2", ... in order)
+    to the criterion itself or to one after it, as "c<k> refers to c<m>":
+    a criterion refers only to criteria before it."""
+    return [f"c{k} refers to c{m}" for k, t in enumerate(texts, 1)
+            for m in dict.fromkeys(int(x) for x in CRITERION_REF_RE.findall(t)) if k <= m <= len(texts)]
+
+
+def _label_number(label: str) -> int:
+    digits = "".join(ch for ch in label if ch.isdigit())
+    return int(digits) if digits else 0
+
+
 class BeliefState:
     """Belief state b_t, kept at two levels.
 
-    Shown: per criterion its candidates, each with its status and basis
-    (``types.Candidate``; ``belief_state.format_belief``), the whole belief
-    the next update and the agent read of it.
+    Shown (``belief_state.format_belief``): per criterion its candidates,
+    each with its status and its support (the passage observations that
+    support it or speak against it, with their spans and passage titles),
+    and its proposals (names the agent's reasoning proposed that no passage
+    supports yet, without a status).  The agent's claims are kept but never
+    shown to the update.
 
     Saved: per criterion the trace of the observations that entered it
     (``trace``) and its references (``reference_lists``): every source ever
     assigned to it, with its document, title, the step it came in and its
-    verified spans; and per step the candidate updates with their reasons
-    (``apply``), never shown again; and per criterion the candidates the
-    update removed (``removed``, ``types.RemovedCandidate``).
+    verified spans; per step the candidate updates with their reasons
+    (``apply``), never shown again; and per criterion the candidates and
+    proposals it dropped (``removed``, ``types.RemovedCandidate``).
 
-    Each step, the belief update writes the observations of the agent's
-    turn and of the step's new documents, then the candidates that are new,
-    removed or whose status changes, each with its reason; ``apply`` keeps
-    what is valid:
+    Each call, the belief update writes the claims of the agent's turns
+    (reasoning observations), the observations of the call's passages,
+    then the candidates whose support or status changes, each with the
+    passages that support it or speak against it, its reason and its new
+    status; ``apply`` keeps what is valid:
 
     - an observation enters only when it is grounded (a verified span of
-      its passage or turn), names a known criterion, is not a document
-      observation on a criterion no document states (``NO_DOC_KINDS``),
-      and its source is not observed on the criterion yet;
-    - a candidate update is taken only for a criterion with a new
-      observation, once per candidate, with a status of the scale other
-      than "unknown", or "removed"; a name not listed (letters and digits
-      compared) adds the candidate, a listed one changes its status.
-      Candidates the reply does not name keep their status.  The reason is
-      checked (its opening against the current status, its labels against
-      the trace) and flagged, never used to reject;
-    - "removed" takes a listed candidate out of the list (into ``removed``)
-      when the step has the observation that can rule it out: a new passage
-      observation on the criterion that the reason cites, or, for a
-      candidate only reasoning names ("reasoning" basis, or a computed
-      criterion), a new reasoning observation on it.  Otherwise it is
-      flagged and the candidate kept;
-    - the basis of a candidate is "passage" when a passage observed on the
-      criterion names it (a span or the title, as whole words) or the
-      reason cites such a passage, else "reasoning"; once "passage" it
-      stays.  Passages set the status, reasoning only names or rejects
-      candidates (a computed criterion is exempt): a "reasoning" candidate,
-      and a new one in a step with no new passage observation on the
-      criterion, is moved into "unlikely" .. "possible"
-      (``TURN_ONLY_MIN_STATUS`` .. ``TURN_ONLY_MAX_STATUS``) when the reply
-      wrote a status outside it; in a step with no new passage observation
-      on the criterion, a listed "passage" candidate keeps its status, up
-      or down (a passage of an earlier step does not move a status in a
-      later one), unless the criterion has one answer and another of its
-      "passage" candidates is added, removed or changed in the same step
-      (its status depends on the other candidates; a "reasoning" one meets
-      no part of the criterion, so it moves none).
-    - the candidates of a one-answer criterion compete: at most one is above
-      "possible" (only one can meet more parts than every other); more are
-      flagged (``competing_candidates``), not corrected: code cannot tell
-      which one the passages favour.
+      its passage or turn), names a known criterion, and is not a passage
+      observation on a criterion no document states (``NO_DOC_KINDS``); a
+      reasoning observation also needs a candidate and a claim.  A second
+      observation of a passage on the same criterion adds its new spans to
+      the first one;
+    - a claim sets the agent's claim on a listed candidate, or adds, updates
+      or (``REJECTED``) drops a proposal; it never moves a status;
+    - a candidate update is taken only for a criterion with an observation
+      in the call, once per candidate, with a status of the scale other
+      than "unknown", or "removed".  Its support labels must be passages of
+      the call observed on the criterion (``bad_ref`` otherwise, the label
+      dropped).  A name neither listed nor proposed, or a proposed one,
+      becomes a candidate only with a passage that supports it (none at
+      all: it stays or becomes a proposal, ``no_support``; only passages
+      against it: a new name is not added, a proposal stays one,
+      ``against_only``); a listed one gets the new support and status.  Candidates the reply
+      does not name keep their status.  The reason is checked and flagged,
+      never used to reject;
+    - "removed" takes a listed candidate (or a proposal) out of the belief
+      (into ``removed``) only when a passage of the call speaks against it
+      (``against``); on a computed criterion, when the call has a claim on
+      it.  Otherwise it is flagged and kept;
+    - the hard limits (a computed criterion is exempt): a candidate no
+      passage supports is at most "possible" (``no_support``); a listed
+      candidate whose update adds no support keeps its status, unless in
+      the same call another of its candidates gained support, was added or
+      was removed (one answer: its status depends on the others; a
+      proposal added or dropped does not count); ``no_new_support``
+      otherwise.  A criterion that refers to another one ("the town of
+      c1") is judged on its own parts, whatever the statuses of the
+      candidates it links to, so a change there moves nothing here.
+    - flags of a one-answer criterion, statuses kept: a "certain" candidate
+      while another has support (``certain_with_rival``); two candidates
+      with the same support and different statuses (``unequal_tie``).
 
     Derived per criterion (``belief_lists``): its status, the highest of
     its candidates ("unknown" without candidates); its selected
     candidate(s), among those at "possible" or above: for a one-answer
     criterion the first one shown (``ordered``), for a several-answers
-    criterion every one.
+    criterion every one.  A proposal is never selected.
 
-    Documents get their label ("d<n>") when they are shown
+    Documents get their label ("d<n>") when they are first shown
     (``label_doc``).
     """
 
     def __init__(self, criteria: List[Criterion]) -> None:
         self.criteria = list(criteria)
         self._index = {c.id: k for k, c in enumerate(self.criteria)}
-        # Per criterion its candidates, in the order they were added.
+        # Per criterion its candidates, in the order they were added, and its proposals.
         self.candidates: List[List[Candidate]] = [[] for _ in self.criteria]
+        self.proposals: List[List[Proposal]] = [[] for _ in self.criteria]
         # The trace: per criterion, the observations that entered it.
         self.trace: List[List[Observation]] = [[] for _ in self.criteria]
-        # Per criterion the candidates the update removed, in order.
+        # Per criterion the candidates and proposals dropped, in order.
         self.removed: List[List[RemovedCandidate]] = [[] for _ in self.criteria]
         self._doc_labels: Dict[str, str] = {}
         self._titles: Dict[str, str] = {}
-
-    def index(self, criterion_id: str) -> Optional[int]:
-        return self._index.get(criterion_id)
+        self._call_dropped: set = set()
 
     def label_doc(self, key: str, title: str) -> str:
         """The label of the document *key* (its id, or a key of its text),
@@ -678,9 +737,9 @@ class BeliefState:
         """The label of the document *key*, None when it was never shown."""
         return self._doc_labels.get(key)
 
-    def is_doc_label(self, label: str) -> bool:
-        """Whether *label* names a document shown to the update ("d<n>")."""
-        return label in self._titles
+    def title(self, label: str) -> str:
+        """The title of the document labelled *label* ("" when unknown)."""
+        return self._titles.get(label) or ""
 
     # ------------------------------------------------------------------
     # Derived per criterion
@@ -690,7 +749,7 @@ class BeliefState:
         """The candidates of criterion *k* as shown: highest status first,
         then "passage" before "reasoning", then in the order they were
         added (so a one-answer criterion's selected candidate is first)."""
-        return sorted(self.candidates[k], key=lambda c: (-_level(c.status), c.basis != PASSAGE))
+        return sorted(self.candidates[k], key=lambda c: (-_level(c.status), c.basis == REASONING))
 
     def status(self, k: int) -> str:
         """The status of criterion *k*: the highest of its candidates,
@@ -699,72 +758,102 @@ class BeliefState:
 
     def selected(self, k: int) -> List[str]:
         """The selected candidate(s) of criterion *k*, among those at
-        "possible" or above (a ruled-out candidate is never selected): for
-        a one-answer criterion the first one shown (``ordered``: highest
-        status, then "passage" before "reasoning", then the earliest
-        added); for a several-answers criterion every one."""
-        kept = [c.name for c in self.ordered(k) if _level(c.status) >= _level(TURN_ONLY_MAX_STATUS)]
+        "possible" or above: for a one-answer criterion the first one shown
+        (``ordered``), for a several-answers criterion every one."""
+        kept = [c.name for c in self.ordered(k) if _level(c.status) >= _level(NO_SUPPORT_MAX_STATUS)]
         return kept[:1] if exclusive(self.criteria[k].kind) else kept
+
+    def ruled_out(self, k: int) -> List[str]:
+        """The names criterion *k* dropped because a passage spoke against
+        them (``RemovedCandidate.against``), each once, those listed or
+        proposed again left out (the final scorer reads them as removed)."""
+        names: Dict[str, str] = {}
+        for x in self.removed[k]:
+            if x.against and self._listed(k, x.name) is None and self._proposed(k, x.name) is None:
+                names.setdefault(alnum(x.name), x.name)
+        return list(names.values())
+
+    def ruled_out_lists(self) -> Dict[str, List[str]]:
+        """``ruled_out`` of every criterion, by id."""
+        return {c.id: self.ruled_out(k) for k, c in enumerate(self.criteria)}
 
     # ------------------------------------------------------------------
     # The update
     # ------------------------------------------------------------------
 
-    def apply(self, think: List[Observation], docs: List[Observation],
+    def apply(self, claims: List[Observation], docs: List[Observation],
               updates: List[CandidateUpdate], step: int) -> Dict[str, Any]:
-        """Apply one belief update of step *step*: the observations of the
-        turn (*think*) and of the documents (*docs*), then the candidate
-        *updates*.
+        """Apply one belief update of the call of step *step*: the claims of
+        the turns (*claims*, reasoning observations), the observations of
+        the passages (*docs*), then the candidate *updates*.
 
         Returns ``{observations, updates, changed, issues}``: the
         observations that entered the belief (``Observation.to_dict``), one
         record per candidate update of the reply (``{id, candidate, reason,
-        written, previous, status}``: ``written`` the status the reply
-        wrote ("removed" for a removal), ``previous`` the candidate's status
-        before (null for a new one), ``status`` the one kept ("removed" when
-        the candidate left the list), null when the update was not taken),
-        the ids of the criteria with a candidate added, removed or whose
-        status changed, and one issue record per thing the reply got wrong
-        (the ``ISSUE_*`` codes)."""
+        support, against, written, previous, status}``: ``support`` and
+        ``against`` the labels kept, ``written`` the status the reply wrote
+        ("removed" for a removal), ``previous`` the candidate's status
+        before (null for a new one, "proposed" for a proposal), ``status``
+        the one kept ("removed" when it left the belief, "proposed" when it
+        stays a proposal), null when the update was not taken), the ids of
+        the criteria whose candidates or proposals changed, and one issue
+        record per thing the reply got wrong (the ``ISSUE_*`` codes)."""
         issues: List[Dict[str, Any]] = []
-        new: List[List[Observation]] = [[] for _ in self.criteria]
-        seen = [{o.label for o in obs} for obs in self.trace]
+        # The proposals a claim of this call rejected.
+        self._call_dropped = set()
+        # Per criterion: the passages of the call observed on it (label ->
+        # its observation in the trace), and whether the call has a claim on it.
+        call_docs: List[Dict[str, Observation]] = [{} for _ in self.criteria]
+        claimed = [False] * len(self.criteria)
         entered: List[Observation] = []
-        for o in [*think, *docs]:
+        changed = set()
+        for o in [*claims, *docs]:
             k = self._index.get(o.criterion)
             if k is None:
                 issues.append(_issue(o.criterion, ISSUE_UNKNOWN_CRITERION, "unknown criterion id", o))
             elif o.source == DOC and o.doc_id is None:
-                issues.append(_issue(o.criterion, ISSUE_NOT_NEW_PASSAGE, "no new passage of the call has this label", o))
+                issues.append(_issue(o.criterion, ISSUE_NOT_NEW_PASSAGE, "no passage of the call has this label", o))
             elif o.source == DOC and self.criteria[k].kind in NO_DOC_KINDS:
-                issues.append(_issue(o.criterion, ISSUE_COMPUTED, "the criterion is computed: no document observation", o))
+                issues.append(_issue(o.criterion, ISSUE_COMPUTED, "the criterion is computed: no passage observation", o))
             elif not o.grounded:
                 issues.append(_issue(o.criterion, ISSUE_NO_SPAN, "no verified span", o) if o.source == DOC else
                               _issue(o.criterion, ISSUE_NOT_IN_TURN, "no span of the agent's turn", o))
-            elif o.label in seen[k]:
-                issues.append(_issue(o.criterion, ISSUE_REPEATED, "the source is already observed on the criterion", o))
-            else:
-                seen[k].add(o.label)
-                new[k].append(o)
+            elif o.source == THINK and (not alnum(o.candidate or "") or o.claim is None):
+                issues.append(_issue(o.criterion, ISSUE_BAD_CLAIM, "a claim needs a candidate and a status or "
+                                                                   f"'{REJECTED}'", o))
+            elif o.source == DOC:
+                known = next((x for x in self.trace[k] if x.source == DOC and x.label == o.label), None)
+                if known is None:
+                    self.trace[k].append(o)
+                    known = o
+                else:
+                    # A second observation of the passage: its new spans join the first.
+                    for span in o.verified_spans:
+                        if span not in known.spans:
+                            known.spans.append(span)
+                            known.span_verified.append(True)
+                call_docs[k][o.label] = known
                 entered.append(o)
-        for k, obs in enumerate(new):
-            self.trace[k].extend(obs)
+            else:
+                self.trace[k].append(o)
+                claimed[k] = True
+                entered.append(o)
+
+        # Claims, in the order of their turns: the latest one stands.
+        for o in sorted((o for o in entered if o.source == THINK), key=lambda o: _label_number(o.label)):
+            if self._claim(self._index[o.criterion], o, issues):
+                changed.add(self._index[o.criterion])
 
         records: List[Dict[str, Any]] = []
         done = set()
-        changed = set()
-        # Criteria with a "passage" candidate added, removed or changed: only
-        # such a rival moves the status of the others (a reasoning-only one
-        # meets no part of the criterion).
-        passage_moved = set()
-        # Status changes of listed passage candidates of one-answer criteria
-        # in a step with no new passage on the criterion: taken only when
-        # another passage candidate of the criterion changes in the step.
+        # The support of the one-answer criteria before the updates (only
+        # they defer a status change, below).
+        before = {k: self._support_key(k) for k, c in enumerate(self.criteria) if exclusive(c.kind)}
         deferred: List[Tuple[int, Candidate, str, Dict[str, Any]]] = []
         for u in updates:
             name = " ".join(str(u.candidate or "").split())
-            rec: Dict[str, Any] = {"id": u.id, "candidate": name, "reason": u.reason, "written": u.status,
-                                   "previous": None, "status": None}
+            rec: Dict[str, Any] = {"id": u.id, "candidate": name, "reason": u.reason, "support": [], "against": [],
+                                   "written": u.status, "previous": None, "status": None}
             records.append(rec)
             k = self._index.get(u.id)
             if k is None:
@@ -781,38 +870,56 @@ class BeliefState:
                 issues.append(_issue(u.id, ISSUE_DUPLICATE_CANDIDATE, f"a second update of {name!r}; ignored"))
                 continue
             done.add((k, alnum(name)))
-            if not new[k]:
-                issues.append(_issue(u.id, ISSUE_UNEXPECTED_CANDIDATE, f"{name!r}: no new observation on the criterion; ignored"))
+            if not call_docs[k] and not claimed[k]:
+                issues.append(_issue(u.id, ISSUE_UNEXPECTED_CANDIDATE, f"{name!r}: no observation on the criterion "
+                                                                        "in the call; ignored"))
                 continue
             rec["written"] = status
+            support = self._labels(k, name, u.support, call_docs[k], issues)
+            against = [lb for lb in self._labels(k, name, u.against, call_docs[k], issues) if lb not in support]
+            rec["support"], rec["against"] = support, against
+            entries = [self._support(call_docs[k][lb], step, False) for lb in support] + \
+                      [self._support(call_docs[k][lb], step, True) for lb in against]
             if status == REMOVED:
-                basis = self._remove_candidate(k, name, u.reason, step, new[k], rec, issues)
+                moved = self._remove(k, name, u.reason, step, entries, claimed[k], rec, issues)
             else:
-                basis = self._update_candidate(k, name, status, u.reason, step, new[k], rec, issues, deferred)
-            if basis is not None:
+                moved = self._update(k, name, status, u.reason, step, entries, rec, issues, deferred)
+            if moved:
                 changed.add(k)
-                if basis == PASSAGE:
-                    passage_moved.add(k)
 
+        # Criteria with a candidate added or removed, or whose support
+        # changed (a proposal added or dropped is not): only then a
+        # one-answer candidate without new support of its own may change
+        # (its status depends on the others).
+        support_moved = {k for k in before if self._support_key(k) != before[k]} if deferred else set()
         for k, existing, status, rec in deferred:
-            if k in passage_moved:
+            if exclusive(self.criteria[k].kind) and k in support_moved:
+                if not existing.supports() and _cap(status) != status:
+                    issues.append(_issue(self.criteria[k].id, ISSUE_NO_SUPPORT,
+                                         f"{existing.name!r}: {status!r} with no passage supporting it; "
+                                         f"set to {_cap(status)!r}"))
+                    status = _cap(status)
                 existing.status = status
-                rec["status"] = status
+                rec["status"] = existing.status
+                changed.add(k)
             else:
-                issues.append(_issue(self.criteria[k].id, ISSUE_TURN_ONLY_CHANGE,
+                issues.append(_issue(self.criteria[k].id, ISSUE_NO_NEW_SUPPORT,
                                      f"{existing.name!r}: {status!r} from {existing.status!r} with no new passage on "
-                                     f"the criterion and no other passage candidate changed; kept"))
+                                     f"it, and no other candidate's support changed; kept"))
                 rec["status"] = existing.status
 
         for k in sorted(changed):
-            if exclusive(self.criteria[k].kind):
-                # Only one candidate can meet more parts than every other.
-                above = [c.name for c in self.candidates[k] if _level(c.status) > _level(TURN_ONLY_MAX_STATUS)]
-                if len(above) > 1:
-                    issues.append(_issue(self.criteria[k].id, ISSUE_COMPETING,
-                                         f"a one-answer criterion with {above} above {TURN_ONLY_MAX_STATUS!r}"))
+            if exclusive(self.criteria[k].kind) and self.criteria[k].kind not in NO_DOC_KINDS:
+                self._flag_rivals(k, issues)
         return {"observations": [o.to_dict() for o in entered], "updates": records,
                 "changed": [self.criteria[k].id for k in sorted(changed)], "issues": issues}
+
+    def _support_key(self, k: int) -> frozenset:
+        """The candidates of criterion *k* with their support (passage
+        labels and sides), statuses left out: what ``apply`` compares to
+        tell whether the support of the criterion moved in a call."""
+        return frozenset((alnum(x.name), frozenset((s.label, s.against) for s in x.support))
+                         for x in self.candidates[k])
 
     def _listed(self, k: int, name: str) -> Optional[Candidate]:
         """The listed candidate of criterion *k* named *name* (letters and
@@ -820,135 +927,237 @@ class BeliefState:
         key = alnum(name)
         return next((x for x in self.candidates[k] if alnum(x.name) == key), None)
 
+    def _proposed(self, k: int, name: str) -> Optional[Proposal]:
+        key = alnum(name)
+        return next((x for x in self.proposals[k] if alnum(x.name) == key), None)
+
+    def _dropped(self, k: int, name: str) -> bool:
+        key = alnum(name)
+        return any(alnum(x.name) == key for x in self.removed[k])
+
+    def _claim(self, k: int, o: Observation, issues: List[Dict[str, Any]]) -> bool:
+        """Apply the claim *o* on criterion *k*; returns whether the
+        proposals changed."""
+        step = o.step
+        existing = self._listed(k, o.candidate or "")
+        if existing is not None:
+            existing.claim, existing.claim_step = o.claim, step
+            return False
+        proposal = self._proposed(k, o.candidate or "")
+        if proposal is not None:
+            if o.claim == REJECTED:
+                self.proposals[k].remove(proposal)
+                self._call_dropped.add((k, alnum(proposal.name)))
+                self.removed[k].append(RemovedCandidate(
+                    name=proposal.name, status=None, basis=REASONING, added_step=proposal.added_step, removed_step=step,
+                    reason=f"rejected in {o.label}: {' ... '.join(o.verified_spans)}"))
+                return True
+            proposal.claim, proposal.step = o.claim, step
+            return False
+        if o.claim == REJECTED:
+            return False
+        self._add_proposal(k, " ".join((o.candidate or "").split()), o.claim, step, issues, o)
+        return True
+
+    def _add_proposal(self, k: int, name: str, claim: Optional[str], step: int, issues: List[Dict[str, Any]],
+                      o: Optional[Observation] = None) -> None:
+        """Propose *name* for criterion *k* (from a claim *o*, or an update
+        without a passage): flagged when it was dropped before; past
+        ``MAX_PROPOSALS`` the least recently claimed proposal is dropped
+        (the agent's current names stay)."""
+        if self._dropped(k, name):
+            issues.append(_issue(self.criteria[k].id, ISSUE_READDED, f"{name!r} was dropped before; proposed again", o))
+        self.proposals[k].append(Proposal(name=name, claim=claim, step=step, added_step=step))
+        if len(self.proposals[k]) > MAX_PROPOSALS:
+            old = min(self.proposals[k], key=lambda x: x.step)
+            self.proposals[k].remove(old)
+            self.removed[k].append(RemovedCandidate(name=old.name, status=None, basis=REASONING,
+                                                    added_step=old.added_step, removed_step=step,
+                                                    reason=f"more than {MAX_PROPOSALS} proposals: the least recently claimed dropped"))
+
+    def _labels(self, k: int, name: str, labels: List[str], call_docs: Dict[str, Observation],
+                issues: List[Dict[str, Any]]) -> List[str]:
+        """The passage *labels* of an update of candidate *name* that are
+        passages of the call observed on criterion *k*; the others are
+        flagged and dropped."""
+        kept = [lb for lb in dict.fromkeys(labels) if lb in call_docs]
+        bad = [lb for lb in dict.fromkeys(labels) if lb not in call_docs]
+        if bad:
+            issues.append(_issue(self.criteria[k].id, ISSUE_BAD_REF,
+                                 f"{name!r}: passages {bad} have no observation on the criterion in the call"))
+        return kept
+
+    def _support(self, o: Observation, step: int, against: bool) -> Support:
+        return Support(label=o.label, doc_id=o.doc_id, title=self.title(o.label), step=step,
+                       spans=o.verified_spans, against=against)
+
     def _check_reason(self, k: int, name: str, reason: str, existing: Optional[Candidate],
-                      issues: List[Dict[str, Any]]) -> List[str]:
-        """Flag what the *reason* of an update of candidate *name* of
-        criterion *k* gets wrong (its opening against the current status, its
-        labels against the trace); returns the labels it cites."""
+                      proposal: Optional[Proposal], issues: List[Dict[str, Any]]) -> None:
+        """Flag what the *reason* of an update of *name* of criterion *k*
+        gets wrong: its opening against the candidate's current status (or
+        its proposal), its labels against the trace."""
         c = self.criteria[k]
         opening = parse_reason(reason)
         if opening is None:
-            issues.append(_issue(c.id, ISSUE_NO_REASON, f"{name!r}: the reason opens with neither 'Was <status>:' nor 'New:'"))
+            issues.append(_issue(c.id, ISSUE_NO_REASON, f"{name!r}: the reason opens with none of 'Was <status>:', "
+                                                        "'Was proposed:', 'New:'"))
         elif opening.new and existing is not None:
             issues.append(_issue(c.id, ISSUE_LISTED_AS_NEW, f"{name!r} is listed ({existing.status}); its status is updated"))
-        elif not opening.new and existing is None:
-            issues.append(_issue(c.id, ISSUE_NOT_LISTED, f"'Was' on {name!r}, which is not listed; it is added"))
-        elif not opening.new and opening.previous != existing.status:
+        elif opening.new and proposal is not None:
+            issues.append(_issue(c.id, ISSUE_WRONG_PREVIOUS, f"{name!r}: the reason says it is new, it was proposed"))
+        elif opening.proposed and proposal is None:
+            issues.append(_issue(c.id, ISSUE_WRONG_PREVIOUS, f"{name!r}: the reason says it was proposed, it is "
+                                                             f"{existing.status if existing else 'not listed'}"))
+        elif not opening.new and not opening.proposed and existing is None:
+            issues.append(_issue(c.id, ISSUE_NOT_LISTED, f"'Was' on {name!r}, which is not listed"))
+        elif not opening.new and not opening.proposed and opening.previous != existing.status:
             issues.append(_issue(c.id, ISSUE_WRONG_PREVIOUS,
                                  f"{name!r}: the reason says it was {opening.previous!r}, it is {existing.status!r}"))
         observed = {o.label for o in self.trace[k]}
-        cited = reason_labels(reason)
-        bad = [lb for lb in cited if lb not in observed]
+        bad = [lb for lb in reason_labels(reason) if lb not in observed]
         if bad:
-            issues.append(_issue(c.id, ISSUE_BAD_REF, f"{name!r}: cited sources {bad} have no observation on the criterion"))
-        return cited
+            issues.append(_issue(c.id, ISSUE_BAD_REF, f"{name!r}: the reason cites sources {bad} with no "
+                                                      "observation on the criterion"))
 
-    def _remove_candidate(self, k: int, name: str, reason: str, step: int, new_obs: List[Observation],
-                          rec: Dict[str, Any], issues: List[Dict[str, Any]]) -> Optional[str]:
-        """Remove candidate *name* of criterion *k* when the step has the
-        observation that can rule it out (``apply``); fills *rec* and
-        returns the removed candidate's basis, None when it is kept.  A
-        computed criterion's candidates are all "reasoning"."""
+    def _remove(self, k: int, name: str, reason: str, step: int, entries: List[Support], claimed: bool,
+                rec: Dict[str, Any], issues: List[Dict[str, Any]]) -> bool:
+        """Remove candidate or proposal *name* of criterion *k* when a
+        passage of the call speaks against it (``apply``); fills *rec* and
+        returns whether it was removed."""
         c = self.criteria[k]
-        existing = self._listed(k, name)
-        if existing is None:
-            issues.append(_issue(c.id, ISSUE_REMOVE_UNLISTED, f"'removed' on {name!r}, which is not listed; ignored"))
-            return None
-        rec["previous"], rec["candidate"] = existing.status, existing.name
-        cited = self._check_reason(k, existing.name, reason, existing, issues)
-        new_passages = {o.label for o in new_obs if o.source == DOC}
-        by_passage = any(lb in new_passages for lb in cited)
-        by_reasoning = existing.basis != PASSAGE and any(o.source == THINK for o in new_obs)
-        if not (by_passage or by_reasoning):
-            why = ("cites no new passage on the criterion" if existing.basis == PASSAGE
-                   else "cites no new passage and the turn has no observation on the criterion")
-            issues.append(_issue(c.id, ISSUE_BAD_REMOVAL, f"{existing.name!r}: removed, but the reason {why}; kept"))
-            rec["status"] = existing.status
-            return None
-        self.candidates[k].remove(existing)
-        self.removed[k].append(RemovedCandidate(name=existing.name, status=existing.status, basis=existing.basis,
-                                                added_step=existing.added_step, removed_step=step, reason=reason))
-        rec["status"] = REMOVED
-        return existing.basis
-
-    def _update_candidate(self, k: int, name: str, status: str, reason: str, step: int,
-                          new_obs: List[Observation], rec: Dict[str, Any], issues: List[Dict[str, Any]],
-                          deferred: List[Tuple[int, Candidate, str, Dict[str, Any]]]) -> Optional[str]:
-        """Add candidate *name* of criterion *k* with *status*, or change its
-        status, checked and bounded (``apply``); fills *rec* and returns
-        the candidate's basis when the belief changed, else None.  A change
-        *apply* decides after the reply's other updates goes to
-        *deferred*."""
-        c = self.criteria[k]
-        key = alnum(name)
-        existing = self._listed(k, name)
-        rec["previous"] = existing.status if existing is not None else None
+        existing, proposal = self._listed(k, name), self._proposed(k, name)
+        if existing is None and proposal is None and (k, alnum(name)) in self._call_dropped:
+            # A proposal a claim of the call rejected: already dropped.
+            rec["previous"], rec["status"] = "proposed", REMOVED
+            return False
+        if existing is None and proposal is None:
+            issues.append(_issue(c.id, ISSUE_REMOVE_UNLISTED, f"'removed' on {name!r}, which is neither listed nor "
+                                                              "proposed; ignored"))
+            return False
+        rec["previous"] = existing.status if existing is not None else "proposed"
+        rec["candidate"] = existing.name if existing is not None else proposal.name
+        self._check_reason(k, rec["candidate"], reason, existing, proposal, issues)
+        against = [x for x in entries if x.against]
+        if not (against or (c.kind in NO_DOC_KINDS and claimed)):
+            issues.append(_issue(c.id, ISSUE_BAD_REMOVAL, f"{rec['candidate']!r}: removed, but no passage of the "
+                                                          "call speaks against it; kept"))
+            rec["status"] = rec["previous"]
+            return False
         if existing is not None:
-            rec["candidate"] = existing.name
-        cited = self._check_reason(k, name, reason, existing, issues)
-        observed = {o.label for o in self.trace[k]}
+            self.candidates[k].remove(existing)
+            self.removed[k].append(RemovedCandidate(name=existing.name, status=existing.status, basis=existing.basis,
+                                                    added_step=existing.added_step, removed_step=step, reason=reason,
+                                                    against=bool(against)))
+        else:
+            self.proposals[k].remove(proposal)
+            self.removed[k].append(RemovedCandidate(name=proposal.name, status=None, basis=REASONING,
+                                                    added_step=proposal.added_step, removed_step=step, reason=reason,
+                                                    against=bool(against)))
+        rec["status"] = REMOVED
+        return True
+
+    def _update(self, k: int, name: str, status: str, reason: str, step: int, entries: List[Support],
+                rec: Dict[str, Any], issues: List[Dict[str, Any]],
+                deferred: List[Tuple[int, Candidate, str, Dict[str, Any]]]) -> bool:
+        """Add candidate *name* of criterion *k* with *status* and its
+        support *entries*, promote its proposal, or change a listed one,
+        within the hard limits (``apply``); fills *rec* and returns whether
+        the belief changed.  A status change ``apply`` decides after the
+        reply's other updates goes to *deferred*."""
+        c = self.criteria[k]
+        existing, proposal = self._listed(k, name), self._proposed(k, name)
+        if existing is not None:
+            rec["previous"], rec["candidate"] = existing.status, existing.name
+        elif proposal is not None:
+            rec["previous"], rec["candidate"] = "proposed", proposal.name
+        self._check_reason(k, rec["candidate"], reason, existing, proposal, issues)
+        computed = c.kind in NO_DOC_KINDS
+
         if existing is None:
-            if any(alnum(x.name) == key for x in self.removed[k]):
-                issues.append(_issue(c.id, ISSUE_READDED, f"{name!r} was removed before; it is added again"))
-            if self._unknown_candidate(k, name):
-                issues.append(_issue(c.id, ISSUE_UNKNOWN_CANDIDATE, f"{name!r} in no span or title of the criterion"))
+            if not entries and not computed:
+                issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: no passage of the call supports it or speaks "
+                                                             "against it; kept as proposed"))
+                rec["status"] = "proposed"
+                if proposal is None:
+                    self._add_proposal(k, name, None, step, issues)
+                    return True
+                return False
+            if not computed and not any(not x.against for x in entries):
+                # Only passages against it: no possible answer (a passage
+                # that states it fails a part removes a proposal instead).
+                issues.append(_issue(c.id, ISSUE_AGAINST_ONLY, f"{name!r}: only passages against it; " +
+                                     ("kept as proposed" if proposal is not None else "not added")))
+                rec["status"] = "proposed" if proposal is not None else None
+                return False
+            if not computed and c.kind in NAMED_KINDS and self._unknown_candidate(k, name):
+                issues.append(_issue(c.id, ISSUE_UNKNOWN_CANDIDATE, f"{name!r} in no span or title of the "
+                                                                    "criterion's passages"))
             near = [x.name for x in self.candidates[k] if contains_words(x.name, name) or contains_words(name, x.name)]
             if near:
                 issues.append(_issue(c.id, ISSUE_NEAR_DUPLICATE, f"{name!r} is close to listed {near}"))
-        elif status == existing.status:
-            issues.append(_issue(c.id, ISSUE_UNCHANGED, f"{name!r}: the status written is its current one"))
+            if proposal is None and self._dropped(k, name):
+                issues.append(_issue(c.id, ISSUE_READDED, f"{name!r} was dropped before; it is added again"))
+            cand = Candidate(name=proposal.name if proposal is not None else name, status=status,
+                             added_step=step, support=list(entries))
+            if proposal is not None:
+                cand.claim, cand.claim_step = proposal.claim, proposal.step
+                self.proposals[k].remove(proposal)
+            if not computed and not cand.supports() and _cap(status) != status:
+                issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: {status!r} with no passage supporting it; "
+                                                             f"set to {_cap(status)!r}"))
+                cand.status = _cap(status)
+            self.candidates[k].append(cand)
+            rec["status"] = cand.status
+            return True
 
-        computed = c.kind in NO_DOC_KINDS
-        if computed:
-            basis = REASONING
-        elif (existing is not None and existing.basis == PASSAGE) or self._named_by_passage(k, name) \
-                or any(self.is_doc_label(lb) and lb in observed for lb in cited):
-            basis = PASSAGE
-        else:
-            basis = REASONING
-        if not computed:
-            # Passages set the status; reasoning only names or rejects
-            # candidates.  A step with no new passage on the criterion moves
-            # no status of a passage candidate, whatever earlier passage the
-            # reason cites.
-            new_passage = any(o.source == DOC for o in new_obs)
-            if existing is not None and basis == PASSAGE and not new_passage:
-                if status != existing.status:
-                    if exclusive(c.kind):
-                        # Its status depends on the other candidates: taken
-                        # when another passage candidate changes in the step.
-                        deferred.append((k, existing, status, rec))
-                        return None
-                    issues.append(_issue(c.id, ISSUE_TURN_ONLY_CHANGE,
-                                         f"{name!r}: {status!r} from {existing.status!r} with no new passage on "
-                                         f"the criterion; kept"))
-                    status = existing.status
-            elif basis == REASONING or not new_passage:
-                bounded = min(max(status, TURN_ONLY_MIN_STATUS, key=_level), TURN_ONLY_MAX_STATUS, key=_level)
-                if bounded != status:
-                    why = "no passage on it" if basis == REASONING else "no new passage on the criterion"
-                    issues.append(_issue(c.id, ISSUE_TURN_ONLY, f"{name!r}: {status!r} with {why}; "
-                                                                f"set to {bounded!r}"))
-                    status = bounded
-
+        known = {(x.label, x.against) for x in existing.support}
+        added = [x for x in entries if (x.label, x.against) not in known]
+        if not added and not computed:
+            if status == existing.status:
+                issues.append(_issue(c.id, ISSUE_UNCHANGED, f"{existing.name!r}: no new support and the status "
+                                                            "written is its current one"))
+                rec["status"] = existing.status
+                return False
+            deferred.append((k, existing, status, rec))
+            return False
+        existing.support.extend(added)
+        if not computed and not existing.supports() and _cap(status) != status:
+            issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{existing.name!r}: {status!r} with no passage supporting "
+                                                         f"it; set to {_cap(status)!r}"))
+            status = _cap(status)
+        moved = bool(added) or status != existing.status
+        existing.status = status
         rec["status"] = status
-        if existing is None:
-            self.candidates[k].append(Candidate(name=name, status=status, basis=basis, added_step=step))
-            return basis
-        moved = status != existing.status or basis != existing.basis
-        existing.status, existing.basis = status, basis
-        return basis if moved else None
+        return moved
 
-    def _texts(self, k: int, passages_only: bool) -> List[str]:
-        """The verified spans of the observations on criterion *k* (of its
-        passages only, with *passages_only*), and the titles of its
-        passages (a passage may name its subject in its title only)."""
+    def _flag_rivals(self, k: int, issues: List[Dict[str, Any]]) -> None:
+        """The flags of a one-answer criterion *k* (``apply``)."""
+        c = self.criteria[k]
+        cands = self.candidates[k]
+        for x in cands:
+            if x.status == "certain":
+                rivals = [y.name for y in cands if y is not x and y.supports()]
+                if rivals:
+                    issues.append(_issue(c.id, ISSUE_CERTAIN_WITH_RIVAL,
+                                         f"{x.name!r} is certain while {rivals} have support"))
+        groups: Dict[Tuple, List[Candidate]] = {}
+        for x in cands:
+            if x.supports():
+                key = (frozenset(s.label for s in x.supports()), frozenset(s.label for s in x.supports(True)))
+                groups.setdefault(key, []).append(x)
+        for same in groups.values():
+            if len({x.status for x in same}) > 1:
+                issues.append(_issue(c.id, ISSUE_UNEQUAL_TIE, "the same support, different statuses: " +
+                                     ", ".join(f"{x.name!r} {x.status}" for x in same)))
+
+    def _passage_texts(self, k: int) -> List[str]:
+        """The verified spans of the passage observations on criterion *k*
+        and the titles of their passages (a passage may name its subject in
+        its title only)."""
         out: List[str] = []
         for o in self.trace[k]:
             if o.source == DOC:
-                out += [*o.verified_spans, self._titles.get(o.label) or ""]
-            elif not passages_only:
-                out += o.verified_spans
+                out += [*o.verified_spans, self.title(o.label)]
         return out
 
     def _parts(self, k: int, name: str) -> List[str]:
@@ -956,25 +1165,15 @@ class BeliefState:
         "<member>: <value>" the member and the value, else the name whole."""
         return name.split(":", 1) if self.criteria[k].kind == REST and ":" in name else [name]
 
-    def _named_by_passage(self, k: int, name: str) -> bool:
-        """Whether a passage observed on criterion *k* names candidate
-        *name* as whole words (a part of it, for a rest criterion's
-        "<member>: <value>")."""
-        texts = self._texts(k, passages_only=True)
-        return any(contains_words(t, p) for p in self._parts(k, name) for t in texts)
-
     def _unknown_candidate(self, k: int, name: str) -> bool:
-        """Whether candidate *name* occurs in none of the verified spans of
-        criterion *k* and in no title of a passage observed on it (a passage
-        may name its subject in its title only).  Checked for the kinds
-        whose answer is a name or figure a source writes out: a closed or
-        aggregate criterion (the candidate whole), the rest criterion
-        ("<member>: <value>": the member and the value each).  An aspect's
-        answers are statements the update words itself, so they are not
-        checked."""
-        if self.criteria[k].kind == ASPECT:
-            return False
-        texts = self._texts(k, passages_only=False)
+        """Whether candidate *name* occurs in none of the spans of the
+        passage observations on criterion *k* (its support among them) nor
+        in their passages' titles (a candidate a passage names in its title
+        only, or a hop's candidate named by the passage of another span).
+        Checked for the kinds whose answer is a name or figure a source
+        writes out (``NAMED_KINDS``; a rest criterion's "<member>:
+        <value>", the member and the value each)."""
+        texts = self._passage_texts(k)
         return not all(any(contains_words(t, p) for t in texts) for p in self._parts(k, name) if alnum(p))
 
     # ------------------------------------------------------------------
@@ -982,25 +1181,30 @@ class BeliefState:
     # ------------------------------------------------------------------
 
     def belief_lists(self) -> List[Dict[str, Any]]:
-        """Per criterion ``{id, status, selected, candidates}``: its derived
-        status and selection, and its candidates as shown
-        (``Candidate.to_dict``, highest status first)."""
+        """Per criterion ``{id, status, selected, candidates, proposals}``:
+        its derived status and selection, its candidates as shown
+        (``Candidate.to_dict``, highest status first) and its proposals
+        (``Proposal.to_dict``)."""
         return [{"id": c.id, "status": self.status(k), "selected": self.selected(k),
-                 "candidates": [x.to_dict() for x in self.ordered(k)]}
+                 "candidates": [x.to_dict() for x in self.ordered(k)],
+                 "proposals": [x.to_dict() for x in self.proposals[k]]}
                 for k, c in enumerate(self.criteria)]
 
     def reference_lists(self) -> List[Dict[str, Any]]:
         """Per criterion ``{id, references, removed}``: every source assigned
         to it so far, in the order it came in, as ``{label, step, spans}``
-        plus ``doc_id`` and ``title`` for a document; and the candidates the
-        update removed (``RemovedCandidate.to_dict``)."""
+        plus ``doc_id`` and ``title`` for a document, ``candidate`` and
+        ``claim`` for a claim; and the candidates and proposals dropped
+        (``RemovedCandidate.to_dict``)."""
         out = []
         for k, (c, obs) in enumerate(zip(self.criteria, self.trace)):
             refs = []
             for o in obs:
                 r: Dict[str, Any] = {"label": o.label, "step": o.step}
                 if o.source == DOC:
-                    r.update(doc_id=o.doc_id, title=self._titles.get(o.label))
+                    r.update(doc_id=o.doc_id, title=self.title(o.label))
+                else:
+                    r.update(candidate=o.candidate, claim=o.claim)
                 r["spans"] = o.verified_spans
                 refs.append(r)
             out.append({"id": c.id, "references": refs, "removed": [x.to_dict() for x in self.removed[k]]})

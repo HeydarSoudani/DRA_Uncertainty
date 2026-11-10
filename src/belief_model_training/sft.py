@@ -12,7 +12,15 @@ replay that passes the gate (``scoring.format_ok``) and, with
 ``require_verified_spans``, that is clean (``criteria.UNCLEAN_REPLY``:
 every observation entered the belief, no status corrected, no cited source
 without an observation, no reason that misreads the belief, no removal
-code did not take, no competing one-answer candidates).  The init call (criteria
+code did not take, no competing one-answer candidates).  On a short-answer
+query the final call is the final scorer's (the second task,
+``task: score``): its sample is kept when the reply parses, its answer's
+candidates have no issue (``final_score.check_issues``) and its status agrees
+with the correctness y of the agent's answer (|p - y| <= ``SCORE_AGREEMENT``,
+rejection sampling, so the student does not copy the teacher's
+miscalibration; "possible", p = 1/2, is kept for both y, so the student
+also learns to hedge); the counts of kept score samples per y are printed (the
+two should not be far apart).  The init call (criteria
 extraction) is not trained: the student runs on the gold criteria.
 The input is the chat-template prompt the inference belief model sends
 (``add_generation_prompt``, native reasoning off, as served by vLLM),
@@ -37,8 +45,8 @@ calibration, the share of well-formed calls and the certainty score
 against correctness, the measures of the phase 3 rewards), so its quality
 is known: SFT copies its errors.
 
-Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, qid,
-dataset, split, iteration, messages, completion}),
+Outputs (``phase2_sft/``): ``samples.jsonl`` ({set: train / val, task:
+update / score, qid, dataset, split, iteration, messages, completion}),
 ``teacher_scores.json``, ``checkpoints/`` (LoRA; removed at the start of
 a run), ``adapter/`` and ``merged/`` (full weights, the RL start).
 """
@@ -65,6 +73,10 @@ from .runs import check_same_settings, load_episodes, nugget_gold
 from .scoring import assess, format_ok
 
 logger = logging.getLogger(__name__)
+
+# A final scorer sample is kept when its probability is within this of y
+# (inclusive: "possible", 1/2, is kept for both y).
+SCORE_AGREEMENT = 0.5
 
 
 def chat_prompt(tokenizer, messages: List[Dict[str, str]]) -> str:
@@ -147,17 +159,28 @@ def teacher_samples(episode: Episode, store: DocumentStore, require_verified_spa
     base = {"qid": episode.qid, "dataset": episode.dataset, "split": episode.split.split_id}
     out = []
     for c in calls:
-        counts["teacher_calls"] += 1
+        task = "score" if c.call.is_scorer else "update"
+        prefix = "score_" if c.call.is_scorer else ""
+        counts[f"{prefix}teacher_calls"] += 1
         if c.output is None:
-            counts["dropped_failed"] += 1
+            counts[f"{prefix}dropped_failed"] += 1
             continue
         if not format_ok(c.outcome, "stop"):
-            counts["dropped_gate"] += 1
+            counts[f"{prefix}dropped_gate"] += 1
             continue
-        if require_verified_spans and not _clean(c.outcome):
+        if c.call.is_scorer:
+            if c.outcome["final_score"]["issues"]:
+                counts["score_dropped_issues"] += 1
+                continue
+            if episode.correct is None or abs(c.outcome["certainty"] - float(episode.correct)) > SCORE_AGREEMENT:
+                counts["score_dropped_disagree"] += 1
+                continue
+            counts[f"score_samples_y{int(episode.correct)}"] += 1
+        elif require_verified_spans and not _clean(c.outcome):
             counts["dropped_unclean"] += 1
             continue
-        out.append({**base, "iteration": c.call.iteration, "messages": c.call.messages, "completion": c.output})
+        out.append({**base, "task": task, "iteration": c.call.iteration, "messages": c.call.messages,
+                    "completion": c.output})
     return out, (episode, calls, tracker)
 
 

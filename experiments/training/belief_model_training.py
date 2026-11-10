@@ -1,14 +1,16 @@
 """Train the belief model with the agent frozen.
 
 Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model is
-trained, here with the agent frozen.  The trained call is the belief
-update, one per step, b_t = f(query, b_{t-1}, agent turn t, new passages)
--> the observations of the turn and the passages and the candidate updates
-of the criteria they touch, on the pool's gold criteria (the criteria init is not
-trained).  It is rewarded over whole trajectories, per criterion: the
-assignment of the sources to it and the calibration of its status at every
-step; plus well-formed calls and the certainty score of the final
-beliefs against the correctness of the agent's answer.
+trained, here with the agent frozen.  Two calls are trained: the belief
+update, b_t = f(query, b_{t-1}, agent turns, new passages) -> the
+observations of the turns and the passages and the candidate updates of
+the criteria they touch, on the pool's gold criteria (the criteria init is
+not trained); and, on a short-answer query, the final scorer, s_T =
+f(query, b_{T-1}, answer turn).  The updates are rewarded over whole
+trajectories, per criterion: the assignment of the sources to it and the
+calibration of its status at every step, plus well-formed calls; the
+scorer by s_T against the correctness of the agent's answer (on a
+report, the certainty of the final beliefs).
 Training uses only the queries with the full gold annotation (each query's
 ``split`` in the pool's queries file).  One phase per call (``--phase N``):
 

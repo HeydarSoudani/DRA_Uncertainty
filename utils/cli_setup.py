@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 from indexing_corpus_dataset.layout import apply_dataset_defaults, dataset_root, default_corpus_path, default_index_dir
+from utils.text_utils import MAX_PASSAGE_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ FILE_BACKED_DEFAULTS = {
     "use_plan": False,
     "max_extend_steps": 5,
     "hard_mode": True,
-    "max_passage_chars": 4000,
+    "max_passage_chars": MAX_PASSAGE_CHARS,
     # Belief model (the rest; --belief-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,

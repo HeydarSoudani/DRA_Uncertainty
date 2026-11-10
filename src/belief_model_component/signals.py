@@ -1,8 +1,9 @@
 """Per-step parts of the belief model:
 
-- ``BeliefUpdateSignal`` b_t: the belief update of the step (one call:
-  observations of the agent's turn and of the documents, then the
-  candidate updates).
+- ``BeliefUpdateSignal`` b_t: the belief update of the step (one call when
+  the step has a new passage: the claims of the
+  agent's turns and the observations of the passages, then the candidate
+  updates).
 
 Extra, for evaluation only (never shown to the agent):
 
@@ -14,14 +15,15 @@ Extra, for evaluation only (never shown to the agent):
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from deep_research_agents.prompts.answer_prompts import extract_answer_candidates, extract_bare_answer
 from reasoner_component import REASONING_FALLBACK_PREFIX
-from utils.text_utils import doc_id as _doc_id, doc_text
+from utils.text_utils import doc_id as _doc_id, doc_text, doc_title
 from .certainty import certainty
 from .criteria import BeliefState
-from .updater import LLMBeliefUpdater, Passage, passage_title
+from .updater import LLMBeliefUpdater, Passage, Turn, passage_title
 from .prompts import intermediate_answer_instruction
 from .types import Criterion
 
@@ -32,37 +34,61 @@ logger = logging.getLogger(__name__)
 # b_t: belief update
 # ---------------------------------------------------------------------------
 
-def _doc_key(doc: Dict[str, Any], text: str) -> str:
-    """A document's key for its label: its id, else a hash of its text."""
-    return _doc_id(doc) or "text:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+def _doc_key(doc: Dict[str, Any], text: Optional[str] = None) -> Optional[str]:
+    """A document's key for its label: its id, else a hash of its text
+    (*text*, read from *doc* when not given); None without either."""
+    i = _doc_id(doc)
+    if i:
+        return i
+    text = doc_text(doc, max_length=None) if text is None else text
+    return "text:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] if text else None
+
+
+# Turns kept for the next call while no call is made (the most recent).
+MAX_PENDING_TURNS = 6
+
+
+@dataclass
+class CallPlan:
+    """What one belief update call reads: the agent's turns since the last
+    call (``(step, text)``, labelled "t<step>") and its passages, those
+    new to the belief."""
+    turns: List[Turn]
+    passages: List[Passage]
 
 
 class BeliefUpdateSignal:
-    """Belief update of each step: one call (``updater``) on the agent's
-    turn and the step's documents not judged in an earlier step; each
-    document gets its label when shown (``BeliefState.label_doc``), and the
-    reply is applied by ``BeliefState.apply``.  The answer turn is one more
-    call (``finish``), with no document.
+    """Belief update of the search: one call (``updater``) per step that
+    has something new to read, then one on the answer turn (``finish``).
 
-    A call with nothing to read (no turn, no new document with text) is not
-    made.  When the call fails the belief stays as it was, the step's
+    A step makes a call when it has a document not judged in an earlier
+    step (with text); the final turn always makes one.  A judged passage
+    is never shown again: the reasoning about it reaches the next call
+    through the turns.  A step without a call carries the belief
+    forward, and its turn waits for the next call, which reads every turn
+    since the last one (the last ``MAX_PENDING_TURNS``).  Each document
+    gets its label when first shown (``BeliefState.label_doc``), and the
+    reply is applied by ``BeliefState.apply``.
+
+    When the call fails the belief stays as it was, the call's new
     documents stay unjudged (a later step that retrieves them shows them
-    again, with the same labels) and the turn's observations are lost.
-    ``score`` and ``finish`` return the step's outcome::
+    again, with the same labels) and its turns' claims are lost.  ``score``
+    and ``finish`` return the step's outcome::
 
-        {passages, observations, updates, changed, issues, beliefs, reply, errors}
+        {called, passages, observations, updates, changed, issues, beliefs, reply, errors}
 
-    (``passages`` ``[{label, doc_id}]`` as shown; ``observations``,
-    ``updates``, ``changed`` and ``issues`` as ``BeliefState.apply`` gives
-    them, null / empty when the call was not made or failed; ``beliefs``
-    every criterion's belief after the call (``BeliefState.belief_lists``); ``reply`` the raw reply, null
+    (``called`` whether a call was made; ``passages`` ``[{label, doc_id}]``
+    as shown; ``observations``, ``updates``, ``changed`` and
+    ``issues`` as ``BeliefState.apply`` gives them, null / empty when the
+    call was not made or failed; ``beliefs`` every criterion's belief after
+    the step (``BeliefState.belief_lists``); ``reply`` the raw reply, null
     when not called or the call raised).
 
-    The call is made in two halves, ``passages`` (label the documents) and
-    ``apply`` (the parsed reply), so belief model training can make the
-    LLM calls itself (``belief_model_training.episodes.BeliefTracker``).
-    ``certainty`` is the certainty score s_t of the belief
-    (``certainty.certainty``).
+    The call is made in two halves, ``plan`` (label the documents, gather
+    the turns) and ``apply`` (the parsed reply), so belief model training
+    can make the LLM calls itself
+    (``belief_model_training.episodes.BeliefTracker``).  ``certainty`` is
+    the certainty score s_t of the belief (``certainty.certainty``).
     """
 
     def __init__(self, updater: LLMBeliefUpdater) -> None:
@@ -70,10 +96,15 @@ class BeliefUpdateSignal:
         self._query = ""
         self._state: Optional[BeliefState] = None
         self._judged: Set[str] = set()
+        self._pending: List[Turn] = []
 
     @property
     def active(self) -> bool:
         return self._state is not None
+
+    @property
+    def query(self) -> str:
+        return self._query
 
     @property
     def state(self) -> Optional[BeliefState]:
@@ -86,12 +117,14 @@ class BeliefUpdateSignal:
         """s_t of the current belief; None without criteria."""
         if self._state is None:
             return None
-        return certainty(self._state.belief_lists(), [c.kind for c in self._state.criteria])
+        return certainty([{"status": self._state.status(k)} for k in range(len(self._state.criteria))],
+                         [c.kind for c in self._state.criteria])
 
     def reset(self, query: str, criteria: List[Criterion]) -> None:
         self._query = query
         self._state = BeliefState(criteria) if criteria else None
         self._judged.clear()
+        self._pending = []
 
     def unjudged(self, docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """The documents of *docs* not judged yet (documents without an id
@@ -101,12 +134,12 @@ class BeliefUpdateSignal:
     def score(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None) -> Dict[str, Any]:
         """The update of one step from its unique *docs* and the agent's
         turn (*agent_turn*; None: no turn to read)."""
-        return self._update(self.unjudged(docs), step, agent_turn)
+        return self._update(self.plan(docs, step, agent_turn), step)
 
     def finish(self, step: int, agent_turn: str) -> Dict[str, Any]:
-        """The final update: the agent's answer turn (labelled ``t<step>``),
-        no document."""
-        return self._update([], step, agent_turn)
+        """The final update: the agent's answer turn (labelled ``t<step>``)
+        with the turns still waiting."""
+        return self._update(self.plan([], step, agent_turn, final=True), step)
 
     def passages(self, docs: List[Dict[str, Any]]) -> Tuple[List[Passage], List[str]]:
         """The passages of *docs* (each labelled, ``label_doc``) and the
@@ -118,36 +151,57 @@ class BeliefUpdateSignal:
             if not text:
                 errors.append(f"empty text for doc {_doc_id(d)}")
                 continue
-            passages.append((self._state.label_doc(_doc_key(d, text), passage_title(text)), _doc_id(d), text))
+            passages.append(Passage(self._state.label_doc(_doc_key(d, text), passage_title(text, doc_title(d, default=""))), _doc_id(d), text))
         return passages, errors
+
+    def plan(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str],
+             final: bool = False) -> Tuple[Optional[CallPlan], List[str]]:
+        """The call of step *step*, or None when it makes none (``(plan,
+        errors)``): its turn joins the waiting ones; the call has the
+        unjudged *docs* with text, and is made when it has a passage or is
+        the *final* one (with a turn).  A call takes the waiting turns."""
+        if self._state is None:
+            return None, []
+        turn = agent_turn.strip() if agent_turn and agent_turn.strip() else None
+        if turn is not None:
+            self._pending.append((step, turn))
+            self._pending = self._pending[-MAX_PENDING_TURNS:]
+        passages, errors = self.passages(self.unjudged(docs))
+        if not passages and not (final and self._pending):
+            return None, errors
+        plan = CallPlan(turns=list(self._pending), passages=passages)
+        self._pending = []
+        return plan, errors
 
     def label_of(self, doc: Dict[str, Any]) -> Optional[str]:
         """The label of a document once it was shown, else None."""
-        text = doc_text(doc, max_length=None)
-        return self._state.doc_label(_doc_key(doc, text)) if self._state is not None and text else None
+        key = _doc_key(doc) if self._state is not None else None
+        return self._state.doc_label(key) if key else None
 
-    def apply(self, parsed: Any, passages: List[Passage], step: int) -> Dict[str, Any]:
+    def apply(self, parsed: Any, plan: CallPlan, step: int) -> Dict[str, Any]:
         """Apply a parsed reply (``LLMBeliefUpdater.parse``) of the call of
-        step *step* on *passages*: they are judged now; returns the records
+        step *step* (*plan*): its passages are judged once it is applied
+        (a reply that raises leaves them unjudged); returns the records
         of ``BeliefState.apply``."""
-        self._judged.update(doc for _, doc, _ in passages if doc)
-        think, doc_obs, updates = parsed
-        return self._state.apply(think, doc_obs, updates, step)
+        claims, doc_obs, updates = parsed
+        out = self._state.apply(claims, doc_obs, updates, step)
+        self._judged.update(p.doc_id for p in plan.passages if p.doc_id)
+        return out
 
-    def _update(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str]) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"passages": [], "observations": None, "updates": [], "changed": [], "issues": [],
-                               "beliefs": None, "reply": None, "errors": []}
+    def _update(self, planned: Tuple[Optional[CallPlan], List[str]], step: int) -> Dict[str, Any]:
+        plan, errors = planned
+        out: Dict[str, Any] = {"called": False, "passages": [], "observations": None, "updates": [], "changed": [],
+                               "issues": [], "beliefs": None, "reply": None, "errors": list(errors)}
         if self._state is None:
             return out
-        passages, out["errors"] = self.passages(docs)
-        out["passages"] = [{"label": label, "doc_id": doc} for label, doc, _ in passages]
-        turn = agent_turn if agent_turn and agent_turn.strip() else None
-        if passages or turn is not None:
-            parsed, raw, errors = self.updater.update(self._query, self._state, step, turn, passages)
+        if plan is not None:
+            out["called"] = True
+            out["passages"] = [{"label": p.label, "doc_id": p.doc_id} for p in plan.passages]
+            parsed, raw, call_errors = self.updater.update(self._query, self._state, plan.turns, plan.passages, step)
             out["reply"] = raw
-            out["errors"].extend(f"belief_update: {e}" for e in errors)
+            out["errors"].extend(f"belief_update: {e}" for e in call_errors)
             if parsed is not None:
-                out.update(self.apply(parsed, passages, step))
+                out.update(self.apply(parsed, plan, step))
         out["beliefs"] = self.beliefs()
         return out
 

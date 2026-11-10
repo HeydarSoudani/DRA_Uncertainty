@@ -169,5 +169,5 @@ if __name__ == "__main__":
 # python experiments/training/build_training_pool.py --step 2 --source webshaper --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 10
 # python experiments/training/build_training_pool.py --step 2 --source frames --limit 10
-# python experiments/training/build_training_pool.py --step 3 --limit 100
+# python experiments/training/build_training_pool.py --step 3 --limit 200
 # python experiments/training/build_training_pool.py --step 4

@@ -2,20 +2,23 @@ After the results of each search, you receive a <belief_state> tag that tracks y
 
 <belief_state step="2">
   <criteria>
-    <k1>the engineer who was born in the town where the Varn Folk Museum was founded
-      "Henrik Dahl": certain (passage)
+    <k1>the town where the Varn Folk Museum was founded
+      "Osby": certain
     </k1>
-    <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
-      "Skarv Lighthouse": possible (passage)
-      "Hamn Lighthouse": possible (passage)
+    <k2>the engineer who was born in the town of k1
+      "Henrik Dahl": certain
     </k2>
-    <k3>the year that lighthouse was completed</k3>
+    <k3>the lighthouse that was designed by the engineer of k2
+      "Skarv Lighthouse": possible
+      "Hamn Lighthouse": possible
+      unverified: "Kalvik Lighthouse"
+    </k3>
   </criteria>
 </belief_state>
 
 - `step`: the number of searches so far.
-- <criteria>: the pieces of information a complete response must contain, each with its candidates so far; a criterion without candidates has none yet.
-- Each candidate is a possible answer of its criterion, with how likely it is an answer, from lowest to highest: `unlikely`, `possible`, `probable`, `almost certain`, `certain`. A candidate the passages rule out is removed.
-- `(passage)`: the passages of your searches bear on the candidate; `(reasoning)`: only your own reasoning names it.
+- <criteria>: the pieces of information a complete response must contain, each with its candidates so far; a criterion without candidates has none yet. A criterion may refer to the answer of another one by its id.
+- Each candidate is a possible answer of its criterion that the passages of your searches bear on, with how likely it is an answer, from lowest to highest: `unlikely`, `possible`, `probable`, `almost certain`, `certain`. A candidate the passages rule out is removed.
+- `unverified`: names your own reasoning proposed that no passage supports yet.
 
 If the passages disagree with the tag, trust the passages.

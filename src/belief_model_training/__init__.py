@@ -6,8 +6,10 @@ criteria (the criteria init call is not trained).  It is rewarded over
 whole trajectories, per criterion: the assignment of the sources to it
 (its gold documents, the turns that state its gold answer) and the
 calibration of its status at every step; plus the share of well-formed
-calls and, at the end, the certainty score of the final beliefs
-against the correctness of the agent's final answer.
+calls.  Its second task, on a short-answer query, is the final scorer
+(``belief_model_component.final_score``): s_T from b_{T-1} and the answer
+turn, rewarded against the correctness of the agent's final answer in its
+own GRPO stream (on a report, s_T of the final beliefs).
 
 Entry point: ``experiments/training/belief_model_training.py --phase N``.
 

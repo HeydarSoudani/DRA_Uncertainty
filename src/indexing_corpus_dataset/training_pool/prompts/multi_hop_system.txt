@@ -2,13 +2,13 @@ You are a criteria writer. Given a question and the chain of entities that leads
 
 == Rules ==
 1. Write each criterion in the question's own words: keep the entities the question names, and describe each placeholder entity as the question describes it, never by its name. No criterion may contain the name of any placeholder entity.
-2. Every criterion is self-contained: it describes its entity through the whole chain that the question gives for it, not by pointing back with words such as "that city" or "the above".
+2. Order the criteria so that each one refers only to criteria before it: the first is an entity the question describes without another placeholder entity, each next one is described through entities before it, and the answer is last. Refer to an entity before it by its placeholder ("the town of E1"); what the question says about an entity after it stays in the question's words.
 3. Start each criterion with the entity's type in the question's words ("the city where ...", "the botanist who ..."), or "the entity" when the question gives no type.
 4. Use only what the question states; the relations listed are there to tell which part of the question describes which entity. A relation may hold details the question does not state (a year, a full title); these stay out of the criteria.
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
-- "criteria": One object per placeholder, in the given order: {"entity": "E1", "text": "..."}.
+- "criteria": One object per placeholder, in your order: {"entity": "E1", "text": "..."}.
 
 Example question: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
 Example chain:
@@ -18,6 +18,6 @@ E3 (the answer): E3 was designed by E2
 Example output:
 {"criteria": [
   {"entity": "E1", "text": "the town where the Varn Folk Museum was founded"},
-  {"entity": "E2", "text": "the engineer who was born in the town where the Varn Folk Museum was founded"},
-  {"entity": "E3", "text": "the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded"}
+  {"entity": "E2", "text": "the engineer who was born in the town of E1"},
+  {"entity": "E3", "text": "the lighthouse that was designed by the engineer of E2"}
 ]}

@@ -7,11 +7,12 @@ two never drift apart.  It reads the saved shapes only: the step and final
 records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
 
 Per criterion, one row with its status, its selected candidate(s) and
-the number of its candidates (a removed candidate leaves the list).
-``*`` marks a criterion with a candidate added, removed or whose status
-changed this iteration.  The md also gives every
-candidate update of the iteration (previous status -> status, and its
-reason) and the reply's issues.  The documents labelled in the
+the number of its candidates and proposals (a removed candidate leaves the
+list).  ``*`` marks a criterion whose candidates or proposals changed this
+iteration.  A step without a belief update call says so.  The md also
+gives every candidate update of the iteration (previous status -> status,
+the passages it cites as support (+) or against (-), and its reason) and
+the reply's issues.  The documents labelled in the
 iteration are listed with their ids, so a label can be traced to its
 document.
 """
@@ -47,8 +48,9 @@ def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
         b = beliefs[i] if i < len(beliefs) else {}
         selected = ", ".join(f'"{_value(v, value_chars)}"' for v in b.get("selected") or []) or "—"
         n = len(b.get("candidates") or [])
-        rows.append((cid, "*" if cid in changed else "", str(b.get("status") or "unknown"), selected,
-                     f"{n} candidate" + ("" if n == 1 else "s")))
+        m = len(b.get("proposals") or [])
+        count = f"{n} candidate" + ("" if n == 1 else "s") + (f", {m} proposed" if m else "")
+        rows.append((cid, "*" if cid in changed else "", str(b.get("status") or "unknown"), selected, count))
     return rows
 
 
@@ -67,6 +69,9 @@ def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
             move = f"{u.get('previous') or 'new'} -> {kept}"
             if written and written != kept:
                 move += f" (wrote {written})"
+        cited = " ".join([f"+{lb}" for lb in u.get("support") or []] + [f"-{lb}" for lb in u.get("against") or []])
+        if cited:
+            move += f" [{cited}]"
         reason = " ".join(str(u.get("reason") or "").split())
         out.append((str(u.get("id")), f'"{u.get("candidate")}": {move}' + (f" ({reason})" if reason else "")))
     return out
@@ -95,9 +100,30 @@ def gold_summary(record: Dict[str, Any]) -> str:
 
 def _summary(record: Dict[str, Any], final: bool) -> str:
     out = f"certainty={_num(record.get('certainty'))}"
+    if final and record.get("final_score") is not None:
+        out += (f" ({record.get('certainty_label')}) | formula={_num(record.get('certainty_formula'))}"
+                f" | answer formula={_num(record.get('certainty_answer_formula'))}")
+    elif final and record.get("certainty_formula") != record.get("certainty"):
+        out += f" | formula={_num(record.get('certainty_formula'))}"
     if not final:
         out += f" | {record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new docs"
+    if record.get("called") is False:
+        out += " | no call (belief carried forward)"
     return out
+
+
+def _final_score(record: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """The final scorer's answer's candidates, reason and issues of a final
+    record."""
+    score = record.get("final_score")
+    if not score:
+        return []
+    named = "; ".join(f"{c.get('id')} " + (f"\"{c['candidate']}\"" if c.get("candidate") else "none")
+                      for c in score.get("candidates") or [])
+    rows = [("answer's candidates", named or "none"), ("reason", score.get("reason") or "")]
+    if score.get("issues"):
+        rows.append(("score issues", "; ".join(score["issues"])))
+    return rows
 
 
 def _new_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -151,6 +177,7 @@ def belief_lines(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
     value_w = max((len(r[3]) for r in table), default=0)
     for cid, mark, status, value, count in table:
         rows.append((f"{cid} {mark}".rstrip(), f"{status:<{status_w}}  {value:<{value_w}}  ({count})"))
+    rows += _final_score(record)
     if not final and _new_labels(record):
         rows.append(("labels", _labels(record, md=False)))
     if record.get("issues"):
@@ -202,6 +229,9 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
     updates = _updates(record)
     if updates:
         lines += [""] + [f"- **{cid}** {_cell(text)}" for cid, text in updates]
+    scored = _final_score(record)
+    if scored:
+        lines += [""] + [f"- {key}: {_cell(text)}" for key, text in scored]
     if not final and _new_labels(record):
         lines += ["", f"labels: {_labels(record, md=True)}"]
     if record.get("issues"):

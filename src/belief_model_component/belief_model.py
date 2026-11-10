@@ -10,16 +10,20 @@ sample:
     observe(...)             called once at the end of every search
                              iteration with the iteration's queries and seen
                              documents; returns and stores the step record
-    finish(answer_turn)      once, after the last step: the update on the
-                             agent's answer turn; stores the final record
+    finish(answer_turn)      once, after the last step: the final scorer
+                             on the agent's answer turn (short-answer
+                             queries; a report: one more update); stores
+                             the final record
 
 Order inside ``observe`` (the step's documents and the agent's turn move
 the belief from b_{t-1} to b_t):
 
-    b_t (one belief update call reads the agent's turn and the documents
-    not judged in earlier steps, records their observations and gives the
-    status of every candidate that is new, removed or whose status
-    changes, with its reason) ->
+    b_t (when the step has a document not judged in earlier steps, one
+    belief update call reads the agent's turns since the last call and
+    those passages, records the
+    claims of the turns and the observations of the passages and gives the
+    support and status of every candidate they change, with its reason;
+    otherwise b_t = b_{t-1} and the turn waits for the next call) ->
     retrieval gain -> intermediate answer (both for evaluation only)
 
 Step record, one per iteration (saved as one ``step`` line of
@@ -31,7 +35,7 @@ first, nested detail last::
     new_item_precision,
     num_new_relevant, num_repeated_relevant, num_irrelevant,
     recall_so_far, num_relevant_seen, num_relevant,
-    certainty,
+    certainty, called,
     intermediate_answers, intermediate_answer_status,
     docs[], beliefs[], updates[], changed[], observations[], issues[],
     agent_turn, reply, intermediate_answer_reasoning, errors[],
@@ -48,40 +52,62 @@ A value that could not be computed is null, never 0; the reason is in
 when its id was not shown in an earlier step (``num_new_docs`` counts
 them), ``label`` the belief's label of it ("d<n>", given when the document
 is first shown to the belief update; null for a document without text).
+``called`` says whether the step made a belief update call.
 ``beliefs`` holds, per criterion in ``criteria`` order, its belief after
-the step (``{id, status, selected, candidates}``: ``candidates`` its
-candidates as shown to the next update and to the agent, highest status
-first, each ``{name, status, basis, added_step}``; derived from them, the
-criterion's status on the scale ``types.BELIEF_STATUSES`` and
-its selected candidate(s), ``BeliefState.belief_lists``).  ``updates``
-are the reply's candidate updates (``{id, candidate, reason, written,
-previous, status}``: the reason is saved here only, never shown; ``status``
-the one code kept, "removed" for a removed candidate, null when the
-update was not taken); ``changed`` the ids of the criteria with a
-candidate added, removed or whose status changed.
-``observations`` are the observations of the turn and of the new documents
-that entered the belief in the step (``{id, label, step, [doc_id],
-spans}``, verified spans only), null when the call was not made or failed;
+the step (``{id, status, selected, candidates, proposals}``: ``candidates``
+its candidates as shown to the next update, highest status first, each
+``{name, status, basis, added_step, support, claim, claim_step}``
+(``support`` the passage observations on it, ``{label, doc_id, title,
+step, spans, against}``; ``claim`` the agent's latest claim on it, never
+shown to the update); ``proposals`` the names the agent proposed that no
+passage supports, each ``{name, claim, step, added_step}`` (``step`` its
+latest claim's); derived from the
+candidates, the criterion's status on the scale ``types.BELIEF_STATUSES``
+and its selected candidate(s), ``BeliefState.belief_lists``).  ``updates``
+are the reply's candidate updates (``{id, candidate, reason, support,
+against, written, previous, status}``: the reason is saved here only,
+never shown; ``status`` the one code kept, "removed" for a removed
+candidate, "proposed" for a name kept as a proposal, null when the update
+was not taken); ``changed`` the ids of the criteria whose candidates or
+proposals changed.
+``observations`` are the observations that entered the belief in the call
+(claims ``{id, label, step, candidate, claim, spans}``, passage
+observations ``{id, label, step, doc_id, spans}``, verified spans only),
+null when the call was not made or failed;
 together over the steps they are every criterion's references (the final
 record gathers them).  ``issues`` one ``{id, code, detail, [label]}`` per
 thing the reply got wrong (``criteria.ISSUE_*``: an observation left out,
 a candidate update not taken, corrected or flagged).
-``agent_turn`` is the agent's reasoning of the iteration as the update read
-it (``agent_turn.agent_turn_text``; the queries are in the trajectory),
-``reply`` the raw reply of the call.
+``agent_turn`` is the agent's reasoning of the iteration
+(``agent_turn.agent_turn_text``; the queries are in the trajectory), read
+by the step's call or by the next one, ``reply`` the raw reply of the call.
 ``certainty`` is the certainty score s_t of the belief after the step
 (``certainty.certainty``: the geometric mean over the criteria of their
 status's probability, the rest criterion left out); null without criteria.
 
-The final record (one ``final`` line) is the update on the answer turn
-(``agent_turn.answer_turn``, labelled "t<last step + 1>"), read as any
-other turn: ``{iteration, certainty, beliefs, updates, changed,
-observations, issues, references, agent_turn, reply, errors}``; its ``certainty`` is
-s_T; ``references`` per criterion every source assigned to it over the
-sample and the candidates the update removed
+The final record (one ``final`` line) reads the answer turn
+(``agent_turn.answer_turn``): ``{iteration, certainty, certainty_label,
+certainty_formula, certainty_answer_formula, called, final_score, beliefs,
+updates, changed, observations, issues, references, agent_turn, reply,
+errors}``.  On a short-answer query the final scorer (``final_score``)
+reads b_{T-1} and the answer turn, and the belief is not updated:
+``certainty`` is s_T, the probability of the final answer's status
+(``certainty_label``), null when the call failed; ``final_score`` its
+``{status, candidates, reason, issues}``; ``certainty_formula`` the
+certainty of b_{T-1} (``certainty.certainty``) and
+``certainty_answer_formula`` its form anchored on the answer's
+candidates (``certainty.answer_certainty``), both baselines;
+``updates``, ``changed`` and ``issues`` empty, ``observations`` null.  On
+a report (no final scorer) the answer turn is one more update,
+labelled "t<last step + 1>" with the turns still waiting, and s_T the
+certainty of the belief after it (``certainty`` = ``certainty_formula``;
+``certainty_label``, ``certainty_answer_formula`` and ``final_score``
+null).  ``reply`` is the raw reply of the call.
+``references`` per criterion every source assigned to it over the
+sample and the candidates and proposals it dropped
 (``BeliefState.reference_lists``: ``{id, references: [{label, step,
-[doc_id, title], spans}], removed: [{name, status, basis, added_step,
-removed_step, reason}]}``).
+[doc_id, title | candidate, claim], spans}], removed: [{name, status,
+basis, added_step, removed_step, reason}]}``).
 It is null without an answer turn.
 ``intermediate_answers`` is null when not configured or failed and ``[]``
 when the model gave no answer; ``intermediate_answer_status`` says which:
@@ -97,7 +123,9 @@ from typing import Any, Dict, List, Optional, Set
 from utils.text_utils import doc_id as _doc_id, unique_docs
 
 from .belief_state import render_belief_state
+from .certainty import answer_certainty
 from .criteria import CriteriaSource
+from .final_score import LLMFinalScorer, check_issues
 from .updater import LLMBeliefUpdater
 from .signals import AnswerFn, BeliefUpdateSignal, IntermediateAnswerSignal, RetrievalGainSignal
 from .types import Criterion
@@ -117,6 +145,9 @@ class BeliefModel:
             disables the belief.
         belief_updater: The belief update call
             (``updater.LLMBeliefUpdater``).  None: b_t is null.
+        final_scorer: The final scorer call (``final_score.LLMFinalScorer``)
+            that gives s_T; None: the answer turn is one more update and
+            s_T the certainty of the belief after it (a report).
         qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
             new-item precision and the recall so far.
         intermediate_answer_fn: The agent's ``answer_from_trajectory``;
@@ -135,9 +166,11 @@ class BeliefModel:
         intermediate_answer_fn: Optional[AnswerFn] = None,
         policy_model: str = "",
         inform: bool = False,
+        final_scorer: Optional[LLMFinalScorer] = None,
     ) -> None:
         self.inform = inform
         self._criteria_source = criteria_source
+        self._final_scorer = final_scorer
 
         self._seen_ids: Set[str] = set()
         self._retrieval_gain = RetrievalGainSignal(qrels)
@@ -211,12 +244,15 @@ class BeliefModel:
 
     def finish(self, answer_turn: Optional[str]) -> None:
         """Read the agent's answer turn (``agent_turn.agent_turn_text`` with
-        the answer; its label is "t<last step + 1>") as one more update; its
-        record is ``final`` (null without an answer turn).  Called once,
-        after the last step."""
+        the answer): the final scorer's call, or (no final scorer) one more
+        update, its label "t<last step + 1>"; its record is ``final`` (null
+        without an answer turn).  Called once, after the last step."""
         if not self._tracks_state or answer_turn is None:
             return
         step = self._step + 1
+        if self._final_scorer is not None:
+            self.final = self._score_final(step, answer_turn)
+            return
         errors: List[str] = []
         update: Dict[str, Any] = {}
         try:
@@ -225,9 +261,15 @@ class BeliefModel:
             logger.warning("BeliefModel: final belief update failed", exc_info=True)
             errors.append(f"belief_update: {e}")
         errors.extend(update.get("errors") or [])
+        s_t = _round(self._belief.certainty())
         self.final = {
             "iteration": step,
-            "certainty": _round(self._belief.certainty()),
+            "certainty": s_t,
+            "certainty_label": None,
+            "certainty_formula": s_t,
+            "certainty_answer_formula": None,
+            "called": bool(update.get("called")),
+            "final_score": None,
             "beliefs": self._belief.beliefs(),
             "updates": update.get("updates") or [],
             "changed": update.get("changed") or [],
@@ -239,10 +281,45 @@ class BeliefModel:
             "errors": errors,
         }
 
+    def _score_final(self, step: int, answer_turn: str) -> Dict[str, Any]:
+        """The final record of the final scorer's call on b_{T-1} and the
+        answer turn (see the module docstring)."""
+        state = self._belief.state
+        errors: List[str] = []
+        score, raw = None, None
+        try:
+            score, raw, call_errors = self._final_scorer.score(self._belief.query, state, answer_turn)
+            errors.extend(f"final_score: {e}" for e in call_errors)
+        except Exception as e:
+            logger.warning("BeliefModel: final scorer failed", exc_info=True)
+            errors.append(f"final_score: {e}")
+        beliefs = self._belief.beliefs()
+        kinds = [c.kind for c in state.criteria]
+        s_answer = answer_certainty(beliefs, kinds, score.candidates, state.ruled_out_lists()) if score else None
+        return {
+            "iteration": step,
+            "certainty": _round(score.probability) if score else None,
+            "certainty_label": score.status if score else None,
+            "certainty_formula": _round(self._belief.certainty()),
+            "certainty_answer_formula": _round(s_answer),
+            "called": True,
+            "final_score": {**score.to_dict(), "issues": check_issues(score, state)} if score else None,
+            "beliefs": beliefs,
+            "updates": [],
+            "changed": [],
+            "observations": None,
+            "issues": [],
+            "references": state.reference_lists(),
+            "agent_turn": answer_turn,
+            "reply": raw,
+            "errors": errors,
+        }
+
     def close(self) -> None:
         """Drop every model and callback reference (the updater, the agent's
         answer hook) so their GPU memory can be freed."""
         self._belief = None
+        self._final_scorer = None
         self._intermediate_answer = None
 
     # ------------------------------------------------------------------
@@ -330,6 +407,7 @@ class BeliefModel:
             "num_new_docs": len(new_ids),
             **gain,
             "certainty": _round(self._belief.certainty()) if state is not None else None,
+            "called": bool(update.get("called")),
             "intermediate_answers": intermediate_answer["answers"] if intermediate_answer else None,
             "intermediate_answer_status": intermediate_answer_status,
             "docs": per_doc,

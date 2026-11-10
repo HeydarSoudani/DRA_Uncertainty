@@ -30,6 +30,14 @@ OSS_SYSTEM_PROMPT = (_PROMPT_DIR / "system.txt").read_text()
 # Reasoning-only responses in a row before the loop ends.
 MAX_INVALID_TOOL_CALLS = 5
 
+# OpenRouter hosts for gpt-oss-20b/120b.  Some hosts (DeepInfra, DekaLLM,
+# Darkbloom, BaseTen, Groq on 120b) often return the search call as JSON at
+# the end of the reasoning text instead of a function_call, which the loop sees
+# as a reasoning-only response; these three parsed every call (2026-11-10
+# replay, 15 calls per host and model).  No fallbacks: a run never moves to an
+# unchecked host.
+OPENROUTER_PROVIDER_PIN = {"order": ["Parasail", "AkashML", "PrimeIntellect"], "allow_fallbacks": False}
+
 # The tool a server's validation error names, e.g. Groq's "attempted to call
 # tool 'open_file' which was not in request.tools".
 _UNKNOWN_TOOL_RE = re.compile(r"attempted to call tool '([^']+)'")
@@ -75,6 +83,8 @@ class OSS_Agent(BasicAgent):
             api_key=self._api_key,
             max_output_tokens=max_output_tokens,
             reasoning_effort=reasoning_effort,
+            extra_body=({"provider": OPENROUTER_PROVIDER_PIN}
+                        if "openrouter.ai" in self.model_url else None),
             system_prompt=OSS_SYSTEM_PROMPT,
             format_instructions=OSS_FORMAT,
         )
@@ -119,6 +129,8 @@ class OSS_Agent(BasicAgent):
                 "summary": "detailed",
             },
         }
+        if cfg.extra_body:
+            initial_request["extra_body"] = cfg.extra_body
 
         reasoning_path: List[Dict[str, Any]] = []
         prediction = ""
@@ -177,9 +189,14 @@ class OSS_Agent(BasicAgent):
             ):
                 self._reasoning_only_retries += 1
                 error = response_dict.get("error") or {}
+                last_reasoning = " ".join(
+                    c.get("text") or "" for c in response_dict["output"][-1].get("content") or []
+                )
                 logger.warning(
-                    "Iteration %d: reasoning-only response (%d in a row), status=%s, error=%s",
+                    "Iteration %d: reasoning-only response (%d in a row), status=%s, error=%s, "
+                    "output_tokens=%s, reasoning tail: %r",
                     iteration, self._reasoning_only_retries, response_dict.get("status"), error.get("message"),
+                    (response_dict.get("usage") or {}).get("output_tokens"), last_reasoning[-300:],
                 )
                 if self._reasoning_only_retries > MAX_INVALID_TOOL_CALLS:
                     logger.warning("Too many reasoning-only responses, breaking loop")

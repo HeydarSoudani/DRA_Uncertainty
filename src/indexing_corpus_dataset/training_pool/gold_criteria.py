@@ -9,7 +9,12 @@ of the question, from the question and the criteria's source structure:
 
     multi_hop   one text per criterion from its relations (placeholders E1,
                 E2, ... for the criteria, the last one the answer):
-                InfoSeek's tree hops, WebShaper's formalization variables
+                InfoSeek's tree hops, WebShaper's formalization variables;
+                the writer orders the criteria so that each refers only to
+                criteria before it (by placeholder, saved as the
+                criterion's id: "the town of E1" -> "the town of c1"),
+                the answer last; the row's criteria are reordered and
+                renumbered in that order (``_order``, ``_with_texts``)
     set         the property phrase and the aggregation from the question,
                 its property and its computation (TRQA): the member
                 criteria "<member>: <property>" and the rest criterion
@@ -24,15 +29,18 @@ answer into a criterion; an answer the question names is exempt; in a set
 query, no member, value or final answer in the phrase or the aggregation,
 the member's name in its own criterion being the point; in a multi-hop
 query, no number or capitalized word the question does not state, such as
-a year the relations give), or when
+a year the relations give, placeholders left out), or when
 the query has no criteria (FRAMES: no LLM call); false when the texts
 failed for good (a leak or an unstated word after the retry, no text for a
 criterion); None when the writer call failed (an error, a reply that is not
 a JSON object), so the next build run asks again.  A list that leaks or
-holds unstated words is asked once more with them named.  The number of criteria is the source's (no cap).
+holds unstated words, or is in an invalid order, is asked once more with
+the problem named.  The number of criteria is the source's (no cap).
 
 Memory: ``criterion_texts.jsonl`` gets one row per query whose texts are final
-(``{"id", "structure", "texts", "texts_ok", "errors", "model", "prompt"}``),
+(``{"id", "structure", "texts", "texts_ok", "errors", "model", "prompt"}``,
+and a multi-hop row's ``order``: the source's criterion indices in the
+writer's order; ``structure`` is the source row's),
 appended as the writer finishes them, so a stopped run keeps its texts.  A
 run reuses them for a query whose criteria are unchanged (``structure``)
 and writes the others.  A writer (``gold_criteria.model``) or prompts other
@@ -47,7 +55,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
@@ -77,6 +85,7 @@ SET_SYSTEM = _read("set_system.txt")
 SET_USER = _read("set_user.txt")
 RETRY_NOTE = "\n\n" + _read("retry_note.txt")
 UNSTATED_NOTE = "\n\n" + _read("retry_note_unstated.txt")
+ORDER_NOTE = "\n\n" + _read("retry_note_order.txt")
 
 # The prompts of each query shape.
 PROMPTS = {"multi_hop": (MULTI_HOP_SYSTEM, MULTI_HOP_USER), "set": (SET_SYSTEM, SET_USER)}
@@ -86,7 +95,8 @@ def prompt_hash(shape: str) -> str:
     """The hash of the prompts of query shape *shape*, saved with each row
     of the memory: a change of one shape's prompts leaves the texts of the
     other shapes valid."""
-    text = "\n".join((*PROMPTS[shape], RETRY_NOTE, UNSTATED_NOTE))
+    notes = (RETRY_NOTE, UNSTATED_NOTE, *((ORDER_NOTE,) if shape == "multi_hop" else ()))
+    text = "\n".join((*PROMPTS[shape], *notes))
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
@@ -131,14 +141,43 @@ def _unstated(texts: List[str], question: str) -> List[str]:
     return list(dict.fromkeys(w for w in found if not set(normalize(w).split()) <= words))
 
 
-def _with_texts(row: dict, texts: List[Optional[str]], ok: Optional[bool], errors: List[str]) -> Dict[str, Any]:
-    """*row* with one text per criterion, ``texts_ok`` *ok* and *errors*."""
-    criteria = [{**c, "text": t} for c, t in zip(row["criteria"], texts)]
-    return {**row, "criteria": criteria, "texts_ok": ok, "errors": errors}
+# The key of a row with texts that carries the writer's order to the
+# memory (``fill_texts`` takes it out of the row).
+_ORDER_KEY = "_order"
+
+
+def _with_texts(row: dict, texts: List[Optional[str]], ok: Optional[bool], errors: List[str],
+                order: Optional[List[int]] = None) -> Dict[str, Any]:
+    """*row* with one text per criterion, ``texts_ok`` *ok* and *errors*.
+    With *order* (a multi-hop row: the source's criterion indices in the
+    writer's order, the *texts* in that order) the criteria are reordered
+    and renumbered "c1", "c2", ... in it, the placeholders of their
+    relations ("E<k>") renumbered with them."""
+    source = row["criteria"]
+    if order is None:
+        criteria = [{**c, "text": t} for c, t in zip(source, texts)]
+    else:
+        position = {i + 1: n + 1 for n, i in enumerate(order)}
+        renumber = lambda r: _PLACEHOLDER_RE.sub(lambda m: f"E{position.get(int(m.group(1)), m.group(1))}", r)
+        criteria = [{**source[i], "id": f"c{n + 1}", "text": t, "relations": [renumber(r) for r in source[i]["relations"]]}
+                    for n, (i, t) in enumerate(zip(order, texts))]
+    return {**row, "criteria": criteria, "texts_ok": ok, "errors": errors,
+            **({_ORDER_KEY: list(order)} if order is not None else {})}
 
 
 def _failed(row: dict, errors: List[str]) -> Dict[str, Any]:
     return _with_texts(row, [None] * len(row["criteria"]), False, errors)
+
+
+# A placeholder in a criterion text ("E2"): the writer refers to another
+# entity of the chain by it.
+_PLACEHOLDER_RE = re.compile(r"\bE(\d+)\b")
+
+
+def _criterion_refs(text: str, n: int) -> str:
+    """*text* with each placeholder "E<k>" (1 <= k <= *n*) written as the id
+    of its criterion, "c<k>" (the belief model's criterion ids)."""
+    return _PLACEHOLDER_RE.sub(lambda m: f"c{m.group(1)}" if 1 <= int(m.group(1)) <= n else m.group(0), text)
 
 
 def _chain(criteria: List[dict]) -> str:
@@ -151,8 +190,28 @@ def _chain(criteria: List[dict]) -> str:
     return "\n".join(lines)
 
 
+def _order(entities: List[str], texts: List[str], n: int) -> List[str]:
+    """The problems of the writer's order (*entities*, its placeholders in
+    order, with their *texts*) for a chain of *n* criteria: each
+    placeholder exactly once, the answer ("E<n>") last, and a text refers
+    only to placeholders before it."""
+    problems = []
+    if sorted(entities) != sorted(f"E{k}" for k in range(1, n + 1)):
+        problems.append(f"the placeholders were {', '.join(entities) or 'none'}, not E1 to E{n} once each")
+        return problems
+    if entities[-1] != f"E{n}":
+        problems.append(f"the answer E{n} was not last")
+    for k, (e, t) in enumerate(zip(entities, texts)):
+        for ref in dict.fromkeys(f"E{m}" for m in _PLACEHOLDER_RE.findall(t)):
+            if ref == e or ref in entities[k + 1:]:
+                problems.append(f"{e} refers to {ref}" + (", itself" if ref == e else ", which comes after it"))
+    return problems
+
+
 def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
-    """The texts of a multi-hop row (InfoSeek, WebShaper)."""
+    """The texts of a multi-hop row (InfoSeek, WebShaper), in the
+    writer's order (``_order``: each criterion refers only to criteria
+    before it, the answer last)."""
     question, criteria, names_all = row["text"], row["criteria"], row["entity_names"]
     others = names_all or [a for c in criteria for a in c["answers"]]
     # An answer the question itself mentions (a named answer) cannot be kept out.
@@ -162,15 +221,23 @@ def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     for _ in range(2):
         data = writer.ask(MULTI_HOP_SYSTEM, MULTI_HOP_USER.format(question=question, chain=_chain(criteria),
                                                                   retry=retry))
-        items = data.get("criteria")
-        by_label = {str(i.get("entity", "")).strip(): str(i.get("text", "")).strip()
-                    for i in items or [] if isinstance(i, dict)}
-        texts = [by_label.get(f"E{k}", "") for k in range(1, len(criteria) + 1)]
-        if not all(texts):
+        items = [i for i in data.get("criteria") or [] if isinstance(i, dict)]
+        entities = [str(i.get("entity", "")).strip() for i in items]
+        texts = [str(i.get("text", "")).strip() for i in items]
+        if len(texts) != len(criteria) or not all(texts):
             errors.append("writer: no text for every criterion")
+            retry = ""
             continue
-        leaked = _leaks(texts, names, others)
-        unstated = _unstated(texts, question)
+        problems = _order(entities, texts, len(criteria))
+        if problems:
+            errors.append(f"writer: order: {'; '.join(problems)}")
+            retry = ORDER_NOTE.format(problems="; ".join(problems))
+            continue
+        # The checks read the texts without their placeholders (a reference
+        # to another entity, not a detail of the question).
+        bare = [_PLACEHOLDER_RE.sub(" ", t) for t in texts]
+        leaked = _leaks(bare, names, others)
+        unstated = _unstated(bare, question)
         if leaked or unstated:
             retry = ""
             if leaked:
@@ -180,7 +247,10 @@ def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
                 errors.append(f"writer: texts state {unstated}, the question does not")
                 retry += UNSTATED_NOTE.format(words=", ".join(f'"{w}"' for w in unstated))
             continue
-        return _with_texts(row, texts, True, [])
+        order = [int(e[1:]) - 1 for e in entities]
+        position = {f"E{i + 1}": f"E{n + 1}" for n, i in enumerate(order)}
+        texts = [_PLACEHOLDER_RE.sub(lambda m: position.get(m.group(0), m.group(0)), t) for t in texts]
+        return _with_texts(row, [_criterion_refs(t, len(criteria)) for t in texts], True, [], order)
     return _failed(row, errors)
 
 
@@ -286,7 +356,8 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
     for row in rows:
         old = memory.get(str(row["id"]))
         if old is not None and old["structure"] == _structure(row):
-            out[row["id"]] = _with_texts(row, old["texts"], old["texts_ok"], old["errors"])
+            out[row["id"]] = _with_texts(row, old["texts"], old["texts_ok"], old["errors"], old.get("order"))
+            out[row["id"]].pop(_ORDER_KEY, None)
         elif not row["criteria"]:
             out[row["id"]] = _with_texts(row, [], True, [])
         else:
@@ -297,13 +368,13 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
         require_api_key(gc, f"the criterion texts of {len(todo)} queries")
         writer = CriteriaWriter(gc.model, gc.max_tokens)
 
-        def one(row: dict) -> dict:
+        def one(row: dict) -> Tuple[dict, dict]:
             try:
                 done = criteria_texts(row, writer)
             except Exception as e:  # noqa: BLE001 - recorded; the next run asks again
                 log.warning("criterion texts of %s failed: %s", row["id"], e)
-                return {**row, "errors": [f"writer: {e}"]}
-            return done
+                done = {**row, "errors": [f"writer: {e}"]}
+            return row, done
 
         paths.texts.parent.mkdir(parents=True, exist_ok=True)
         pool = ThreadPoolExecutor(max_workers=max(1, gc.workers))
@@ -311,13 +382,17 @@ def fill_texts(gc: GoldCriteriaConfig, paths: PoolPaths, rows: List[dict]) -> Li
             with open(paths.texts, "a", encoding="utf-8") as fh:
                 futures = [pool.submit(one, row) for row in todo]
                 for future in tqdm(as_completed(futures), total=len(futures), desc="[texts]", dynamic_ncols=True):
-                    row = future.result()
+                    # The structure is the source row's (the texts may
+                    # reorder its criteria).
+                    source, row = future.result()
+                    order = row.pop(_ORDER_KEY, None)
                     out[row["id"]] = row
                     if row["texts_ok"] is not None:
-                        fh.write(json.dumps({"id": row["id"], "structure": _structure(row),
+                        fh.write(json.dumps({"id": row["id"], "structure": _structure(source),
                                              "texts": [c["text"] for c in row["criteria"]],
                                              "texts_ok": row["texts_ok"], "errors": row["errors"],
-                                             "model": gc.model, "prompt": prompt_hash(row["query_shape"])},
+                                             "model": gc.model, "prompt": prompt_hash(row["query_shape"]),
+                                             **({"order": order} if order is not None else {})},
                                             ensure_ascii=False) + "\n")
                         fh.flush()
         finally:

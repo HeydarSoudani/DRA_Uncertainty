@@ -392,7 +392,7 @@ class TongyiDR_Agent(BasicAgent):
                             })
 
                         # Format combined results for model (single <tool_response>)
-                        result_text = format_as_markdown(all_docs, self.seen_top_k)
+                        result_text = format_as_markdown(all_docs, self.seen_top_k, self.max_passage_chars)
 
                     messages = [
                         *messages,

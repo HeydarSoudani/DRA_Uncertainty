@@ -75,7 +75,8 @@ The belief model (`src/belief_model_component/`) can be plugged into any agent:
 It follows Agent-BRACE (Singh et al., 2026, arXiv:2605.11436), adapted to search: the environment is the retriever,
 the observation of a search iteration is its documents and the agent's turn, and the belief state gives each
 criterion of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
-how likely it is an answer, and its basis (passage or reasoning). All criteria and belief
+how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
+passage supports yet. All criteria and belief
 calls are LLM calls: the criteria extractor
 uses `llm_criteria`, the belief update (`src/belief_model_component/updater.py`) `belief_judge_model` (default
 `llm_criteria`).
@@ -89,7 +90,7 @@ prompt, a shared core plus one block per shape:
 | Shape | Datasets | Criteria |
 |---|---|---|
 | single target | BrowseComp-Plus | every clue of the target, copied verbatim (no cap) |
-| multi-hop | deep_qa | one criterion per entity on the chain, the answer last (FRAMES; at most 8) |
+| multi-hop | deep_qa | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
 | set | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
 | report | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
@@ -105,11 +106,13 @@ Rules for report criteria:
 - Every criterion reads on its own, naming its subject instead of pointing back ("it", "these").
 - Criteria are distinct: none asks for what another one asks for.
 
-Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `rest`, `aggregate` or `aspect` (one
-aspect of a report topic). All clues and hops are closed; a set query's members are closed, its "any other member"
-criterion rest and its last criterion aggregate (each added by code when the model leaves it out); all report
-criteria are aspects. A closed or aggregate criterion has one answer, so its candidates are alternatives; the others
-have several answers that hold together (members, values, facts). No document states an aggregate (the agent computes
+Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate` or `aspect`
+(one aspect of a report topic). All clues are closed; a multi-hop query's hops before its answer are `hop`, its answer
+closed (`criteria.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a set query's
+members are closed, its "any other member" criterion rest and its last criterion aggregate (each added by code when the
+model leaves it out); all report criteria are aspects. A closed or aggregate criterion has one answer, so its
+candidates are alternatives; the others have several answers that hold together (members, values, facts; two entities
+can both fit a hop and lead on to the same next hop). No document states an aggregate (the agent computes
 it), so its candidates rest on the agent's turns only.
 
 **Gold and silver criteria.** Criteria are gold when they come from the question or from the dataset's annotation,
@@ -176,91 +179,110 @@ Rules of a bank line:
 
 ### Belief update
 
-The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. Each
-search iteration makes one call (`system.txt` in `src/belief_model_component/prompts/belief_update/`, the per-shape
-context in `criterion_shapes.txt`, the status definitions of the shape's criterion types in `criterion_statuses.txt`,
-the per-shape example in `examples.txt`), the same prompt for the prompted teacher and a trained student, so one training
-sample is one call. It reads every criterion with its current candidates, the agent's turn of the iteration (its
-reasoning only, labelled `t<iteration>`; the search queries stay in the trajectory) and the iteration's documents not
-judged before, each labelled `d<n>` when first shown. After the last iteration, the agent's answer turn (its
-reasoning and final answer) is read the same way, with no document. The reply has three lists:
+The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. A call
+(`system.txt` in `src/belief_model_component/prompts/belief_update/`, the per-shape context in `criterion_shapes.txt`,
+the status definitions of the shape's criterion types in `criterion_statuses.txt`, the per-shape example in
+`examples.txt`) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
-1. **Think observations**: per criterion, the spans of the turn that propose, doubt or reject a candidate of it (not
-   plans, search intents or remarks on the results). A span must occur in the turn; an observation without one is
-   dropped.
-2. **Passage observations**: per new passage and criterion (not a computed one), the spans of the passage that give
-   information about it. Each span is checked on its own (a span joined with "..." is split first); an observation
-   without a verified span is dropped. A passage may give information about several criteria.
-3. **Candidates**: per candidate that is new or whose status changes, `{id, candidate, reason, status}`. The reason
-   comes first and opens with `Was <current status>:` or `New:`, then the observations that move it, with their
-   source labels.
+**When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when it has a document not
+judged before (labelled `d<n>` when first shown); a judged passage is never shown again. Otherwise no call
+is made (`called: false`): the belief is carried forward and the turn waits; the next call reads every turn since the
+last call (the last 6), each labelled `t<iteration>`. After the last iteration, the answer turn (its reasoning and
+final answer) makes the final call: on a short-answer dataset the final scorer's (below), on a report one more
+update with the turns still waiting.
 
-The belief is kept at two levels. **Shown**: per criterion its candidates, one line each, `"<name>": <status>
-(<basis>)`, highest status first (ties: "passage" before "reasoning", then the order added); the only thing the next update reads and the agent's `<belief_state>` tag shows.
-**Saved**: every observation that entered (its verified spans), per criterion every source ever assigned to it (the
-`references` of the `final` line), and the candidate updates with their reasons (`updates`), never shown again.
+**Passage length.** The agent and the belief update read the same text of each document: its first
+`max_passage_chars` characters (one shared setting, default 1000, `utils.text_utils.cut_passage`), report documents
+included. A passage's title is its metadata title, else its front matter's (`title:`), else its first line.
 
-Code applies the reply (`BeliefState.apply`) so that the state carries the whole past:
+The call reads every criterion with its current candidates, their support and its proposals, the turns and the
+passages. The reply has three lists:
 
-- **Removal.** A candidate the reply does not name keeps its status. The reply removes a candidate by writing
-  "removed": taken when the step has the observation that can rule it out (a new passage observation on the criterion
-  that the reason cites, or, for a candidate only reasoning names, a new reasoning observation on it), else flagged
-  and kept (`bad_removal`; `remove_unlisted` for a name not listed). A removed candidate leaves the list and is saved
-  in the final line's `references[].removed`; one added again is flagged (`readded`). Names are matched on letters and digits only; a new name that contains a listed one, or
-  the reverse, is flagged (`near_duplicate`), not merged.
-- **Basis.** "passage" when a passage observed on the criterion names the candidate as whole words (a span or its
-  title), or the
-  reason cites such a passage; else "reasoning". Once "passage", it stays.
-- **Passages set the status; reasoning only names or rejects candidates** (not for a computed criterion): a
-  "reasoning" candidate, and a new one in a step with no new passage observation on the criterion, is moved into
-  "unlikely" .. "possible" when the reply wrote a status outside it (`turn_only`). In a step with no new passage
-  observation on the criterion, a listed "passage" candidate keeps its status, up or down (`turn_only_change`): a
-  passage of an earlier step does not move a status in a later one, unless the criterion has one answer and another
-  of its "passage" candidates is added, removed or changed in the step (its status depends on the other candidates; a
-  "reasoning" one meets no part of the criterion).
+1. **Reasoning observations** (claims): per candidate the reasoning names, assesses or rejects, `{id, turn,
+   candidate, span, claim}`: the claim is a status, or "rejected". The span must occur in its turn.
+2. **Passage observations**: per passage and criterion (not a computed one), the spans of the passage that state a
+   part of the criterion. Each span is checked on its own (a span joined with "..." is split first); an observation
+   without a verified span is dropped.
+3. **Candidates**: per candidate whose support or status changes, `{id, candidate, support, against, reason,
+   status}`: the labels of the call's passages whose observations support it or speak against it, a reason opening
+   with `Was <current status>:`, `Was proposed:` or `New:`, and the new status, or "removed".
+
+The belief is kept at two levels. **Shown** to the next update: per criterion its candidates, highest status first,
+each with its support, one line per passage observation (`+` supports, `-` against: the spans and the passage's title
+in brackets; labels are local to one call, so they are never shown again), then `proposed:` and the names the agent
+proposed that no passage supports yet. **Saved**: every observation that entered (verified spans), per criterion every
+source ever assigned to it (the `references` of the `final` line), the agent's latest claim on each candidate, and
+the candidate updates with their reasons (`updates`); the claims and reasons are never shown.
+
+Code applies the reply (`BeliefState.apply`):
+
+- **Reasoning only proposes.** A claim sets the agent's claim on a listed candidate (never its status), or adds a
+  proposal (no status, not a rival, never selected; at most 8 per criterion), updates it, or drops it when the claim
+  is "rejected". A proposal becomes a candidate when a passage supports it.
+- **Support.** A support or against label must be a passage of the call observed on the criterion (`bad_ref`
+  otherwise, the label dropped). A second observation of a passage on the criterion adds its new spans to the first. The basis of a
+  candidate follows from its support ("passage", or "reasoning" for a computed criterion's candidates).
+- **Hard limits** (not for a computed criterion, whose status the reasoning sets): a candidate no passage supports is
+  at most "possible", and a new name without any passage of the call stays a proposal (`no_support`); a name that
+  passages of the call only speak against is not added, and a proposal stays one (`against_only`); a listed
+  candidate whose update adds no support keeps its status, unless in the same call another of its candidates gained
+  support, was added or was removed (one answer: the status depends on the others; a proposal added or dropped does
+  not count); otherwise `no_new_support`. A criterion is judged on its own parts: a part that refers to another
+  criterion is met when a passage links the candidate to a candidate of that criterion, whatever that candidate's
+  status, so a change of the referenced criterion moves nothing.
+- **Removal.** A candidate the reply does not name keeps its status. "removed" is taken when a passage of the call
+  speaks against the candidate (`against`), or for a proposal a claim of the call rejected; else flagged and kept
+  (`bad_removal`; `remove_unlisted` for a name neither listed nor proposed). Removed candidates and dropped proposals
+  are saved in the final line's `references[].removed`; a name added again is flagged (`readded`). Names are matched
+  on letters and digits only; a new name that contains a listed one, or the reverse, is flagged (`near_duplicate`).
 - **Not taken**: an update of an unknown criterion, without a name (`empty_candidate`), with a status that is no
   candidate status (`bad_status`), a second one of the same candidate (`duplicate_candidate`), or of a criterion
-  without a new observation in the step (`unexpected_candidate`).
-- **Flagged**: a reason without its opening (`no_reason_opening`), a `Was X` that is not the current status
-  (`wrong_previous`), `Was` on an unlisted candidate (`not_listed`, it is added), `New:` on a listed one
-  (`listed_as_new`), a cited source with no observation on the criterion (`bad_ref`), a new candidate in none of its
-  spans and titles (`unknown_candidate`), the current status written again (`unchanged`), and a one-answer criterion
-  with more than one candidate above "possible" (`competing_candidates`).
+  without an observation in the call (`unexpected_candidate`); a claim without a candidate or a valid claim
+  (`bad_claim`).
+- **Flagged** (statuses kept): a reason without its opening (`no_reason_opening`), a `Was X` that is not the current
+  status (`wrong_previous`), `Was` on an unlisted candidate (`not_listed`), `New:` on a listed one (`listed_as_new`),
+  a reason citing a source with no observation on the criterion (`bad_ref`), a new candidate in none of its
+  criterion's passage spans and titles (`unknown_candidate`), no new support with the current status written again
+  (`unchanged`); in a one-answer criterion, a "certain" candidate while another has support (`certain_with_rival`)
+  and two candidates with the same support but different statuses (`unequal_tie`).
 
 Derived per criterion: its status, the highest of its candidates ("unknown" without one), and its selected
-candidate(s), among those at "possible" or above (a ruled-out one is never selected): for a one-answer criterion the
-first one listed, for a several-answers criterion every one. `changed` lists the criteria with a
-candidate added, removed or whose status changed. When the call fails the belief stays as it was and the documents are shown
-again when retrieved again. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
+candidate(s), among those at "possible" or above: for a one-answer criterion the first one listed, for a
+several-answers criterion every one; a proposal is never selected. `changed` lists the criteria whose candidates or
+proposals changed. When the call fails the belief stays as it was, its new documents are shown again when retrieved
+again and its turns' claims are lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
 
 The statuses of a candidate, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3),
-`certain` (4); "unknown" (level 0) is the status of a criterion without candidates. Passage observations set the
-status; reasoning observations only name or reject candidates. How the observations give a status depends on the
-criterion type, and each dataset's prompt holds only the definitions of the types its query shape has
-(`prompts/belief_update/criterion_statuses.txt`; single_target, multi_hop: one answer; multi_aspect: several answers;
-set: all three):
+`certain` (4); "unknown" (level 0) is the status of a criterion without candidates. The model writes the status: it
+weighs the support (how many parts passages state, how directly, how many sources agree, whether one speaks against
+it). Each dataset's prompt holds only the definitions of the types its query shape has
+(`prompts/belief_update/criterion_statuses.txt`; single_target: one answer; multi_hop: one answer and several answers;
+multi_aspect: several answers; set: all three):
 
 | status | several answers (candidates do not compete) | one answer (candidates compete) |
 |---|---|---|
-| unlikely | a passage speaks against it without ruling it out | another candidate meets more parts, or a passage speaks against it |
-| possible | no passage meets a part of the criterion for it | no passage meets a part, or another candidate meets as many parts |
-| probable | passages meet some parts | passages meet some parts, every other candidate meets fewer |
-| almost certain | passages meet most parts, none speaks against it | passages meet most or all parts, none against, every other meets fewer |
-| certain | passages meet all parts, none speaks against it | passages meet all parts, none against, no other candidate meets a part |
+| unlikely | a passage speaks against it without stating that it fails a part | another candidate has clearly stronger support, or a passage speaks against it |
+| possible | no passage states a part for it | no passage states a part, or another candidate has support as strong |
+| probable | passages state some parts | passages state some parts, its support stronger than every other's |
+| almost certain | every part stated, some only by inference or in part, none against | the same, and every other candidate's support clearly weaker |
+| certain | every part stated, none against | every part stated, none against, no other candidate has support |
 
 When several fit, the lowest is given. For a computed criterion the reasoning sets the status (how completely the
-computation uses the answers it is computed from). A candidate a passage rules out, or a reasoning-only one the
-reasoning rejects, is removed. Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the neutral level
-0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
+computation uses the answers it is computed from). Differences from Agent-BRACE: it ranks "unknown" lowest; here it
+is the neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
 
 The update prompt reads each criterion with its candidates (`belief_state.format_belief`):
 
 ```
-c2 (one answer): the engineer who was born in the town where the Varn Folk Museum was founded
-  "Henrik Dahl": certain (passage)
-  "Nils Berg": unlikely (reasoning)
-c3 (one answer): the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded
+c1 (several answers): the town where the Varn Folk Museum was founded
+  "Osby": certain
+    + "The Varn Folk Museum was founded in Osby in 1921" [Osby]
+c2 (several answers): the engineer who was born in the town of c1
+  "Henrik Dahl": certain
+    + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
+c3 (one answer): the lighthouse that was designed by the engineer of c2
   (no candidate)
+  proposed: "Kalvik Lighthouse"
 ```
 
 The certainty score s_t (`belief_model_component/certainty.py`) is a fixed function of the statuses:
@@ -271,14 +293,28 @@ The certainty score s_t (`belief_model_component/certainty.py`) is a fixed funct
    the candidates share nothing.
 2. s_t is the geometric mean over the criteria. The rest criterion of a set query is left out.
 
-s_T, after the answer turn, is compared with the correctness of the agent's final answer.
+s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
+scorer's (`belief_model_component/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
+the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
+and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
+and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
+status is (unlikely 1/6, possible 1/2, probable 2/3, almost certain 5/6, certain 1). The prompt shares the belief
+update's definitions and status definitions: the final answer is judged as a candidate of the query, the criteria
+weighed by how much each identifies the answer.
+The fixed function of the final statuses is kept next to it as a baseline (`certainty_formula`), with its form
+anchored on the answer's candidates (`certainty_answer_formula`: a candidate's status, "unlikely" for a name a
+passage ruled out, "unknown" for a proposal or an unlisted name). On a report, s_T is the fixed function of the
+belief after the final update. `analysis/final_score_ablation.py` rescores saved runs: the scorer with and without
+the belief, and both formulas.
 
 Saved in `belief/{qid}.jsonl` (schema in `src/evaluation/belief/writer.py`): a meta line, one line per iteration and
-one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, the documents
+one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, selected,
-candidates}`), the candidate `updates` of the reply (with their reasons), the criteria it `changed`, the
-`observations` that entered (with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
-criterion every source assigned to it over the sample, and the candidates removed from it); its `certainty` is s_T. The same belief is readable in the
+candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the candidate `updates` of the
+reply (with their reasons and support labels), the criteria it `changed`, the `observations` that entered (claims and
+passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
+criterion every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
+with `certainty_label`, `certainty_formula`, `certainty_answer_formula` and `final_score` (status, answer's candidates, reason, issues). The same belief is readable in the
 trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each iteration and
 the final belief before the result. For evaluation only, never shown to the agent:
 
@@ -298,15 +334,21 @@ results, one `<belief_state>` tag is appended to the trajectory (`src/belief_mod
 ```xml
 <belief_state step="2">
   <criteria>
-    <k1>the engineer who was born in the town where the Varn Folk Museum was founded
-      "Henrik Dahl": certain (passage)
+    <k1>the town where the Varn Folk Museum was founded
+      "Osby": certain
     </k1>
-    <k2>the lighthouse that was designed by an engineer who was born in the town where the Varn Folk Museum was founded</k2>
+    <k2>the engineer who was born in the town of k1
+      "Henrik Dahl": certain
+    </k2>
+    <k3>the lighthouse that was designed by the engineer of k2
+      unverified: "Kalvik Lighthouse"
+    </k3>
   </criteria>
 </belief_state>
 ```
 
-The tag is descriptive only: each criterion with its candidates, as the update reads them. Gold-based fields
+The tag is descriptive only: each criterion with its candidates and statuses (no support), and the names the agent
+proposed as `unverified`; a criterion id in a criterion's text is written with the tag's own id ("of k1"). Gold-based fields
 (`new_item_precision`, `recall_so_far`, relevant counts) stay in `belief/{qid}.jsonl` for analysis. Where the tag goes:
 
 | agents | place |

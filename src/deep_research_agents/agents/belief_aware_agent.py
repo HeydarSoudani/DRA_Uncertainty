@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from reasoner_component import disable_native_thinking, is_context_window_error
-from utils.text_utils import doc_id, doc_text, doc_title, number_citations, unique_docs
+from utils.text_utils import MAX_PASSAGE_CHARS, doc_id, doc_text, doc_title, number_citations, unique_docs
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     MAX_TURNS_ANSWER_INSTRUCTION,
@@ -289,7 +289,7 @@ class BeliefAwareAgent(BasicAgent):
     AGENT_NAME = "BeliefAware"
 
     def __init__(self, llm_client, retriever: Optional[Any] = None, max_iteration: int = 100,
-                 seen_top_k: int = 5, verbose: bool = True, max_passage_chars: int = 4000,
+                 seen_top_k: int = 5, verbose: bool = True, max_passage_chars: int = MAX_PASSAGE_CHARS,
                  max_retries: int = 3, task: str = "qa", report_chars: Optional[int] = None):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose

@@ -1,0 +1,1 @@
+Your earlier criteria were not in a valid order ({problems}); order them so that each refers only to criteria before it and the answer is last.

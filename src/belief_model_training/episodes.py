@@ -18,18 +18,22 @@ A monitor run also has the teacher belief model's view
 that wrote them, per iteration the teacher's reply, the agent turn it read
 and the records the reply gave (observations, candidate updates, changed
 criteria, issues and the beliefs after it), and the final call on the answer turn (the
-``final`` line).  The belief file must have one step per search iteration
+``final`` line: the final scorer's call on a short-answer query, one more
+update on a report).  The belief file must have one step per search iteration
 of the trajectory, with the same documents.
 
 Document text is read back from the corpus (``CorpusLookup.contents``, the
 field the retrievers return).
 
 ``BeliefTracker`` runs the inference belief update (``BeliefUpdateSignal``
-with the ``LLMBeliefUpdater`` of the query shape) over an episode with the
-LLM calls made by the caller: the student's chains in phase 3, the
+with the ``LLMBeliefUpdater`` of the query shape, the same call triggers:
+a step without a new passage makes no call and its turn is
+read by the next one) over an episode with the LLM calls made by the
+caller: the student's chains in phase 3, the
 teacher's saved replies in ``replay_teacher``, which gives the exact prompt
 of every teacher call (the SFT inputs), the final call on the answer turn
-included, and checks the replay against the saved records (span checks
+included (``ScorerCall``: the belief model's second task, on a
+short-answer query), and checks the replay against the saved records (span checks
 depend on the passage text and on the agent turns), so an episode
 whose documents or prompts cannot be rebuilt is caught.
 
@@ -47,9 +51,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from belief_model_component import BeliefUpdateSignal, Criterion, build_belief_updater
+from belief_model_component import BeliefUpdateSignal, Criterion, build_belief_updater, build_final_scorer
+from belief_model_component.final_score import check_issues, parse_final_score
 from belief_model_component.agent_turn import agent_turn_text, answer_turn
 from belief_model_component.belief_model import unique_docs
+from belief_model_component.signals import CallPlan
 from belief_model_component.updater import Passage
 from evaluation.belief import SCHEMA_VERSION
 from evaluation.belief.writer import _clean
@@ -106,12 +112,14 @@ class Episode:
     query_shape: str
     steps: List[EpisodeStep]
     run_dir: str
+    # Characters of one document the run's belief update read
+    # (``runs.passage_chars``); None: whole documents.
+    max_passage_chars: Optional[int] = None
     # Monitor runs: the run's criteria, the model that wrote them.
     criteria: List[Dict[str, str]] = field(default_factory=list)
     criteria_model: Optional[str] = None
     replay_error: Optional[str] = None
-    # The agent of the run, and the pool source of the query (its gold annotation row).
-    policy_model: Optional[str] = None
+    # The pool source of the query (its gold annotation row).
     source: Optional[str] = None
     # Relevant documents of the query; the agent's final answer is correct
     # (null when it was not judged or the judge failed).
@@ -123,6 +131,8 @@ class Episode:
     teacher_final_output: Optional[str] = None
     teacher_final_failed: bool = False
     teacher_final_records: Dict[str, Any] = field(default_factory=dict)
+    # The final status of the teacher's final scorer (null: none, or a report).
+    teacher_final_label: Optional[str] = None
     # The gold criteria of the pool (queries with texts_ok only): per
     # criterion {id, kind, relations, answers, doc_ids, text}, answers and
     # doc_ids empty when the source states none; the criteria ids the
@@ -162,10 +172,11 @@ class Episode:
         return (self.answer_stated if t is None else self.steps[t].stated) or set()
 
 
-def _call_failed(errors: List[str]) -> bool:
-    """The step's belief update call raised (not a parse failure, not a
-    document without text)."""
-    return any(e.startswith("belief_update: ") and "parse (attempt" not in e for e in errors)
+def _call_failed(errors: List[str], prefix: str = "belief_update: ") -> bool:
+    """The step's belief update call (the final scorer's: *prefix*
+    ``"final_score: "``) raised (not a parse failure, not a document
+    without text)."""
+    return any(e.startswith(prefix) and "parse (attempt" not in e for e in errors)
 
 
 def _iteration(value: Any) -> int:
@@ -266,8 +277,12 @@ def attach_teacher(episode: Episode, path: Path) -> Optional[str]:
     if final is not None:
         episode.answer_turn = final.get("agent_turn")
         episode.teacher_final_output = final.get("reply")
-        episode.teacher_final_failed = _call_failed(final.get("errors") or [])
+        scorer = final.get("final_score") is not None or any(
+            e.startswith("final_score: ") for e in final.get("errors") or [])
+        episode.teacher_final_failed = _call_failed(final.get("errors") or [],
+                                                    "final_score: " if scorer else "belief_update: ")
         episode.teacher_final_records = _records(final)
+        episode.teacher_final_label = final.get("certainty_label")
     return None
 
 
@@ -338,20 +353,46 @@ class _NoLLM:
 @dataclass
 class UpdaterCall:
     """One belief update call of an episode: its prompt and what it reads.
-    ``t`` indexes ``episode.steps`` (None: the final call, on the answer
-    turn, which has no passage); ``iteration`` is the call's step label
-    (its turn is "t<iteration>")."""
+    ``t`` indexes ``episode.steps`` of the step that made the call (None:
+    the final call, on the answer turn); ``iteration`` is that step's
+    number (the answer turn's: the last step + 1); ``turns`` the agent's
+    turns the call reads, ``(step number, text)``, those of earlier steps
+    without a call first (``BeliefUpdateSignal.plan``)."""
     t: Optional[int]
     iteration: int
     messages: List[Dict[str, str]]
-    passages: List[Passage]
-    agent_turn: Optional[str]
+    plan: CallPlan
     # Per passage, its text as the call showed it (``LLMBeliefUpdater.shown_text``).
     shown: List[str] = field(default_factory=list)
+    is_scorer = False
+
+    @property
+    def passages(self) -> List[Passage]:
+        return self.plan.passages
+
+    @property
+    def turns(self) -> List[Tuple[int, str]]:
+        return self.plan.turns
+
+    def turn_positions(self, n_steps: int) -> List[Tuple[Optional[int], int]]:
+        """Per turn of the call, ``(t, step number)``: *t* its index in the
+        episode's steps (None: the answer turn, step ``n_steps + 1``)."""
+        return [(step - 1 if step <= n_steps else None, step) for step, _ in self.turns]
 
     def shown_text(self) -> Dict[str, str]:
         """Per document of the call, its text as the call showed it."""
-        return {doc: text for (_, doc, _), text in zip(self.passages, self.shown)}
+        return {p.doc_id: text for p, text in zip(self.passages, self.shown)}
+
+
+@dataclass
+class ScorerCall:
+    """The final scorer's call of an episode (``final_score``, a
+    short-answer query): its prompt, on b_{T-1} and the answer turn;
+    ``iteration`` the answer turn's (the last step + 1)."""
+    iteration: int
+    messages: List[Dict[str, str]]
+    t: Optional[int] = None
+    is_scorer = True
 
 
 class BeliefTracker:
@@ -359,31 +400,33 @@ class BeliefTracker:
     *criteria*, with the LLM calls made by the caller.
 
     ``open_step(t)`` starts step *t* and returns its call, or None when it
-    needs none (no unjudged document with text and no agent turn);
+    makes none (no unjudged document with text: its turn waits for the
+    next call, as at inference);
     ``open_final()`` returns the final call on the answer turn, or None (no
-    answer turn); ``submit`` applies the reply to the open call."""
+    answer turn): a ``ScorerCall`` on a short-answer query (the belief
+    stays b_{T-1}), else one more update; ``submit`` applies the reply to
+    the open call."""
 
     def __init__(self, episode: Episode, docs: List[List[Dict[str, Any]]], criteria: List[Criterion]) -> None:
         self.episode = episode
         self._docs = docs
-        self.updater = build_belief_updater(_NoLLM(), model="trained", query_shape=episode.query_shape)
+        self.updater = build_belief_updater(_NoLLM(), model="trained", query_shape=episode.query_shape,
+                                            max_passage_chars=episode.max_passage_chars)
+        self.scorer = build_final_scorer(_NoLLM(), model="trained", query_shape=episode.query_shape)
         self.signal = BeliefUpdateSignal(self.updater)
         self.signal.reset(episode.query, criteria)
-        self._pending: Optional[UpdaterCall] = None
+        self._pending: Optional[Any] = None
 
-    @property
-    def max_tokens(self) -> int:
-        """The reply budget of a call (the inference updater's)."""
-        return self.updater.max_tokens
+    def max_tokens(self, call: Any) -> int:
+        """The reply budget of *call* (the inference updater's or scorer's)."""
+        return self.scorer.max_tokens if call.is_scorer else self.updater.max_tokens
 
-    def _open(self, t: Optional[int], iteration: int, passages: List[Passage],
-              agent_turn: Optional[str]) -> Optional[UpdaterCall]:
-        turn = agent_turn if agent_turn and agent_turn.strip() else None
-        if not passages and turn is None:
+    def _open(self, t: Optional[int], iteration: int, plan: Optional[CallPlan]) -> Optional[UpdaterCall]:
+        if plan is None:
             return None
-        messages = self.updater.prompt(self.episode.query, self.signal.state, iteration, turn, passages)
-        self._pending = UpdaterCall(t, iteration, messages, passages, turn,
-                                    [self.updater.shown_text(text) for _, _, text in passages])
+        messages = self.updater.prompt(self.episode.query, self.signal.state, plan.turns, plan.passages)
+        self._pending = UpdaterCall(t, iteration, messages, plan,
+                                    [self.updater.shown_text(p.text) for p in plan.passages])
         return self._pending
 
     def open_step(self, t: int) -> Optional[UpdaterCall]:
@@ -391,15 +434,39 @@ class BeliefTracker:
             raise RuntimeError("the previous call has no reply yet")
         if self.signal.state is None:
             return None
-        passages, _ = self.signal.passages(self.signal.unjudged(unique_docs(self._docs[t])))
-        return self._open(t, self.episode.steps[t].iteration, passages, self.episode.steps[t].agent_turn)
+        step = self.episode.steps[t]
+        plan, _ = self.signal.plan(unique_docs(self._docs[t]), step.iteration, step.agent_turn)
+        return self._open(t, step.iteration, plan)
 
     def open_final(self) -> Optional[UpdaterCall]:
         if self._pending is not None:
             raise RuntimeError("the previous call has no reply yet")
         if self.signal.state is None or self.episode.answer_turn is None:
             return None
-        return self._open(None, len(self.episode.steps) + 1, [], self.episode.answer_turn)
+        iteration = len(self.episode.steps) + 1
+        if self.scorer is not None:
+            self._pending = ScorerCall(iteration, self.scorer.prompt(self.episode.query, self.signal.state,
+                                                                     self.episode.answer_turn))
+            return self._pending
+        plan, _ = self.signal.plan([], iteration, self.episode.answer_turn, final=True)
+        return self._open(None, iteration, plan)
+
+    def score_outcome(self, call: ScorerCall, raw: Optional[str]) -> Dict[str, Any]:
+        """The outcome of the scorer's reply *raw* (None: the call failed)
+        to *call*, as ``submit`` gives it, without touching the belief (a
+        GRPO group scores several replies to one scorer call):
+        ``{iteration, parsed, observations, updates, changed, issues,
+        beliefs, ruled_out, final_score, certainty, certainty_label}``
+        (``ruled_out``: ``BeliefState.ruled_out_lists`` of b_{T-1}, for
+        ``certainty.answer_certainty``)."""
+        score = parse_final_score(raw) if raw is not None else None
+        return {"iteration": call.iteration, "parsed": score is not None, "observations": None, "updates": [],
+                "changed": [], "issues": [], "beliefs": self.signal.beliefs(),
+                "ruled_out": self.signal.state.ruled_out_lists(),
+                "final_score": ({**score.to_dict(), "issues": check_issues(score, self.signal.state)}
+                                if score else None),
+                "certainty": score.probability if score else None,
+                "certainty_label": score.status if score else None}
 
     def submit(self, raw: Optional[str]) -> Dict[str, Any]:
         """Apply the reply *raw* (None: the call failed) to the open call;
@@ -411,13 +478,14 @@ class BeliefTracker:
         if call is None:
             raise RuntimeError("no open call")
         self._pending = None
-        parsed = (self.updater.parse(raw, call.iteration, call.agent_turn, call.passages)
-                  if raw is not None else None)
+        if call.is_scorer:
+            return self.score_outcome(call, raw)
+        parsed = self.updater.parse(raw, call.turns, call.passages, call.iteration) if raw is not None else None
         # As the inference belief model records a call whose reply did not parse.
         out: Dict[str, Any] = {"iteration": call.iteration, "parsed": parsed is not None,
                                "observations": None, "updates": [], "changed": [], "issues": []}
         if parsed is not None:
-            out.update(self.signal.apply(parsed, call.passages, call.iteration))
+            out.update(self.signal.apply(parsed, call.plan, call.iteration))
         out["beliefs"] = self.signal.beliefs()
         return out
 
@@ -428,9 +496,10 @@ def _canonical(records: Any) -> str:
 
 @dataclass
 class TeacherCall:
-    """One call of the teacher's replay: the call, the teacher's reply
-    (None: the call failed) and the replayed outcome."""
-    call: UpdaterCall
+    """One call of the teacher's replay: the call (an update, or the final
+    scorer's), the teacher's reply (None: the call failed) and the
+    replayed outcome."""
+    call: Any
     output: Optional[str]
     outcome: Dict[str, Any]
 
@@ -463,5 +532,8 @@ def replay_teacher(episode: Episode, docs: List[List[Dict[str, Any]]],
         for key in RECORD_KEYS:
             if _canonical(outcome.get(key)) != _canonical(saved.get(key)):
                 return calls, f"{name}: replayed {key} differ from the saved ones", tracker
+        if call.is_scorer and outcome["certainty_label"] != episode.teacher_final_label:
+            return calls, (f"{name}: replayed final status {outcome['certainty_label']!r}, saved "
+                           f"{episode.teacher_final_label!r}"), tracker
         calls.append(TeacherCall(call, reply, outcome))
     return calls, None, tracker

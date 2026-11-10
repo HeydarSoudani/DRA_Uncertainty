@@ -8,7 +8,7 @@ import functools
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +366,9 @@ class InferenceConfig:
 
     # Reasoning (Responses API only; None disables the reasoning block)
     reasoning_effort: Optional[str] = "high"
+
+    # Extra request fields (Responses API only), e.g. OpenRouter's provider pin
+    extra_body: Optional[Dict[str, Any]] = None
 
     # Prompt scaffolding
     system_prompt: Optional[str] = None

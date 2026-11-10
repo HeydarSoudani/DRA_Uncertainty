@@ -381,6 +381,9 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "criteria_source": kwargs["criteria_source"],
             "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
+            # Characters of one document the belief update reads (the
+            # agent's ``max_passage_chars``); a training replay shows the same.
+            "max_passage_chars": kwargs.get("max_passage_chars"),
         })
     return {
         "dataset": {
@@ -417,10 +420,23 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "post_fusion_reranker_input": kwargs.get("post_fusion_reranker_input", "original_query"),
         },
         "belief_model": belief,
+        # The OpenRouter hosts the agent's calls are pinned to (OSS on the
+        # API only; information, not a locked section: the pin is code).
+        "openrouter_provider": _openrouter_provider(policy_model, backend),
         "evaluation": {
             "judge_model": kwargs.get("judge_model"),
         },
     }
+
+
+def _openrouter_provider(policy_model: str, backend: str) -> Optional[Dict[str, Any]]:
+    """The provider pin of the agent's OpenRouter calls, None when it has
+    none (an agent other than OSS, or served by vLLM)."""
+    from utils.config import POLICY_MODEL_ALIAS
+    if backend != "api" or POLICY_MODEL_ALIAS.get(policy_model, policy_model) != "oss":
+        return None
+    from deep_research_agents.agents.oss_agent import OPENROUTER_PROVIDER_PIN
+    return dict(OPENROUTER_PROVIDER_PIN)
 
 
 # Settings that are no longer options, with the value they now always have:

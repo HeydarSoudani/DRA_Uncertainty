@@ -24,6 +24,7 @@ from jinja2 import Template
 
 from searcher_component.fusion import interleaving_fusion
 from deep_research_agents.agents.base_agent import BasicAgent
+from utils.text_utils import MAX_PASSAGE_CHARS, cut_passage
 from utils.config import InferenceConfig
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class CPMReport(BasicAgent):
         hard_mode: bool = True,
         verbose: bool = True,
         search_tool=None,
-        max_passage_chars: int = 4000,
+        max_passage_chars: int = MAX_PASSAGE_CHARS,
         model_name: str = "",
         model_url: str = None,
         **kwargs,
@@ -1133,7 +1134,7 @@ class CPMReport(BasicAgent):
                         doc_id = doc.get("doc_id") or doc.get("id")
 
                     citation_id = self._assign_citation_id(state, psg, doc_id)
-                    truncated_psg = psg[:self.max_passage_chars] + "..." if len(psg) > self.max_passage_chars else psg
+                    truncated_psg = cut_passage(psg, self.max_passage_chars)
                     cited_psg = f"[{citation_id}] {truncated_psg}"
                     all_passages.append(cited_psg)
 
@@ -1155,7 +1156,7 @@ class CPMReport(BasicAgent):
                             doc_id = doc.get("doc_id") or doc.get("id")
 
                         citation_id = self._assign_citation_id(state, psg, doc_id)
-                        truncated_psg = psg[:self.max_passage_chars] + "..." if len(psg) > self.max_passage_chars else psg
+                        truncated_psg = cut_passage(psg, self.max_passage_chars)
                         cited_psg = f"[{citation_id}] {truncated_psg}"
                         all_passages.append(cited_psg)
                         remaining_slots -= 1
