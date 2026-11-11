@@ -56,7 +56,7 @@ from belief_model_component import (  # noqa: E402
 )
 from belief_model_training.runs import read_correctness  # noqa: E402
 from belief_model_training.scoring import _final_measures  # noqa: E402
-from evaluation.belief import clean_record, passage_chars  # noqa: E402
+from evaluation.belief import clean_record, passage_tokens  # noqa: E402
 from indexing_corpus_dataset.doc_lookup import CorpusLookup  # noqa: E402
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path  # noqa: E402
 from utils.io_utils import read_jsonl  # noqa: E402
@@ -84,14 +84,14 @@ def _canonical(value: Any) -> str:
     return json.dumps(clean_record(value), sort_keys=True, ensure_ascii=False)
 
 
-def replay_belief(lines: List[Dict[str, Any]], shape: str, max_chars: Optional[int],
+def replay_belief(lines: List[Dict[str, Any]], shape: str, max_tokens: Optional[int],
                   corpus: CorpusLookup) -> BeliefState:
     """b_{T-1} of one saved belief file (its meta and step lines), rebuilt
     from the saved replies; raises on a step whose belief differs."""
     meta = lines[0]
     steps = [r for r in lines if r.get("record") == "step"]
     llm = _SavedReplies()
-    signal = BeliefUpdateSignal(build_belief_updater(llm, "saved", shape, max_passage_chars=max_chars))
+    signal = BeliefUpdateSignal(build_belief_updater(llm, "saved", shape, max_passage_tokens=max_tokens))
     signal.reset(meta["question"], [Criterion(**c) for c in meta["criteria"]])
     texts = corpus.contents({d["doc_id"] for r in steps for d in r.get("docs") or []})
     for r in steps:
@@ -119,7 +119,10 @@ def ablate_run(run_dir: Path, model: Optional[str], limit: Optional[int],
     if spec.task != "qa":
         raise SystemExit(f"{run_dir}: {dataset} is not a short-answer dataset")
     shape = spec.query_shape
-    max_chars = passage_chars(config, shape)
+    try:
+        max_tokens = passage_tokens(config)
+    except ValueError as exc:
+        raise SystemExit(f"{run_dir}: {exc}") from None
     model = model or config["belief_model"].get("belief_judge_model")
     scorer = build_final_scorer(belief_llm(model), model=model, query_shape=shape)
     corpus = CorpusLookup(default_corpus_path(dataset, subset or spec.subset))
@@ -136,7 +139,7 @@ def ablate_run(run_dir: Path, model: Optional[str], limit: Optional[int],
             logger.info("%s: no answer turn or no correctness; skipped", qid)
             continue
         try:
-            state = replay_belief(lines, shape, max_chars, corpus)
+            state = replay_belief(lines, shape, max_tokens, corpus)
         except Exception as e:
             logger.warning("%s: replay failed: %s; skipped", qid, e)
             continue

@@ -1,0 +1,309 @@
+"""Counts written to ``stats.json``, one section per build stage: questions
+per source, gold pages per question, drop reasons, and (webshaper_frames)
+page fetch outcomes and lengths, the hard negatives, the dataset as written;
+the ``annotations`` section holds the gold annotation of the dataset's rows
+(every build), the ``split`` section the split (``splits.py``)."""
+
+import json
+import statistics
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
+
+from utils.io_utils import atomic_write_text, read_jsonl, write_jsonl
+
+from .gold.annotations import CLOSED, KINDS, LEVELS, REST, has_gold, problems
+from .gold.criterion_texts import PROMPTS, prompt_hash
+
+
+def distribution(values: List[float]) -> dict:
+    if not values:
+        return {"n": 0}
+    ordered = sorted(values)
+    return {
+        "n": len(ordered), "mean": round(statistics.mean(ordered), 2), "median": statistics.median(ordered),
+        "p95": ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))], "min": ordered[0], "max": ordered[-1],
+    }
+
+
+def question_stats(records: List[dict]) -> dict:
+    """Per source (and ``all``): questions, gold pages per question, gold
+    pages by kind."""
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for record in records:
+        groups[record["source"]].append(record)
+        groups["all"].append(record)
+    return {
+        source: {
+            "questions": len(group),
+            "gold_per_question": distribution([len(r["gold"]) for r in group]),
+            "gold_by_kind": dict(Counter(_gold_kind(g) for r in group for g in r["gold"])),
+            "ignored_urls": sum(r["meta"].get("ignored_urls", 0) for r in group),
+        }
+        for source, group in sorted(groups.items())
+    }
+
+
+def _gold_kind(gold: dict) -> str:
+    if gold["kind"] == "wiki":
+        return "wiki_en" if gold["lang"] == "en" else "wiki_other_lang"
+    return "web"
+
+
+def drop_stats(dropped: Iterable[dict]) -> dict:
+    """Per source: the questions, and per reason the questions with it (a
+    question with several failed pages counts once per distinct reason)."""
+    out: Dict[str, dict] = defaultdict(lambda: {"questions": 0, "by_reason": Counter()})
+    for item in dropped:
+        out[item["source"]]["questions"] += 1
+        reasons = {r if isinstance(r, str) else r["status"] for r in item["reasons"]}
+        out[item["source"]]["by_reason"].update(reasons)
+    return {s: {"questions": v["questions"], "by_reason": dict(v["by_reason"].most_common())}
+            for s, v in sorted(out.items())}
+
+
+def page_stats(pages: Iterable[dict]) -> dict:
+    """Per page kind: status counts, how pages were fetched, redirects, and the
+    word count of the fetched pages."""
+    by_kind: Dict[str, List[dict]] = defaultdict(list)
+    for page in pages:
+        by_kind[page["kind"]].append(page)
+    out = {}
+    for kind, rows in sorted(by_kind.items()):
+        ok = [r for r in rows if r["status"] == "ok"]
+        out[kind] = {
+            "pages": len(rows),
+            "status": dict(Counter(r["status"] for r in rows).most_common()),
+            "fetched_via": dict(Counter(r.get("fetched_via") for r in ok)),
+            "redirected": sum(bool(r.get("redirected")) for r in rows),
+            "unique_pageids": len({r["pageid"] for r in ok if r.get("pageid")}) if kind == "wiki" else None,
+            "words": distribution([r.get("words", 0) for r in ok]),
+        }
+    return out
+
+
+def read_stats(path: Path) -> dict:
+    """The sections of *path* (``{}`` when it does not exist)."""
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def write_stats(path: Path, section: str, stats: dict) -> None:
+    """Set *section* (a build stage, ``annotations``, ``split``) of *path*,
+    the other sections kept."""
+    sections = read_stats(path)
+    sections[section] = stats
+    atomic_write_text(path, json.dumps(dict(sorted(sections.items())), indent=2, ensure_ascii=False) + "\n")
+
+
+def write_dropped(path: Path, stage: str, dropped: List[dict]) -> None:
+    """Replace the rows of *stage* in the dropped questions of *path*
+    (``dropped.jsonl``), the other stages' kept."""
+    others = [r for r in read_jsonl(path) if r["stage"] != stage] if path.exists() else []
+    write_jsonl(path, others + [{"stage": stage, **d} for d in dropped])
+
+
+def negative_stats(memory: Dict[str, dict], max_per_gold: Optional[int] = None) -> dict:
+    """The hard negatives of the gold pages in *memory* (rows of the negatives memory, gold
+    page id -> row): their number, per gold page, per source, the pages
+    shared by several gold pages, and their word counts.  With
+    *max_per_gold*, the gold pages that got fewer."""
+    rows = list(memory.values())
+    uses = Counter(n["id"] for r in rows for n in r["negatives"])
+    words = {n["id"]: n["words"] for r in rows for n in r["negatives"]}
+    out = {
+        "gold_pages": len(rows),
+        "hard_negatives": len(uses),
+        "per_gold": distribution([len(r["negatives"]) for r in rows]),
+        "by_source": dict(Counter(n["source"] for r in rows for n in r["negatives"]).most_common()),
+        "shared": sum(n >= 2 for n in uses.values()),
+        "words": distribution(list(words.values())),
+    }
+    if max_per_gold is not None:
+        out["gold_pages_short"] = sum(len(r["negatives"]) < max_per_gold for r in rows)
+    return out
+
+
+def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, List[str]],
+                  doc_words: Dict[str, int], dropped: List[dict], hard_negatives: List[str],
+                  memory: Dict[str, dict]) -> dict:
+    """Step 4: the dataset as written (queries, qrels, corpus), per source
+    (and ``all``), the hard negatives, and consistency checks between the
+    files.
+
+    *candidates* are the candidate questions, *qrels* maps a query id to its doc
+    ids, *doc_words* maps a corpus doc id to its word count, *dropped* are
+    the drops of the pages stage, *hard_negatives* the ids of ``ids_hard_negative.txt``
+    and *memory* the rows of the negatives memory (gold page id -> row).
+    """
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for query in queries:
+        groups[query["source"]].append(query)
+        groups["all"].append(query)
+    n_candidates = Counter(r["source"] for r in candidates)
+    n_dropped = Counter(r["source"] for r in dropped)
+    for counter in (n_candidates, n_dropped):
+        counter["all"] = sum(counter.values())
+
+    per_source = {}
+    for source in sorted(set(groups) | set(n_candidates)):
+        group = groups.get(source, [])
+        doc_ids = [d for q in group for d in qrels.get(q["id"], [])]
+        uses = Counter(doc_ids)
+        per_source[source] = {
+            "candidates": n_candidates[source],
+            "processed": len(group) + n_dropped[source],
+            "kept": len(group),
+            "dropped": n_dropped[source],
+            "qrels": len(doc_ids),
+            "docs_per_query": distribution([len(qrels.get(q["id"], [])) for q in group]),
+            "unique_docs": len(uses),
+            "docs_by_kind": dict(Counter(d.split("_", 1)[0] for d in uses)),
+            "docs_shared": sum(n >= 2 for n in uses.values()),
+            "doc_words": distribution([doc_words[d] for d in uses if d in doc_words]),
+            "query_words": distribution([len(q["text"].split()) for q in group]),
+            "answer_words": distribution([len(str(q["answer"]).split()) for q in group]),
+        }
+
+    query_ids = {q["id"] for q in queries}
+    qrel_docs = {d for docs in qrels.values() for d in docs}
+    negatives = set(hard_negatives)
+    wiki_gold = {d for d in qrel_docs if d.startswith("wiki_")}
+    memory = {g: r for g, r in memory.items() if g in wiki_gold}
+    checks = {
+        "duplicate_query_ids": len(queries) - len(query_ids),
+        "queries_without_qrels": sum(not qrels.get(q) for q in query_ids),
+        "qrels_unknown_query": sum(q not in query_ids for q in qrels),
+        "qrels_docs_missing_from_corpus": len(qrel_docs - set(doc_words)),
+        "hard_negatives_missing_from_corpus": len(negatives - set(doc_words)),
+        "hard_negatives_in_qrels": len(negatives & qrel_docs),
+        "corpus_docs_neither_gold_nor_negative": len(set(doc_words) - qrel_docs - negatives),
+    }
+    hard = negative_stats(memory)
+    hard["wiki_gold_pages"] = len(wiki_gold)
+    hard["words_in_corpus"] = distribution([doc_words[d] for d in negatives if d in doc_words])
+    return {"corpus_docs": len(doc_words), "per_source": per_source, "hard_negatives": hard, "checks": checks}
+
+
+def annotation_stats(rows: List[dict]) -> dict:
+    """The gold annotation (``gold/annotations.py``) per source (and ``all``):
+    queries per level and per state of the criterion texts (``texts_ok``),
+    criteria per query and per kind, the criteria with answers (all but
+    the rest), with documents (the closed ones) and with their gold
+    (``annotations.has_gold``); the rows that break the row format
+    (``annotations.problems``) and the duplicate ids."""
+    groups: Dict[str, List[dict]] = defaultdict(list)
+    for row in rows:
+        groups[row["source"]].append(row)
+        groups["all"].append(row)
+    per_source = {}
+    for source, group in sorted(groups.items()):
+        criteria = [c for r in group for c in r["criteria"]]
+        levels = Counter(r["level"] for r in group)
+        per_source[source] = {
+            "queries": len(group),
+            "levels": {lv: levels[lv] for lv in LEVELS},
+            "texts": {k: sum(r["texts_ok"] is v for r in group)
+                      for k, v in (("ok", True), ("failed", False), ("retry", None))},
+            "criteria_per_query": distribution([len(r["criteria"]) for r in group]),
+            "criteria": len(criteria),
+            "kinds": {k: sum(c["kind"] == k for c in criteria) for k in KINDS},
+            "with_answers": sum(bool(c["answers"]) for c in criteria if c["kind"] != REST),
+            "with_docs": sum(bool(c["doc_ids"]) for c in criteria if c["kind"] == CLOSED),
+            "with_gold": sum(has_gold(c) for c in criteria),
+        }
+    checks = {"rows_breaking_format": sum(bool(problems(r)) for r in rows),
+              "duplicate_ids": len(rows) - len({r["id"] for r in rows})}
+    return {"per_source": per_source, "checks": checks}
+
+
+def format_annotation_table(stats: dict) -> str:
+    """The annotation stats as a plain-text table: one row per measure, one
+    column per source (``all`` last), then the checks."""
+    per_source = stats["per_source"]
+    sources = [s for s in per_source if s != "all"] + ["all"] if per_source else []
+
+    def share(n: int, total: int) -> str:
+        return f"{n} ({n / total:.0%})" if total else "0"
+
+    rows = [("queries", lambda s: s["queries"])]
+    rows += [(f"  level {lv}", lambda s, lv=lv: s["levels"][lv]) for lv in ("full", "partial", "query")]
+    rows += [(f"  texts {k}", lambda s, k=k: s["texts"][k]) for k in ("ok", "failed", "retry")]
+    rows += [
+        ("criteria/query mean/med/max", lambda s: _dist(s["criteria_per_query"], ("mean", "median", "max"))),
+        ("criteria", lambda s: s["criteria"]),
+    ]
+    rows += [(f"  {k}", lambda s, k=k: s["kinds"][k]) for k in KINDS]
+    rows += [
+        ("  with answers (not rest)", lambda s: share(s["with_answers"], s["criteria"] - s["kinds"][REST])),
+        ("  with docs (closed)", lambda s: share(s["with_docs"], s["kinds"][CLOSED])),
+        ("  with their gold", lambda s: share(s["with_gold"], s["criteria"])),
+    ]
+    lines = _table(sources, per_source, rows)
+    lines.append("")
+    lines.append("annotation checks (all 0 = consistent): "
+                 + ", ".join(f"{k} {v}" for k, v in stats["checks"].items()))
+    return "\n".join(lines)
+
+
+def _table(sources: List[str], per_source: Dict[str, dict], rows) -> List[str]:
+    table = [[""] + sources] + [[label] + [_fmt(get(per_source[s])) for s in sources] for label, get in rows]
+    widths = [max(len(row[i]) for row in table) for i in range(len(table[0]))]
+    lines = ["  ".join(cell.ljust(w) if i == 0 else cell.rjust(w) for i, (cell, w) in enumerate(zip(row, widths)))
+             for row in table]
+    lines.insert(1, "-" * len(lines[0]))
+    return lines
+
+
+def _fmt(value: float) -> str:
+    return f"{value:g}" if isinstance(value, (int, float)) else str(value)
+
+
+def _dist(d: dict, keys: Tuple[str, ...]) -> str:
+    return " / ".join(_fmt(d[k]) for k in keys) if d["n"] else "-"
+
+
+def format_dataset_table(stats: dict) -> str:
+    """The report stats as a plain-text table: one row per measure, one
+    column per source (``all`` last), then the corpus size, the hard
+    negatives and the checks."""
+    per_source = stats["per_source"]
+    sources = [s for s in per_source if s != "all"] + ["all"]
+    rows = [
+        ("candidates", lambda s: s["candidates"]),
+        ("processed", lambda s: s["processed"]),
+        ("dropped (Filter A)", lambda s: s["dropped"]),
+        ("queries (kept)", lambda s: s["kept"]),
+        ("qrels pairs", lambda s: s["qrels"]),
+        ("docs/query mean/med/min/max", lambda s: _dist(s["docs_per_query"], ("mean", "median", "min", "max"))),
+        ("unique docs", lambda s: s["unique_docs"]),
+        ("  wiki", lambda s: s["docs_by_kind"].get("wiki", 0)),
+        ("  web", lambda s: s["docs_by_kind"].get("web", 0)),
+        ("docs shared by >=2 queries", lambda s: s["docs_shared"]),
+        ("doc words mean/med/p95", lambda s: _dist(s["doc_words"], ("mean", "median", "p95"))),
+        ("query words mean/med/max", lambda s: _dist(s["query_words"], ("mean", "median", "max"))),
+        ("answer words mean/med", lambda s: _dist(s["answer_words"], ("mean", "median"))),
+    ]
+    lines = _table(sources, per_source, rows)
+    lines.append("")
+    lines.append(f"corpus docs: {stats['corpus_docs']}")
+    hard = stats["hard_negatives"]
+    lines.append(f"hard negatives: {hard['hard_negatives']} for {hard['gold_pages']} of {hard['wiki_gold_pages']} "
+                 f"wiki gold pages; per gold page mean/med/min/max "
+                 f"{_dist(hard['per_gold'], ('mean', 'median', 'min', 'max'))}; "
+                 f"by source {', '.join(f'{k} {v}' for k, v in hard['by_source'].items()) or '-'}; "
+                 f"shared by >=2 gold pages {hard['shared']}; "
+                 f"words mean/med/p95 {_dist(hard['words_in_corpus'], ('mean', 'median', 'p95'))}")
+    lines.append("checks (all 0 = consistent): "
+                 + ", ".join(f"{k} {v}" for k, v in stats["checks"].items()))
+    return "\n".join(lines)
+
+
+def write_annotation_stats(paths, gc, rows: List[dict]) -> dict:
+    """The ``annotations`` section of ``stats.json``, the same in every
+    dataset: ``annotation_stats`` of the rows of split ``all`` and the writer of
+    their criterion texts (``gold_criteria.model`` and the hash of its
+    prompts per query shape)."""
+    stats = {"writer": {"model": gc.model, "prompt": {shape: prompt_hash(shape) for shape in PROMPTS}},
+             **annotation_stats(rows)}
+    write_stats(paths.stats, "annotations", stats)
+    return stats

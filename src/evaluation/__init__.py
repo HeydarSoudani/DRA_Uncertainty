@@ -20,7 +20,7 @@ trajectory
 generation
     The per-query generation file.
 gold
-    Per-criterion gold (TRQA's gold bank, the training pools) and TRQA's
+    Per-criterion gold (TRQA's gold bank, the training datasets) and TRQA's
     gold entities with their matcher (``analysis/criteria_reachability.py``).
 
 Beside them: ``runner`` (evaluation of an inference run), ``report`` (its

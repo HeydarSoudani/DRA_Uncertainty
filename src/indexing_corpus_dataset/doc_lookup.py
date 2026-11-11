@@ -20,8 +20,9 @@ from typing import Dict, Iterable, Tuple
 import numpy as np
 from tqdm import tqdm
 
-# The id field at the start of a corpus line, read without parsing the line.
-_ID_RE = re.compile(rb'^\{\s*"id"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# The id field at the start of a corpus line, read without parsing the line:
+# a string, or a number (InfoSeek's wiki-25-512), read as its text.
+_ID_RE = re.compile(rb'^\{\s*"id"\s*:\s*(?:"((?:[^"\\]|\\.)*)"|(-?\d+)\s*[,}])')
 
 
 def _id_hash(doc_id: str) -> int:
@@ -31,7 +32,7 @@ def _id_hash(doc_id: str) -> int:
 def _line_id(line: bytes) -> str:
     m = _ID_RE.match(line)
     if m:
-        return json.loads(b'"' + m.group(1) + b'"')
+        return json.loads(b'"' + m.group(1) + b'"') if m.group(1) is not None else m.group(2).decode("ascii")
     return str(json.loads(line)["id"])
 
 

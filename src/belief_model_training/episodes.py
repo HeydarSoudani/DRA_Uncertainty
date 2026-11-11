@@ -1,7 +1,7 @@
 """Episodes: the belief model's view of one agent run.
 
 An episode is one query of an inference run (``experiments/inference/dra_inference.py``)
-on a training pool split, in ``monitor`` or ``off`` mode: the query and per
+on a training dataset split, in ``monitor`` or ``off`` mode: the query and per
 search iteration the documents the agent was shown, in order, and the
 agent's turn of the iteration (its reasoning,
 ``text.agent_turn.agent_turn_text``), then its answer turn
@@ -40,7 +40,7 @@ whose documents or prompts cannot be rebuilt is caught.
 The episode also carries the gold of the rewards and scores: per step the
 relevant documents first seen in it and ``recall_so_far`` (``annotate_gold``,
 from the qrels), the final correctness of the agent's answer, and with the
-gold criteria of the pool (``gold_criteria``: answers and documents per
+gold criteria of the dataset (``gold_criteria``: answers and documents per
 criterion) which criteria each agent turn states the gold answer of
 (``nugget_gold.annotate_stated``).
 """
@@ -104,21 +104,21 @@ class EpisodeStep:
 class Episode:
     qid: str
     dataset: str
-    # The training pool split (layout.POOL_SPLITS).
+    # The training dataset split (layout.TRAINING_SPLITS).
     subset: Optional[str]
     dataset_year: Optional[str]
     query: str
     query_shape: str
     steps: List[EpisodeStep]
     run_dir: str
-    # Characters of one document the run's belief update read
-    # (``evaluation.belief.passage_chars``); None: whole documents.
-    max_passage_chars: Optional[int] = None
+    # Tokens of one document the run's belief update read
+    # (``evaluation.belief.passage_tokens``); None: whole documents.
+    max_passage_tokens: Optional[int] = None
     # Monitor runs: the run's criteria, the model that wrote them.
     criteria: List[Dict[str, str]] = field(default_factory=list)
     criteria_model: Optional[str] = None
     replay_error: Optional[str] = None
-    # The pool source of the query (its gold annotation row).
+    # The source of the query in its training dataset (its gold annotation row).
     source: Optional[str] = None
     # Relevant documents of the query; the agent's final answer is correct
     # (null when it was not judged or the judge failed).
@@ -132,7 +132,7 @@ class Episode:
     teacher_final_records: Dict[str, Any] = field(default_factory=dict)
     # The final status of the teacher's final scorer (null: none, or a report).
     teacher_final_label: Optional[str] = None
-    # The gold criteria of the pool (queries with texts_ok only): per
+    # The gold criteria of the dataset (queries with texts_ok only): per
     # criterion {id, kind, relations, answers, doc_ids, text}, answers and
     # doc_ids empty when the source states none; the criteria ids the
     # answer turn states the gold answer of (nugget_gold).
@@ -410,7 +410,7 @@ class BeliefTracker:
         self.episode = episode
         self._docs = docs
         self.updater = build_belief_updater(_NoLLM(), model="trained", query_shape=episode.query_shape,
-                                            max_passage_chars=episode.max_passage_chars)
+                                            max_passage_tokens=episode.max_passage_tokens)
         self.scorer = build_final_scorer(_NoLLM(), model="trained", query_shape=episode.query_shape)
         self.signal = BeliefUpdateSignal(self.updater)
         self.signal.reset(episode.query, criteria)

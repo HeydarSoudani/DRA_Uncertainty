@@ -35,7 +35,7 @@ class SelfAsk_Agent(BasicAgent):
         """Convert retrieval results to context string."""
         format_reference = ""
         for idx, doc_item in enumerate(retrieval_result):
-            text = doc_text(doc_item, self.max_passage_chars)
+            text = doc_text(doc_item, self.max_passage_tokens)
             format_reference += f"Context{idx+1}: {text}\n"
         return format_reference
 

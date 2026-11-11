@@ -5,7 +5,7 @@ The query describes one unnamed entity, the target, by clues. The first criteria
 The query reaches one entity or value through a chain of entities; every criterion is one hop on the chain, and the answer of the last one is the answer to the query.
 
 ---multi_member---
-The query asks for a value computed over the members of a set, such as a count; the criteria are one per known member, "<member>: <property>", then "any other member: <property>", whose answers are written "<member>: <value>", then the computation.
+The query asks for a value computed over the members of a set, such as a count; the criteria are one per known member, "<member>: <property>", whose answer is the member's value, then "any other member: <property>", whose answers are written "<member>: <value>", then the computation. The member criteria only collect values; whether a member belongs to the set is judged on the computation.
 
 ---multi_aspect---
-The query asks for a report on several aspects of a topic; every criterion is one aspect, and its answers are specific facts on it, each written as one short statement.
+The query asks for a report on several aspects of a topic; every criterion is one aspect, and its answers are specific facts on it, each written as one short statement. Each aspect also has a coverage status.

@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 def empty_update(errors: Optional[List[str]] = None) -> Dict[str, Any]:
     """The outcome of a step without a parsed call (``BeliefUpdateSignal``)."""
-    return {"called": False, "observations": None, "updates": [], "changed": [], "issues": [], "beliefs": None,
-            "reply": None, "errors": list(errors or [])}
+    return {"called": False, "observations": None, "updates": [], "coverage": [], "changed": [], "issues": [],
+            "beliefs": None, "reply": None, "errors": list(errors or [])}
 
 
 def _doc_key(doc: Dict[str, Any], text: Optional[str] = None) -> Optional[str]:
@@ -31,7 +31,7 @@ def _doc_key(doc: Dict[str, Any], text: Optional[str] = None) -> Optional[str]:
     i = _doc_id(doc)
     if i:
         return i
-    text = doc_text(doc, max_length=None) if text is None else text
+    text = doc_text(doc, max_tokens=None) if text is None else text
     return "text:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:16] if text else None
 
 
@@ -140,7 +140,7 @@ class BeliefUpdateSignal:
         keys: List[str] = []
         errors: List[str] = []
         for d in docs:
-            text = doc_text(d, max_length=None)
+            text = doc_text(d, max_tokens=None)
             if not text:
                 errors.append(f"empty text for doc {_doc_id(d)}")
                 continue
@@ -183,8 +183,8 @@ class BeliefUpdateSignal:
         step *step* (*plan*): its passages are judged once it is applied
         (a reply that raises leaves them unjudged); returns the records
         of ``BeliefState.apply``."""
-        claims, doc_obs, updates = parsed
-        out = self._state.apply(claims, doc_obs, updates, step)
+        claims, doc_obs, updates, coverage = parsed
+        out = self._state.apply(claims, doc_obs, updates, step, coverage)
         self._judged.update(plan.keys)
         return out
 

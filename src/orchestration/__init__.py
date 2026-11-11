@@ -32,7 +32,7 @@ from utils.config import (
     resolve_agent_backend,
 )
 from reasoner_component.setup import setup_llm
-from utils.text_utils import MAX_PASSAGE_CHARS, _build_cited_docs_ranked_list, build_references_section
+from utils.text_utils import MAX_PASSAGE_TOKENS, _build_cited_docs_ranked_list, build_references_section
 from utils.trajectory_logger import TrajectoryLogger
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ def build_belief_model(
     dataset: Optional[str] = None,
     split: Optional[str] = None,
     criteria_source: str = GOLD_CRITERIA,
-    max_passage_chars: int = MAX_PASSAGE_CHARS,
+    max_passage_tokens: int = MAX_PASSAGE_TOKENS,
 ):
     """Build the belief model, or None when *mode* is ``"off"``.
 
@@ -121,8 +121,8 @@ def build_belief_model(
             The criteria are read from the banks, made and added only when
             missing.  The belief update is still the
             *belief_judge_model* / *llm_criteria* LLM.
-        max_passage_chars: Characters of one document the belief update
-            reads, the agents' own (the run's shared setting).
+        max_passage_tokens: Tokens of one document the belief update
+            reads (its first ones), the agents' own (the run's shared setting).
     """
     if mode == "off":
         return None
@@ -161,7 +161,7 @@ def build_belief_model(
         judge_model = belief_judge_model or llm_criteria
         judge_llm = belief_llm(judge_model)
         belief_updater = build_belief_updater(judge_llm, model=judge_model, query_shape=query_shape,
-                                              max_passage_chars=max_passage_chars)
+                                              max_passage_tokens=max_passage_tokens)
         print(f"Belief model: belief updater {belief_updater.name}")
         # s_T: the final scorer on the same model (a short-answer query;
         # a report keeps the certainty of its final belief).
@@ -202,7 +202,7 @@ def build_agent(
     max_extend_steps: int = 5,
     max_retries: int = 3,
     hard_mode: bool = True,
-    max_passage_chars: int = MAX_PASSAGE_CHARS,
+    max_passage_tokens: int = MAX_PASSAGE_TOKENS,
 ):
     """Instantiate an agent and attach its search tool.
 
@@ -263,11 +263,10 @@ def build_agent(
         _reasoning_extra["model_name"] = llm_model
     elif policy_model == "belief_aware":
         _reasoning_extra["max_retries"] = max_retries
-        # Report datasets get the report prompts (task from the dataset).
-        if dataset is not None:
-            spec = DATASET_SPECS[dataset]
-            _reasoning_extra["task"] = spec.task
-            _reasoning_extra["report_chars"] = spec.report_chars
+    # Report datasets get the report prompts (task from the dataset); a
+    # report has no length limit.
+    if policy_model in ("belief_aware", "oss", "glm") and dataset is not None:
+        _reasoning_extra["task"] = DATASET_SPECS[dataset].task
 
     agent = model_class(
         llm_client=llm_client,
@@ -278,8 +277,8 @@ def build_agent(
         **_reasoning_extra,
     )
     # One document length for every agent (and the belief model):
-    # ``max_passage_chars``, the run's shared setting.
-    agent.max_passage_chars = max_passage_chars
+    # ``max_passage_tokens``, the run's shared setting.
+    agent.max_passage_tokens = max_passage_tokens
 
     # Inject search tool into agents that inherit from BasicAgent
     # (avoids modifying every subclass constructor).
@@ -438,7 +437,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_extend_steps=worker_config["max_extend_steps"],
         max_retries=worker_config["max_retries"],
         hard_mode=worker_config["hard_mode"],
-        max_passage_chars=worker_config["max_passage_chars"],
+        max_passage_tokens=worker_config["max_passage_tokens"],
     )
 
     belief_model = build_belief_model(
@@ -453,7 +452,7 @@ def _init_worker(worker_id: int, worker_config: dict):
         dataset=dataset,
         split=worker_config.get("split"),
         criteria_source=worker_config.get("criteria_source", GOLD_CRITERIA),
-        max_passage_chars=worker_config["max_passage_chars"],
+        max_passage_tokens=worker_config["max_passage_tokens"],
     )
     if belief_model is not None and hasattr(agent, "belief_model"):
         agent.belief_model = belief_model

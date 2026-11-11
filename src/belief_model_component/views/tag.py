@@ -8,7 +8,10 @@ every criterion with its candidates, highest status first
 observation that supports it (``+``) or speaks against it (``-``), its
 spans and the passage's title in brackets (labels such as "d2" are local to
 one call, so they are never shown again); then the names the agent
-proposed that no passage supports yet (``format_belief``)::
+proposed that no passage supports yet; an aspect criterion (a report) shows
+its coverage first, and a computed criterion then the passage texts on its
+definition, such as whether a member meets the set's condition
+(``format_belief``)::
 
     c1 (several answers): the American theoretical physicist who shared his Nobel Prize with a Nobel Laureate from Pakistan
       "Sheldon Glashow": certain
@@ -46,7 +49,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from ..core.types import CRITERION_REF_RE, DERIVED_KINDS, NO_DOC_KINDS, Candidate, Support, exclusive
+from ..core.types import ASPECT, CRITERION_REF_RE, DERIVED_KINDS, DOC, NO_DOC_KINDS, Candidate, Support, exclusive
 
 # A tag the model wrote itself; removed before its text enters the context.
 BELIEF_STATE_RE = re.compile(r"<belief_state\b[^>]*>.*?</belief_state>\s*", re.DOTALL)
@@ -59,6 +62,9 @@ NO_CANDIDATE = "(no candidate)"
 MAX_SUPPORT_LINES = 3
 # Characters of the spans of one support line.
 MAX_SUPPORT_CHARS = 300
+# Passage lines shown on a computed criterion's definition (one per passage,
+# the latest ones; the others are counted).
+MAX_DEFINITION_LINES = 40
 
 
 def strip_belief_state(text: str) -> str:
@@ -70,6 +76,8 @@ def criterion_type(kind: str) -> str:
     """The type of a criterion of *kind* as the belief update reads it."""
     if kind in DERIVED_KINDS:
         return "target"
+    if kind == ASPECT:
+        return "aspect"
     return "computed" if kind in NO_DOC_KINDS else "one answer" if exclusive(kind) else "several answers"
 
 
@@ -109,6 +117,31 @@ def support_lines(c: Candidate) -> List[str]:
     return lines
 
 
+def coverage_line(state: Any, k: int) -> Optional[str]:
+    """An aspect criterion's coverage (``BeliefState.coverage``), else None."""
+    return f"coverage: {state.coverage[k]}" if state.criteria[k].kind == ASPECT else None
+
+
+def definition_lines(state: Any, k: int) -> List[str]:
+    """A computed criterion's passage observations (what passages state on
+    its definition, such as a member meeting the set's condition): a
+    heading, then one line per passage, ``"<spans>" [<title>]``, at most
+    ``MAX_DEFINITION_LINES`` (the latest; "+N more sources" before them).
+    Empty for other criteria or without one."""
+    if state.criteria[k].kind not in NO_DOC_KINDS:
+        return []
+    obs = [o for o in state.trace[k] if o.source == DOC and o.verified_spans]
+    if not obs:
+        return []
+    lines = ["passages on its definition:"]
+    hidden = len(obs) - MAX_DEFINITION_LINES
+    if hidden > 0:
+        lines.append(f"  {hidden} more source" + ("s" if hidden > 1 else ""))
+        obs = obs[hidden:]
+    lines.extend(f'  "{_spans_text(o.verified_spans)}" [{state.title(o.label)}]' for o in obs)
+    return lines
+
+
 def proposals_line(state: Any, k: int, label: str = "proposed") -> Optional[str]:
     names = [p.name for p in state.proposals[k]]
     return f"{label}: " + ", ".join(f'"{n}"' for n in names) if names else None
@@ -119,12 +152,18 @@ def format_belief(state: Any, removed: bool = False) -> str:
     highest status first, or ``NO_CANDIDATE``, then its proposals; with
     *removed* (the final scorer's view), then the names the belief ruled
     out (``BeliefState.ruled_out``).  A target criterion's candidates are
-    shown without support lines: their support is the clues', shown there."""
+    shown without support lines: their support is the clues', shown there;
+    a computed criterion's too: its passages are listed once, as the
+    passages on its definition (``definition_lines``).  An aspect shows its
+    coverage first (``coverage_line``)."""
     lines = []
     for k in range(len(state.criteria)):
         lines.append(criterion_head(state, k))
+        coverage = coverage_line(state, k)
+        if coverage:
+            lines.append(f"  {coverage}")
         cands = state.ordered(k)
-        derived = state.criteria[k].kind in DERIVED_KINDS
+        derived = state.criteria[k].kind in DERIVED_KINDS or state.criteria[k].kind in NO_DOC_KINDS
         if not cands:
             lines.append(f"  {NO_CANDIDATE}")
         for c in cands:
@@ -137,6 +176,7 @@ def format_belief(state: Any, removed: bool = False) -> str:
         ruled_out = state.ruled_out(k) if removed else []
         if ruled_out:
             lines.append("  removed: " + ", ".join(f'"{n}"' for n in ruled_out))
+        lines.extend(f"  {line}" for line in definition_lines(state, k))
     return "\n".join(lines)
 
 
@@ -149,7 +189,9 @@ def render_belief_state(record: Dict[str, Any], state: Any) -> Optional[str]:
     lines: List[str] = [f'<belief_state step="{record["iteration"]}">', "  <criteria>"]
     for i, c in enumerate(state.criteria, 1):
         text = escape(CRITERION_REF_RE.sub(r"k\1", c.text), quote=False)
-        body = [escape(candidate_line(x), quote=False) for x in state.ordered(i - 1)]
+        coverage = coverage_line(state, i - 1)
+        body = ([escape(coverage, quote=False)] if coverage else []) + \
+               [escape(candidate_line(x), quote=False) for x in state.ordered(i - 1)]
         proposed = proposals_line(state, i - 1, "unverified")
         if proposed:
             body.append(escape(proposed, quote=False))

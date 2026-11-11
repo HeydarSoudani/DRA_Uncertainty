@@ -4,10 +4,10 @@ list C = {c_1, ..., c_K}, produced once at the start of each sample.
 ``LLMCriteriaSource`` derives the criteria from the query;
 ``BankedCriteriaSource`` reads them from a bank file and has its producer
 (the extractor, or TRQA's gold criteria built from the intermediate info,
-``indexing_corpus_dataset.trqa_gold_criteria``) make and add only the
+``indexing_corpus_dataset.training_datasets.gold.trqa``) make and add only the
 missing ones, so runs and analyses share one list per query;
-``GoldCriteriaSource`` reads a training pool's gold criteria (the pool's
-queries file is their bank, written by the pool build only);
+``GoldCriteriaSource`` reads a training dataset's gold criteria (the dataset's
+queries file is their bank, written by the dataset build only);
 ``FallbackCriteriaSource`` gives a query without gold criteria silver
 ones.  Which source a dataset and ``criteria_source`` get is decided in
 ``criteria.factory``.
@@ -30,7 +30,7 @@ checked against its layout (``parsing.clue_layout``).  A multi-member query list
 closed criteria, then a rest criterion, "any other member: <property>",
 for the members the extractor did not list, then an aggregate criterion,
 how the answer follows from the members' values, as in the gold criteria
-of the training pools.  The kind follows from the dataset's query shape
+of the training datasets.  The kind follows from the dataset's query shape
 and the criterion's position (``parsing.criterion_kinds``); the extractor
 only lists the criteria.
 """
@@ -240,7 +240,7 @@ class BankedCriteriaSource(CriteriaSource):
     *inner* is any ``CriteriaSource`` with ``bank_fields`` (what, besides
     the query, decides its criteria): the extractor
     (``LLMCriteriaSource``: model, query shape, cap, prompt hash) or TRQA's
-    gold producer (``indexing_corpus_dataset.trqa_gold_criteria``: the
+    gold producer (``indexing_corpus_dataset.training_datasets.gold.trqa``: the
     writer of the texts and its prompt hash).
 
     The bank (``layout.criteria_bank_path``) is a JSONL file, one line per
@@ -367,16 +367,16 @@ GOLD_CRITERIA_MODEL = "gold"
 
 
 # The annotation level of a query whose gold criteria have every gold
-# answer and document (training_pool/annotations.py); belief model training
+# answer and document (training_datasets/gold/annotations.py); belief model training
 # scores only such queries.  The belief model uses the gold criteria of any
 # level.
 GOLD_CRITERIA_LEVEL = "full"
 
 
 class GoldCriteriaSource(CriteriaSource):
-    """Reads each query's gold criteria from a training pool's queries file
+    """Reads each query's gold criteria from a training dataset's queries file
     (``layout.gold_criteria_path``, one row per query in the format of
-    ``training_pool/annotations.py``, written by the pool build): per query,
+    ``training_datasets/gold/annotations.py``, written by the dataset build): per query,
     its criteria with their gold answers and documents.  Only the criteria
     (id, text, kind; a multi-hop query's hops as ``shape_kinds`` reads
     them) reach the belief model, of a query whose row has
@@ -436,7 +436,7 @@ class GoldCriteriaSource(CriteriaSource):
 
 
 class FallbackCriteriaSource(CriteriaSource):
-    """The gold criteria of a query from *gold* (a training pool's rows, or
+    """The gold criteria of a query from *gold* (a training dataset's rows, or
     TRQA's banked gold), and for a query without them (no criteria) the
     silver ones of *fallback*, with the reason, the gold source's
     ``errors``, in its info as ``gold_missing``.  The bank-only part of the

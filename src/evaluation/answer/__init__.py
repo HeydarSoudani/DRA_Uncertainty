@@ -1,7 +1,7 @@
 """Answer evaluation (the ``generation`` group of the run's ``metrics.md``).
 
 * :class:`AccuracyEvaluator`: answer correctness by LLM judge
-  (``answer_eval == "llm_judge"``: BrowseComp-Plus, deep_qa).
+  (``answer_eval == "llm_judge"``: BrowseComp-Plus, infoseek, webshaper_frames).
 * :class:`NumericMatchEvaluator`: answer correctness by numeric exact
   match (``answer_eval == "numeric_match"``, TRQA).
 * :class:`ArgueReportEvaluator`: a report against the request's nuggets with

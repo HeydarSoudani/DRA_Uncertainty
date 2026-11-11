@@ -2,14 +2,14 @@
 each criterion, for the belief update evaluation
 (``evaluation.belief.evaluator``).
 
-Where the gold rows are (the training pools' row format,
-``training_pool/annotations.py``: ``criteria[]`` with ``id, text, answers,
+Where the gold rows are (the training datasets' row format,
+``training_datasets/gold/annotations.py``: ``criteria[]`` with ``id, text, answers,
 doc_ids, kind``, plus ``entity_names`` and ``source``):
 
-- a training pool (deep_qa, trqa_validation): its queries file
+- a training dataset (infoseek, webshaper_frames, trqa_validation): its queries file
   (``layout.gold_criteria_path``), one row per query;
 - TRQA: its gold bank (``layout.criteria_bank_path(..., "gold")``), the row
-  kept in each line's ``bank_only`` (``trqa_gold_criteria``); a query may
+  kept in each line's ``bank_only`` (``training_datasets.gold.trqa``); a query may
   have several lines (other writers), so every row is returned;
 - any other dataset: none (its criteria are the question's clues, with no
   answer per criterion).

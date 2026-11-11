@@ -4,7 +4,7 @@ text shown, passage titles, and the labels a reply writes ("d4", "t2")."""
 import re
 from typing import Any, List, NamedTuple, Optional, Tuple
 
-from utils.text_utils import cut_passage
+from utils.text_utils import cut_chars
 
 from .matching import alnum, alnum_index
 
@@ -46,7 +46,7 @@ def passage_title(text: str, title: str = "", max_chars: int = 120) -> str:
         body = text[front.end():] if front else text
         line = (found.group(1).strip().strip("'\"") if found else
                 next((ln.strip() for ln in body.splitlines() if alnum(ln)), ""))
-    return cut_passage(line, max_chars)
+    return cut_chars(line, max_chars)
 
 
 def _label(value: Any, prefix: str) -> str:

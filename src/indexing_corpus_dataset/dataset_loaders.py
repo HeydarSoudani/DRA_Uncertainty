@@ -6,8 +6,8 @@ The on-disk layout, path builders, split-id rule, and record schemas live in
 ``data_path`` and a split, it parses queries / qrels / answers.
 
 All functions take an explicit ``data_path`` so they work regardless of the
-current working directory.  Split ``sft``, ``rl`` or ``val`` of a training
-pool is a view of its split ``all`` (``layout.is_pool_view``): the rows of
+current working directory.  Split ``sft``, ``rl`` or ``val`` of a
+training dataset is a view of its split ``all`` (``layout.is_split_view``): the rows of
 ``queries_all.jsonl`` with that ``split`` and their qrels.
 """
 
@@ -15,37 +15,36 @@ from pathlib import Path
 import csv
 import json
 
-# Layout vocabulary (single source of truth).  ``resolve_split_id`` and
-# ``resolve_data_path`` are re-exported for the
-# ``from ...dataset_loaders import resolve_split_id`` call sites.
+# Layout vocabulary (single source of truth).  ``resolve_split_id`` is
+# re-exported for the ``from ...dataset_loaders import resolve_split_id``
+# call sites.
 from .layout import (  # noqa: F401
-    POOL_ALL_SPLIT,
-    is_pool,
-    is_pool_view,
+    ALL_SPLIT,
+    is_training_dataset,
+    is_split_view,
     queries_base,
     qrels_base,
     nuggets_base,
     resolve_split_id,
-    resolve_data_path,
     _resolve_split_file,
 )
 
 
 # ===========================================================================
-# Training pool views
+# Training dataset views
 # ===========================================================================
 
-# Pool queries file -> ((mtime_ns, size), {split: ids}): the queries, qrels
+# Training dataset queries file -> ((mtime_ns, size), {split: ids}): the queries, qrels
 # and intermediate info of a view read the file once.
 _VIEW_IDS: dict[Path, tuple[tuple[int, int], dict[str, set[str]]]] = {}
 
 
-def _pool_view_ids(data_path: Path | str, split: str) -> set[str] | None:
-    """The ids of the queries of pool view *split* (``layout.is_pool_view``),
+def _split_view_ids(data_path: Path | str, split: str) -> set[str] | None:
+    """The ids of the queries of split view *split* (``layout.is_split_view``),
     or None when *split* is no view."""
-    if not is_pool_view(data_path, split):
+    if not is_split_view(data_path, split):
         return None
-    file_path = queries_base(data_path, POOL_ALL_SPLIT).with_suffix(".jsonl")
+    file_path = queries_base(data_path, ALL_SPLIT).with_suffix(".jsonl")
     if not file_path.exists():
         return set()
     stat = file_path.stat()
@@ -63,8 +62,8 @@ def _pool_view_ids(data_path: Path | str, split: str) -> set[str] | None:
 
 
 def _file_split(data_path: Path | str, split: str) -> str:
-    """The split whose files hold *split*: ``all`` for a pool view."""
-    return POOL_ALL_SPLIT if is_pool_view(data_path, split) else split
+    """The split whose files hold *split*: ``all`` for a split view."""
+    return ALL_SPLIT if is_split_view(data_path, split) else split
 
 
 # ===========================================================================
@@ -80,7 +79,7 @@ def _load_queries_and_answers(
     field (e.g. BrowseComp-Plus); it is empty for TSV files or datasets without
     answers.
     """
-    view = _pool_view_ids(data_path, split)
+    view = _split_view_ids(data_path, split)
     file_path = _resolve_split_file(queries_base(data_path, _file_split(data_path, split)), (".tsv", ".jsonl"))
     if file_path is None:
         print(f"Error reading queries file: No valid file found for "
@@ -158,7 +157,7 @@ def load_qrels(
     Returns:
         ``{query_id: {doc_id: relevance_score}}``
     """
-    view = _pool_view_ids(data_path, data_set)
+    view = _split_view_ids(data_path, data_set)
     file_path = _resolve_split_file(qrels_base(data_path, _file_split(data_path, data_set)), (".tsv", ".txt"))
     if file_path is None:
         print(f"Error reading qrels file: No valid file found for "
@@ -218,13 +217,13 @@ def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[s
     Reads ``queries/queries_{split}_intermediate_info.jsonl`` and returns
     ``{query_id: record}``, where a record is ``{"qid", "entity_values":
     [{"entity", "value", "passage_ids"}], "property": {"label", ...}, "aggregation",
-    "answer"}``.  A training pool has no such file: its query rows hold the
+    "answer"}``.  A training dataset has no such file: its query rows hold the
     information (``members``, ``property``, ``aggregation``;
-    ``training_pool/annotations.py``), returned in the same record format
+    ``training_datasets/gold/annotations.py``), returned in the same record format
     for the rows with members.  Empty for datasets without either.
     """
-    if is_pool(data_path):
-        return _pool_intermediate_info(data_path, data_set)
+    if is_training_dataset(data_path):
+        return _dataset_intermediate_info(data_path, data_set)
     base = queries_base(data_path, data_set)
     file_path = base.with_name(f"{base.name}_intermediate_info.jsonl")
     if not file_path.exists():
@@ -238,10 +237,10 @@ def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[s
     return info
 
 
-def _pool_intermediate_info(data_path: Path | str, data_set: str) -> dict[str, dict]:
-    """The intermediate information of the query rows of a training pool
+def _dataset_intermediate_info(data_path: Path | str, data_set: str) -> dict[str, dict]:
+    """The intermediate information of the query rows of a training dataset
     (``load_query_intermediate_info``)."""
-    view = _pool_view_ids(data_path, data_set)
+    view = _split_view_ids(data_path, data_set)
     file_path = queries_base(data_path, _file_split(data_path, data_set)).with_suffix(".jsonl")
     if not file_path.exists():
         return {}

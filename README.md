@@ -14,7 +14,7 @@ The project has two parts:
 | Part | What it does | README |
 |---|---|---|
 | Inference | runs an agent on a dataset with the belief model (`off` / `monitor` / `inform`), evaluates retrieval, answers or reports and the trajectory, and saves the belief state and signals of every step | [experiments/inference/README.md](experiments/inference/README.md) |
-| Training | trains the belief model with the agent frozen: training pools, teacher runs, SFT, then RL | [experiments/training/README.md](experiments/training/README.md) |
+| Training | trains the belief model with the agent frozen: training datasets, teacher runs, SFT, then RL | [experiments/training/README.md](experiments/training/README.md) |
 
 ## Supported agents, datasets and retrievers
 
@@ -46,11 +46,11 @@ src/
 └── belief_model_training/    training phases of the belief model
 experiments/
 ├── inference/                dra_inference.py
-├── training/                 build_training_pool.py, belief_model_training.py
+├── training/                 build_training_dataset.py, belief_model_training.py
 └── configs/                  YAML defaults of every script
 analysis/                     criteria reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)
-data/                         criteria banks, training pools
+data/                         criteria banks, training datasets
 ```
 
 ## Installation
@@ -72,16 +72,16 @@ Inference and training both read the datasets and indices built here.
 
 ```bash
 # trqa  (subset: wiki1 | wiki2 | ecommerce)
-python src/indexing_corpus_dataset/download_datasets.py trqa --subset wiki1
+python src/indexing_corpus_dataset/download/download_datasets.py trqa --subset wiki1
 
 # neuclir  (subset: news | technical; 2024 news also writes report nuggets)
-python src/indexing_corpus_dataset/download_datasets.py neuclir --year 2024 --subset news
+python src/indexing_corpus_dataset/download/download_datasets.py neuclir --year 2024 --subset news
 
 # ragtime  (2025; queries, qrels, nuggets, English corpus)
-python src/indexing_corpus_dataset/download_datasets.py ragtime
+python src/indexing_corpus_dataset/download/download_datasets.py ragtime
 
 # browsecomp_plus  (corpus only)
-python src/indexing_corpus_dataset/download_datasets.py browsecomp_plus --skip-queries-qrels
+python src/indexing_corpus_dataset/download/download_datasets.py browsecomp_plus --skip-queries-qrels
 ```
 
 Canonical layout written under `$DRA_DATA_ROOT/<dataset>/`:
@@ -96,18 +96,18 @@ corpus/{name}.jsonl               {"id","contents"}
 ### Build an index
 
 ```bash
-python -m indexing_corpus_dataset.index_builder \
+python -m indexing_corpus_dataset.indexing.index_builder \
     --retriever qwen3_emb_4b --dataset browsecomp_plus \
     --use_fp16 --max_length 4096 --batch_size 16 --faiss_type Flat --save_embedding
 ```
 
 On Slurm: `sbatch scripts/run_index_builder.sh` (sets per-retriever arguments automatically). Build defaults live in
-`src/indexing_corpus_dataset/configs/index_build.yaml`.
+`experiments/configs/index_build.yaml`.
 
 To test a build, a small smoke index over gold and distractor passages checks entity recall:
 
 ```bash
-python src/indexing_corpus_dataset/index_builder_test.py \
+python src/indexing_corpus_dataset/indexing/index_builder_test.py \
     --retriever bge --dataset neuclir --query-limit 20
 ```
 

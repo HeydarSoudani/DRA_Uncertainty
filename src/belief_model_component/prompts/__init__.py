@@ -5,8 +5,8 @@ criteria extractor (``criteria_init/``: the shared core ``system.txt``, its
 per-shape parts in ``<shape>.txt``)
 and the belief updater (``belief_update/``: the shared core ``system.txt``,
 the per-shape context in ``criterion_shapes.txt``, the status definitions of
-each criterion type in ``criterion_statuses.txt`` and the per-shape example
-in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
+each criterion type in ``criterion_statuses.txt``, the output fields of some
+shapes in ``shape_output.txt`` and the per-shape example in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
 with the same per-shape context and its own per-shape example in
 ``examples.txt``; short-answer shapes only).  User prompts are in
 ``user_prompts`` and re-exported here.
@@ -70,14 +70,19 @@ CRITERION_SHAPES = {k: v for k, v in _sections("belief_update/criterion_shapes.t
 # closed criteria are "one answer", hops (a multi-hop query's criteria
 # before its answer), rest and aspect criteria "several answers", the
 # aggregate of a multi-member query "computed", the target of a multi-clue
-# query "target".
+# query "target"; a report's aspects are "several answers" with their own
+# coverage ("aspect").
 CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/criterion_statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
     MULTI_CLUE: ("one_answer", "target"),
     MULTI_HOP: ("one_answer", "several_answers"),
     MULTI_MEMBER: ("one_answer", "several_answers", "computed"),
-    MULTI_ASPECT: ("several_answers",),
+    MULTI_ASPECT: ("several_answers", "aspect"),
 }
+
+# The output fields only some query shapes have (``belief_update/shape_output.txt``):
+# a report's aspects' coverage.
+SHAPE_OUTPUTS = {k: v for k, v in _sections("belief_update/shape_output.txt").items() if k}
 
 # One worked example of the belief update per query shape (``belief_update/examples.txt``).
 BELIEF_UPDATE_EXAMPLES = {k: v for k, v in _sections("belief_update/examples.txt").items() if k}
@@ -91,10 +96,13 @@ def _call_system(stage: str, shape: str, examples: Dict[str, str]) -> str:
     fills = {
         "shape_context": CRITERION_SHAPES[shape],
         "status_definitions": "\n\n".join(CRITERION_STATUSES[t] for t in SHAPE_CRITERION_TYPES[shape]),
+        "shape_output": SHAPE_OUTPUTS.get(shape, ""),
         "example": examples[shape],
     }
     text = _read(f"{stage}/system.txt")
     for key, body in fills.items():
+        if not body:
+            text = text.replace("{" + key + "}\n", "")
         text = text.replace("{" + key + "}", body)
     return text
 

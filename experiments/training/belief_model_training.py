@@ -4,7 +4,7 @@ Agent-BRACE (arXiv 2605.11436) adapted to retrieval: the belief model is
 trained, here with the agent frozen.  Two calls are trained: the belief
 update, b_t = f(query, b_{t-1}, agent turns, new passages) -> the
 observations of the turns and the passages and the candidate updates of
-the criteria they touch, on the pool's gold criteria (the criteria init is
+the criteria they touch, on the dataset's gold criteria (the criteria init is
 not trained); and, on a short-answer query, the final scorer, s_T =
 f(query, b_{T-1}, answer turn).  The updates are rewarded over whole
 trajectories, per criterion: the assignment of the sources to it and the
@@ -12,10 +12,10 @@ calibration of its status at every step, plus well-formed calls; the
 scorer by s_T against the correctness of the agent's answer (on a
 report, the certainty of the final beliefs).
 Training uses only the queries with the full gold annotation (each query's
-``split`` in the pool's queries file).  One phase per call (``--phase N``):
+``split`` in the dataset's queries file).  One phase per call (``--phase N``):
 
     1  dra_inference with the frozen agent on     run_outputs/ (dra_inference layout)
-       one split of the training pool (--split):
+       one split of the training dataset (--split):
        sft and val in monitor mode with the
        teacher belief model, rl in off mode
     2  teacher scores, SFT warm-up of the student phase2_sft/
@@ -37,12 +37,12 @@ inference run (phase 1) come from ``shared.inference_config``
 (experiments/configs/dra_inference.yaml) and are never repeated here.
 The merged settings of each phase are saved as ``phase{N}_config.yaml``.
 
-The training data is a training pool (``--training-data``), built and
-split into sft / rl / val by experiments/training/build_training_pool.py
-under ``data/training_pool/{pool}`` and run by dra_inference as dataset
-``{pool}``, subset = split: deep_qa (its index under
-``data/training_pool/deep_qa/indices``) or trqa_validation (TRQA's
-wiki_partial corpus and indices).
+The training data is a training dataset (``--training-data``), built and
+split into sft / rl / val by experiments/training/build_training_dataset.py
+under ``data/training_datasets/{dataset}`` and run by dra_inference as
+dataset ``{dataset}``, subset = split: infoseek (the wiki-25-512 corpus and
+its indices under ``DATA_ROOT/infoseek``), trqa_validation (TRQA's
+wiki_partial corpus and indices) or webshaper_frames (val only).
 
 """
 
@@ -63,7 +63,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from belief_model_training.config import RunPaths, load_config
-from indexing_corpus_dataset.layout import POOL_SPLITS
+from indexing_corpus_dataset.layout import BUILT_DATASETS, TRAINING_SPLITS
 from utils.cli_setup import _sm_bool
 
 _CONFIG_DEFAULT = str(_HERE.parent / "configs" / "belief_model_training.yaml")
@@ -97,11 +97,11 @@ def _parse_args() -> argparse.Namespace:
         allow_abbrev=False,
     )
     # ── Phase and settings files ────────────────────────────────────────────
-    parser.add_argument("--phase", type=int, required=True, choices=[1, 2, 3], help="1 trajectories (dra_inference on a pool split), 2 SFT, 3 RL.")
+    parser.add_argument("--phase", type=int, required=True, choices=[1, 2, 3], help="1 trajectories (dra_inference on a dataset split), 2 SFT, 3 RL.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, one section per phase plus 'shared'.")
 
     # ── Shared ──────────────────────────────────────────────────────────────
-    parser.add_argument("--training-data", type=str, default="deep_qa", choices=["deep_qa", "trqa_validation"], help="Training pool (dataset of dra_inference).")
+    parser.add_argument("--training-data", type=str, default="infoseek", choices=sorted(BUILT_DATASETS), help="Training dataset (dataset of dra_inference); webshaper_frames has a val split only.")
     parser.add_argument("--policy-model", type=str, default="oss_20b", help="Frozen agent (--policy-model of dra_inference), e.g. glm, oss_20b, oss_120b: phase 1 runs it, phases 2-3 read its runs and write under {output root}/{training data}/{policy model}.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", help="Retriever of the inference runs (phase 1).")
     parser.add_argument("--output-root", type=str, default=None, help="Root of the phase 2-3 runs (None = OUTPUT_ROOT/belief_model_training).")
@@ -110,7 +110,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="Random seed.")
 
     # ── Phase 1: trajectories ───────────────────────────────────────────────
-    parser.add_argument("--split", type=str, default="sft", choices=list(POOL_SPLITS), help="Pool split to run: sft and val in monitor mode with the teacher, rl in off mode.")
+    parser.add_argument("--split", type=str, default="sft", choices=list(TRAINING_SPLITS), help="Dataset split to run: sft and val in monitor mode with the teacher, rl in off mode.")
     parser.add_argument("--teacher-belief-model", type=str, default="openrouter/qwen/qwen3.6-27b", help="Teacher belief model (criteria init and belief updates; phase 2 checks the runs used it).")
     parser.add_argument("--limit", type=int, default=None, help="The next N queries of the split not run yet (None = all).")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (no per-step agent output), as dra_inference --quiet.")

@@ -8,7 +8,10 @@ records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
 
 Per criterion, one row with its status, its selected candidate(s) and
 the number of its candidates and proposals (a removed candidate leaves the
-list).  ``*`` marks a criterion whose candidates or proposals changed this
+list).  The row shows at most ``SELECTED_SHOWN`` selected candidates, then
+``+N more``; the md lists every selected candidate of such a criterion
+(with its status) under the table when the criterion changed in the
+iteration, and always in the final belief.  ``*`` marks a criterion whose candidates or proposals changed this
 iteration.  A step without a belief update call says so.  The md also
 gives every candidate update of the iteration (previous status -> status,
 the passages it cites as support (+) or against (-), and its reason) and
@@ -19,8 +22,12 @@ document.
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# Candidates are cut to this length in the console; the md shows them in full.
+# Selected candidates shown in a criterion's row; the rest as "+N more".
+SELECTED_SHOWN = 2
+# Candidates are cut to this length in a row (console, md table); the md
+# list under the table shows them in full.
 CONSOLE_VALUE_CHARS = 40
+MD_VALUE_CHARS = 60
 
 Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, selected, number of candidates
 
@@ -46,12 +53,36 @@ def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
     for i, c in enumerate(criteria):
         cid = c.get("id", f"c{i + 1}")
         b = beliefs[i] if i < len(beliefs) else {}
-        selected = ", ".join(f'"{_value(v, value_chars)}"' for v in b.get("selected") or []) or "—"
+        chosen = b.get("selected") or []
+        selected = ", ".join(f'"{_value(v, value_chars)}"' for v in chosen[:SELECTED_SHOWN]) or "—"
+        if len(chosen) > SELECTED_SHOWN:
+            selected += f" +{len(chosen) - SELECTED_SHOWN} more"
         n = len(b.get("candidates") or [])
         m = len(b.get("proposals") or [])
         count = f"{n} candidate" + ("" if n == 1 else "s") + (f", {m} proposed" if m else "")
         rows.append((cid, "*" if cid in changed else "", str(b.get("status") or "unknown"), selected, count))
     return rows
+
+
+def selected_lists(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
+                   final: bool = False) -> List[Tuple[str, List[Tuple[str, str]]]]:
+    """``(criterion id, [(candidate, status), ...])`` of each criterion
+    whose row cut its selected candidates (more than ``SELECTED_SHOWN``),
+    those changed this iteration only unless *final*."""
+    beliefs = record.get("beliefs")
+    if beliefs is None:
+        return []
+    changed = set(record.get("changed") or [])
+    out = []
+    for i, c in enumerate(criteria):
+        cid = c.get("id", f"c{i + 1}")
+        b = beliefs[i] if i < len(beliefs) else {}
+        chosen = b.get("selected") or []
+        if len(chosen) <= SELECTED_SHOWN or not (final or cid in changed):
+            continue
+        status = {x.get("name"): x.get("status") for x in b.get("candidates") or []}
+        out.append((cid, [(v, str(status.get(v) or "")) for v in chosen]))
+    return out
 
 
 def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -74,6 +105,14 @@ def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
             move += f" [{cited}]"
         reason = " ".join(str(u.get("reason") or "").split())
         out.append((str(u.get("id")), f'"{u.get("candidate")}": {move}' + (f" ({reason})" if reason else "")))
+    # An aspect's coverage update (a report): "coverage: <previous> -> <kept>".
+    for u in record.get("coverage") or []:
+        kept, written = u.get("status"), u.get("written")
+        move = f"{u.get('previous')} -> {kept}" if kept is not None else f"not taken (wrote {written})"
+        if kept is not None and written and written != kept:
+            move += f" (wrote {written})"
+        reason = " ".join(str(u.get("reason") or "").split())
+        out.append((str(u.get("id")), f"coverage: {move}" + (f" ({reason})" if reason else "")))
     return out
 
 
@@ -221,11 +260,14 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
     lines = [heading, "", _summary(record, final).replace(" | ", " · ")]
     if not final:
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
-    table = belief_rows(record, criteria)
+    table = belief_rows(record, criteria, MD_VALUE_CHARS)
     if table:
         lines += [""] + _md_table(("criterion", "status", "selected", "candidates"),
                                   [(f"{cid} {mark}".strip(), status, _cell(value), count)
                                    for cid, mark, status, value, count in table])
+    for cid, chosen in selected_lists(record, criteria, final):
+        lines += ["", f"- **{cid}** selected ({len(chosen)}):"]
+        lines += [f'  - "{_cell(_value(v, None))}"' + (f": {st}" if st else "") for v, st in chosen]
     updates = _updates(record)
     if updates:
         lines += [""] + [f"- **{cid}** {_cell(text)}" for cid, text in updates]

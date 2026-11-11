@@ -20,11 +20,11 @@ Per query:
      elsewhere (``layout.extraction_kind``); bank
      ``layout.criteria_bank_path``;
    - TRQA's gold criteria, made from the intermediate info
-     (``indexing_corpus_dataset.trqa_gold_criteria``); bank
+     (``indexing_corpus_dataset.training_datasets.gold.trqa``); bank
      ``layout.criteria_bank_path(..., "gold")``;
-   - a training pool's gold criteria (``GoldCriteriaSource``): the pool's
-     queries file is their bank, written by the pool build only
-     (``build_training_pool.py``); a query without them gets silver ones.
+   - a training dataset's gold criteria (``GoldCriteriaSource``): the dataset's
+     queries file is their bank, written by the dataset build only
+     (``build_training_dataset.py``); a query without them gets silver ones.
 
 Functions:
 
@@ -99,12 +99,12 @@ def bank_model_id(model: str) -> str:
 
 def check_max_criteria(dataset: str, max_criteria: Optional[int]) -> None:
     """*max_criteria* (after the dataset's default) caps silver criteria
-    only: TRQA's and trqa_validation's members, deep_qa's FRAMES hops.  Stops
+    only: TRQA's and trqa_validation's members, webshaper_frames' FRAMES hops.  Stops
     when it is set on a dataset whose criteria are all gold (BrowseComp-Plus,
     NeuCLIR, RAGTIME: the question's own, never capped)."""
     if max_criteria is not None and extraction_kind(dataset) != SILVER_CRITERIA:
         raise SystemExit(f"max_criteria {max_criteria}: the cap is for silver criteria only (TRQA, "
-                         f"trqa_validation, deep_qa's FRAMES); the criteria of {dataset} are gold, never capped. "
+                         f"trqa_validation, webshaper_frames' FRAMES); the criteria of {dataset} are gold, never capped. "
                          "Set max_criteria to null")
 
 
@@ -113,7 +113,7 @@ def check_criteria_inputs(dataset: str, criteria_source: str, llm_criteria: Opti
     """Check the criteria settings of a run of *dataset* before any model is
     loaded, and say where its criteria come from.  Stops when *max_criteria*
     is set on a dataset without silver criteria (``check_max_criteria``) or
-    a training pool's gold criteria file is missing."""
+    a training dataset's gold criteria file is missing."""
     check_max_criteria(dataset, max_criteria)
     spec = DATASET_SPECS[dataset]
     source = effective_criteria_source(criteria_source, dataset)
@@ -128,9 +128,9 @@ def check_criteria_inputs(dataset: str, criteria_source: str, llm_criteria: Opti
     elif dataset in BUILT_DATASETS:
         path = gold_criteria_path(dataset)
         if not path.exists():
-            raise SystemExit(f"criteria_source gold: {path} not found; build the pool with "
-                             "experiments/training/build_training_pool.py (deep_qa step 2, or the trqa_validation "
-                             "build), or run with --criteria-source silver")
+            raise SystemExit(f"criteria_source gold: {path} not found; build the dataset with "
+                             f"experiments/training/build_training_dataset.py --dataset {dataset}"
+                             + (", or run with --criteria-source silver" if spec.criteria_choice else ""))
         print(f"[INFO] criteria: gold from {path}, silver for a query without them (extracted by {llm_criteria})")
     else:
         print(f"[INFO] criteria: gold, made from the intermediate info (texts by {llm_criteria}), silver for a "
@@ -175,7 +175,7 @@ def build_criteria_source(
         gold: CriteriaSource = GoldCriteriaSource(path, spec.query_shape)
         print(f"Belief model: gold criteria from {path}")
     else:
-        from indexing_corpus_dataset.trqa_gold_criteria import TRQAGoldCriteria
+        from indexing_corpus_dataset.training_datasets.gold.trqa import TRQAGoldCriteria
 
         gold_bank = criteria_bank_path(dataset, split, GOLD_CRITERIA)
         gold = BankedCriteriaSource(TRQAGoldCriteria(split, writer=model_id, llm_client=llm), gold_bank)
@@ -192,8 +192,8 @@ def prepare_criteria(source: CriteriaSource, queries: Dict[str, str]) -> Dict[st
     *source*, so the missing ones are made and banked here, before the
     workers start (they then read them from the bank; a query still
     missing is made by its worker).  Prints and returns the counts: per
-    kind, per origin (``bank_hit``, ``bank_added``, ``pool``: a training
-    pool's gold) and the queries ``failed`` (no criteria)."""
+    kind, per origin (``bank_hit``, ``bank_added``, ``dataset``: a
+    training dataset's gold) and the queries ``failed`` (no criteria)."""
     source.prepare()
 
     def one(item):
@@ -214,11 +214,11 @@ def prepare_criteria(source: CriteriaSource, queries: Dict[str, str]) -> Dict[st
                 continue
             counts[info.get("criteria_kind") or "unknown"] += 1
             origin = info.get("bank")
-            counts["pool" if origin is None and info.get("model") == GOLD_CRITERIA_MODEL else f"bank_{origin}"] += 1
+            counts["dataset" if origin is None and info.get("model") == GOLD_CRITERIA_MODEL else f"bank_{origin}"] += 1
             counts["gold_missing"] += "gold_missing" in info
     result = {**counts, "failed": failed}
     print(f"[INFO] criteria of {len(queries)} queries: {counts['gold']} gold, {counts['silver']} silver "
           f"({counts['gold_missing']} without gold), {len(failed)} without criteria; "
           f"{counts['bank_hit']} from the bank, {counts['bank_added']} made and added, "
-          f"{counts['pool']} from the pool's gold")
+          f"{counts['dataset']} from the dataset's gold")
     return result

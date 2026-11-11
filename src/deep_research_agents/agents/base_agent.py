@@ -11,10 +11,11 @@ from reasoner_component import REASONING_FALLBACK_PREFIX
 from searcher_component import normalize_retrieval_response
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
+    REPORT_FINAL_INSTRUCTION,
     TAG_FORMAT,
     force_answer_prompt,
 )
-from utils.text_utils import MAX_PASSAGE_CHARS, passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
+from utils.text_utils import MAX_PASSAGE_TOKENS, passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
 from utils.config import InferenceConfig
 from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_belief  # noqa: F401
@@ -357,6 +358,16 @@ def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 class BasicAgent(AgentVerboseMixin):
     """Base class for retrieval agents."""
 
+    # "qa" or "report" (layout.DATASET_SPECS task); an agent that writes
+    # reports sets it from its constructor.
+    task: str = "qa"
+
+    @property
+    def force_instruction(self) -> str:
+        """The instruction of a forced final turn: the report on a report
+        task, else the most likely answer."""
+        return REPORT_FINAL_INSTRUCTION if self.task == "report" else FINAL_ANSWER_INSTRUCTION
+
     def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, belief_model=None):
         """Initialize BasicAgent.
 
@@ -380,10 +391,10 @@ class BasicAgent(AgentVerboseMixin):
         self.belief_model = belief_model
         self.max_iteration = max_iteration
         self.seen_top_k = seen_top_k
-        # Characters of one document the agent reads (the run's shared
-        # ``max_passage_chars``, set by ``build_agent``; the belief model
+        # Tokens of one document the agent reads (the run's shared
+        # ``max_passage_tokens``, set by ``build_agent``; the belief model
         # reads the same text).
-        self.max_passage_chars = MAX_PASSAGE_CHARS
+        self.max_passage_tokens = MAX_PASSAGE_TOKENS
         # Set per query by run_single(); see _record_step().
         self._traj_logger = None
 
@@ -473,7 +484,7 @@ class BasicAgent(AgentVerboseMixin):
 
     def _format_search_results(self, docs: List[Dict[str, Any]]) -> str:
         """Format retrieved documents as JSON for tool response messages."""
-        return format_as_json(docs, self.seen_top_k, self.max_passage_chars)
+        return format_as_json(docs, self.seen_top_k, self.max_passage_tokens)
 
     def _get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Return search tool definition in the appropriate API format.
@@ -649,7 +660,7 @@ class BasicAgent(AgentVerboseMixin):
         trimmed = self._trim_first_iteration(messages)
         trimmed.append({
             "role": "user",
-            "content": force_answer_prompt(cfg.format_instructions),
+            "content": force_answer_prompt(cfg.format_instructions, self.force_instruction),
         })
         return self._make_responses_api_call(trimmed)
 
@@ -690,7 +701,7 @@ class BasicAgent(AgentVerboseMixin):
         trimmed = self._trim_first_iteration(messages)
         trimmed.append({
             "role": "user",
-            "content": force_answer_prompt(cfg.format_instructions),
+            "content": force_answer_prompt(cfg.format_instructions, self.force_instruction),
         })
         force_max_tokens = min(cfg.max_output_tokens, 4096)
         try:
@@ -976,7 +987,7 @@ class BasicAgent(AgentVerboseMixin):
         if is_stripped:
             search_results = "(earlier search results omitted for brevity)"
         else:
-            search_results = passages2string(docs[:seen_top_k], self.max_passage_chars)
+            search_results = passages2string(docs[:seen_top_k], self.max_passage_tokens)
 
         return f"\n\n{output_text}<information>{search_results}</information>\n\n{self._belief_state_suffix(step)}"
 
@@ -1017,9 +1028,9 @@ class BasicAgent(AgentVerboseMixin):
         ``_force_answer_on_context_limit`` which wraps this.
         """
         evidence = build_evidence_summary(reasoning_path, seen_top_k=self.seen_top_k,
-                                          max_text_length=self.max_passage_chars)
+                                          max_tokens=self.max_passage_tokens)
         return (
-            f"{FINAL_ANSWER_INSTRUCTION}\n\n"
+            f"{self.force_instruction}\n\n"
             f"Question: {query}\n\n"
             f"Evidence collected:\n{evidence}\n\n"
             f"{format_instructions}"
@@ -1212,7 +1223,7 @@ class TagReasoningAgent(BasicAgent):
                     original_query=question,
                     reasoning=think_text if think_text else None,
                 )
-                search_results = passages2string(search_docs[:self.seen_top_k], self.max_passage_chars)
+                search_results = passages2string(search_docs[:self.seen_top_k], self.max_passage_tokens)
 
             else:
                 search_docs, search_results = [], ''

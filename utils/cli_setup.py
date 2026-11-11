@@ -13,7 +13,7 @@ from pathlib import Path
 import yaml
 
 from indexing_corpus_dataset.layout import apply_dataset_defaults, dataset_root, default_corpus_path, default_index_dir
-from utils.text_utils import MAX_PASSAGE_CHARS
+from utils.text_utils import MAX_PASSAGE_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ FILE_BACKED_DEFAULTS = {
     "use_plan": False,
     "max_extend_steps": 5,
     "hard_mode": True,
-    "max_passage_chars": MAX_PASSAGE_CHARS,
+    "max_passage_tokens": MAX_PASSAGE_TOKENS,
     # Belief model (the rest; --belief-mode is CLI)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
@@ -102,6 +102,7 @@ _FILE_BACKED_TYPES = {
     "llm_temperature": float,
     "min_relevance_score": int,
     "max_criteria": int,
+    "max_passage_tokens": int,
     "max_length": int,  # index build
 }
 
@@ -290,7 +291,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["use_plan"] = args.use_plan
     pipeline_kwargs["max_extend_steps"] = args.max_extend_steps
     pipeline_kwargs["hard_mode"] = args.hard_mode
-    pipeline_kwargs["max_passage_chars"] = args.max_passage_chars
+    pipeline_kwargs["max_passage_tokens"] = args.max_passage_tokens
 
     pipeline_kwargs["belief_mode"] = args.belief_mode
     pipeline_kwargs["llm_criteria"] = args.llm_criteria
@@ -319,7 +320,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "max_extend_steps":        args.max_extend_steps,
         "max_retries":             args.max_retries,
         "hard_mode":               args.hard_mode,
-        "max_passage_chars":       args.max_passage_chars,
+        "max_passage_tokens":       args.max_passage_tokens,
         "verbose":                 verbose,
         "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),
         "post_retrieval_reranker_type": args.post_retrieval_reranker,

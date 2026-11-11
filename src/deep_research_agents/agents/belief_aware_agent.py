@@ -31,7 +31,7 @@ rides on the result as ``ba_outcome``, which the trajectory meta line persists
 
 Settings are the shared ones of ``dra_inference.yaml``: ``max_iteration`` (turn
 cap, enforced in code and never stated to the policy), ``max_retries`` (format
-re-asks), ``max_passage_chars``, ``llm_max_tokens_per_call``, ``seen_top_k``
+re-asks), ``max_passage_tokens``, ``llm_max_tokens_per_call``, ``seen_top_k``
 (passages per search) and the run temperature.  The backbone's own reasoning
 mode is always off.
 
@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from reasoner_component import disable_native_thinking, is_context_window_error
-from utils.text_utils import MAX_PASSAGE_CHARS, doc_id, doc_text, doc_title, number_citations, unique_docs
+from utils.text_utils import MAX_PASSAGE_TOKENS, doc_id, doc_text, doc_title, number_citations, unique_docs
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
     MAX_TURNS_ANSWER_INSTRUCTION,
@@ -211,8 +211,8 @@ class DocRegistry:
         return labels
 
 
-def render_information(docs: List[Dict[str, Any]], labels: List[str], max_chars: int) -> str:
-    parts = [f"[{label}] {doc_title(doc)}\n{doc_text(doc, max_length=max_chars)}"
+def render_information(docs: List[Dict[str, Any]], labels: List[str], max_tokens: Optional[int]) -> str:
+    parts = [f"[{label}] {doc_title(doc)}\n{doc_text(doc, max_tokens=max_tokens)}"
              for doc, label in zip(docs, labels)]
     body = "\n\n".join(parts) if parts else "No documents retrieved."
     return f"<information>\n{body}\n</information>"
@@ -289,19 +289,18 @@ class BeliefAwareAgent(BasicAgent):
     AGENT_NAME = "BeliefAware"
 
     def __init__(self, llm_client, retriever: Optional[Any] = None, max_iteration: int = 100,
-                 seen_top_k: int = 5, verbose: bool = True, max_passage_chars: int = MAX_PASSAGE_CHARS,
-                 max_retries: int = 3, task: str = "qa", report_chars: Optional[int] = None):
+                 seen_top_k: int = 5, verbose: bool = True, max_passage_tokens: int = MAX_PASSAGE_TOKENS,
+                 max_retries: int = 3, task: str = "qa"):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
-        self.max_passage_chars = max_passage_chars
+        self.max_passage_tokens = max_passage_tokens
         self.max_retries = max_retries
         # The dataset's task (layout.DATASET_SPECS): "qa" answers a question,
-        # "report" writes a report of about *report_chars* characters.  Only
+        # "report" writes a report (no length limit).  Only
         # the prompts differ; the turn protocol is the same.
         if task not in FORCED_TURN_PROMPTS:
             raise ValueError(f"unknown task {task!r}; expected one of {tuple(FORCED_TURN_PROMPTS)}")
         self.task = task
-        self.report_chars = report_chars
         # The backbone's own reasoning mode is always off, as in the Search-R1
         # family: the protocol's <reasoning> is the only reasoning.  With it on,
         # the model can spend the whole output cap on hidden reasoning and
@@ -432,7 +431,7 @@ class BeliefAwareAgent(BasicAgent):
 
         # Read per query: the belief model is attached after the agent is built.
         informs = self._informs
-        system = render_system(inform=informs, task=self.task, report_chars=self.report_chars)
+        system = render_system(inform=informs, task=self.task)
         registry = DocRegistry()
         blocks: List[SearchBlock] = []
         reasoning_path: List[Dict[str, Any]] = []
@@ -497,7 +496,7 @@ class BeliefAwareAgent(BasicAgent):
             shown = unique_docs(docs, keep_unidentified=False)[:self.seen_top_k]
             labels = registry.register(shown)
             block = SearchBlock(turn=turn.text,
-                                information=render_information(shown, labels, self.max_passage_chars))
+                                information=render_information(shown, labels, self.max_passage_tokens))
             blocks.append(block)
             step = {
                 "iteration": t, "action_type": ACTION_SEARCH, "think": turn.think,

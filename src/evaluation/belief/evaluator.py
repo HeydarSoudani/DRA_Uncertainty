@@ -10,7 +10,7 @@ criteria are left out).  Read from the saved belief files
 **Gold event** (criterion k, document d, step t): d is one of k's gold
 documents, new to the belief at step t (not in an earlier step whose update
 call parsed: the update shows only such documents), and its
-text as the update read it (the run's ``max_passage_chars`` cut) states k's
+text as the update read it (the run's ``max_passage_tokens`` cut) states k's
 gold answer (string match, ``gold.states``).  A gold document whose answer
 is past the cut is not an event (counted in the reachability).  When the
 update call of step t failed, the document is shown again when retrieved
@@ -66,7 +66,7 @@ import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -74,7 +74,7 @@ from belief_model_component import (AGGREGATE, MULTI_ASPECT, REST, STATUS_LEVEL,
                                     status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.text_utils import cut_passage
+from utils.text_utils import cut_chars, cut_passage
 
 from ..common import read_jsonl
 from ..gold.criteria import load_gold_rows, match_row
@@ -116,7 +116,9 @@ def read_belief_file(path: Path, light: bool = False) -> BeliefFile:
 
 
 # Before the shared cut (schema 38) the belief update cut a short-answer
-# document at 3000 characters and read a report document whole.
+# document at 3000 characters and read a report document whole; from
+# schema 38 to the token cut the shared cut was ``max_passage_chars``
+# characters, ending in "...".
 LEGACY_PASSAGE_CHARS = 3000
 
 
@@ -126,18 +128,42 @@ def read_run_config(run_dir: Path) -> Dict[str, Any]:
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def passage_chars(config: Dict[str, Any], query_shape: str) -> Optional[int]:
-    """Characters of one document the belief update of a run read (or, a
-    run without the belief model, will read in training), from its
-    ``run_config.json`` *config*: the belief section's
-    ``max_passage_chars``, else the agent's (the shared cut, the same
-    value), else the cut of the runs before it was recorded; None: whole
-    documents."""
+def _recorded(config: Dict[str, Any], key: str) -> Tuple[bool, Optional[int]]:
+    """``(recorded, value)`` of *key* in the belief section of a
+    ``run_config.json`` *config*, else in its agent section (the shared cut,
+    the same value)."""
     for section in ("belief_model", "agent"):
         values = config.get(section) or {}
-        if "max_passage_chars" in values:
-            return values["max_passage_chars"]
-    return None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS
+        if key in values:
+            return True, values[key]
+    return False, None
+
+
+def passage_tokens(config: Dict[str, Any]) -> Optional[int]:
+    """Tokens of one document the belief update of a run read (or, a run
+    without the belief model, will read in training): its
+    ``max_passage_tokens``; None: whole documents.  A run made before the
+    token cut (it recorded characters, or nothing) cannot be replayed with
+    the same text: ValueError."""
+    recorded, value = _recorded(config, "max_passage_tokens")
+    if not recorded:
+        raise ValueError("the run was made before the shared token cut (no max_passage_tokens in its "
+                         "run_config.json); rerun it")
+    return value
+
+
+def passage_cut(config: Dict[str, Any], query_shape: str) -> Callable[[str], str]:
+    """The cut of one document as the belief update of a run read it, from
+    its ``run_config.json`` *config*: ``max_passage_tokens`` (tokens), else
+    an older run's ``max_passage_chars`` (characters), else the cut before
+    either was recorded."""
+    recorded, tokens = _recorded(config, "max_passage_tokens")
+    if recorded:
+        return lambda text: cut_passage(text, tokens)
+    recorded, chars = _recorded(config, "max_passage_chars")
+    if not recorded:
+        chars = None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS
+    return lambda text: cut_chars(text, chars)
 
 
 def load_belief_files(run_dir: Path, query_ids: Iterable[str]) -> Dict[str, BeliefFile]:
@@ -244,9 +270,9 @@ class BeliefUpdateEvaluator:
         ids = set().union(*(q.needed_doc_ids() for q in queries)) if queries else set()
         if not ids or not self.corpus_path:
             return {}
-        max_chars = passage_chars(read_run_config(run_dir), DATASET_SPECS[self.dataset].query_shape)
+        cut = passage_cut(read_run_config(run_dir), DATASET_SPECS[self.dataset].query_shape)
         contents = CorpusLookup(self.corpus_path).contents(ids)
-        return {i: cut_passage(str(t).strip(), max_chars) for i, t in contents.items()}
+        return {i: cut(str(t).strip()) for i, t in contents.items()}
 
     def _gold_names(self, queries: List[_Query], run_dir: Path) -> Dict[Tuple[str, str, str], bool]:
         """``(qid, criterion id, name) -> is a gold answer`` for every
@@ -312,9 +338,11 @@ class BeliefUpdateEvaluator:
         for step in q.steps:
             t = step.get("iteration")
             docs = step.get("docs") or []
+            # A call failed when it was made and no reply parsed; a parse
+            # error of an attempt that a retry recovered leaves an error
+            # line on a step whose call succeeded.
             parsed = step.get("observations") is not None
-            failed = (bool(step.get("called")) and not parsed) or any(
-                str(e).startswith("belief_update:") for e in step.get("errors") or [])
+            failed = bool(step.get("called")) and not parsed
             fresh = {d["doc_id"] for d in docs if d.get("doc_id") and d["doc_id"] not in judged}
             after = _by_id(step.get("beliefs")) or prev
             observed = {(o["id"], o.get("doc_id")) for o in step.get("observations") or [] if o.get("doc_id")}

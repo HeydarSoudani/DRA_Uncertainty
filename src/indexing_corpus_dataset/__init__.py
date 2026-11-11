@@ -1,11 +1,18 @@
 """Corpus, dataset, and index tooling for retrieval research.
 
-Provides the canonical on-disk dataset layout and the readers/writers around it:
+Provides the canonical on-disk dataset layout and the readers around it,
+imported across the repo:
 
     layout.py             canonical paths, data root, split-id + corpus-name rules
-    download_datasets.py  fetch TRQA / BrowseComp-Plus / NeuCLIR / RAGTIME into the canonical layout
     dataset_loaders.py    read queries / qrels / answers / nuggets from that layout
-    index_builder.py      build BM25 / SPLADE / dense indexes over a corpus
+    doc_lookup.py         fetch corpus documents by id (byte-offset index)
+
+and one subpackage per job:
+
+    download/             fetch TRQA / BrowseComp-Plus / NeuCLIR / RAGTIME into the canonical layout
+    indexing/             build BM25 / SPLADE / dense indexes over a corpus (configs in
+                          experiments/configs/index_build*.yaml)
+    training_datasets/    build the training datasets and their gold annotation
 
 Canonical layout::
 
@@ -23,7 +30,6 @@ from .layout import (
     corpus_path,
     corpus_name,
     resolve_split_id,
-    resolve_data_path,
     default_corpus_path,
     default_index_dir,
 )
@@ -43,7 +49,6 @@ __all__ = [
     "load_query_intermediate_info",
     "load_split",
     "resolve_split_id",
-    "resolve_data_path",
     "queries_base",
     "qrels_base",
     "nuggets_base",

@@ -381,9 +381,9 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "criteria_source": kwargs["criteria_source"],
             "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
             "add_intermediate_answer": bool(kwargs["add_intermediate_answer"]),
-            # Characters of one document the belief update reads (the
-            # agent's ``max_passage_chars``); a training replay shows the same.
-            "max_passage_chars": kwargs.get("max_passage_chars"),
+            # Tokens of one document the belief update reads (the
+            # agent's ``max_passage_tokens``); a training replay shows the same.
+            "max_passage_tokens": kwargs.get("max_passage_tokens"),
         })
     return {
         "dataset": {
@@ -403,7 +403,7 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "use_plan": kwargs.get("use_plan", False),
             "max_iteration": kwargs.get("max_iteration"),
             "max_retries": kwargs.get("max_retries"),
-            "max_passage_chars": kwargs.get("max_passage_chars"),
+            "max_passage_tokens": kwargs.get("max_passage_tokens"),
             "llm_max_tokens_per_call": kwargs.get("llm_max_tokens_per_call"),
             "max_output_tokens_total": effective_max_output_tokens(policy_model, kwargs["max_output_tokens_total"]),
             "max_extend_steps": kwargs.get("max_extend_steps"),

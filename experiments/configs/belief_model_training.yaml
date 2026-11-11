@@ -13,10 +13,10 @@
 
 # ── Shared ───────────────────────────────────────────────────────────────────
 shared:
-  training_data: deep_qa            # training pool: deep_qa | trqa_validation (build_training_pool.py)
+  training_data: infoseek           # training dataset: infoseek | trqa_validation | webshaper_frames (val only) (build_training_dataset.py)
   criteria_source: gold             # gold | silver: the belief model's criteria in the phase 1 monitor runs (dra_inference --criteria-source);
-                                    # a choice on trqa_validation only (belief-monitor-{source}); deep_qa always gold (silver for FRAMES);
-                                    # phases 2-3 score against the pool's gold criteria and need gold
+                                    # a choice on trqa_validation only (belief-monitor-{source}); infoseek, webshaper_frames always gold (silver for FRAMES);
+                                    # phases 2-3 score against the dataset's gold criteria and need gold
   # policy_model (the frozen agent) is set by the --policy-model default of
   # experiments/training/belief_model_training.py, not here.
   output_root: null                 # null = OUTPUT_ROOT/belief_model_training
@@ -27,9 +27,9 @@ shared:
   gpu_ids: null                     # their GPUs, e.g. "0,1,2,3" (phase 1); null = gpu_ids of the inference config
   max_seq_len: 32768                # longest student sequence (prompt + reply) in SFT and RL
 
-# ── Phase 1: dra_inference on one pool split (sft, val: monitor; rl: off) ───
+# ── Phase 1: dra_inference on one dataset split (sft, val: monitor; rl: off) ───
 trajectories:
-  split: sft                                        # sft | rl | val (build_training_pool.py split)
+  split: sft                                        # sft | rl | val (build_training_dataset.py split)
   teacher_belief_model: openrouter/qwen/qwen3.6-27b # belief model whose criteria (init) and updates are the SFT targets
   limit: null                                       # next N queries of the split not run yet (null = all)
   quiet: false                                      # minimal logs (no per-step agent output), as dra_inference --quiet

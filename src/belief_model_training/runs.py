@@ -1,12 +1,12 @@
 """The inference runs of phase 1, read back as episodes by phases 2 and 3.
 
 Phase 1 runs ``experiments/inference/dra_inference.py`` on one split of the
-training pool, with the standard output layout:
+training dataset, with the standard output layout:
 
     {inference_output}/{dataset}_{split}_{retriever}/{agent dir}/belief-{mode}[-{source}]/
 
 (``-{source}``: ``shared.criteria_source`` on trqa_validation, where it is a
-choice; deep_qa's monitor runs are ``belief-monitor``.)
+choice; infoseek's monitor runs are ``belief-monitor``.)
 
     split  mode      used by
     sft    monitor   phase 2 (SFT samples, teacher scores)
@@ -15,7 +15,7 @@ choice; deep_qa's monitor runs are ``belief-monitor``.)
 
 ``load_episodes`` gives the episodes of a split's run: the trajectories
 (``episodes.read_episode``), the gold of the qrels (``annotate_gold``), the
-correctness of the run's ``accuracy.jsonl`` and the pool's gold criteria
+correctness of the run's ``accuracy.jsonl`` and the dataset's gold criteria
 (``gold_criteria``; training uses only the queries with the full gold
 annotation and criterion texts: the out-of-domain queries of ``val``, whose
 criteria the teacher wrote, are for evaluation and left out, as is a query
@@ -47,7 +47,7 @@ from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run
 
 from belief_model_component import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, shape_kinds
 
-from evaluation.belief import passage_chars
+from evaluation.belief import passage_tokens
 from evaluation.belief.gold import AnswerJudge
 
 from .config import RunPaths, Split, TrainingConfig
@@ -105,7 +105,7 @@ def find_run(cfg: TrainingConfig, split: Split) -> Tuple[Path, Dict]:
 def check_same_settings(cfg: TrainingConfig, names: List[str]) -> None:
     """The runs of splits *names* have the same agent and searcher
     settings; raises with the keys that differ."""
-    configs = {name: find_run(cfg, cfg.pool_split(name))[1] for name in names}
+    configs = {name: find_run(cfg, cfg.dataset_split(name))[1] for name in names}
     first = names[0]
     diffs = [f"{first} -> {name}: {d}" for name in names[1:]
              for d in run_config_diffs(configs[first], configs[name], SAME_SETTINGS)]
@@ -125,12 +125,12 @@ def check_teacher(run_dir: Path, config: Dict, teacher: str) -> None:
 
 
 def require_gold(cfg: TrainingConfig) -> None:
-    """Phases 2 and 3 score the belief against the pool's gold criteria
+    """Phases 2 and 3 score the belief against the dataset's gold criteria
     (gold answers and documents per criterion id): they read the runs on
     the gold criteria only."""
     source = effective_criteria_source(cfg.shared.criteria_source, cfg.shared.training_data)
     if source != GOLD_CRITERIA:
-        raise SystemExit(f"shared.criteria_source {source}: phases 2 and 3 score against the pool's gold "
+        raise SystemExit(f"shared.criteria_source {source}: phases 2 and 3 score against the dataset's gold "
                          f"criteria and need the runs on them (shared.criteria_source gold); silver runs are "
                          f"for phase 1 and evaluation only")
 
@@ -138,11 +138,11 @@ def require_gold(cfg: TrainingConfig) -> None:
 def read_gold_criteria(split: Split) -> Tuple[Dict[str, Dict], Set[str]]:
     """The gold criteria rows of the queries of *split* with the full
     annotation and criteria with texts (``texts_ok``), by query id
-    (``layout.gold_criteria_path``: the pool's rows with that ``split``),
+    (``layout.gold_criteria_path``: the dataset's rows with that ``split``),
     and the ids of the out-of-domain queries (not full)."""
     path = gold_criteria_path(split.dataset)
     if not path.exists():
-        raise SystemExit(f"{path} not found: build the pool (build_training_pool.py: deep_qa step 2, or trqa_validation)")
+        raise SystemExit(f"{path} not found: build the dataset (build_training_dataset.py --dataset {split.dataset})")
     out, ood = {}, set()
     for line in path.read_text().splitlines():
         row = json.loads(line) if line.strip() else None
@@ -216,11 +216,15 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
     *teacher* (a monitor run), each also has the teacher's view; an episode
     whose belief file cannot be used is left out."""
     require_gold(cfg)
-    split = cfg.pool_split(name)
+    split = cfg.dataset_split(name)
     run_dir, config = find_run(cfg, split)
     mode = SPLIT_MODE[split.subset]
     if teacher:
         check_teacher(run_dir, config, cfg.trajectories.teacher_belief_model)
+    try:
+        max_passage_tokens = passage_tokens(config)
+    except ValueError as exc:
+        raise SystemExit(f"{run_dir}: {exc} (phase 1)") from None
     gold = split_gold(split, config)
     gold_criteria, ood = read_gold_criteria(split)
     correctness = read_correctness(run_dir)
@@ -236,7 +240,7 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
         if episode is None:
             counts["not_run"] += 1
             continue
-        episode.max_passage_chars = passage_chars(config, episode.query_shape)
+        episode.max_passage_tokens = max_passage_tokens
         # The kinds as the belief reads them (a multi-hop query's hops, ``shape_kinds``).
         rows = gold_criteria[qid]["criteria"]
         kinds = shape_kinds(episode.query_shape, [c["kind"] for c in rows])
@@ -248,7 +252,7 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
             if reason is None and episode.criteria_model != GOLD_CRITERIA_MODEL:
                 reason = f"criteria by {episode.criteria_model!r}, not the gold criteria"
             if reason is None and [c["text"] for c in episode.criteria] != [c["text"] for c in episode.gold_criteria]:
-                reason = "the run's criteria differ from the pool's gold criteria"
+                reason = "the run's criteria differ from the dataset's gold criteria"
             if reason is not None:
                 counts["teacher_unusable"] += 1
                 logger.warning("%s %s %s: %s", tag, split.name, qid, reason)

@@ -33,7 +33,7 @@ source scripts/_activate.sh
 mkdir -p script_logging
 
 RETRIEVER=spladepp            # bm25 | spladepp | bge | qwen3_emb_4b
-DATASET=trqa                  # trqa | neuclir | browsecomp_plus | ragtime
+DATASET=trqa                  # trqa | neuclir | browsecomp_plus | ragtime | infoseek | webshaper_frames
 
 case "$RETRIEVER" in
     bm25)              ARGS=() ;;
@@ -52,7 +52,7 @@ case "$RETRIEVER" in
     *)                 ARGS=(--use_fp16 --max_length 512 --batch_size 512 --faiss_type Flat --save_embedding) ;;
 esac
 
-python -m indexing_corpus_dataset.index_builder \
+python -m indexing_corpus_dataset.indexing.index_builder \
     --retriever "$RETRIEVER" \
     --dataset "$DATASET" \
     "${ARGS[@]}"

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from utils.sectioned_config import load_sectioned
-from indexing_corpus_dataset.layout import BUILT_DATASETS, CRITERIA_SOURCES, OUTPUT_ROOT, POOL_SPLITS, resolve_split_id
+from indexing_corpus_dataset.layout import BUILT_DATASETS, CRITERIA_SOURCES, OUTPUT_ROOT, TRAINING_SPLITS, resolve_split_id
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,15 +39,15 @@ class Split:
 
 @dataclass
 class SharedConfig:
-    # Training pool of experiments/training/build_training_pool.py: deep_qa
-    # (InfoSeek-Hard, WebShaper, FRAMES) or trqa_validation (TRQA wiki1 +
-    # wiki2 validation).
-    training_data: str = "deep_qa"
+    # Training dataset of experiments/training/build_training_dataset.py:
+    # infoseek (InfoSeek-Hard) or trqa_validation (TRQA wiki1 + wiki2
+    # validation); webshaper_frames (WebShaper, FRAMES) has a val split only.
+    training_data: str = "infoseek"
     # Criteria of the belief model in the monitor runs of phase 1
     # (dra_inference --criteria-source): gold or silver.  A choice on
-    # trqa_validation only (run folder belief-monitor-{source}); deep_qa
-    # always uses its gold criteria (silver for FRAMES).  Phases 2 and 3
-    # score against the pool's gold criteria, so they need gold.
+    # trqa_validation only (run folder belief-monitor-{source}); infoseek
+    # and webshaper_frames always use their gold criteria (silver for FRAMES).  Phases 2 and 3
+    # score against the dataset's gold criteria, so they need gold.
     criteria_source: str = "gold"
     # Frozen agent (--policy-model of dra_inference): phase 1 runs it, phases
     # 2 and 3 read its runs and write under {output_root}/{training_data}/{policy_model}.
@@ -72,9 +72,9 @@ class SharedConfig:
 @dataclass
 class TrajectoriesConfig:
     """Phase 1: dra_inference with the frozen agent on one split of the
-    training pool ``shared.training_data``: sft and val in monitor mode with
+    training dataset ``shared.training_data``: sft and val in monitor mode with
     the teacher belief model, rl in off mode."""
-    # sft, rl or val (layout.POOL_SPLITS).
+    # sft, rl or val (layout.TRAINING_SPLITS).
     split: str = "sft"
     # Teacher belief model: its criteria (init) and belief updates are the SFT
     # targets; phase 2 checks that the monitor runs used it.
@@ -193,8 +193,8 @@ class TrainingConfig:
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
 
-    def pool_split(self, name: str) -> Split:
-        """Split *name* (``sft``, ``rl`` or ``val``) of the training pool."""
+    def dataset_split(self, name: str) -> Split:
+        """Split *name* (``sft``, ``rl`` or ``val``) of the training dataset."""
         return Split(self.shared.training_data, name)
 
     @property
@@ -216,8 +216,8 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
     if cfg.shared.criteria_source not in CRITERIA_SOURCES:
         raise ValueError(f"shared.criteria_source: expected one of {list(CRITERIA_SOURCES)}, "
                          f"got {cfg.shared.criteria_source!r}")
-    if cfg.trajectories.split not in POOL_SPLITS:
-        raise ValueError(f"trajectories.split: expected one of {list(POOL_SPLITS)}, got {cfg.trajectories.split!r}")
+    if cfg.trajectories.split not in TRAINING_SPLITS:
+        raise ValueError(f"trajectories.split: expected one of {list(TRAINING_SPLITS)}, got {cfg.trajectories.split!r}")
     return cfg
 
 

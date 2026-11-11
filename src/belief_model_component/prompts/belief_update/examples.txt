@@ -104,10 +104,12 @@ c3 (several answers): any other member: length
   (no candidate)
 c4 (computed): the total length of the bridges over the river Varn that were built before 1900
   "205 m": possible
+  passages on its definition:
+    "The Osby Bridge, built in 1862" [Osby Bridge]
 
 The agent's reasoning since the last update:
 [t4]
-Osby Bridge is 120 m and Kalvik Bridge is about 85 m, so the total is 205 m. I should check whether other old bridges cross the Varn.
+The Kalvik Bridge was built before 1900, so it counts. Osby Bridge is 120 m and Kalvik Bridge is about 85 m, so the total is 205 m. I should check whether other old bridges cross the Varn.
 
 Passages:
 [d6] Kalvik Bridge
@@ -125,13 +127,15 @@ Output:
   ],
   "passage_observations": [
     {"id": "c2", "passage": "d6", "spans": ["The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long"]},
-    {"id": "c3", "passage": "d7", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895 and is 40 metres long"]}
+    {"id": "c4", "passage": "d6", "spans": ["The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn"]},
+    {"id": "c3", "passage": "d7", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895 and is 40 metres long"]},
+    {"id": "c4", "passage": "d7", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895"]}
   ],
   "candidates": [
     {"id": "c2", "candidate": "85 m", "support": [], "against": ["d6"], "reason": "Was proposed: d6 states that the Kalvik Bridge is 92 metres long, not 85 m, so a passage states that it fails a part.", "belief_status": "removed"},
     {"id": "c2", "candidate": "92 metres", "support": ["d6"], "against": [], "reason": "New: d6 states that the Kalvik Bridge is 92 metres long, so a passage states every part, and no other candidate has support.", "belief_status": "certain"},
-    {"id": "c3", "candidate": "Tirsa footbridge: 40 metres", "support": ["d7"], "against": [], "reason": "New: d7 states that the Tirsa footbridge crosses the Varn, was built in 1895 and is 40 metres long, so a passage states every part.", "belief_status": "certain"},
-    {"id": "c4", "candidate": "205 m", "support": [], "against": [], "reason": "Was possible: t4 computes it from 120 m and 85 m, but the answer of c2 is now 92 metres and the computation leaves out the Tirsa footbridge, so it uses only one of the answers it is computed from.", "belief_status": "unlikely"}
+    {"id": "c3", "candidate": "Tirsa footbridge: 40 metres", "support": ["d7"], "against": [], "reason": "New: d7 states that the Tirsa footbridge crosses the Varn and is 40 metres long, so a passage states every part.", "belief_status": "certain"},
+    {"id": "c4", "candidate": "205 m", "support": ["d6"], "against": ["d7"], "reason": "Was possible: d7 states that the Tirsa footbridge, built in 1895, crosses the Varn, so it meets the set's conditions, but the computation leaves it out, and it uses 85 m where the answer of c2 is now 92 metres.", "belief_status": "unlikely"}
   ]
 }
 
@@ -139,11 +143,13 @@ Output:
 Query: Write a report on the effects of the 2022 drought on farming in Norland, not including livestock.
 
 Criteria, with their current candidates:
-c1 (several answers): crop yield losses in Norland in 2022
+c1 (aspect): crop yield losses in Norland in 2022
+  coverage: possible
   "Wheat yields fell by about a third": probable
     + "the drought cut the 2022 wheat harvest sharply, by about a third in the south" [Norland farm news]
   proposed: "Potato yields fell by half"
-c2 (several answers): support measures for farmers in Norland in 2022, not livestock subsidies
+c2 (aspect): support measures for farmers in Norland in 2022, not livestock subsidies
+  coverage: unknown
   (no candidate)
 
 The agent's reasoning since the last update:
@@ -171,5 +177,9 @@ Output:
     {"id": "c1", "candidate": "Potato yields fell by half", "support": [], "against": ["d7"], "reason": "Was proposed: d7 states that potato yields were close to normal in 2022, so a passage states that it fails a part.", "belief_status": "removed"},
     {"id": "c1", "candidate": "Barley yields fell by 18%", "support": ["d7"], "against": [], "reason": "New: d7 states that barley yields in Norland fell 18% in 2022, so a passage states every part.", "belief_status": "certain"},
     {"id": "c2", "candidate": "Drought relief of 40 euros per hectare for crop farmers", "support": ["d8"], "against": [], "reason": "New: d8 states that in 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief, so a passage states every part; the feed subsidies for livestock farms are left out by the criterion.", "belief_status": "certain"}
+  ],
+  "coverage": [
+    {"id": "c1", "reason": "Was possible: two sources now state the losses of wheat and barley, the main grain crops, so the facts cover most of what the aspect asks.", "coverage_status": "probable"},
+    {"id": "c2", "reason": "Was unknown: one source states one measure, drought relief per hectare, a narrow part of the support measures.", "coverage_status": "possible"}
   ]
 }

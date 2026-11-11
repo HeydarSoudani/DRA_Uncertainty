@@ -90,12 +90,12 @@ prompt, a shared core plus one block per shape:
 | Shape | Datasets | Criteria |
 |---|---|---|
 | multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets c1 to c5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
-| multi-hop | deep_qa | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
+| multi-hop | infoseek, webshaper_frames | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
 | multi-member | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
 | multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
 `max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
-trqa_validation (52) and deep_qa's FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
+trqa_validation (52) and webshaper_frames' FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
 whose criteria are all gold, a `max_criteria` stops the run (`criteria.factory.check_max_criteria`).
 
 Rules for report criteria:
@@ -109,7 +109,7 @@ Rules for report criteria:
 Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate`, `aspect`
 (one aspect of a report topic) or `target`. A multi-clue query's clues and asked answer are closed, its "meets c1 to
 c<k>" criterion a target (`criteria.parsing.target_index`); a multi-hop query's hops before its answer are `hop`, its answer
-closed (`criteria.parsing.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a multi-member query's
+closed (`criteria.parsing.shape_kinds`, also applied to the training datasets' gold rows, which record every hop as closed); a multi-member query's
 members are closed, its "any other member" criterion rest and its last criterion aggregate (each added by code when the
 model leaves it out); all report criteria are aspects. A closed or aggregate criterion has one answer, so its
 candidates are alternatives; the others have several answers that hold together (members, values, facts; two entities
@@ -122,10 +122,10 @@ silver when an LLM extracts structure the question does not state (`DatasetSpec.
 | Dataset | Gold | Silver |
 |---|---|---|
 | BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's criteria (the question's own clues and requirements) | none |
-| deep_qa InfoSeek, WebShaper | the pool's rows (`queries/queries_all.jsonl`, any `level`) | none |
-| deep_qa FRAMES | none | the extractor's multi-hop criteria |
-| TRQA | made from the intermediate info on demand (`trqa_gold_criteria.py`) | the extractor's set criteria |
-| trqa_validation | the pool's rows | the extractor's set criteria |
+| infoseek, webshaper_frames WebShaper | the dataset's rows (`queries/queries_all.jsonl`, any `level`) | none |
+| webshaper_frames FRAMES | none | the extractor's multi-hop criteria |
+| TRQA | made from the intermediate info on demand (`training_datasets/gold/trqa.py`) | the extractor's set criteria |
+| trqa_validation | the dataset's rows | the extractor's set criteria |
 
 **Criteria source** (`criteria_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_validation only,
 whose queries have both; the run goes to `belief-{mode}-gold/` or `belief-{mode}-silver/`. Elsewhere it has no
@@ -147,24 +147,24 @@ each query's list once, at the start of the query (`BeliefModel.reset`). The run
 Before the workers start (after the vLLM servers are up), the run makes and banks the missing criteria of its
 queries in parallel (`prepare_criteria`, with counts per kind and origin); the workers then read them from the bank,
 and a query still missing is made by its worker. The settings are checked before any model is loaded
-(`check_criteria_inputs`: e.g. a missing pool gold file stops the run).
+(`check_criteria_inputs`: e.g. a missing training dataset gold file stops the run).
 
 The banks:
 
 - The extractor's criteria (`llm_criteria`): `CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl`
-  (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training pool has one bank for all its splits,
-  `CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
+  (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
+  `CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
 - TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
-  prompts). They are made from the query's intermediate info as the trqa_validation pool makes its own
+  prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
   (`annotations.multi_member_row`: one criterion per member, the rest and the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `llm_criteria` writes
-  the property phrase and the aggregation (the pools' prompts, `training_pool/prompts/set_*`). The bank line keeps
+  the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
   criteria, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
-- A training pool's gold criteria: the pool's queries file is their bank, written by its build only
-  (`build_training_pool.py`), never during a run, so training scores against the same texts. A query whose gold
-  texts failed gets silver ones; rebuild the pool to fix them.
+- A training dataset's gold criteria: its queries file is their bank, written by its build only
+  (`build_training_dataset.py`), never during a run, so training scores against the same texts. A query whose gold
+  texts failed gets silver ones; rebuild the dataset to fix them.
 
 Rules of a bank line:
 
@@ -193,7 +193,8 @@ final answer) makes the final call: on a short-answer dataset the final scorer's
 update with the turns still waiting.
 
 **Passage length.** The agent and the belief update read the same text of each document: its first
-`max_passage_chars` characters (one shared setting, default 1000, `utils.text_utils.cut_passage`), report documents
+`max_passage_tokens` tokens (one shared setting, default 512 as in BrowseComp-Plus, counted with the `Qwen/Qwen3.5-4B`
+tokenizer whatever the agent's model, no marker at the cut; `utils.text_utils.cut_passage`), report documents
 included. A passage's title is its metadata title, else its front matter's (`title:`), else its first line.
 
 The call reads every criterion with its current candidates, their support and its proposals, the turns and the
@@ -262,7 +263,8 @@ The statuses of a candidate, lowest first: `unlikely` (-1), `possible` (1), `pro
 weighs the support (how many parts passages state, how directly, how many sources agree, whether one speaks against
 it). Each dataset's prompt holds only the definitions of the types its query shape has
 (`prompts/belief_update/criterion_statuses.txt`; multi_clue: one answer and target; multi_hop: one answer and several
-answers; multi_aspect: several answers; multi_member: one answer, several answers and computed):
+answers; multi_aspect: several answers and aspect; multi_member: one answer, several answers and computed). Candidates
+of a several-answers criterion that give different values of the same quantity compete as one-answer candidates do:
 
 | status | several answers (candidates do not compete) | one answer (candidates compete) |
 |---|---|---|
@@ -272,8 +274,23 @@ answers; multi_aspect: several answers; multi_member: one answer, several answer
 | almost certain | every part stated, some only by inference or in part, none against | the same, and every other candidate's support clearly weaker |
 | certain | every part stated, none against | every part stated, none against, no other candidate has support |
 
-When several fit, the lowest is given. For a computed criterion the reasoning sets the status (how completely the
-computation uses the answers it is computed from). Differences from Agent-BRACE: it ranks "unknown" lowest; here it
+When several fit, the lowest is given. A candidate is what its criterion asks for, never the member a member
+criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
+written as a candidate or proposal (`subject_candidate`; a rest criterion's name also needs its value). Whether a
+member belongs to the set is judged on the computed criterion: its passage observations state a member's conditions
+(shown as "passages on its definition"), and its candidate's status is how completely the computation uses the right
+inputs (unlikely when it leaves out a member a passage states meets the conditions, uses one that fails them, or a
+value other than its criterion's answer; possible while members lack an answer at probable or above; up to certain
+when every member it uses is stated to meet the conditions with a certain answer).
+
+A report's aspect (multi_aspect) has its facts as several-answers candidates and its own **coverage** status, written
+by the update in the reply's `coverage` list: how completely the passages cover what the aspect asks for (unknown: no
+fact; possible: a narrow part; probable: most of it, more than one source; almost certain: all of it, several
+independent sources; certain: and new passages add nothing). The number of sources is given to the model as a hint,
+not as the rule. The coverage is the aspect's status (and so its q_k); it moves only with a passage on the aspect in
+the call and stays "unknown" while no passage supports a fact (`coverage_no_passage`, `coverage_no_fact`). A new fact
+whose words contain a listed one, or the reverse, joins it (`merged_duplicate`); a supporting span that shares no
+content word with its fact is flagged (`span_off_candidate`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it
 is the neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
 
 The update prompt reads each criterion with its candidates (`views.tag.format_belief`):
@@ -382,9 +399,10 @@ The measures, by group, in the order of the files and the log:
 |---|---|---|
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
-| | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, judge failures | reports |
+| | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
 | uncertainty | per score: AUROC [CI], Brier, ECE; s_T - verbal AUROC [CI]; queries judged, scored, excluded | QA, belief on |
-| belief | the belief update on gold documents (below) | TRQA, trqa_validation, deep_qa (InfoSeek), belief on |
+| | s_T mean; s_T Kendall tau-b [CI] vs nugget coverage (and weighted); queries scored, excluded | reports, belief on |
+| belief | the belief update on gold documents (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
 CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.metrics`). Nothing else is
@@ -394,15 +412,17 @@ raw outputs stay in the run, for `analysis/`).
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
 query out). The scores: `s_T` (the final scorer, the headline), `formula` and `answer formula` (the fixed function
 of the final statuses and its form on the scorer's answer candidates, ablations) and `verbal`, the agent's own
-`Confidence: X%` (glm, oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`; a generation
-without it has none). s_T and verbal are measured on the same queries: those with y, s_T and, when the run has
+`Confidence: X%` (glm, oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`, "~85 %" and a
+fraction such as "0.85" accepted; a generation without it has none). s_T and verbal are measured on the same queries: those with y, s_T and, when the run has
 any, a verbal confidence; an ablation on those of them where it has a value (its own n). Only belief files of the
-current schema are scored.
+current schema are scored. On a report dataset (`uncertainty/report.py`) s_T is the certainty of the final belief
+(the geometric mean of the aspects' coverage statuses; a report has no final scorer) and y the report's Auto-ARGUE
+nugget coverage: Kendall's tau-b with its CI over queries; an empty report is left out.
 
 **Belief update** (`src/evaluation/belief/evaluator.py`), on the queries whose criteria are the gold criteria with
 a gold answer and gold documents per criterion (TRQA members, InfoSeek hops; not the rest and aggregate criteria,
 not WebShaper or FRAMES, which have no gold documents per criterion). A **gold event** is a gold document of
-criterion k, new to the belief (not in an earlier step whose update call parsed), whose text as the update read it (the `max_passage_chars` cut) states k's gold
+criterion k, new to the belief (not in an earlier step whose update call parsed), whose text as the update read it (the `max_passage_tokens` cut) states k's gold
 answer. Per event:
 
 - `assigned`: the update wrote an observation of the document on k;
@@ -448,12 +468,12 @@ src/evaluation/
 ├── retrieval/       surfaced / seen / cited doc levels and their TREC files; seen-doc Recall@N, Precision@N
 ├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
-├── uncertainty/     UncertaintyEvaluator
+├── uncertainty/     UncertaintyEvaluator, ReportUncertaintyEvaluator
 ├── belief/          save_belief (belief/{qid}.jsonl schema), BeliefUpdateEvaluator, gold match and judge
 │                    (shared with belief model training)
 ├── trajectory/      TrajectoryEvaluator (per query), save_trajectory
 ├── generation/      the generation/{qid}.md writer
-├── gold/            per-criterion gold (TRQA gold bank, training pools); TRQA gold entities and their matcher
+├── gold/            per-criterion gold (TRQA gold bank, training datasets); TRQA gold entities and their matcher
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
 └── common.py        file and statistics helpers
 ```
@@ -467,7 +487,11 @@ package runs unmodified with our judge (`judge_model`, Qwen3-32B, temperature 0,
 Llama-3.3-70B.
 
 - Input: `generation/{qid}.md` split into sentences, each with the documents its `[N]` markers cite (resolved through
-  the References block), cut at the dataset's `report_chars` (2000) as in the tracks.
+  the References block), read whole: a report has no length limit (the tracks' 2000-character cut is not applied, so
+  scores are comparable across our runs, not to the official track numbers). Agents that cite by docid (oss, glm on a
+  report task) have their `[docid]` / `[[docid]]` citations, unique id prefixes included, numbered `[N]` when the run
+  ends (`utils.text_utils.number_docid_citations`). `metrics.md` counts the reports without any parsed citation and
+  those with markers that map to no reference: their citation and nugget scores are not meaningful.
 - Nuggets: the dataset's nuggets as v3 banks. NeuCLIR uses the NIST QC'd bank with importance (vital counts 2, okay 1),
   the AND/OR aggregation and each answer's supporting documents; only its 22 requests with supporting documents can be
   scored. RAGTIME has no importance labels, so the weighted scores equal the plain ones.

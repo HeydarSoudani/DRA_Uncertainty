@@ -25,6 +25,7 @@ from utils.llm_client import LiteLLMClient
 from .base_agent import BasicAgent
 from utils.config import InferenceConfig
 from utils.text_utils import (
+    doc_text,
     extract_tag_content as _extract_tag,
     format_react_history,
     number_citations,
@@ -60,14 +61,14 @@ def memory_bank_retrieve(bank: Dict[str, dict], ids: List[str]) -> Dict[str, str
     return out
 
 
-def memory_bank_format_for_context(bank: Dict[str, dict], max_summary_len: int = 500, ids_only: bool = False) -> str:
+def memory_bank_format_for_context(bank: Dict[str, dict], ids_only: bool = False) -> str:
     """Format memory bank for LLM context (planner / writer)."""
     lines = []
     for eid, entry in bank.items():
         if ids_only:
             lines.append(f"<{eid}>")
             continue
-        summary = (entry.get("summary") or entry.get("evidence") or "")[:max_summary_len]
+        summary = entry.get("summary") or entry.get("evidence") or ""
         lines.append(f"<{eid}>\nSummary: {summary}\n")
     return "\n".join(lines) if lines else "(No evidence yet.)"
 
@@ -540,16 +541,11 @@ class WebWeaver_Agent(BasicAgent):
                 for doc in docs[:self.seen_top_k]:
                     entry_id = f"id_{self._entry_counter}"
                     self._entry_counter += 1
-                    text = (
-                        doc.get("relevant_text")
-                        or doc.get("text")
-                        or doc.get("contents")
-                        or doc.get("snippet")
-                        or ""
-                    ).strip()
+                    # The shared cut: the text every agent and the belief model read.
+                    text = doc_text(doc, self.max_passage_tokens)
                     title = doc.get("title") or (doc.get("metadata", {}).get("title") if isinstance(doc.get("metadata"), dict) else None) or ""
                     new_entries[entry_id] = {
-                        "summary":  text[:500],
+                        "summary":  text,
                         "evidence": text,
                         "url":      doc.get("doc_id", ""),
                         "title":    title,

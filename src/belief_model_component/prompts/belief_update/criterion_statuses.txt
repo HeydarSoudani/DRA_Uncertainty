@@ -7,7 +7,7 @@
 - "certain": no doubt left: passages state every part for it directly, none speaks against it, and no other candidate has support.
 
 ---several_answers---
-"several answers" criterion: it may have several answers that hold together, so its candidates do not compete. A candidate's belief status depends only on its own passages:
+"several answers" criterion: it may have several answers that hold together, so its candidates do not compete, except candidates that give different values of the same quantity (the same measure of the same thing, at the same time and place), which compete as the candidates of a "one answer" criterion do. Any other candidate's belief status depends only on its own passages:
 - "unlikely": a passage casts doubt on a part for it.
 - "possible": no passage states a part for it.
 - "probable": passages state some parts for it.
@@ -15,7 +15,21 @@
 - "certain": passages state every part for it directly, and none speaks against it.
 
 ---computed---
-"computed" criterion: the agent computes its answer and no passage states it. The reasoning gives its candidates and sets their belief status: how completely the agent's computation uses the answers of the criteria it is computed from.
+"computed" criterion: the agent computes its answer and no passage states it. The reasoning gives its candidates; its passage observations state the conditions of its definition for a member, such as whether the member belongs to the set. A candidate's belief status is how completely the computation uses the right inputs: the members that the passages show meeting the set's conditions, each with the answer of its criterion:
+- "unlikely": the computation leaves out a member that a passage states meets the conditions, uses a member that a passage states fails them, or uses a value other than its criterion's answer.
+- "possible": the computation uses only some of the members it needs: members have no answer at "probable" or above, no passage states whether they meet the conditions, or it leaves out a member that a passage shows only may meet them.
+- "probable": the computation uses every listed member that a passage states meets the conditions, with their answers, but some answers are below "almost certain", or members may be missing.
+- "almost certain": as "probable", every answer it uses is at "almost certain" or above, and no member that a passage states meets the conditions is missing.
+- "certain": as "almost certain", every answer it uses is "certain", and passages state that every member it uses meets the conditions.
 
 ---target---
 "target" criterion: the entity that meets every clue before it. Its candidates and their belief statuses are set from the clues: a name listed on every clue is a candidate, at the lowest of its belief statuses there. It takes no observation and no candidate update of its own.
+
+---aspect---
+"aspect" criterion: one aspect of a report's topic. Its candidates are the facts on it, each written as one short statement, with the belief statuses of a "several answers" criterion. The aspect itself has a coverage status: how completely the passages cover what the aspect asks for, from the facts with support:
+- "unknown": no passage states a fact on it.
+- "possible": passages state facts on only a narrow part of what it asks.
+- "probable": passages state facts on most of what it asks, from more than one source.
+- "almost certain": passages state facts on all of what it asks, from several independent sources.
+- "certain": as "almost certain", and new passages add no new fact to it.
+The number of sources with facts on the aspect is a hint, not the rule: one source is usually "possible", two or three "probable", more "almost certain" or "certain", but what their facts cover decides.

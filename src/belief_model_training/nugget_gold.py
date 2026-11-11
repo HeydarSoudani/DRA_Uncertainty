@@ -1,7 +1,7 @@
 """Gold of the belief: whether a value is a gold answer of a criterion,
 and which criteria each agent turn states the gold answer of.
 
-The gold answers are the pool's (``gold_criteria``: per criterion the
+The gold answers are the dataset's (``gold_criteria``: per criterion the
 entity of the hop, a set member's value, or the final answer for the
 aggregate criterion).  A text matches a criterion's gold when one of its
 answers occurs in it as whole words (case, accents and punctuation

@@ -9,8 +9,8 @@
   judge), shared with belief model training.
 """
 
-from .evaluator import BeliefUpdateEvaluator, load_belief_files, passage_chars, read_belief_file, read_run_config
+from .evaluator import BeliefUpdateEvaluator, load_belief_files, passage_cut, passage_tokens, read_belief_file, read_run_config
 from .writer import SCHEMA_VERSION, clean_record, save_belief
 
 __all__ = ["SCHEMA_VERSION", "clean_record", "save_belief", "BeliefUpdateEvaluator", "load_belief_files",
-           "passage_chars", "read_belief_file", "read_run_config"]
+           "passage_cut", "passage_tokens", "read_belief_file", "read_run_config"]

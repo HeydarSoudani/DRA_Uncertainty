@@ -24,7 +24,7 @@ from jinja2 import Template
 
 from searcher_component.fusion import interleaving_fusion
 from deep_research_agents.agents.base_agent import BasicAgent
-from utils.text_utils import MAX_PASSAGE_CHARS, cut_passage
+from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, doc_text
 from utils.config import InferenceConfig
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class CPMReport(BasicAgent):
         hard_mode: bool = True,
         verbose: bool = True,
         search_tool=None,
-        max_passage_chars: int = MAX_PASSAGE_CHARS,
+        max_passage_tokens: int = MAX_PASSAGE_TOKENS,
         model_name: str = "",
         model_url: str = None,
         **kwargs,
@@ -75,7 +75,7 @@ class CPMReport(BasicAgent):
         self.max_retries = max_retries
         self.hard_mode = hard_mode
         self.verbose = verbose
-        self.max_passage_chars = max_passage_chars
+        self.max_passage_tokens = max_passage_tokens
 
         # --- Dual API routing ---------------------------------------------------
         # When model_name looks like a vLLM-served model (e.g. "openbmb/..."),
@@ -414,14 +414,10 @@ class CPMReport(BasicAgent):
         # Extract passages from fused docs
         fused_passages = []
         for idx, doc in enumerate(fused_docs):
-            text = doc.get("relevant_text", "") or doc.get("text", "")
+            # Whole and stripped, as every agent and the belief model read it;
+            # cut to the shared max_passage_tokens when shown (_process_passages_with_citation).
+            text = doc_text(doc, None)
             if not text:
-                text = doc.get("contents", "")
-            if not text:
-                title = doc.get("title", "")
-                contents = doc.get("contents", "")
-                text = f"{title}\n{contents}".strip() if title or contents else ""
-            if not text or not text.strip():
                 self._print(f"  ⚠ Warning: Empty passage for fused doc {idx}: keys={list(doc.keys())}")
             fused_passages.append(text)
 
@@ -1134,7 +1130,7 @@ class CPMReport(BasicAgent):
                         doc_id = doc.get("doc_id") or doc.get("id")
 
                     citation_id = self._assign_citation_id(state, psg, doc_id)
-                    truncated_psg = cut_passage(psg, self.max_passage_chars)
+                    truncated_psg = cut_passage(psg, self.max_passage_tokens)
                     cited_psg = f"[{citation_id}] {truncated_psg}"
                     all_passages.append(cited_psg)
 
@@ -1156,7 +1152,7 @@ class CPMReport(BasicAgent):
                             doc_id = doc.get("doc_id") or doc.get("id")
 
                         citation_id = self._assign_citation_id(state, psg, doc_id)
-                        truncated_psg = cut_passage(psg, self.max_passage_chars)
+                        truncated_psg = cut_passage(psg, self.max_passage_tokens)
                         cited_psg = f"[{citation_id}] {truncated_psg}"
                         all_passages.append(cited_psg)
                         remaining_slots -= 1

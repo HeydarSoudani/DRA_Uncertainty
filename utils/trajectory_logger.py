@@ -228,7 +228,7 @@ def _fence(text: str, lang: str = "") -> str:
 
 def _snippet(doc: Dict[str, Any], limit: int) -> str:
     """One-line preview of a document's text, collapsed and truncated."""
-    text = doc_text(doc, max_length=None)
+    text = doc_text(doc, max_tokens=None)
     text = " ".join(str(text).split())
     if len(text) > limit:
         text = text[:limit].rstrip() + "…"

@@ -110,9 +110,12 @@ EXCLUSIVE_KINDS = (CLOSED, AGGREGATE, TARGET)
 # criterion's "<member>: <value>" each part).  An aggregate is computed,
 # never checked.
 NAMED_KINDS = (CLOSED, HOP, REST)
-# Kinds no document can state (the agent computes an aggregate): the
-# belief update takes no document observation on them, so their values
-# rest on the agent's turns only.
+# Kinds whose answer no document states (the agent computes an aggregate):
+# the reasoning gives their candidates and their status is not capped for
+# lack of support.  A passage observed on such a criterion states a
+# condition of its definition for a member (whether the member belongs to
+# the set), which the computation's status weighs: the member criteria
+# only collect values, membership is judged here.
 NO_DOC_KINDS = (AGGREGATE,)
 # Kinds whose candidates code derives from other criteria, never the belief
 # update (``BeliefState._derive_targets``): a target's candidates are the
@@ -124,6 +127,45 @@ DERIVED_KINDS = (TARGET,)
 def exclusive(kind: str) -> bool:
     """Whether a criterion of *kind* has one correct answer."""
     return kind in EXCLUSIVE_KINDS
+
+
+# The coverage status of an aspect criterion (a report's aspect): how
+# completely the passages cover what the aspect asks for, written by the
+# belief update per aspect (``BeliefState.coverage``); it is the aspect's
+# status.  The scale of the candidate statuses from "unknown" (no passage
+# states a fact on it) up: coverage is never against an aspect.
+COVERAGE_STATUSES = BELIEF_STATUSES[BELIEF_STATUSES.index(UNKNOWN):]
+
+
+def parse_coverage(text: Any) -> Optional[str]:
+    """The coverage status *text* names (as ``parse_status``), None when it
+    is not one of ``COVERAGE_STATUSES``."""
+    status = parse_status(text)
+    return status if status in COVERAGE_STATUSES else None
+
+
+# The entity a criterion is about, written before its colon: a multi-member
+# query's member criterion "<member>: <property>" (``member_subject``).
+_PARENTHETICAL_RE = re.compile(r"\s*\([^)]*\)")
+
+
+def member_subject(criteria: List["Criterion"], k: int) -> Optional[str]:
+    """The member criterion *k* is about, or None: a closed criterion
+    "<member>: <property>" of a multi-member query's list (one with a rest
+    criterion).  Its candidates are the member's value, never the member."""
+    c = criteria[k]
+    if c.kind != CLOSED or ":" not in c.text or not any(x.kind == REST for x in criteria):
+        return None
+    # The last separator: a member's name may hold one ("Star Wars: Episode IV: box office").
+    subject = c.text.rsplit(": " if ": " in c.text else ":", 1)[0].strip()
+    return subject or None
+
+
+def subject_names(subject: str) -> List[str]:
+    """The names of a criterion's *subject* a candidate may repeat: the
+    subject, and without its parenthetical ("New York (state)": "New York")."""
+    short = _PARENTHETICAL_RE.sub("", subject).strip()
+    return list(dict.fromkeys(n for n in (subject, short) if n))
 
 
 # Query shapes (layout.DATASET_SPECS): one entity (the target) described by a
@@ -318,3 +360,13 @@ class CandidateUpdate:
     status: str
     support: List[str] = field(default_factory=list)
     against: List[str] = field(default_factory=list)
+
+
+@dataclass
+class CoverageUpdate:
+    """One item of the reply's ``coverage`` list (a report's aspects), as
+    written: the criterion id, the reason ("Was <coverage>: ...") and the
+    new coverage status (raw text)."""
+    id: str
+    reason: str
+    status: str

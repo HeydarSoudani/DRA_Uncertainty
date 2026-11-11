@@ -1,0 +1,5 @@
+---multi_aspect---
+- "coverage": One object per aspect whose coverage status changes, criteria in the given order:
+  - "id": The criterion id.
+  - "reason": One sentence: "Was <current coverage status>: <why the facts with support give the new coverage status>."
+  - "coverage_status": Its new coverage status.

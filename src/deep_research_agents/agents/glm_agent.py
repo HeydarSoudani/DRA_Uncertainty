@@ -20,12 +20,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from reasoner_component import REASONING_FALLBACK_PREFIX
 
 from .base_agent import BasicAgent
-from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE
-from deep_research_agents.prompts.answer_prompts import (
-    FINAL_ANSWER_INSTRUCTION,
-    OSS_FORMAT,
-)
+from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE, REPORT_QUERY_TEMPLATE
+from deep_research_agents.prompts.answer_prompts import OSS_FORMAT, OSS_REPORT_FORMAT
 from utils.config import InferenceConfig
+from utils.text_utils import number_docid_citations
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +89,12 @@ class GLM_Agent(BasicAgent):
 
     AGENT_NAME = "GLM"
 
-    def __init__(self, llm_client=None, retriever=None, max_iteration: int = 100, seen_top_k: int = 5, model_url: Optional[str] = None, model_name: str = "zai-org/GLM-4.7-Flash", max_output_tokens: int = 20000, system_prompt: Optional[str] = None, verbose: bool = True, api_key: Optional[str] = None, **kwargs) -> None:
+    def __init__(self, llm_client=None, retriever=None, max_iteration: int = 100, seen_top_k: int = 5, model_url: Optional[str] = None, model_name: str = "zai-org/GLM-4.7-Flash", max_output_tokens: int = 20000, system_prompt: Optional[str] = None, verbose: bool = True, api_key: Optional[str] = None, task: str = "qa", **kwargs) -> None:
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
+        # "report": the response is a report (REPORT_QUERY_TEMPLATE), its
+        # docid citations numbered at the end (``_number_citations``).
+        self.task = task
+        self._extras: Dict[str, Any] = {}
 
         self.model_url = model_url or os.getenv(
             "GLM_API_BASE", "http://localhost:6008/v1"
@@ -125,7 +127,7 @@ class GLM_Agent(BasicAgent):
             max_output_tokens=max_output_tokens,
             reasoning_effort=None,
             system_prompt=GLM_SYSTEM_PROMPT,
-            format_instructions=OSS_FORMAT,
+            format_instructions=OSS_REPORT_FORMAT if task == "report" else OSS_FORMAT,
         )
 
     # _get_tool_definitions() and _format_search_results() inherited from BasicAgent
@@ -202,7 +204,9 @@ class GLM_Agent(BasicAgent):
         cfg = self.inference_config
         client = self._openai_client()
 
-        formatted_query = QUERY_TEMPLATE.format(Question=query)
+        self._extras = {}
+        template = REPORT_QUERY_TEMPLATE if self.task == "report" else QUERY_TEMPLATE
+        formatted_query = template.format(Question=query)
         messages: List[Any] = [
             {"role": "system", "content": cfg.system_prompt},
             {"role": "user", "content": formatted_query},
@@ -232,7 +236,7 @@ class GLM_Agent(BasicAgent):
                     prediction = forced_text
                     self._record_step(reasoning_path, {
                         "action_type": "context_limit",
-                        "think": FINAL_ANSWER_INSTRUCTION,
+                        "think": self.force_instruction,
                         "generation": forced_text,
                         "docs": [],
                         "component_doc_ids": [],
@@ -265,7 +269,7 @@ class GLM_Agent(BasicAgent):
                     prediction = forced_text
                     self._record_step(reasoning_path, {
                         "action_type": "context_limit",
-                        "think": FINAL_ANSWER_INSTRUCTION,
+                        "think": self.force_instruction,
                         "generation": forced_text,
                         "docs": [],
                         "component_doc_ids": [],
@@ -455,7 +459,7 @@ class GLM_Agent(BasicAgent):
                 prediction = forced_text
                 self._record_step(reasoning_path, {
                     "action_type": "max_iter_force",
-                    "think": FINAL_ANSWER_INSTRUCTION,
+                    "think": self.force_instruction,
                     "generation": forced_text,
                     "docs": [],
                     "component_doc_ids": [],
@@ -472,4 +476,18 @@ class GLM_Agent(BasicAgent):
             f"{num_searches} searches, answer {len(prediction)} chars"
         )
 
+        if self.task == "report":
+            prediction = self._number_citations(prediction, reasoning_path)
         return reasoning_path, prediction, num_iterations
+
+    def _number_citations(self, report: str, reasoning_path: List[Dict[str, Any]]) -> str:
+        """The report with its docid citations as ``[N]`` markers, resolved
+        against the documents the agent was shown; the mapping goes to the
+        result as ``citation_to_doc_id`` (``build_references_section``)."""
+        shown = [d for step in reasoning_path for d in step.get("component_doc_ids") or []]
+        numbered, citation_to_doc_id = number_docid_citations(report, shown)
+        self._extras = {"citation_to_doc_id": citation_to_doc_id}
+        return numbered
+
+    def _result_extras(self) -> Dict[str, Any]:
+        return self._extras

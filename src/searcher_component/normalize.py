@@ -40,9 +40,12 @@ def normalize_retrieval_response(response):
         if isinstance(doc, dict):
             doc = doc.copy()  # Don't modify the original
 
-            # id → doc_id
+            # id → doc_id, always a string (the qrels' ids; a corpus may
+            # number its documents, e.g. InfoSeek's wiki-25-512)
             if 'id' in doc and 'doc_id' not in doc:
                 doc['doc_id'] = doc['id']
+            if doc.get('doc_id') is not None and not isinstance(doc['doc_id'], str):
+                doc['doc_id'] = str(doc['doc_id'])
 
             # contents → relevant_text
             if 'contents' in doc and 'relevant_text' not in doc:

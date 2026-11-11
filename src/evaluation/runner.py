@@ -13,7 +13,8 @@ The groups, in the order of the files and the log:
     retrieval    Recall@N, Precision@N of the seen docs (N = docs seen)
     generation   accuracy (QA) or Auto-ARGUE nugget coverage and F1 (reports)
     uncertainty  s_T, its formula ablations and the agent's verbal confidence
-                 against correctness (QA, belief model on)
+                 against correctness (QA, belief model on); a report's s_T
+                 against its nugget coverage (reports, belief model on)
     belief       the belief update on gold documents (datasets with gold
                  per criterion, belief model on)
     trajectory   searches, agent and belief model tokens, forced answers
@@ -49,7 +50,7 @@ from .gold.criteria import GOLD_DATASETS
 from .report import METRICS_FILE, PER_QUERY_FILE, Row, log_lines, write_metrics, write_per_query
 from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
 from .trajectory import TrajectoryEvaluator, save_trajectory
-from .uncertainty import UncertaintyEvaluator
+from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class Evaluators:
     ``accuracy`` is None without ground-truth answers or for a dataset
     without ``answer_eval``; ``report`` is None for a dataset without
     ``report_eval`` (``layout.DATASET_SPECS``); ``uncertainty`` is None for
-    a report dataset; ``belief`` is None for a dataset without
+    a report dataset, ``report_uncertainty`` for any other; ``belief`` is None for a dataset without
     per-criterion gold (``evaluation.gold.criteria``).  The last two score
     a run only when its belief files exist.
     """
@@ -94,6 +95,7 @@ class Evaluators:
     accuracy: Optional[Union[AccuracyEvaluator, NumericMatchEvaluator]] = None
     report: Optional[ArgueReportEvaluator] = None
     uncertainty: Optional[UncertaintyEvaluator] = None
+    report_uncertainty: Optional[ReportUncertaintyEvaluator] = None
     belief: Optional[BeliefUpdateEvaluator] = None
     dataset: Optional[str] = None
 
@@ -118,7 +120,7 @@ def build_evaluators(
                       ``answer_eval`` (``layout.DATASET_SPECS``) picks the
                       accuracy evaluator: ``"numeric_match"`` (TRQA)
                       :class:`NumericMatchEvaluator`, ``"llm_judge"``
-                      (BrowseComp-Plus, deep_qa) :class:`AccuracyEvaluator`.
+                      (BrowseComp-Plus, infoseek, webshaper_frames) :class:`AccuracyEvaluator`.
         questions:    ``query_id -> question text``, for the judges.
         dataset:      Dataset name.
         data_path:    Dataset directory and *split*: the nuggets of a dataset
@@ -139,10 +141,12 @@ def build_evaluators(
     if spec is not None and spec.report_eval == "argue":
         evaluators.report = ArgueReportEvaluator(
             nuggets=load_nuggets(data_path, split), questions=questions or {},
-            corpus_path=kwargs["corpus_path"], max_chars=spec.report_chars, **judge_kwargs,
+            corpus_path=kwargs["corpus_path"], **judge_kwargs,
         )
     if spec is not None and spec.task == "qa" and evaluators.accuracy is not None:
         evaluators.uncertainty = UncertaintyEvaluator()
+    if spec is not None and spec.task == "report" and evaluators.report is not None:
+        evaluators.report_uncertainty = ReportUncertaintyEvaluator()
     if dataset in GOLD_DATASETS:
         evaluators.belief = BeliefUpdateEvaluator(dataset, split, kwargs.get("corpus_path"), judge_model)
     return evaluators
@@ -260,6 +264,8 @@ def evaluate_and_save(
         add("generation", "evaluated", report["num_evaluated"])
         add("generation", "without nuggets", report["num_without_nuggets"])
         add("generation", "empty reports", report["num_empty_reports"])
+        add("generation", "reports without citations", report["num_uncited_reports"])
+        add("generation", "reports with unmapped citations", report["num_unmapped_reports"])
         add("generation", "judge failures", report["num_judge_failures"])
 
     # ── Uncertainty and belief update (belief files) ─────────────────────
@@ -271,6 +277,13 @@ def evaluate_and_save(
         unc = timed("uncertainty", ev.uncertainty.evaluate, finals, accuracy["per_query"])
         if unc:
             merge({q: {k: v for k, v in r.items() if k != "y"} for q, r in unc["per_query"].items()})
+            for metric, value, lo, hi, n in unc["rows"]:
+                add("uncertainty", metric, value, lo, hi, n)
+    if belief_files and ev.report_uncertainty is not None and report:
+        finals = {q: f[2] for q, f in belief_files.items()}
+        unc = timed("uncertainty", ev.report_uncertainty.evaluate, finals, report["per_query"])
+        if unc:
+            merge(unc["per_query"])
             for metric, value, lo, hi, n in unc["rows"]:
                 add("uncertainty", metric, value, lo, hi, n)
     bel: Dict[str, Any] = {}

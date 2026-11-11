@@ -1,7 +1,7 @@
 """Gold of the evaluation beyond the qrels and answers.
 
 * :mod:`.criteria`: the gold answers and documents per criterion of a
-  query (TRQA's gold bank, the training pools), for the belief update
+  query (TRQA's gold bank, the training datasets), for the belief update
   evaluation.
 * :mod:`.loaders` and :mod:`.entity_match`: the entities of each TRQA set
   and their matcher, for the entity reachability of the criteria

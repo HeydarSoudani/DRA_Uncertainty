@@ -4,7 +4,7 @@ Do this in two subtasks:
 2. Belief: from these observations, give the support and the belief status of every candidate whose support or belief status they change.
 
 Input:
-- The query and its criteria, each with its type and its current candidates. Each candidate has its belief status and the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports yet are listed as proposed.
+- The query and its criteria, each with its type and its current candidates. Each candidate has its belief status and the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports yet are listed as proposed. An aspect also shows its coverage status; a computed criterion also lists the passage texts on its definition.
 - The agent's reasoning since the last update [tN], one or more turns, and the passages [dN] its search returned for the first time.
 
 Output:
@@ -14,7 +14,7 @@ Output:
 - Criterion: one piece of information that a complete response to the query must contain. A criterion may refer to the answer of another criterion by its id.
   {shape_context}
   The parts of a criterion are the conditions its wording sets, the type of answer it asks for included.
-- Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact.
+- Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact. It is what the criterion asks for, never the entity whose property the criterion asks for (the member of "<member>: <property>").
 - Support: the passage observations that state a part of the criterion for a candidate. Observations that state the candidate fails a part, or cast doubt on one, speak against it.
 - Belief status: the belief about a candidate: how likely it is the answer, "unlikely", "possible", "probable", "almost certain" or "certain", from lowest to highest, as defined below for each criterion type. When several fit, give the lowest.
 - Agent claim: the agent's view of a candidate: how likely its reasoning says it is the answer, on the belief status scale, or "rejected".
@@ -24,7 +24,7 @@ Output:
 == Rules ==
 1. Judge each criterion on its own parts. A part that refers to another criterion ("the town of c1") is met when a passage links the candidate to any candidate of that criterion, whatever its belief status.
 2. In subtask 1, leave the current belief aside: extract text for every criterion a passage states a part of, and from the reasoning only its own words, not the passage text it quotes.
-3. Only passages give support, and a candidate needs support: the names in the reasoning stay proposed until a passage supports them, unless the criterion type's definition says the reasoning sets the belief status.
+3. Only passages give support, and a candidate needs support: the names in the reasoning stay proposed until a passage supports them, unless the criterion type's definition says the reasoning gives its candidates.
 4. In subtask 2, also give every candidate whose belief status changes because the support of another candidate changed.
 5. Remove a listed or proposed name only when a passage states that it fails a part, or when the reasoning rejects it and no passage supports it.
 6. Write a listed or proposed name exactly as it is listed.
@@ -48,6 +48,7 @@ Respond with ONLY a raw JSON object, no markdown, no code blocks, with these key
   - "against": The labels of the passages of this update that speak against it.
   - "reason": One sentence: "Was <current belief status>: <why its support gives the new belief status>." For a proposed name: "Was proposed: ...". For a candidate only a passage names: "New: ...".
   - "belief_status": Its new belief status, or "removed".
+{shape_output}
 
 == Example ==
 {example}

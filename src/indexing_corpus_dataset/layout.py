@@ -25,7 +25,8 @@ Record schemas:
               (``aggregator`` and ``answer_docs``, the supporting documents of
               each answer, where the source gives them: NeuCLIR)
     corpus  : {"id": str, "contents": str}   (the title, if any, is the first
-              line of ``contents``; the deep_qa pool adds ``url``)
+              line of ``contents``; webshaper_frames adds ``url``; InfoSeek's
+              wiki-25-512 numbers its chunks, read as strings)
 
 Per-dataset defaults (split, query key, relevance threshold, task type, encoder
 lengths) live in :data:`DATASET_SPECS`, read by the inference CLI, the index
@@ -87,8 +88,8 @@ OUTPUT_ROOT = Path(os.environ.get(
 # (src/indexing_corpus_dataset/layout.py), so it follows the checkout.
 REPO_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 
-# The training pools, one folder per pool (``{TRAINING_POOL_ROOT}/{pool}``).
-TRAINING_POOL_ROOT = REPO_DATA_ROOT / "training_pool"
+# The training datasets, one folder each (``{TRAINING_DATASETS_ROOT}/{dataset}``).
+TRAINING_DATASETS_ROOT = REPO_DATA_ROOT / "training_datasets"
 
 # Root of the criteria banks, in the repo's data folder; ``DRA_CRITERIA_ROOT``
 # overrides it.
@@ -144,12 +145,12 @@ class DatasetSpec:
                              clue of a BrowseComp-Plus question, every
                              requirement of a report request; they are
                              banked as gold) or ``"annotation"`` (from the
-                             dataset's annotation: a training pool's rows,
+                             dataset's annotation: a training dataset's rows,
                              ``gold_criteria_path``; TRQA's intermediate
                              info, made on demand into its gold bank,
-                             ``trqa_gold_criteria``).  A query of
+                             ``training_datasets.gold.trqa``).  A query of
                              an annotation dataset without gold criteria
-                             (deep_qa's FRAMES) gets silver ones, extracted
+                             (webshaper_frames' FRAMES) gets silver ones, extracted
                              from the question by an LLM.
         criteria_choice:     ``criteria_source`` picks between the gold and
                              the silver criteria of every query (TRQA);
@@ -168,8 +169,6 @@ class DatasetSpec:
                              long-context encoders.
         query_max_length:    Max tokens per query at retrieval, for long-context
                              encoders.
-        report_chars:        Target report length in characters (report tasks),
-                             also the length the report evaluation reads.
         report_eval:         Report evaluator: ``"argue"`` (Auto-ARGUE against
                              the dataset's nuggets, ``evaluation.answer.argue``)
                              or None (reports are not graded).
@@ -191,7 +190,6 @@ class DatasetSpec:
     answer_eval: str | None
     doc_max_length: int
     query_max_length: int
-    report_chars: int | None = None
     report_eval: str | None = None
     title_key: str | None = None
 
@@ -199,7 +197,7 @@ class DatasetSpec:
 DATASET_SPECS = {
     # TRQA passages are short; answers are numeric.  Up to 52 criteria, as
     # the gold: one per member (up to 50), the rest and the aggregate
-    # (training_pool/annotations.py).
+    # (training_datasets/gold/annotations.py).
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
@@ -220,7 +218,7 @@ DATASET_SPECS = {
     "neuclir": DatasetSpec(
         dataset_year="2024", subset="news", query_key="request", min_relevance_score=3,
         relevance_gains={1: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
-        report_chars=2000, report_eval="argue", title_key="topic_title",
+        report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
     # 0 irrelevant.  Official points 3/1/0/0; the trajectory gold and the
@@ -230,19 +228,28 @@ DATASET_SPECS = {
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=3,
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
-        report_chars=2000, report_eval="argue", title_key="title",
+        report_eval="argue", title_key="title",
     ),
-    # Training pools built by this project (experiments/training/build_training_pool.py),
-    # under TRAINING_POOL_ROOT; ``subset`` is the split (POOL_SPLITS, default sft).
-    # deep_qa: BrowseComp-style questions (InfoSeek-Hard, WebShaper, FRAMES)
-    # with their gold Wikipedia and web pages as binary qrels; the corpus adds
-    # hard negatives of the Wikipedia gold pages (build step 3).  Lengths as
-    # BrowseComp-Plus (long web pages and multi-clue questions).  Multi-hop
-    # criteria: one per entity on the chain, as the gold criteria of the pool
-    # (InfoSeek's research trees, WebShaper's formalizations; build step 2).
-    # FRAMES has no structure: its criteria are silver, at most 8 hops.
-    "deep_qa": DatasetSpec(
+    # Training datasets built by this project (experiments/training/build_training_dataset.py),
+    # under TRAINING_DATASETS_ROOT; ``subset`` is the split (TRAINING_SPLITS).
+    # infoseek: InfoSeek-Hard questions over the original release's corpus,
+    # wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under
+    # DATA_ROOT/infoseek with its indices, ``_CORPUS_IN_DATA_ROOT``); binary
+    # qrels: the first chunk of each gold page (where InfoSeek's claims are
+    # written from).  Multi-hop gold criteria,
+    # one per hop of the research tree.
+    "infoseek": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, gold_criteria="annotation", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+    ),
+    # webshaper_frames: WebShaper and FRAMES questions with their gold
+    # Wikipedia and web pages fetched from the source as binary qrels; the
+    # corpus adds hard negatives of the Wikipedia gold pages.  Validation
+    # only (out of domain).  Lengths as BrowseComp-Plus (long web pages).
+    # WebShaper's gold criteria come from its formalizations; FRAMES has no
+    # structure: its criteria are silver, at most 8 hops.
+    "webshaper_frames": DatasetSpec(
+        dataset_year=None, subset="val", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_criteria=8, gold_criteria="annotation", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
     ),
     # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
@@ -253,20 +260,24 @@ DATASET_SPECS = {
     ),
 }
 
-# Datasets built by this project, kept under ``TRAINING_POOL_ROOT`` (the
+# Datasets built by this project, kept under ``TRAINING_DATASETS_ROOT`` (the
 # others are downloaded inputs under ``DATA_ROOT``).
-BUILT_DATASETS = frozenset({"deep_qa", "trqa_validation"})
+BUILT_DATASETS = frozenset({"infoseek", "webshaper_frames", "trqa_validation"})
 
-# Splits of a training pool: ``all`` holds every query of the pool as built,
-# one row per query with its ``split`` (training_pool/annotations.py);
+# Splits of a training dataset: ``all`` holds every query of the dataset as
+# built, one row per query with its ``split`` (training_datasets/gold/annotations.py);
 # ``sft``, ``rl`` and ``val`` are views of it, the rows with that split and
-# their qrels (``is_pool_view``; training_pool/splits.py), for belief model
-# training.
-POOL_ALL_SPLIT = "all"
-POOL_SPLITS = ("sft", "rl", "val")
+# their qrels (``is_split_view``; training_datasets/splits.py), for belief
+# model training.
+ALL_SPLIT = "all"
+TRAINING_SPLITS = ("sft", "rl", "val")
 
 # Built datasets that search another dataset's corpus and indices.
 _SHARED_CORPUS = {"trqa_validation": "trqa"}
+
+# Built datasets whose corpus is a downloaded one, kept with its indices
+# under ``DATA_ROOT/{dataset}`` (corpus file stem): InfoSeek's release.
+_CORPUS_IN_DATA_ROOT = {"infoseek": "wiki-25-512"}
 
 # Datasets with a local corpus + index under ``DATA_ROOT/{dataset}``.
 DATASETS = tuple(DATASET_SPECS)
@@ -329,9 +340,18 @@ _TRQA_CORPUS_NAMES = {
 # ===========================================================================
 
 def dataset_root(dataset: str) -> Path:
-    """Root folder of a dataset: ``TRAINING_POOL_ROOT/{dataset}`` for the
-    built datasets, ``DATA_ROOT/{dataset}`` for the downloaded ones."""
-    return (TRAINING_POOL_ROOT if dataset in BUILT_DATASETS else DATA_ROOT) / dataset
+    """Root folder of a dataset: ``TRAINING_DATASETS_ROOT/{dataset}`` for
+    the built datasets, ``DATA_ROOT/{dataset}`` for the downloaded ones."""
+    return (TRAINING_DATASETS_ROOT if dataset in BUILT_DATASETS else DATA_ROOT) / dataset
+
+
+def corpus_root(dataset: str) -> Path:
+    """Folder of a dataset's corpus and indices: ``DATA_ROOT/{dataset}``
+    for a built dataset with a downloaded corpus (``_CORPUS_IN_DATA_ROOT``),
+    else its ``dataset_root`` (a dataset searching another's corpus:
+    that one's)."""
+    dataset = _SHARED_CORPUS.get(dataset, dataset)
+    return DATA_ROOT / dataset if dataset in _CORPUS_IN_DATA_ROOT else dataset_root(dataset)
 
 
 def queries_base(data_path: Path | str, split: str) -> Path:
@@ -372,42 +392,42 @@ def criteria_bank_path(dataset: str, split: str, kind: str | None = None) -> Pat
     (*kind*: ``extraction_kind`` by default), e.g.
     ``CRITERIA_ROOT/ragtime/criteria_bank/gold/criteria_2025.jsonl`` or
     ``CRITERIA_ROOT/trqa/criteria_bank/silver/criteria_wiki2_test.jsonl``.
-    A training pool has one bank for all its splits:
-    ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl``.
+    A training dataset has one bank for all its splits:
+    ``CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl``.
     The belief model reads and adds to them (``belief_model_component.criteria.factory``)."""
     kind = kind or extraction_kind(dataset)
     if kind not in CRITERIA_SOURCES:
         raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")
     if dataset in BUILT_DATASETS:
-        return CRITERIA_ROOT / "training_pool" / dataset / "criteria_bank" / kind / f"criteria_{POOL_ALL_SPLIT}.jsonl"
+        return CRITERIA_ROOT / "training_datasets" / dataset / "criteria_bank" / kind / f"criteria_{ALL_SPLIT}.jsonl"
     return CRITERIA_ROOT / dataset / "criteria_bank" / kind / f"criteria_{split}.jsonl"
 
 
-def is_pool(data_path: Path | str) -> bool:
-    """Whether the dataset at *data_path* is a training pool (a folder of
-    ``TRAINING_POOL_ROOT``)."""
-    return Path(data_path).resolve().parent == TRAINING_POOL_ROOT.resolve()
+def is_training_dataset(data_path: Path | str) -> bool:
+    """Whether the dataset at *data_path* is a training dataset (a folder
+    of ``TRAINING_DATASETS_ROOT``)."""
+    return Path(data_path).resolve().parent == TRAINING_DATASETS_ROOT.resolve()
 
 
-def is_pool_view(data_path: Path | str, split: str) -> bool:
-    """Whether *split* of the dataset at *data_path* is a view of a training
-    pool's split ``all`` (``sft``, ``rl`` or ``val`` of a pool under
-    ``TRAINING_POOL_ROOT``): its queries are the rows of
+def is_split_view(data_path: Path | str, split: str) -> bool:
+    """Whether *split* of the dataset at *data_path* is a view of a
+    training dataset's split ``all`` (``sft``, ``rl`` or ``val`` of a
+    dataset under ``TRAINING_DATASETS_ROOT``): its queries are the rows of
     ``queries_all.jsonl`` with that ``split``, its qrels theirs."""
-    return split in POOL_SPLITS and is_pool(data_path)
+    return split in TRAINING_SPLITS and is_training_dataset(data_path)
 
 
 def gold_criteria_path(dataset: str) -> Path:
-    """Return the gold criteria of a training pool: its queries file, one
-    row per query (every split) with its gold annotation, e.g.
-    ``TRAINING_POOL_ROOT/deep_qa/queries/queries_all.jsonl``
-    (``training_pool/annotations.py``).  TRQA's gold criteria are made on
-    demand into its gold bank (``criteria_bank_path(..., "gold")``,
-    ``trqa_gold_criteria``); the other datasets' are the extractor's."""
+    """Return the gold criteria of a training dataset: its queries file,
+    one row per query (every split) with its gold annotation, e.g.
+    ``TRAINING_DATASETS_ROOT/infoseek/queries/queries_all.jsonl``
+    (``training_datasets/gold/annotations.py``).  TRQA's gold criteria are made
+    on demand into its gold bank (``criteria_bank_path(..., "gold")``,
+    ``training_datasets.gold.trqa``); the other datasets' are the extractor's."""
     if dataset not in BUILT_DATASETS:
-        raise ValueError(f"gold criteria files exist for the training pools only ({sorted(BUILT_DATASETS)}), "
+        raise ValueError(f"gold criteria files exist for the training datasets only ({sorted(BUILT_DATASETS)}), "
                          f"not {dataset!r}")
-    return queries_base(TRAINING_POOL_ROOT / dataset, POOL_ALL_SPLIT).with_suffix(".jsonl")
+    return queries_base(TRAINING_DATASETS_ROOT / dataset, ALL_SPLIT).with_suffix(".jsonl")
 
 
 def effective_criteria_source(requested: str, dataset: str) -> str:
@@ -485,7 +505,7 @@ def resolve_split_id(
       trqa            -> "{subset}_{eval}"  (eval split carried in dataset_year)
       ragtime         -> "{year}"           (single task; subset unused)
       browsecomp_plus -> subset or "test"
-      training pools  -> subset or the pool's default split ("sft"; POOL_SPLITS, POOL_ALL_SPLIT)
+      training datasets -> subset or the dataset's default split (TRAINING_SPLITS, ALL_SPLIT)
       other           -> subset or "set1"
     """
     if dataset == "neuclir":
@@ -508,19 +528,6 @@ def resolve_split_id(
     return subset or "set1"
 
 
-def resolve_data_path(dataset: str, project_root: Path | str | None = None) -> str:
-    """Resolve the dataset root directory.
-
-    Uses the canonical :func:`dataset_root` location, falling back to the
-    repo-local ``data/{dataset}/`` for legacy setups.
-    """
-    candidate = dataset_root(dataset)
-    if candidate.exists():
-        return str(candidate)
-    base = Path(project_root) if project_root is not None else Path.cwd()
-    return str((base / "data" / dataset).resolve())
-
-
 # ===========================================================================
 # Index-build path derivation (corpus + index dir from dataset/subset)
 # ===========================================================================
@@ -539,20 +546,23 @@ def default_corpus_path(
         return DATA_ROOT / "neuclir" / "corpus" / f"{corpus_name(subset)}.jsonl"
     if dataset in _SHARED_CORPUS:
         return default_corpus_path(_SHARED_CORPUS[dataset], DATASET_SPECS[_SHARED_CORPUS[dataset]].subset, partial=partial)
+    if dataset in _CORPUS_IN_DATA_ROOT:
+        return corpus_path(corpus_root(dataset), _CORPUS_IN_DATA_ROOT[dataset])
     if dataset == "trqa":
         return DATA_ROOT / "trqa" / "corpus" / f"{trqa_corpus_name(subset, partial)}.jsonl"
     if dataset == "ragtime":
         return DATA_ROOT / "ragtime" / "corpus" / f"{RAGTIME_CORPUS_NAME}.jsonl"
     if dataset == "browsecomp_plus":
         return DATA_ROOT / "browsecomp_plus" / "corpus" / "corpus.jsonl"
-    # deep_qa, or an unknown dataset (best-effort canonical location).
+    # webshaper_frames, or an unknown dataset (best-effort canonical location).
     return corpus_path(dataset_root(dataset))
 
 
 def default_index_dir(dataset: str) -> Path:
     """Canonical index output directory for a dataset, ``{dataset_root}/indices``.
 
-    Sibling of the ``corpus/`` directory, matching the production layout.  A
-    pool that searches another dataset's corpus uses that dataset's indices.
+    Sibling of the ``corpus/`` directory, matching the production layout
+    (``corpus_root``): a dataset that searches another dataset's corpus uses
+    that dataset's indices, InfoSeek's those under ``DATA_ROOT/infoseek``.
     """
-    return dataset_root(_SHARED_CORPUS.get(dataset, dataset)) / "indices"
+    return corpus_root(dataset) / "indices"

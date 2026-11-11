@@ -118,6 +118,10 @@ c3 (several answers): any other member: length
     + "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
 c4 (computed): the total length of the bridges over the river Varn that were built before 1900
   "212 m": probable
+  passages on its definition:
+    "The Osby Bridge, built in 1862" [Osby Bridge]
+    "The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn" [Kalvik Bridge]
+    "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895" [Tirsa footbridge]
 
 The agent's final answer:
 Osby Bridge is 120 m and Kalvik Bridge is 92 m, so the total is 212 m.
@@ -133,6 +137,6 @@ Output:
     {"id": "c3", "candidate": null},
     {"id": "c4", "candidate": "212 m"}
   ],
-  "reason": "The total leaves out the Tirsa footbridge, a member that is certain on c3, so the answer misses a member of the set it depends on.",
+  "reason": "The total leaves out the Tirsa footbridge, which a passage shows built in 1895 and which is certain on c3, so the answer misses a member of the set it depends on.",
   "final_status": "unlikely"
 }

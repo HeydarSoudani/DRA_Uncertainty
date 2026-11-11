@@ -176,6 +176,7 @@ class BeliefModel:
         self.final = self._final_record(
             step, answer_turn, errors, certainty=s_t, certainty_formula=s_t, called=bool(update.get("called")),
             beliefs=update.get("beliefs") or self._belief.beliefs(), updates=update.get("updates") or [],
+            coverage=update.get("coverage") or [],
             changed=update.get("changed") or [], observations=update.get("observations"),
             issues=update.get("issues") or [], reply=update.get("reply"))
 
@@ -218,6 +219,7 @@ class BeliefModel:
             "final_score": None,
             "beliefs": None,
             "updates": [],
+            "coverage": [],
             "changed": [],
             "observations": None,
             "issues": [],
@@ -326,6 +328,7 @@ class BeliefModel:
             "docs": per_doc,
             "beliefs": update.get("beliefs") or (state.belief_lists() if state is not None else None),
             "updates": update.get("updates") or [],
+            "coverage": update.get("coverage") or [],
             "changed": update.get("changed") or [],
             "observations": update.get("observations"),
             "issues": update.get("issues") or [],

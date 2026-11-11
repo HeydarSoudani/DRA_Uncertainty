@@ -63,7 +63,7 @@ the prompted teacher and the trained student (`belief_model_component/prompts/be
 A claim needs a span that occurs in its turn, and a document observation one that occurs in its passage (checked in
 code); other observations do not enter the belief. Passage observations have no stance and no candidate; the
 candidate updates say which passages support or speak against which candidate. Code checks each reason's opening against the candidate's current status and flags a
-cited source without an observation on the criterion. The criteria are the pool's
+cited source without an observation on the criterion. The criteria are the dataset's
 gold criteria; the criteria init call is not trained.
 
 Each status has a signed level $\ell$:
@@ -72,7 +72,7 @@ Each status has a signed level $\ell$:
 |---|---|---|---|---|---|---|
 | $\ell$ | −1 | 0 | 1 | 2 | 3 | 4 |
 
-The criteria follow the query shape of the dataset: `multi_hop` for deep_qa (one criterion per entity on the chain
+The criteria follow the query shape of the dataset: `multi_hop` for infoseek and webshaper_frames (one criterion per entity on the chain
 to the answer, the answer last), `multi_member` for trqa_validation (one criterion per member, "<member>: <property>",
 then "any other member: <property>", then the aggregation, how the answer follows from the members' values).
 Training uses the queries with the full gold annotation (InfoSeek and TRQA): per criterion its gold answers and
@@ -82,18 +82,18 @@ gold documents.
 
 | Phase | Script | Does | Output |
 |---|---|---|---|
-| 0 | `build_training_pool.py --pool P` | builds a training pool, deep_qa (questions, gold pages, qrels, `--step N`) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_pool/{pool}/` |
-| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the pool's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the criteria of `shared.criteria_source` (default gold; a query without gold criteria: on its own silver ones), `rl` in off mode. deep_qa runs go to `belief-monitor/`, trqa_validation runs to `belief-monitor-{source}/`; phases 2 and 3 need gold | `run_outputs/` (dra_inference layout) |
+| 0 | `build_training_dataset.py --dataset D` | builds a training dataset, infoseek (InfoSeek-Hard over the original wiki-25-512 corpus), webshaper_frames (fetched gold pages and hard negatives, val only) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_datasets/{dataset}/` |
+| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the dataset's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the criteria of `shared.criteria_source` (default gold; a query without gold criteria: on its own silver ones), `rl` in off mode. infoseek and webshaper_frames runs go to `belief-monitor/`, trqa_validation runs to `belief-monitor-{source}/`; phases 2 and 3 need gold | `run_outputs/` (dra_inference layout) |
 | 2 | `belief_model_training.py --phase 2` | teacher scores, then SFT of the student on the teacher's belief update replies of the `sft` run (LoRA, then merged), validated on the `val` run | `phase2_sft/merged/` |
 | 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on whole belief chains) on the `rl` run, validated on the `val` run | `phase3_rl/final/` |
 
-`--training-data` picks the pool (`deep_qa`, the default, or `trqa_validation`) and `--policy-model` the agent.
+`--training-data` picks the training dataset (`infoseek`, the default, `trqa_validation`, or `webshaper_frames` for val) and `--policy-model` the agent.
 Phase 1 writes only the inference runs; phases 2 and 3 read the runs of that agent and write to
 `{output_root}/{training_data}/{policy_model}/`. Evaluation of the trained model: `dra_inference.py` (see
 [Evaluation](#evaluation-dra_inference)).
 
 ```bash
-python experiments/training/build_training_pool.py --pool trqa_validation
+python experiments/training/build_training_dataset.py --dataset trqa_validation
 T="--training-data trqa_validation --policy-model glm"
 python experiments/training/belief_model_training.py --phase 1 $T --split val
 python experiments/training/belief_model_training.py --phase 1 $T --split sft --limit 200
@@ -102,122 +102,141 @@ torchrun --nproc_per_node 4 experiments/training/belief_model_training.py --phas
 CUDA_VISIBLE_DEVICES=0 python experiments/training/belief_model_training.py --phase 3 $T
 ```
 
-## Phase 0: Training pools
+## Phase 0: Training datasets
 
-Each pool is a dataset of `dra_inference.py` under `data/training_pool/{pool}`, with one row per query:
+Each training dataset is a dataset of `dra_inference.py` under `data/training_datasets/{dataset}`, with one row per
+query:
 
 | File | Contents |
 |---|---|
-| `queries/queries_all.jsonl` | one row per query: the question and answer, its source, its split, its gold annotation (see [Gold annotation](#gold-annotation-deep_qa-steps-1-2-trqa_validation-build)) |
-| `qrels/qrels_all.txt` | the gold documents of each query (TREC qrels) |
-| `corpus/` | deep_qa only: gold pages and hard negatives (trqa_validation searches TRQA's corpus) |
-| `criterion_texts.jsonl`, `stats.json` | build files: the writer's saved criterion texts, the counts and settings of each step |
+| `queries/queries_all.jsonl` | one row per query: the question and answer, its source, its split, its gold annotation (see [Gold annotation](#gold-annotation)) |
+| `qrels/qrels_all.txt` | the gold documents of each query (TREC qrels, binary) |
+| `criterion_texts.jsonl`, `stats.json`, `dropped.jsonl` | build files: the writer's saved criterion texts, the counts and settings of each build stage, the dropped questions with their stage and reasons |
 
-deep_qa also keeps its step files next to them (`questions.jsonl`, `pages/`, `negatives/`, `dropped.jsonl`). The
-splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
-`split` `sft` and their qrels (`layout.is_pool_view`), so dra_inference runs a split as on any dataset and its run
-folders are named by the split. The build (the end of deep_qa step 2, the trqa_validation call) sets each row's
-`split`. SFT
-and RL need the full gold annotation (`level` `full`: every criterion with gold answers and gold documents, for
-$r_{\mathrm{ret}}$ and $r_{\mathrm{reas}}$), so the full queries are split with the shares of the `split` section of
-`experiments/configs/build_training_pool.yaml`, and every other query goes to `val` as its out-of-domain (OOD) part:
+| Dataset | Questions | Corpus | Splits |
+|---|---|---|---|
+| `infoseek` | InfoSeek-Hard | the original release's `wiki-25-512.jsonl` (Wikipedia 2025 in chunks of 512 tokens), under `DATA_ROOT/infoseek/corpus` with its indices | sft / rl / val |
+| `webshaper_frames` | WebShaper, FRAMES | its own `corpus/`: the fetched gold pages and their hard negatives | val only |
+| `trqa_validation` | TRQA wiki1 + wiki2 validation | TRQA's `wiki_partial` | sft / rl / val |
+
+One build call per dataset; every build is incremental, like dra_inference: `--limit N` processes the next N
+questions not processed yet, `--limit 0` processes none and rewrites the dataset files, no `--limit` processes all.
+
+```bash
+python experiments/training/build_training_dataset.py --dataset infoseek --limit 500
+python experiments/training/build_training_dataset.py --dataset webshaper_frames --limit 200
+python experiments/training/build_training_dataset.py --dataset webshaper_frames --source frames --limit 50
+python experiments/training/build_training_dataset.py --dataset trqa_validation
+```
+
+The splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
+`split` `sft` and their qrels (`layout.is_split_view`), so dra_inference runs a split as on any dataset and its run
+folders are named by the split. Every build sets each row's `split`. SFT and RL need the full gold annotation
+(`level` `full`: every criterion with gold answers and gold documents, for $r_{\mathrm{ret}}$ and
+$r_{\mathrm{reas}}$), so the full queries of `infoseek` and `trqa_validation` are split with the shares of the
+`split` section of `experiments/configs/build_training_dataset.yaml`, and every other query goes to `val` as its
+out-of-domain (OOD) part; `webshaper_frames` is validation only:
 
 | Split | Queries | Phase 1 mode | Used by |
 |---|---|---|---|
 | `sft` | 30% of the full ones | monitor (teacher, gold criteria) | phase 2: SFT samples |
 | `rl` | 60% of the full ones | off | phase 3: RL prompts |
 | `val` | in domain: 10% of the full ones | monitor (teacher, gold criteria) | phase 2: validation loss; phase 3: validation |
-| `val` | OOD: the others (deep_qa: WebShaper, FRAMES) | monitor (teacher; WebShaper on its gold criteria, FRAMES on silver ones) | evaluation only |
+| `val` | OOD: `webshaper_frames` (every query) | monitor (teacher; WebShaper on its gold criteria, FRAMES on silver ones) | evaluation only |
 
 A full query without criterion texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
 split until a later build writes its texts. A query keeps the split it has in the queries file, so no query moves
-when the pool grows, and `--limit` on one split never reaches the queries of another. The new full queries of a build
-are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below its
-share, so the shares hold at every pool size (20 full queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3).
-In the OOD part WebShaper keeps its gold criteria (they have texts, but no gold intermediate answers: `level`
-partial), and FRAMES, which has no structure, gets silver criteria from the belief model's init call, as on any new
-dataset; its queries have qrels and a judged final answer, so the certainty score against correctness can be
-measured, but not the observations and beliefs (no gold answers and documents per criterion). Since deep_qa has one
-query shape (`multi_hop`), FRAMES gets the multi-hop criteria prompt (at most 8 criteria).
+when the dataset grows, and `--limit` on one split never reaches the queries of another. The new full queries of a
+build are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below
+its share, so the shares hold at every dataset size (20 full queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3). The
+shares and per-split counts are recorded in the `split` section of `stats.json`; other shares are refused (remove
+the `split` section to re-split every query). One build of a dataset runs at a time (`.build.lock` in its folder).
 
-### deep_qa
-
-The deep_qa pool holds deep-research questions whose gold evidence spans
-several documents, from InfoSeek-Hard, WebShaper and FRAMES. Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA,
-MuSiQue, TriviaQA) are not used: they need too little search.
+Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA, MuSiQue, TriviaQA) are not used: they need too little search.
 
 | Source | Questions | Gold pages / question | Gold pages: wiki / web | Question words | Answer words |
 |---|---|---|---|---|---|
 | InfoSeek-Hard | 18,110 | 3.9 | all wiki | 42 | 2.9 |
 | WebShaper | 500 | 8.1 | 22% / 78% | 65 | 3.4 |
 | FRAMES | 514 | 3.1 | all wiki | 26 | 5.1 |
-| all | 19,124 | 4.0 | 96% / 4% | 43 | 3.0 |
 
-Values are means, after step 1.
+### infoseek
 
-```bash
-python experiments/training/build_training_pool.py --step 1                               # merge the sources -> questions.jsonl
-python experiments/training/build_training_pool.py --step 2 --source infoseek --limit 500 # fetch gold pages of the next 500 InfoSeek questions, Filter A, split all -> sft / rl / val
-python experiments/training/build_training_pool.py --step 2 --source webshaper,frames     # the OOD part of val (all of them; or with --limit)
-python experiments/training/build_training_pool.py --step 3 --limit 500                   # hard negatives of the next 500 wiki gold pages
-python experiments/training/build_training_pool.py --step 4                               # print the statistics per source
-```
+The InfoSeek-Hard questions (`Lk123/InfoSeek`, `data/InfoSeek-Hard-18K.jsonl`, pinned), run over the corpus their
+authors search (VectorSpaceLab/InfoSeek, `research/InfoSeek/rl/InfoSeek/Retrieve`): `wiki-25-512.jsonl` of
+`Lk123/wiki-25-512` (pinned), Wikipedia 2025 split into chunks of 512 tokens, each chunk with its page title on the
+first line. The first build downloads it (18.5 GB) into `DATA_ROOT/infoseek/corpus/`; it is used unchanged, a doc id
+is the chunk's `id` (its line, the row of the released index) as a string. The indices go next to it
+(`DATA_ROOT/infoseek/indices`).
 
-Step 3 adds hard negatives to the corpus, which otherwise holds only gold pages. For each Wikipedia gold page it
-asks the Wikipedia API for candidates: first `morelike` (the articles with the most similar text), then category
-siblings (articles in the page's most specific categories). It keeps at most `negatives.max_per_gold` (10) per gold
-page, skipping pages that are gold for any query, disambiguation and list pages, pages titled with the answer, and
-pages under `min_words`. Web gold pages get none. Negatives are fetched like the gold pages (Parsoid HTML, same text
-extraction). `negatives/index.jsonl` remembers the processed gold pages: a run continues with the next ones in qrels
-order, and `--limit N` counts gold pages. `corpus/corpus.jsonl` holds gold pages and hard negatives with their text;
-`corpus/ids_gold.txt` and `corpus/ids_hard_negative.txt` list the ids of each. qrels are unchanged. Steps 2 and 3
-write the corpus the same way, so a later step 2 run keeps the negatives.
+InfoSeek records each hop's gold page as a Wikipedia title (`href` of a research tree node), with no corpus id and no
+position in the page. The build matches each title exactly against the first line of every chunk (Unicode NFC,
+underscores as spaces, first letter upper case on both sides) and keeps the page's **first chunk** (lowest id) as
+its gold document. InfoSeek's construction code (`ConstructTreeData.py`) writes every claim from the first 1024
+tokens of the page of the node it expands and picks the link "from the front part of the wiki page"; on the first
+30 questions, all 91 claimed links (B named on A's page) are in the first chunk of A's page, and none in a later
+chunk, so the later chunks hold no evidence and would only make long pages weigh more in recall. The query's qrels
+are the first chunk of every gold page. A hop's gold documents are the first chunk of its own page and of the
+pages whose claims link to it: the link to a hop is stated on the linking node's page. A question with a gold page that is not in the corpus (renamed,
+redirected or missing in the 2025 dump) is dropped (`title_not_in_corpus` in `dropped.jsonl`). The titles looked up
+are kept in `corpus_titles.jsonl`, so a build reads the corpus once, and only when it has new titles. The `corpus`
+section of `stats.json` records the corpus revision (another revision is refused) and the titles found.
 
-Step 2 sets the split of every row it writes, so the splits always match the pool. The shares and per-split counts are recorded
-in the `split` section of `stats.json`. Other shares (they would mix two splits in one pool) and other page
-settings than the earlier step 2 runs' (`wiki_lang`, `min_words`, `min_page_share`, `wayback`, `wayback_timestamp`)
-are refused: to change the shares, remove the `split` section of `stats.json` and the next build re-splits every query; to
-change the page settings, rebuild the pool from step 1. Other step 3 settings than the earlier runs' are refused too:
-to change them, remove `negatives/index.jsonl` and the `step3` section of `stats.json`. One build of a pool runs at a time (`.build.lock` in
-its directory).
+### webshaper_frames
+
+WebShaper and FRAMES questions with their gold pages fetched from the source, in stages run by every build:
+
+| Stage | Does | Files |
+|---|---|---|
+| questions | merge the sources, drop duplicates and the FRAMES reasoning types Tabular reasoning and Post processing | `questions.jsonl` |
+| pages | fetch the gold pages of the next `--limit` questions (`--source`: of those sources): Wikipedia API (Parsoid HTML), web pages (Trafilatura, pypdf), Wayback Machine fallback; Filter A (a question with only Wikipedia gold pages needs all of them, one with web gold pages `min_page_share` of all its pages); the rows, qrels and corpus of every processed question | `pages/`, `queries/`, `qrels/`, `corpus/` |
+| negatives | hard negatives of the new Wikipedia gold pages, then the corpus again (none with `--limit 0`) | `negatives/index.jsonl`, `corpus/` |
+| report | the dataset per source, the hard negatives, the gold annotation, consistency checks and the duplicate documents of the corpus (report only) | `stats.json`, `duplicates.jsonl` |
+
+For each Wikipedia gold page the negatives stage asks the Wikipedia API for candidates: first `morelike` (the
+articles with the most similar text), then category siblings (articles in the page's most specific categories). It
+keeps at most `negatives.max_per_gold` (10) per gold page, skipping pages that are gold for any query, disambiguation
+and list pages, pages titled with the answer, pages under `min_words`, and duplicates of a corpus document. Web gold
+pages get none. `corpus/corpus.jsonl` holds gold pages and hard negatives with their text; `corpus/ids_gold.txt` and
+`corpus/ids_hard_negative.txt` list the ids of each. Other page settings than the earlier builds' (`wiki_lang`,
+`min_words`, `min_page_share`, `wayback`, `wayback_timestamp`) are refused (remove the dataset to change them), and
+other negatives settings too (remove `negatives/index.jsonl` and the `negatives` section of `stats.json`). The
+User-Agent contact comes from `DRA_CONTACT` in `.env`.
+
+Every query goes to `val`: WebShaper keeps its gold criteria (they have texts, but no gold intermediate answers:
+`level` partial), and FRAMES, which has no structure, gets silver criteria from the belief model's init call (the
+multi-hop prompt, at most 8 criteria), as on any new dataset; its queries have qrels and a judged final answer, so
+the certainty score against correctness can be measured, but not the observations and beliefs.
 
 ### trqa_validation
 
-The trqa_validation pool merges the TRQA wiki1 and wiki2 validation files (queries, intermediate info, qrels) into
-`queries/queries_all.jsonl` and `qrels/qrels_all.txt` (one call): a query and its intermediate info become one row,
-the members with their values and documents in `members`, with `property` (the label) and `aggregation`. It searches
-TRQA's `wiki_partial` corpus. The gold loaders (`load_query_intermediate_info`) read the intermediate info of a pool
-from its rows, in TRQA's record format.
+The trqa_validation dataset merges the TRQA wiki1 and wiki2 validation files (queries, intermediate info, qrels)
+into `queries/queries_all.jsonl` and `qrels/qrels_all.txt`: a query and its intermediate info become one row, the
+members with their values and documents in `members`, with `property` (the label) and `aggregation`. It searches
+TRQA's `wiki_partial` corpus. The gold loaders (`load_query_intermediate_info`) read the intermediate info of a
+training dataset from its rows, in TRQA's record format.
 
-Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels and all full, so `val` has no OOD part: 343 sft, 687 rl and 115 val.
+Left out: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two different
+questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels and all full, so `val` has no
+OOD part: 343 sft, 687 rl and 115 val. `--limit N` adds the next N kept queries not yet in the dataset (file order,
+wiki1 then wiki2). The `build` section of `stats.json` records the queries in the dataset and the ones remaining.
+Its rows have the keys of the other training datasets' (source `trqa_wiki1` / `trqa_wiki2`).
 
-```bash
-python experiments/training/build_training_pool.py --pool trqa_validation             # every query
-python experiments/training/build_training_pool.py --pool trqa_validation --limit 100 # the next 100 not yet in the pool
-```
+### Gold annotation
 
-`--limit N` is incremental, like deep_qa step 2: it adds the next N kept queries not yet in the pool (file order,
-wiki1 then wiki2) to those already there; `--limit 0` adds none and rewrites the files. The criterion texts of
-earlier calls are reused, so only the new queries call the writer, and every earlier query keeps its split. The
-`build` section of `stats.json` records the queries in the pool and the ones remaining.
-
-Its rows have the keys of deep_qa's (source `trqa_wiki1` / `trqa_wiki2`).
-
-### Gold annotation (deep_qa steps 1-2, trqa_validation build)
-
-Each pool has a gold annotation per query: its criteria, each with its gold answers and gold documents, as far as
-the source states them (`training_pool/annotations.py`). Every row has the same keys whatever the source; what the
-source does not state is an empty value (`[]` or `null`), never a missing key.
+Each training dataset has a gold annotation per query: its criteria, each with its gold answers and gold documents,
+as far as the source states them (`training_datasets/gold/annotations.py`). Every row has the same keys whatever the
+source; what the source does not state is an empty value (`[]` or `null`), never a missing key.
 
 | Source | Criteria | `answers` | `doc_ids` |
 |---|---|---|---|
-| InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | its Wikipedia page |
+| InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | the first corpus chunk of its Wikipedia page and of the pages whose claims link to it |
 | WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the answer only (final answer) | none (the URLs are the query's) |
 | FRAMES | none | | |
 | TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then "any other member: <property>" (`rest`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); rest: none; aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); rest and aggregate: none |
 | TRQA wiki1 | the same | the same | the same |
 
-Every TRQA member has its own criterion, so the rest criterion has no gold in the pool: training can hide some
+Every TRQA member has its own criterion, so the rest criterion has no gold in the dataset: training can hide some
 members under it (their values and documents then become its gold), as at inference, where the belief model lists
 only the members it knows. The aggregate criterion has no documents since no document states the computed value.
 
@@ -229,39 +248,25 @@ only the members it knows. The aggregate criterion has no documents since no doc
 | `partial` | criteria, some without answers or without documents | the criteria that have them; the final answer and the qrels |
 | `query` | no criteria | the final answer and the qrels only |
 
-Queries per level, with the pools as built on 2026-11-01 (deep_qa: the 998 questions step 2 has processed so far,
-910 kept; `level` does not depend on the criterion texts):
+An InfoSeek query is `partial` when an entity of its criteria has no Wikipedia page in the tree (a question with a
+page missing from the corpus is dropped). A WebShaper criterion has no documents, and only the answer criterion has
+answers. The `annotations` section of `stats.json`, the same in every dataset, counts the rows per source and level,
+the criteria per kind and with their answers, documents and gold, the texts per source (ok, failed, retry), and
+records the writer of the texts. The loaders build the criteria from the source (with the page keys of their
+documents); the build resolves the keys to documents (webshaper_frames: the fetched page, a page not fetched gives
+none; infoseek: the first chunk of the page) and writes the rows to `queries/queries_all.jsonl`. The trqa_validation build
+writes the same rows from the intermediate info. Query row: `id`, `source`, `split`, `text` (the question),
+`answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`, `members` (multi-member queries: `entity`,
+`value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the members), `property` and
+`aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`, `rest`,
+`aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer
+and its prompt hash are in `stats.json` and `criterion_texts.jsonl`, not per row).
 
-| Pool | Source | Queries | full | partial | query | Criteria / query (mean) |
-|---|---|---|---|---|---|---|
-| deep_qa | InfoSeek | 400 | 400 | 0 | 0 | 2.5 |
-| deep_qa | WebShaper | 106 | 0 | 106 | 0 | 5.3 |
-| deep_qa | FRAMES | 404 | 0 | 0 | 404 | 0 |
-| trqa_validation | TRQA wiki1 | 91 | 91 | 0 | 0 | 15.4 |
-| trqa_validation | TRQA wiki2 | 1,054 | 1,054 | 0 | 0 | 11.7 |
-
-TRQA's criteria per query are the members plus the rest and the aggregate (the members per query of the TRQA files,
-before the build leaves out 29 queries).
-
-An InfoSeek query is `partial` when an entity of its criteria has no Wikipedia page in the tree, or that page was not
-fetched (Filter A keeps an InfoSeek query only when all its pages were fetched, so none is so far). A WebShaper
-criterion has no documents, and only the answer criterion has answers. The numbers come from the annotation tables of
-the `annotations` section of `stats.json`, the same in both pools (written by deep_qa steps 2 and 4 and by the trqa_validation build, with the writer of the texts). Step 1 builds the criteria from the source (`annotation` of each record in
-`questions.jsonl`, with the page keys of their documents); step 2 resolves the keys to the fetched documents (a page
-that was not fetched gives none, so a query can fall from full to partial) and writes the rows to
-`queries/queries_all.jsonl`. The trqa_validation build writes the same rows from the intermediate info. Query row:
-`id`, `source`, `split`, `text` (the question), `answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`,
-`members` (multi-member queries: `entity`, `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the
-members), `property` and `aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind`
-(`closed`, `rest`, `aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer and its prompt hash
-are in `stats.json` and `criterion_texts.jsonl`, not per row). Steps 2 and 4 and the trqa_validation build count the rows per source and
-level, the criteria per kind and with their answers, documents and gold, and check the row format.
-
-### Criterion texts (end of deep_qa step 2 and of the trqa_validation build)
+### Criterion texts (end of every build)
 
 An LLM (`gold_criteria.model`, the teacher) writes the criterion texts in the question's words, one call per query;
-answers, documents and level come from the source (`training_pool/gold_criteria.py`). The prompts are the files of
-`training_pool/prompts/`, one system and one user prompt per query shape:
+answers, documents and level come from the source (`training_datasets/gold/criterion_texts.py`). The prompts are the files
+of `training_datasets/gold/prompts/`, one system and one user prompt per query shape:
 
 - multi-hop (InfoSeek, WebShaper): one text per criterion, from its relations, with only the details the question
   states (a relation may hold more, such as a year). The writer orders the criteria so that each refers only to
@@ -273,27 +278,26 @@ answers, documents and level come from the source (`training_pool/gold_criteria.
   and its computation code. The member criteria "<member>: <phrase>" and the rest criterion "any other member:
   <phrase>" are built from the phrase; the aggregate criterion is the aggregation.
 
-The writer runs before the split, so the rows are written
-with their texts; step 2 and the trqa_validation build need `OPENROUTER_API_KEY`. `texts_ok` is true when every text
-names none of the gold answers (a name inside a longer entity name, such as Groningen in "University of Groningen",
-does not count; multi-member queries: neither the phrase nor the aggregation names a member, a value or the final answer that
-the question does not name; multi-hop queries: no number or capitalized word the question does not state), or when
-the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak, an unstated word or an
-invalid order after one retry with them given, no text for a criterion); null when the writer call failed (an error, a reply
-that is not JSON), and the next run asks again. The number of criteria is the source's (no cap). Final texts are
-appended to `criterion_texts.jsonl` as they are written, so a stopped run keeps them; a run reuses them for unchanged
-criteria and writes only the new queries' texts. Another `gold_criteria.model` or other prompts than those of
-`criterion_texts.jsonl` are refused (remove the file to write every text again). The prompts are hashed per query
-shape, so editing the set prompts leaves the multi-hop texts valid. `--step 2 --limit 0` fetches nothing
-and rewrites the dataset files from the questions already processed. The queries of a split (its phase 1 run) are
-the full ones with `texts_ok` and at least one criterion, and in `val` also the OOD ones. The `split` section of
-`stats.json` counts the queries per split, source and level, and the full ones in no split (`no_split`). The annotation tables of steps 2 and 4 count the texts per source (ok, failed,
-retry).
+The writer runs before the split, so the rows are written with their texts; a build with texts to write needs
+`OPENROUTER_API_KEY`. `texts_ok` is true when every text names none of the gold answers (a name inside a longer
+entity name, such as Groningen in "University of Groningen", does not count; multi-member queries: neither the phrase
+nor the aggregation names a member, a value or the final answer that the question does not name; multi-hop queries:
+no number or capitalized word the question does not state), or when the query has no criteria (FRAMES, no LLM
+call); false when the texts failed for good (a leak, an unstated word or an invalid order after one retry with them
+given, no text for a criterion); null when the writer call failed (an error, a reply that is not JSON), and the next
+build asks again. The number of criteria is the source's (no cap). Final texts are appended to
+`criterion_texts.jsonl` as they are written, so a stopped build keeps them; a build reuses them for unchanged
+criteria (the texts do not depend on the documents) and writes only the new queries' texts. Another
+`gold_criteria.model` or other prompts than those of `criterion_texts.jsonl` are refused (remove the file to write
+every text again). The prompts are hashed per query shape, so editing the set prompts leaves the multi-hop texts
+valid. The queries of a split (its phase 1 run) are the full ones with `texts_ok` and at least one criterion, and in
+`val` also the OOD ones. The `split` section of `stats.json` counts the queries per split, source and level, and the
+full ones in no split (`no_split`).
 
 ## Phase 1: Trajectory collection
 
 Phase 1 runs `dra_inference.py` with the frozen agent on the queries of one split (`--subset {split}`: the
-pool's rows with that `split`), every such query or the next `--limit` not run yet (inference resume). The mode
+dataset's rows with that `split`), every such query or the next `--limit` not run yet (inference resume). The mode
 follows the split:
 
 | Split | Mode | Belief model |
@@ -303,7 +307,7 @@ follows the split:
 
 The belief does not change what the agent does, so the documents and agent turns of every step are fixed, and
 phase 3 can run the student over the steps of an off-mode run. The runs go to dra_inference's output root in its
-usual layout (`run_outputs/{pool}_{split}_{retriever}/{agent}/belief-monitor/` for `sft` and `val`,
+usual layout (`run_outputs/{dataset}_{split}_{retriever}/{agent}/belief-monitor/` for `sft` and `val`,
 `belief-off/` for `rl`), and phase 1 writes nothing else.
 
 **Episodes.** Phases 2 and 3 read a split's run at their start (`belief_model_training/runs.py`), one episode per
@@ -319,7 +323,7 @@ finished in-domain query (`level` full, `texts_ok`, at least one criterion; the 
 | step | `teacher_output`, `teacher_records`: the teacher's reply and its saved observations, candidate updates, changed criteria, issues and beliefs (monitor runs) | `belief/{qid}.jsonl` | SFT, replay check |
 | episode | `answer_turn`: reasoning after the last search and the final answer; the teacher's final call on it (monitor runs, the `final` line) | `trajectory/{qid}.jsonl`, `generation/{qid}.md`, `belief/{qid}.jsonl` | final call |
 | episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{final}}$ |
-| episode | `gold_criteria`: criteria with `answers` and `doc_ids` | `queries/queries_all.jsonl` of the pool | the criteria of the chains, all rewards |
+| episode | `gold_criteria`: criteria with `answers` and `doc_ids` | `queries/queries_all.jsonl` of the dataset | the criteria of the chains, all rewards |
 
 **Gold of a candidate or spans.** A selected candidate is correct ($g = 1$), and an observation's spans state the
 gold, when one of the criterion's gold answers occurs in it as whole words (case, accents and punctuation ignored; not
@@ -338,7 +342,7 @@ their agent and searcher settings (`run_config.json`, the temperature included):
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
 runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
-that the run's criteria are the pool's), that the belief file (schema 40, `SCHEMA_VERSION`) has one step per search iteration of the
+that the run's criteria are the dataset's), that the belief file (schema 40, `SCHEMA_VERSION`) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
 `recall_so_far` matches the qrels. Episodes without a verdict in `accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
@@ -360,7 +364,7 @@ over the chain's calls, documents and turns together:
 
 | Case | TP | FN | FP |
 |---|---|---|---|
-| passage $d$ new in the call (a judged passage is never shown again), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_chars`; 3000, reports whole, for runs before it was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
+| passage $d$ new in the call (a judged passage is never shown again), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_tokens`; training needs runs made with the token cut, the evaluation also reads older runs' `max_passage_chars`, and 3000 characters, reports whole, before either was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
 | a turn of the call states the gold answer of $k$ (a call reads the turns of the steps before it that made none) | a claim whose span states it | none | |
 | an observation that did not enter the belief (no verified span of its passage or turn, a claim without a candidate or valid claim, a document observation on a computed criterion) | | | yes |
 | any other observation | neutral | | |
@@ -497,7 +501,7 @@ before training and every 20 iterations: one chain per episode, scored as in tra
 mean reward, each term and the teacher-score measures, $s_T$ against $y$ included (compare with
 `phase2_sft/teacher_scores.json`). `final/` is the checkpoint with the best validation reward.
 
-**Open.** One pool per run (`shared.training_data`): InfoSeek (deep_qa) and TRQA (trqa_validation) are not yet
+**Open.** One training dataset per run (`shared.training_data`): InfoSeek (infoseek) and TRQA (trqa_validation) are not yet
 mixed in one RL run. The non-gold passages are neutral in the source assignment; a judged sample of them will show
 whether a precision term is needed. The rest criterion joins the rewards once members are masked into it.
 
@@ -507,9 +511,9 @@ The trained belief model is evaluated with `experiments/inference/dra_inference.
 teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
 Scores are the run's `metrics.md` (the inference evaluation, `experiments/inference/README.md#evaluation`; phase 1
 runs get it too, being dra_inference runs): Recall@N, answer accuracy, the uncertainty group (s_T against the
-correctness, with the formula and verbal-confidence baselines) and, on the pools and TRQA, the belief update group
+correctness, with the formula and verbal-confidence baselines) and, on the training datasets and TRQA, the belief update group
 (what the belief does with each gold document). Phases 2 and 3 score with `scoring.py`, which shares its measures
-and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (deep_qa) or `multi_member` (trqa_validation) prompts; a
+and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (infoseek) or `multi_member` (trqa_validation) prompts; a
 dataset of another query shape (browsecomp_plus: `multi_clue`) gives it prompts it was not trained on.
 
 ```bash

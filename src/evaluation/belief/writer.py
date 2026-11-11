@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 43::
 
-    line 1  {"record": "meta", "schema_version": 42, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 43, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -39,6 +39,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
              "updates": [{"id": "c1", "candidate": "Osby", "reason": "New: d1 states ...",
                           "support": ["d1"], "against": [],
                           "written": "certain", "previous": null, "status": "certain"}, ...],
+             "coverage": [],
              "changed": ["c1"],
              "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
@@ -54,7 +55,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
              "final_score": {"status": "probable",
                              "candidates": [{"id": "c1", "candidate": "Osby"}, ...],
                              "reason": "...", "issues": []},
-             "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [],
+             "beliefs": [...], "updates": [], "coverage": [], "changed": [], "observations": null, "issues": [],
              "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": "possible", "basis": "reasoning",
@@ -72,12 +73,23 @@ from the members' values), ``aspect`` (one aspect of a report topic) or
 ``target`` (a multi-clue query's entity that meets every clue).  A
 step line is the iteration's update plus the light state: ``beliefs``
 is every criterion's belief after the step, ``updates`` the reply's
-candidate updates with their reasons, ``observations`` the
-observations that entered in the step (with their verified spans).  The
+candidate updates with their reasons, ``coverage`` the reply's coverage
+updates of a report's aspects (``{id, reason, written, previous,
+status}``; an aspect's ``status`` in ``beliefs`` is its coverage),
+``observations`` the observations that entered in the step (with their
+verified spans; on an aggregate, a passage states a member's conditions).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 43 (was 42): step and final lines add ``coverage``, the
+coverage updates of a report's aspects (criterion kind ``aspect``; an
+aspect's status is its coverage, "unknown" while no passage supports a
+fact of it); a multi-member criterion's subject is never its candidate
+(issue ``subject_candidate``), and an aggregate takes passage
+observations (a member's conditions); the document cut is
+``max_passage_tokens`` (the first tokens, was ``max_passage_chars``).
 
 Added within schema 42 (no new version, so earlier runs stay readable):
 the meta line's ``tokens``, the belief update and final scorer tokens of
@@ -123,7 +135,7 @@ the call failed).  The final line adds ``certainty_label``,
 ``against`` (ruled out: a passage or the agent's claim spoke against
 it, not a proposal dropped for room); the final scorer reads those names
 as removed.  One document length for the agent and the belief
-update (the run's ``max_passage_chars``, recorded in run_config's
+update (the run's ``max_passage_tokens``, recorded in run_config's
 ``belief_model``): report documents are cut too.  A passage's title is
 its metadata title, else its front matter's, else its first line.
 
@@ -293,7 +305,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

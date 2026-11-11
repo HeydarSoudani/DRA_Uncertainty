@@ -56,3 +56,17 @@ def contains_words(text: str, name: str) -> bool:
             return True
         j = keys.find(key, j + 1)
     return False
+
+
+# Words that carry no content of a statement (``content_words``).
+_STOPWORDS = frozenset("""
+a an and are as at be been but by for from had has have in into is it its of on or that the their
+there these this those to was were which while with during after before than more most also other
+""".split())
+
+
+def content_words(text: str) -> set:
+    """The content words of *text*, lowercased: words of letters or digits,
+    stopwords and one-letter words left out (a number is kept)."""
+    words = "".join(ch.lower() if ch.isalnum() else " " for ch in str(text or "")).split()
+    return {w for w in words if (len(w) > 1 or w.isdigit()) and w not in _STOPWORDS}

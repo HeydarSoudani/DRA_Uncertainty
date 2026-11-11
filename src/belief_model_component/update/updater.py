@@ -18,7 +18,11 @@ with three lists:
 - ``candidates``: per candidate whose support or status changes, the
   labels of the passages that support it or speak against it, its reason
   ("Was <status>: ...", "Was proposed: ..." or "New: ...", ``core.reason_text``)
-  and its new status (``belief_status``), or "removed".
+  and its new status (``belief_status``), or "removed";
+- ``coverage`` (a report's aspects only, ``MULTI_ASPECT``): per aspect
+  whose coverage changes, its reason ("Was <coverage>: ...") and its new
+  coverage status (``coverage_status``): how completely the passages cover
+  what the aspect asks for.
 
 The answer turn is read as any other turn (its reasoning and final answer).
 
@@ -29,11 +33,12 @@ training sample is one call.  ``BeliefState.apply`` keeps the valid parts.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.text_utils import MAX_PASSAGE_CHARS, cut_passage, parse_json_object
+from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import (
-    DOC, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, CandidateUpdate, Observation, criterion_id, parse_claim,
+    DOC, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, CandidateUpdate, CoverageUpdate, Observation,
+    criterion_id, parse_claim,
 )
 from ..prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER_TEMPLATE, NO_TEXT, PASSAGE_TEMPLATE, TURN_TEMPLATE
 from ..text.matching import alnum_index, squash
@@ -49,8 +54,15 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS = 12288
 MULTI_MEMBER_MAX_TOKENS = 16384
 
-# The three lists of a reply, in order.
+# The three lists of a reply, in order; a report's reply ends with a fourth,
+# the aspects' coverage (``reply_keys``).
 REPLY_KEYS = ("reasoning_observations", "passage_observations", "candidates")
+COVERAGE_KEY = "coverage"
+
+
+def reply_keys(query_shape: str) -> tuple:
+    """The lists of a reply for a *query_shape* query, in order."""
+    return REPLY_KEYS + ((COVERAGE_KEY,) if query_shape == MULTI_ASPECT else ())
 
 
 def _add_spans(o: Observation, cited: Any, text: str, index: Optional[Tuple[str, List[int]]]) -> None:
@@ -71,7 +83,7 @@ class LLMBeliefUpdater:
     retries and its errors."""
 
     def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = MULTI_CLUE,
-                 max_passage_chars: Optional[int] = MAX_PASSAGE_CHARS,
+                 max_passage_tokens: Optional[int] = MAX_PASSAGE_TOKENS,
                  max_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = 0.0, parse_retries: int = 1) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
@@ -79,7 +91,8 @@ class LLMBeliefUpdater:
         self.name = f"llm:{model_name}"
         self.query_shape = query_shape
         self._system = BELIEF_UPDATE_SYSTEMS[query_shape]
-        self._max_passage_chars = max_passage_chars
+        self.reply_keys = reply_keys(query_shape)
+        self._max_passage_tokens = max_passage_tokens
         self.max_tokens = max_tokens
         self._temperature = temperature
         self._parse_retries = parse_retries
@@ -87,7 +100,7 @@ class LLMBeliefUpdater:
     def shown_text(self, text: str) -> str:
         """A passage's text as the call shows it (cut as the agent's view
         of it); its spans are checked against this text only."""
-        return cut_passage(text, self._max_passage_chars)
+        return cut_passage(text, self._max_passage_tokens)
 
     def prompt(self, query: str, state: BeliefState, turns: List[Turn],
                passages: List[Passage]) -> List[Dict[str, str]]:
@@ -104,17 +117,19 @@ class LLMBeliefUpdater:
         ]
 
     def parse(self, raw: str, turns: List[Turn], passages: List[Passage], step: int,
-              ) -> Optional[Tuple[List[Observation], List[Observation], List[CandidateUpdate]]]:
-        """``(claims, docs, updates)`` of the reply *raw* of the call of
+              ) -> Optional[Tuple[List[Observation], List[Observation], List[CandidateUpdate],
+                                  List[CoverageUpdate]]]:
+        """``(claims, docs, updates, coverage)`` of the reply *raw* of the call of
         step *step*: the span of a claim checked against its turn (the only
         turn when the call has one and the label is unknown; the claim's
         step is its turn's), those of a document observation against its
         passage as the call showed it (``shown_text``: a span from past the
         cut is not verified; its step is *step*), the items of one
-        criterion and passage merged; None unless the reply is a JSON
-        object with the three lists."""
+        criterion and passage merged; *coverage* the aspects' coverage
+        updates (empty unless a report); None unless the reply is a JSON
+        object with the shape's lists (``reply_keys``)."""
         data = parse_json_object(raw or "")
-        if data is None or not all(isinstance(data.get(key), list) for key in REPLY_KEYS):
+        if data is None or not all(isinstance(data.get(key), list) for key in self.reply_keys):
             return None
 
         by_turn = {f"t{n}": (n, text) for n, text in turns}
@@ -162,7 +177,10 @@ class LLMBeliefUpdater:
                                    status=str(item.get("belief_status") or "").strip(),
                                    support=reply_labels(item.get("support")), against=reply_labels(item.get("against")))
                    for item in data["candidates"] if isinstance(item, dict)]
-        return claims, list(docs.values()), updates
+        coverage = [CoverageUpdate(id=criterion_id(item.get("id")), reason=squash(item.get("reason")),
+                                   status=str(item.get("coverage_status") or "").strip())
+                    for item in data.get(COVERAGE_KEY) or [] if isinstance(item, dict)]
+        return claims, list(docs.values()), updates, coverage
 
     def update(self, query: str, state: BeliefState, turns: List[Turn],
                passages: List[Passage], step: int) -> Tuple[Any, Optional[str], List[str]]:
@@ -171,25 +189,31 @@ class LLMBeliefUpdater:
         reply, None when the first call raised; ``complete_with_repair``)."""
         return complete_with_repair(
             "LLMBeliefUpdater", self._llm, self.prompt(query, state, turns, passages),
-            lambda raw: self.parse(raw, turns, passages, step), UPDATE_REPAIR,
-            f"no JSON object with the lists {list(REPLY_KEYS)}", self._parse_retries,
+            lambda raw: self.parse(raw, turns, passages, step), self.repair,
+            f"no JSON object with the lists {list(self.reply_keys)}", self._parse_retries,
             max_tokens=self.max_tokens, temperature=self._temperature)
 
+    @property
+    def repair(self) -> str:
+        """The retry message after a reply that did not parse."""
+        return update_repair(self.reply_keys)
 
-# The retry message after a reply that did not parse.
-UPDATE_REPAIR = ("Your reply could not be read. Respond with ONLY a raw JSON object with the lists "
-                 + ", ".join(f'"{k}"' for k in REPLY_KEYS) + ", in this order.")
+
+def update_repair(keys: tuple) -> str:
+    """The retry message after a reply without the lists *keys*."""
+    return ("Your reply could not be read. Respond with ONLY a raw JSON object with the lists "
+            + ", ".join(f'"{k}"' for k in keys) + ", in this order.")
 
 
 def build_belief_updater(llm_client: Any, model: str = "", query_shape: str = MULTI_CLUE,
-                         max_passage_chars: Optional[int] = MAX_PASSAGE_CHARS) -> LLMBeliefUpdater:
+                         max_passage_tokens: Optional[int] = MAX_PASSAGE_TOKENS) -> LLMBeliefUpdater:
     """Build the belief updater on one LLM client (named *model*) for the
-    queries of one shape.  A document is cut at *max_passage_chars*, the
+    queries of one shape.  A document is cut at *max_passage_tokens*, the
     run's shared setting, so the update reads the text the agent read."""
     if llm_client is None:
         raise ValueError("the belief updater needs an LLM client")
     return LLMBeliefUpdater(
         llm_client, model_name=model, query_shape=query_shape,
-        max_passage_chars=max_passage_chars,
+        max_passage_tokens=max_passage_tokens,
         max_tokens=MULTI_MEMBER_MAX_TOKENS if query_shape == MULTI_MEMBER else DEFAULT_MAX_TOKENS,
     )

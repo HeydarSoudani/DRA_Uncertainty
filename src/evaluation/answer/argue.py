@@ -25,8 +25,8 @@ Per report it scores:
 The package runs unmodified; this module supplies its inputs and its judge.
 
 * Reports: ``generation/{qid}.md`` split into cited sentences
-  (:mod:`.report_sentences`), cut to the dataset's ``report_chars`` with the
-  package's ``truncate_report`` (the tracks' 2000-character limit).
+  (:mod:`.report_sentences`), read whole: a report has no length limit
+  (the tracks' 2000-character cut is not applied).
 * Nuggets: the dataset's nuggets file as one v3 nugget bank per request:
   questions grouped, ``vital`` when any copy is, AND/OR when given (else OR),
   each answer with its own supporting documents when given, else its
@@ -193,7 +193,7 @@ def build_nugget_banks(nuggets: Dict[str, List[Dict[str, Any]]],
     return banks
 
 
-def build_report(query_id: str, generation: str, max_chars: Optional[int]) -> Tuple[Any, int]:
+def build_report(query_id: str, generation: str) -> Tuple[Any, int]:
     """``(Report, unmapped_markers)``: the report as Auto-ARGUE reads it."""
     _, _, utils = _import_auto_argue()
     sentences, unmapped = report_sentences(generation)
@@ -202,8 +202,6 @@ def build_report(query_id: str, generation: str, max_chars: Optional[int]) -> Tu
         responses=[utils.ReportResponse(text=text, citations=set(cited)) for text, cited in sentences],
         references=sorted({d for _, cited in sentences for d in cited}),
     )
-    if max_chars and report.responses:
-        report = utils.truncate_report(report, max_chars=max_chars)
     return report, unmapped
 
 
@@ -228,14 +226,13 @@ class ArgueReportEvaluator:
 
     Usage::
 
-        evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path, max_chars=2000)
+        evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path)
         metrics = evaluator.evaluate(results, run_dir)
 
     Args:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
         questions: ``query_id -> request text``.
         corpus_path: The corpus JSONL the cited document ids come from.
-        max_chars: Report length limit; longer reports are cut at a sentence.
         judge_model: Judge model, resolved by ``reasoner_component.api``.
         max_concurrent_judges: Max in-flight judge requests.
     """
@@ -245,14 +242,12 @@ class ArgueReportEvaluator:
         nuggets: Dict[str, List[Dict[str, Any]]],
         questions: Dict[str, str],
         corpus_path,
-        max_chars: Optional[int] = None,
         judge_model: str = DEFAULT_JUDGE_MODEL,
         max_concurrent_judges: int = 64,
     ) -> None:
         self.nuggets = nuggets
         self.questions = questions
         self.corpus_path = Path(corpus_path)
-        self.max_chars = max_chars
         self.judge_model = judge_model
         self.max_concurrent_judges = max_concurrent_judges
 
@@ -354,7 +349,7 @@ class ArgueReportEvaluator:
 
         reports, unmapped = {}, {}
         for qid in banks:
-            reports[qid], unmapped[qid] = build_report(qid, results[qid].get("generation", ""), self.max_chars)
+            reports[qid], unmapped[qid] = build_report(qid, results[qid].get("generation", ""))
         empty = {qid for qid, r in reports.items() if not r.responses}
         to_score = {qid: r for qid, r in reports.items() if qid not in empty}
         self._cited_docs(to_score, out_dir)
@@ -395,7 +390,8 @@ class ArgueReportEvaluator:
             if qid in failures:
                 continue
             record: Dict[str, Any] = {"query_id": qid, "empty_report": qid in empty,
-                                      "unmapped_markers": unmapped[qid]}
+                                      "unmapped_markers": unmapped[qid],
+                                      "uncited_report": qid not in empty and not reports[qid].references}
             scores = per_topic.get(qid, {})
             for m in METRICS + COUNTS:
                 record[m] = round(scores.get(m, 0.0), 5)
@@ -407,6 +403,10 @@ class ArgueReportEvaluator:
             "num_evaluated": len(per_query),
             "num_without_nuggets": len([q for q in results if q not in banks]),
             "num_empty_reports": len(empty),
+            # Reports with no parsed citation, or with markers that map to no
+            # reference: their citation and nugget scores are not meaningful.
+            "num_uncited_reports": sum(1 for r in per_query if r["uncited_report"]),
+            "num_unmapped_reports": sum(1 for r in per_query if r["unmapped_markers"]),
             "num_judge_failures": len(failures),
             "metrics": {m: mean_or_none([r[m] for r in per_query], 5) for m in METRICS},
             "judge_calls": chat.calls,

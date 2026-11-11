@@ -21,7 +21,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.training_pool.annotations import mentions
+from indexing_corpus_dataset.training_datasets.gold.annotations import mentions
 
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 

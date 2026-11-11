@@ -81,7 +81,7 @@ class ReActAgent(BasicAgent):
         if is_stripped:
             observation = "(earlier search results omitted for brevity)"
         else:
-            observation = passages2string(docs[:self.seen_top_k], self.max_passage_chars)
+            observation = passages2string(docs[:self.seen_top_k], self.max_passage_tokens)
 
         return self.current_step_template.format(
             think=think, action_text=action_text, observation=observation,
@@ -111,7 +111,7 @@ class ReActAgent(BasicAgent):
             else:
                 docs = self.retrieve_documents(search_query, original_query=self.query)
             self.retrieved_docs.extend(docs)
-            obs = passages2string(docs[:self.seen_top_k], self.max_passage_chars)
+            obs = passages2string(docs[:self.seen_top_k], self.max_passage_tokens)
 
             self.last_search_query = search_query
             self.last_search_results = docs

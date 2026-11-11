@@ -5,21 +5,21 @@ updates behind them (saved).  ``apply`` takes one belief update reply."""
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..text.matching import alnum, contains_words, squash
+from ..text.matching import alnum, contains_words, content_words, squash
 from .issues import (
-    ISSUE_AGAINST_ONLY, ISSUE_BAD_CLAIM, ISSUE_BAD_REF, ISSUE_BAD_REMOVAL, ISSUE_BAD_STATUS,
-    ISSUE_CERTAIN_WITH_RIVAL, ISSUE_COMPUTED, ISSUE_DERIVED, ISSUE_DERIVED_UPDATE, ISSUE_DUPLICATE_CANDIDATE,
-    ISSUE_EMPTY_CANDIDATE,
-    ISSUE_LISTED_AS_NEW, ISSUE_NEAR_DUPLICATE, ISSUE_NO_NEW_SUPPORT, ISSUE_NO_REASON, ISSUE_NO_SPAN,
-    ISSUE_NO_SUPPORT, ISSUE_NOT_IN_TURN, ISSUE_NOT_LISTED, ISSUE_NOT_NEW_PASSAGE, ISSUE_READDED,
-    ISSUE_REMOVE_UNLISTED, ISSUE_UNCHANGED, ISSUE_UNEQUAL_TIE, ISSUE_UNEXPECTED_CANDIDATE,
-    ISSUE_UNKNOWN_CANDIDATE, ISSUE_UNKNOWN_CRITERION, ISSUE_WRONG_PREVIOUS,
+    ISSUE_AGAINST_ONLY, ISSUE_BAD_CLAIM, ISSUE_BAD_COVERAGE, ISSUE_BAD_REF, ISSUE_BAD_REMOVAL, ISSUE_BAD_STATUS,
+    ISSUE_CERTAIN_WITH_RIVAL, ISSUE_COVERAGE_NO_FACT, ISSUE_COVERAGE_NO_PASSAGE, ISSUE_DERIVED,
+    ISSUE_DERIVED_UPDATE, ISSUE_DUPLICATE_CANDIDATE, ISSUE_EMPTY_CANDIDATE,
+    ISSUE_LISTED_AS_NEW, ISSUE_MERGED_DUPLICATE, ISSUE_NEAR_DUPLICATE, ISSUE_NO_NEW_SUPPORT, ISSUE_NO_REASON,
+    ISSUE_NO_SPAN, ISSUE_NO_SUPPORT, ISSUE_NOT_IN_TURN, ISSUE_NOT_LISTED, ISSUE_NOT_NEW_PASSAGE, ISSUE_READDED,
+    ISSUE_REMOVE_UNLISTED, ISSUE_SPAN_OFF_CANDIDATE, ISSUE_SUBJECT_CANDIDATE, ISSUE_UNCHANGED, ISSUE_UNEQUAL_TIE,
+    ISSUE_UNEXPECTED_CANDIDATE, ISSUE_UNKNOWN_CANDIDATE, ISSUE_UNKNOWN_CRITERION, ISSUE_WRONG_PREVIOUS,
 )
 from .reason_text import parse_reason, reason_labels
 from .types import (
-    DERIVED_KINDS, DOC, NAMED_KINDS, NO_DOC_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED, REST, STATUS_LEVEL,
-    THINK, UNKNOWN, Candidate, CandidateUpdate, Criterion, Observation, Proposal, RemovedCandidate, Support,
-    exclusive, is_removed, parse_status,
+    ASPECT, DERIVED_KINDS, DOC, NAMED_KINDS, NO_DOC_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED, REST,
+    STATUS_LEVEL, THINK, UNKNOWN, Candidate, CandidateUpdate, CoverageUpdate, Criterion, Observation, Proposal,
+    RemovedCandidate, Support, exclusive, is_removed, member_subject, parse_coverage, parse_status, subject_names,
 )
 
 # Proposals kept per criterion (beyond it the least recently claimed is dropped).
@@ -90,15 +90,19 @@ class BeliefState:
     status; ``apply`` keeps what is valid:
 
     - an observation enters only when it is grounded (a verified span of
-      its passage or turn), names a known criterion, and is not a passage
-      observation on a criterion no document states (``NO_DOC_KINDS``); a
-      reasoning observation also needs a candidate and a claim.  A second
+      its passage or turn) and names a known criterion that is not derived
+      (a target); a reasoning observation also needs a candidate and a
+      claim.  On a computed criterion (``NO_DOC_KINDS``) a passage
+      observation states a condition of its definition for a member (its
+      membership), never its answer.  A second
       observation of a passage on the same criterion adds its new spans to
       the first one;
     - a claim sets the agent's claim on a listed candidate, or adds, updates
       or (``REJECTED``) drops a proposal; it never moves a status;
     - a candidate update is taken only for a criterion with an observation
-      in the call, once per candidate, with a status of the scale other
+      in the call (a computed criterion: any observation in the call, since
+      its status follows the members' answers), once per candidate, with a
+      status of the scale other
       than "unknown", or "removed".  Its support labels must be passages of
       the call observed on the criterion (``bad_ref`` otherwise, the label
       dropped).  A name neither listed nor proposed, or a proposed one,
@@ -121,6 +125,18 @@ class BeliefState:
       otherwise.  A criterion that refers to another one ("the town of
       c1") is judged on its own parts, whatever the statuses of the
       candidates it links to, so a change there moves nothing here.
+    - the subject of a member criterion ("<member>: <property>",
+      ``core.types.member_subject``) is never its candidate nor proposal,
+      and a rest criterion's name needs its value ("<member>: <value>"):
+      such a claim or update is not taken (``subject_candidate``);
+    - a new fact of an aspect criterion whose words contain a listed fact,
+      or the reverse, joins it (``merged_duplicate``): its support is added
+      to the listed fact, at the higher of the two statuses;
+    - the coverage of an aspect criterion (``coverage``, the reply's
+      ``coverage`` list) changes only with a passage observation on the
+      aspect in the call (``coverage_no_passage`` otherwise), and is
+      "unknown" while no passage supports a fact of it
+      (``coverage_no_fact``);
     - flags of a one-answer criterion, statuses kept: a "certain" candidate
       while another has support (``certain_with_rival``); two candidates
       with the same support and different statuses (``unequal_tie``).
@@ -130,7 +146,8 @@ class BeliefState:
       the clues before it (``_derive_targets``).
 
     Derived per criterion (``belief_lists``): its status, the highest of
-    its candidates ("unknown" without candidates); its selected
+    its candidates ("unknown" without candidates), an aspect's its
+    coverage; its selected
     candidate(s), among those at "possible" or above: for a one-answer
     criterion the first one shown (``ordered``), for a several-answers
     criterion every one.  A proposal is never selected.
@@ -149,6 +166,10 @@ class BeliefState:
         self.trace: List[List[Observation]] = [[] for _ in self.criteria]
         # Per criterion the candidates and proposals dropped, in order.
         self.removed: List[List[RemovedCandidate]] = [[] for _ in self.criteria]
+        # Per aspect criterion its coverage status ("unknown" for the others).
+        self.coverage: List[str] = [UNKNOWN for _ in self.criteria]
+        # Per criterion the member it is about (a member criterion), or None.
+        self._subjects: List[Optional[str]] = [member_subject(self.criteria, k) for k in range(len(self.criteria))]
         self._doc_labels: Dict[str, str] = {}
         self._titles: Dict[str, str] = {}
 
@@ -181,8 +202,10 @@ class BeliefState:
         return sorted(self.candidates[k], key=lambda c: (-_level(c.status), c.basis == REASONING))
 
     def status(self, k: int) -> str:
-        """The status of criterion *k*: the highest of its candidates,
-        "unknown" without candidates."""
+        """The status of criterion *k*: an aspect's coverage, else the
+        highest of its candidates ("unknown" without candidates)."""
+        if self.criteria[k].kind == ASPECT:
+            return self.coverage[k]
         return max((c.status for c in self.candidates[k]), key=_level, default=UNKNOWN)
 
     def selected(self, k: int) -> List[str]:
@@ -212,10 +235,12 @@ class BeliefState:
     # ------------------------------------------------------------------
 
     def apply(self, claims: List[Observation], docs: List[Observation],
-              updates: List[CandidateUpdate], step: int) -> Dict[str, Any]:
+              updates: List[CandidateUpdate], step: int,
+              coverage: Optional[List[CoverageUpdate]] = None) -> Dict[str, Any]:
         """Apply one belief update of the call of step *step*: the claims of
         the turns (*claims*, reasoning observations), the observations of
-        the passages (*docs*), then the candidate *updates*.
+        the passages (*docs*), the candidate *updates*, then the aspects'
+        *coverage* updates (a report).
 
         Returns ``{observations, updates, changed, issues}``: the
         observations that entered the belief (``Observation.to_dict``), one
@@ -225,15 +250,17 @@ class BeliefState:
         ("removed" for a removal), ``previous`` the candidate's status
         before (null for a new one, "proposed" for a proposal), ``status``
         the one kept ("removed" when it left the belief, "proposed" when it
-        stays a proposal), null when the update was not taken), the ids of
+        stays a proposal), null when the update was not taken), one record
+        per coverage update (``{id, reason, written, previous, status}``,
+        ``status`` the coverage kept, null when not taken), the ids of
         the criteria whose candidates or proposals changed, and one issue
         record per thing the reply got wrong (the ``ISSUE_*`` codes).
 
         Phases, in order: admit the observations, apply the claims, apply
         the candidate updates, resolve the status changes deferred on
-        one-answer criteria, derive the target criteria from their clues,
-        flag one-answer criteria whose statuses do not follow their
-        support."""
+        one-answer criteria, apply the coverage updates, derive the target
+        criteria from their clues, flag one-answer criteria whose statuses
+        do not follow their support."""
         # The proposals a claim of this call rejected.
         call = _CallContext(step=step, call_docs=[{} for _ in self.criteria], claimed=[False] * len(self.criteria))
         self._admit_observations([*claims, *docs], call)
@@ -245,19 +272,21 @@ class BeliefState:
         for u in updates:
             self._apply_update(u, call, done)
         self._resolve_deferred(before, call)
+        coverage_records = self._apply_coverage(coverage or [], call)
         self._derive_targets(call)
         for k in sorted(call.changed):
             kind = self.criteria[k].kind
             if exclusive(kind) and kind not in NO_DOC_KINDS and kind not in DERIVED_KINDS:
                 self._flag_rivals(k, call.issues)
         return {"observations": [o.to_dict() for o in call.entered], "updates": call.records,
+                "coverage": coverage_records,
                 "changed": [self.criteria[k].id for k in sorted(call.changed)], "issues": call.issues}
 
     def _admit_observations(self, observations: List[Observation], call: "_CallContext") -> None:
         """Phase 1: each observation enters the trace when it passes the
-        gates (a known criterion, a passage of the call, not a computed
-        criterion for a passage, a verified span, a claim with a candidate
-        and a status); otherwise one issue.  A second observation of a
+        gates (a known criterion that is not derived, a passage of the
+        call, a verified span, a claim with a candidate and a status);
+        otherwise one issue.  A second observation of a
         passage on one criterion adds its new spans to the first."""
         issues = call.issues
         for o in observations:
@@ -269,9 +298,6 @@ class BeliefState:
                                      "the criterion is derived from its clues: no observation", o))
             elif o.source == DOC and o.doc_id is None:
                 issues.append(_issue(o.criterion, ISSUE_NOT_NEW_PASSAGE, "no passage of the call has this label", o))
-            elif o.source == DOC and self.criteria[k].kind in NO_DOC_KINDS:
-                issues.append(_issue(o.criterion, ISSUE_COMPUTED,
-                                     "the criterion is computed: no passage observation", o))
             elif not o.grounded:
                 issues.append(_issue(o.criterion, ISSUE_NO_SPAN, "no verified span", o) if o.source == DOC else
                               _issue(o.criterion, ISSUE_NOT_IN_TURN, "no span of the agent's turn", o))
@@ -335,7 +361,8 @@ class BeliefState:
             return
         done.add((k, alnum(name)))
         call_docs = call.call_docs[k]
-        if not call_docs and not call.claimed[k]:
+        computed = self.criteria[k].kind in NO_DOC_KINDS
+        if not call_docs and not call.claimed[k] and not (computed and call.entered):
             issues.append(_issue(u.id, ISSUE_UNEXPECTED_CANDIDATE, f"{name!r}: no observation on the criterion "
                                                                     "in the call; ignored"))
             return
@@ -377,7 +404,7 @@ class BeliefState:
                 rec["status"] = existing.status
 
     def _derive_targets(self, call: "_CallContext") -> None:
-        """Phase 5: the candidates of every target criterion, derived from
+        """Phase 6: the candidates of every target criterion, derived from
         the clues before it (its closed criteria): a name listed on every
         clue, at the lowest of its statuses there (a rival or a passage
         against it on one clue lowers it), with the support of all of them.
@@ -447,8 +474,25 @@ class BeliefState:
             return False
         if o.claim == REJECTED:
             return False
+        problem = self._subject_problem(k, o.candidate or "")
+        if problem:
+            issues.append(_issue(self.criteria[k].id, ISSUE_SUBJECT_CANDIDATE, f"claim: {problem}; not proposed", o))
+            return False
         self._add_proposal(k, squash(o.candidate), o.claim, step, issues, o)
         return True
+
+    def _subject_problem(self, k: int, name: str) -> Optional[str]:
+        """Why *name* cannot be a candidate of criterion *k* (None when it
+        can): it is the member the member criterion is about, or a rest
+        criterion's name without its value."""
+        subject = self._subjects[k]
+        if subject is not None and alnum(name) in {alnum(n) for n in subject_names(subject)}:
+            return f"{name!r} is the member the criterion is about, not its {self.criteria[k].text.strip()[len(subject):].lstrip(':').strip()}"
+        if self.criteria[k].kind == REST:
+            member, _, value = name.partition(":")
+            if not alnum(member) or not alnum(value):
+                return f"{name!r} is not written \"<member>: <value>\""
+        return None
 
     def _add_proposal(self, k: int, name: str, claim: Optional[str], step: int, issues: List[Dict[str, Any]],
                       o: Optional[Observation] = None) -> None:
@@ -562,6 +606,12 @@ class BeliefState:
             rec["previous"], rec["candidate"] = existing.status, existing.name
         elif proposal is not None:
             rec["previous"], rec["candidate"] = "proposed", proposal.name
+        problem = self._subject_problem(k, name) if existing is None else None
+        if problem:
+            # Never a proposal either (``_claim`` and this check refuse it).
+            issues.append(_issue(c.id, ISSUE_SUBJECT_CANDIDATE, f"{problem}; not added"))
+            rec["status"] = None
+            return False
         self._check_reason(k, rec["candidate"], reason, existing, proposal, issues)
         computed = c.kind in NO_DOC_KINDS
 
@@ -584,9 +634,11 @@ class BeliefState:
             if not computed and c.kind in NAMED_KINDS and self._unknown_candidate(k, name):
                 issues.append(_issue(c.id, ISSUE_UNKNOWN_CANDIDATE, f"{name!r} in no span or title of the "
                                                                     "criterion's passages"))
-            near = [x.name for x in self.candidates[k] if contains_words(x.name, name) or contains_words(name, x.name)]
+            near = [x for x in self.candidates[k] if contains_words(x.name, name) or contains_words(name, x.name)]
+            if near and c.kind == ASPECT:
+                return self._merge(k, near[0], name, status, entries, proposal, rec, issues)
             if near:
-                issues.append(_issue(c.id, ISSUE_NEAR_DUPLICATE, f"{name!r} is close to listed {near}"))
+                issues.append(_issue(c.id, ISSUE_NEAR_DUPLICATE, f"{name!r} is close to listed {[x.name for x in near]}"))
             if proposal is None and self._dropped(k, name):
                 issues.append(_issue(c.id, ISSUE_READDED, f"{name!r} was dropped before; it is added again"))
             cand = Candidate(name=proposal.name if proposal is not None else name, status=status,
@@ -598,6 +650,7 @@ class BeliefState:
                 issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: {status!r} with no passage supporting it; "
                                                              f"set to {_cap(status)!r}"))
                 cand.status = _cap(status)
+            self._check_spans(k, cand.name, entries, issues)
             self.candidates[k].append(cand)
             rec["status"] = cand.status
             return True
@@ -613,6 +666,7 @@ class BeliefState:
             deferred.append((k, existing, status, rec))
             return False
         existing.support.extend(added)
+        self._check_spans(k, existing.name, added, issues)
         if not computed and not existing.supports() and _cap(status) != status:
             issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{existing.name!r}: {status!r} with no passage supporting "
                                                          f"it; set to {_cap(status)!r}"))
@@ -621,6 +675,94 @@ class BeliefState:
         existing.status = status
         rec["status"] = status
         return moved
+
+    def _merge(self, k: int, listed: Candidate, name: str, status: str, entries: List[Support],
+               proposal: Optional[Proposal], rec: Dict[str, Any], issues: List[Dict[str, Any]]) -> bool:
+        """A new fact *name* of aspect criterion *k* that repeats the listed
+        fact *listed* (the words of one contain the other's): its support
+        joins the listed fact, at the higher of the two statuses (a fact
+        no passage supports at most "possible"); a proposal of that name is
+        dropped.  Fills *rec* (under the listed name) and returns whether
+        the belief changed."""
+        issues.append(_issue(self.criteria[k].id, ISSUE_MERGED_DUPLICATE, f"{name!r} repeats listed {listed.name!r}; "
+                                                                         "merged into it"))
+        if proposal is not None:
+            self.proposals[k].remove(proposal)
+        known = {(x.label, x.against) for x in listed.support}
+        added = [x for x in entries if (x.label, x.against) not in known]
+        listed.support.extend(added)
+        self._check_spans(k, listed.name, added, issues)
+        new_status = max(listed.status, status, key=_level)
+        if not listed.supports():
+            new_status = _cap(new_status)
+        moved = bool(added) or new_status != listed.status or proposal is not None
+        rec["candidate"], rec["previous"] = listed.name, listed.status
+        listed.status = new_status
+        rec["status"] = listed.status
+        return moved
+
+    def _check_spans(self, k: int, name: str, entries: List[Support], issues: List[Dict[str, Any]]) -> None:
+        """Flag (information only) a supporting span of an aspect's fact
+        *name* that shares no content word with it: support attached to
+        another fact."""
+        if self.criteria[k].kind != ASPECT:
+            return
+        words = content_words(name)
+        for x in entries:
+            if not x.against and words and not words & content_words(" ".join(x.spans)):
+                issues.append(_issue(self.criteria[k].id, ISSUE_SPAN_OFF_CANDIDATE,
+                                     f"{name!r}: the spans of {x.label} share no content word with it"))
+
+    def _apply_coverage(self, items: List[CoverageUpdate], call: "_CallContext") -> List[Dict[str, Any]]:
+        """Phase 5: the coverage updates of the aspects, once per aspect,
+        each taken only with a passage observation on the aspect in the
+        call, "unknown" while no passage supports a fact of it (also for an
+        aspect the reply left out); returns one record per item."""
+        records: List[Dict[str, Any]] = []
+        done: Set[int] = set()
+        for u in items:
+            rec: Dict[str, Any] = {"id": u.id, "reason": u.reason, "written": u.status, "previous": None,
+                                   "status": None}
+            records.append(rec)
+            k = self._index.get(u.id)
+            status = parse_coverage(u.status)
+            if k is None or self.criteria[k].kind != ASPECT or status is None or k in done:
+                why = ("unknown criterion" if k is None else "not an aspect" if self.criteria[k].kind != ASPECT
+                       else "a second coverage of the aspect" if k in done else f"coverage {u.status!r} is not a status")
+                call.issues.append(_issue(u.id, ISSUE_BAD_COVERAGE, f"{why}; ignored"))
+                continue
+            done.add(k)
+            rec["written"], rec["previous"] = status, self.coverage[k]
+            opening = parse_reason(u.reason)
+            if opening is None or opening.new or opening.proposed:
+                call.issues.append(_issue(u.id, ISSUE_NO_REASON, "coverage: the reason does not open with "
+                                                                 "'Was <coverage>:'"))
+            elif opening.previous != self.coverage[k]:
+                call.issues.append(_issue(u.id, ISSUE_WRONG_PREVIOUS, f"coverage: the reason says it was "
+                                                                      f"{opening.previous!r}, it is {self.coverage[k]!r}"))
+            if not call.call_docs[k]:
+                if status != self.coverage[k]:
+                    call.issues.append(_issue(u.id, ISSUE_COVERAGE_NO_PASSAGE, f"coverage {status!r} from "
+                                              f"{self.coverage[k]!r} with no passage on the aspect in the call; kept"))
+                rec["status"] = self.coverage[k]
+                continue
+            if status != UNKNOWN and not any(x.supports() for x in self.candidates[k]):
+                call.issues.append(_issue(u.id, ISSUE_COVERAGE_NO_FACT, f"coverage {status!r} with no fact a passage "
+                                                                        "supports; set to 'unknown'"))
+                status = UNKNOWN
+            if status != self.coverage[k]:
+                call.changed.add(k)
+            self.coverage[k] = rec["status"] = status
+        # An aspect whose last supported fact left in this call, its coverage
+        # not written: back to "unknown" as well.
+        for k, c in enumerate(self.criteria):
+            if (c.kind == ASPECT and k not in done and self.coverage[k] != UNKNOWN
+                    and not any(x.supports() for x in self.candidates[k])):
+                call.issues.append(_issue(c.id, ISSUE_COVERAGE_NO_FACT, f"coverage {self.coverage[k]!r} with no fact "
+                                                                        "a passage supports; set to 'unknown'"))
+                self.coverage[k] = UNKNOWN
+                call.changed.add(k)
+        return records
 
     def _flag_rivals(self, k: int, issues: List[Dict[str, Any]]) -> None:
         """The flags of a one-answer criterion *k* (``apply``)."""

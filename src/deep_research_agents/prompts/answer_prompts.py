@@ -83,6 +83,12 @@ OSS_FORMAT = (
     "Confidence: {your confidence score between 0% and 100%}"
 )
 
+# The OSS / GLM agents on a report task (prompts.oss.user.REPORT_QUERY_TEMPLATE).
+OSS_REPORT_FORMAT = (
+    "Your response should be the report that answers the request, citing your "
+    "evidence documents inline by enclosing their full docids in square brackets []."
+)
+
 REACT_FORMAT = (
     "Provide your answer in the following format:\n"
     "<think>your final thinking</think>\n"

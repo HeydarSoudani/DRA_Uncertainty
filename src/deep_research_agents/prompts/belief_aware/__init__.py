@@ -33,23 +33,18 @@ USER_TEMPLATES = {task: _read(f"user{_suffix(task)}.txt") for task in TASKS}
 FORMAT_ERROR_TEMPLATE: str = _read("format_error.txt")
 
 
-def render_system(inform: bool, task: str = "qa", report_chars: int | None = None) -> str:
+def render_system(inform: bool, task: str = "qa") -> str:
     """The policy's system prompt.
 
     With *inform* (``--belief-mode inform``) it includes the
     section that explains <belief_state>; otherwise the prompt never mentions the
     tag, since the trajectory carries none.  The turn cap is enforced in code
-    and never stated to the policy.  *report_chars* is the target report
-    length of the ``report`` task.
+    and never stated to the policy, and a report has no length limit.
     """
     _suffix(task)
     prompt = (SYSTEM_TEMPLATES[task]
               .replace("{belief_section}", BELIEF_SECTION if inform else "")
               .replace("{injected_tags}", "<information> or <belief_state>" if inform else "<information>"))
-    if task == "report":
-        if report_chars is None:
-            raise ValueError("the report task needs report_chars")
-        prompt = prompt.replace("{report_chars}", str(report_chars))
     return prompt
 
 

@@ -32,7 +32,7 @@ NUM_GPUS=${NUM_GPUS:-4}
 POLICY_MODEL=${POLICY_MODEL:-glm}
 
 ARGS=(--phase "$PHASE" --policy-model "$POLICY_MODEL")
-# Training pool: shared.training_data of the YAML (deep_qa) unless TRAINING_DATA is set.
+# Training dataset: shared.training_data of the YAML (infoseek) unless TRAINING_DATA is set.
 if [[ -n "${TRAINING_DATA:-}" ]]; then
     ARGS+=(--training-data "$TRAINING_DATA")
 fi

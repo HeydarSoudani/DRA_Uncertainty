@@ -1,5 +1,5 @@
 """Loader of the sectioned YAML configs (one dataclass per section) of the
-training scripts (belief_model_training, build_training_pool)."""
+training scripts (belief_model_training, build_training_dataset)."""
 
 import dataclasses
 from pathlib import Path

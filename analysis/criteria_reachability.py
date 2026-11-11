@@ -53,7 +53,7 @@ Per request:
    :class:`belief_model_component.criteria.sources.LLMCriteriaSource` with the
    dataset's init prompt and ``max_criteria``, and they are added to it.
    TRQA with gold reads its gold bank, made on demand from the
-   intermediate info (:mod:`indexing_corpus_dataset.trqa_gold_criteria`);
+   intermediate info (:mod:`indexing_corpus_dataset.training_datasets.gold.trqa`);
    its criteria name every member, so its entity reachability is near 1 by
    construction, a check of the gold.  ``llm_criteria``, ``max_criteria`` and
    ``criteria_source`` default to the run config
@@ -187,7 +187,7 @@ def bank_criteria(args, source: CriteriaSource, queries: Dict[str, str]) -> Tupl
         criteria, info = source.get(qid, queries[qid])
         if not criteria:
             logger.error("Criteria extraction failed for %s: %s", qid, info.get("errors"))
-        # A pool's gold file is read, never added to: a request has its criteria or none.
+        # A training dataset's gold file is read, never added to: a request has its criteria or none.
         return qid, [c.to_dict() for c in criteria], info.get("bank", "hit" if criteria else "failed")
 
     criteria, outcomes = {}, {"hit": 0, "added": 0, "failed": 0}
@@ -270,7 +270,7 @@ def judgment_key(qid: str, doc_id: str, criteria: List[Dict], topic: str, judge:
 
 def render_passage(doc: Dict[str, str]) -> str:
     """The whole document: title and full text."""
-    return f"{doc_title(doc)}\n{doc_text(doc, max_length=None)}"
+    return f"{doc_title(doc)}\n{doc_text(doc, max_tokens=None)}"
 
 
 def parse_labels(raw: str, criteria: List[Dict], passage: str) -> Optional[Dict[str, Dict]]:
@@ -418,7 +418,7 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
                 continue
             downgraded += sum(v["downgraded"] for v in rec["labels"].values())
             docs.append({"query_id": q, "doc_id": d, "grade": g,
-                         "doc_chars": len(doc_text(texts[d], max_length=None)),
+                         "doc_chars": len(doc_text(texts[d], max_tokens=None)),
                          "reach": reach(rec["labels"]), "labels": rec["labels"]})
         all_docs.extend(docs)
         load = {c["id"]: {lvl: [x["doc_id"] for x in docs if at_level(x["labels"][c["id"]]["label"], lvl)]

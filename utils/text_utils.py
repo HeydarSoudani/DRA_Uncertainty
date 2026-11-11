@@ -1,6 +1,7 @@
 """Text and document utilities for LLM I/O.
 
-All pure-Python with no heavy dependencies:
+Pure Python, except the document cut (:func:`cut_passage`), which loads one
+tokenizer file with ``tokenizers`` on first use:
 
   Parsing    — extract content from XML tags, tool calls and JSON objects
   Printing   — format and display agent loop progress to the terminal
@@ -11,6 +12,7 @@ All pure-Python with no heavy dependencies:
 
 import json
 import re
+import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
@@ -287,19 +289,68 @@ def doc_title(doc: Dict[str, Any], default: str = "Untitled Document") -> str:
     return doc.get("title") or default
 
 
-#: Characters of one document shown to an agent and to the belief model
-#: (``max_passage_chars`` of a run, one shared setting): both read the same
-#: text, cut by :func:`cut_passage`.
-MAX_PASSAGE_CHARS = 1000
+#: Tokens of one document shown to an agent and to the belief model
+#: (``max_passage_tokens`` of a run, one shared setting): both read the same
+#: text, the document's first tokens, cut by :func:`cut_passage`.  As in
+#: BrowseComp-Plus (search results cut to their first 512 tokens), counted
+#: with one fixed tokenizer, whatever the agent's model: the student belief
+#: model's (its ``tokenizer.json``, read from the Hugging Face cache).
+MAX_PASSAGE_TOKENS = 512
+PASSAGE_TOKENIZER = "Qwen/Qwen3.5-4B"
+
+# A first window of the text holds the first max_tokens tokens when
+# tokenized alone (a token spans at least about one character); kept
+# this far from the window's end, a token is not changed by the text
+# after it.
+_WINDOW_CHARS_PER_TOKEN = 8
+_WINDOW_MARGIN_CHARS = 64
+
+_passage_tokenizer = None
+_passage_tokenizer_lock = threading.Lock()
 
 
-def cut_passage(text: str, max_chars: Optional[int]) -> str:
-    """*text* cut to *max_chars*, ending in ``...`` when cut (None keeps it whole)."""
+def _tokenizer():
+    """The tokenizer of the cut (``PASSAGE_TOKENIZER``), loaded once."""
+    global _passage_tokenizer
+    with _passage_tokenizer_lock:
+        if _passage_tokenizer is None:
+            from huggingface_hub import hf_hub_download
+            from tokenizers import Tokenizer
+            _passage_tokenizer = Tokenizer.from_file(hf_hub_download(PASSAGE_TOKENIZER, "tokenizer.json"))
+        return _passage_tokenizer
+
+
+def _token_ends(text: str) -> List[int]:
+    """The character offset where each token of *text* ends."""
+    tokenizer = _tokenizer()
+    with _passage_tokenizer_lock:
+        encoded = tokenizer.encode(text, add_special_tokens=False)
+    return [end for _, end in encoded.offsets]
+
+
+def cut_passage(text: str, max_tokens: Optional[int]) -> str:
+    """*text* cut to its first *max_tokens* tokens (``PASSAGE_TOKENIZER``),
+    with no marker; None keeps it whole.  The cut is a prefix of *text*."""
+    if max_tokens is None or not text:
+        return text
+    if max_tokens < 1:
+        raise ValueError(f"max_tokens must be at least 1 (None keeps the text whole), got {max_tokens}")
+    window = text[:max_tokens * _WINDOW_CHARS_PER_TOKEN]
+    ends = _token_ends(window)
+    if len(window) < len(text) and (len(ends) <= max_tokens or ends[max_tokens - 1] > len(window) - _WINDOW_MARGIN_CHARS):
+        ends = _token_ends(text)
+    return text[:ends[max_tokens - 1]] if len(ends) > max_tokens else text
+
+
+def cut_chars(text: str, max_chars: Optional[int]) -> str:
+    """*text* cut to *max_chars* characters, ending in ``...`` when cut
+    (None keeps it whole): a short display text, e.g. a title."""
     return text[:max_chars] + "..." if max_chars is not None and len(text) > max_chars else text
 
 
-def doc_text(doc: Dict[str, Any], max_length: Optional[int] = MAX_PASSAGE_CHARS) -> str:
-    """Extract document text, cut to *max_length* (``None`` = full text)."""
+def doc_text(doc: Dict[str, Any], max_tokens: Optional[int] = MAX_PASSAGE_TOKENS) -> str:
+    """Extract document text, cut to its first *max_tokens* tokens
+    (``None`` = full text)."""
     text = (
         doc.get("relevant_text")
         or doc.get("text")
@@ -307,7 +358,7 @@ def doc_text(doc: Dict[str, Any], max_length: Optional[int] = MAX_PASSAGE_CHARS)
         or doc.get("snippet")
         or ""
     )
-    return cut_passage(str(text).strip(), max_length)
+    return cut_passage(str(text).strip(), max_tokens)
 
 
 # Backwards-compatible private alias (existing call sites).
@@ -404,7 +455,7 @@ def _collect_cited_docs(result: dict) -> List[Dict[str, Any]]:
 # Documents: formatting — convert doc dicts to strings for the LLM prompt
 # ===========================================================================
 
-def passages2string(passages: List[Dict[str, Any]], max_text_length: int = MAX_PASSAGE_CHARS) -> str:
+def passages2string(passages: List[Dict[str, Any]], max_tokens: Optional[int] = MAX_PASSAGE_TOKENS) -> str:
     """Convert passage dicts to a numbered, human-readable string.
 
     Format: ``[1] Title\\ntext``
@@ -416,12 +467,12 @@ def passages2string(passages: List[Dict[str, Any]], max_text_length: int = MAX_P
 
     parts = []
     for idx, passage in enumerate(passages, start=1):
-        parts.append(f"[{idx}] {doc_title(passage)}\n{doc_text(passage, max_text_length)}")
+        parts.append(f"[{idx}] {doc_title(passage)}\n{doc_text(passage, max_tokens)}")
 
     return "\n\n".join(parts)
 
 
-def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = MAX_PASSAGE_CHARS) -> str:
+def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_tokens: Optional[int] = MAX_PASSAGE_TOKENS) -> str:
     """Convert docs to markdown format with ``## Web Results`` header.
 
     Used by: Tongyi-DR agent.
@@ -432,7 +483,7 @@ def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_leng
     parts = []
     for i, doc in enumerate(docs[:top_k], 1):
         title = _doc_title(doc)
-        text = doc_text(doc, max_text_length)
+        text = doc_text(doc, max_tokens)
         if title and text:
             parts.append(f"{i}. [{title}]\n{text}")
         elif text:
@@ -445,7 +496,7 @@ def format_as_markdown(docs: List[Dict[str, Any]], top_k: int = 5, max_text_leng
     return "## Web Results\n" + "\n\n".join(parts)
 
 
-def format_as_json(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: int = MAX_PASSAGE_CHARS) -> str:
+def format_as_json(docs: List[Dict[str, Any]], top_k: int = 5, max_tokens: Optional[int] = MAX_PASSAGE_TOKENS) -> str:
     """Convert docs to JSON format with docid/title/snippet.
 
     Used by: GLM and OSS agents.
@@ -455,7 +506,7 @@ def format_as_json(docs: List[Dict[str, Any]], top_k: int = 5, max_text_length: 
         formatted.append({
             "docid": doc.get("doc_id", ""),
             "title": _doc_title(doc),
-            "snippet": doc_text(doc, max_text_length),
+            "snippet": doc_text(doc, max_tokens),
         })
     return json.dumps(formatted)
 
@@ -464,7 +515,7 @@ def format_as_snippets(
     docs: List[Dict[str, Any]],
     top_k: int = 5,
     snippet_offset: int = 0,
-    max_text_length: int = MAX_PASSAGE_CHARS,
+    max_tokens: Optional[int] = MAX_PASSAGE_TOKENS,
 ) -> tuple:
     """Convert docs to DR-Tulu ``<snippet id="SN">…</snippet>`` XML format.
 
@@ -482,7 +533,7 @@ def format_as_snippets(
 
         title = doc_title(doc, default="")
         url = doc.get("url", doc.get("doc_id", ""))
-        body = doc_text(doc, max_text_length)
+        body = doc_text(doc, max_tokens)
         content = f"Title: {title}\nURL: {url}\n{body}".strip()
 
         parts.append(f'<snippet id="{sid}">{content}</snippet>')
@@ -519,6 +570,69 @@ def number_citations(
         return span + "".join(markers)
 
     numbered = citation_re.sub(replace, text)
+    return numbered, {n: did for did, n in number_of.items()}
+
+
+# A bracketed list of document ids as an agent cites them: "[id]", "[[id]]",
+# "[id1, id2]" (ids separated by commas, semicolons or spaces).
+_DOCID_CITATION_RE = re.compile(r"\[\[?\s*(?P<ids>[^\[\]\n]{1,400}?)\s*\]?\]")
+# The shortest id prefix accepted as a citation of the one document it starts.
+MIN_DOCID_PREFIX = 6
+# The heading of a reference list the agent wrote itself ("## References",
+# "**Sources:**").
+_OWN_REFERENCES_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]*|\*\*)?(?:References|Sources|Bibliography|Works Cited)(?:[ \t]*:)?(?:\*\*)?(?:[ \t]*:)?[ \t]*$",
+    re.MULTILINE | re.IGNORECASE)
+# Bracketed numbers, as the [N] markers a numbered report is read with.
+_NUMBER_BRACKET_RE = re.compile(r"\d+(?:\s*[,;]\s*\d+)*")
+
+
+def number_docid_citations(text: str, doc_ids: List[str]) -> Tuple[str, Dict[int, str]]:
+    """Turn bracketed document-id citations into numbered ``[N]`` markers.
+
+    For agents told to cite documents by their docids: a bracket (single or
+    double) is a citation when every id in it is one of *doc_ids* or a prefix
+    of exactly one of them, at least ``MIN_DOCID_PREFIX`` characters long
+    (agents shorten long ids).  N counts the documents in order of first
+    citation.  Any other bracket is left as written, except bracketed
+    numbers ("[2019]"), which get parentheses so they are never read as
+    ``[N]`` markers.  A reference list the agent wrote at the end is
+    dropped: the references are built from the returned mapping
+    (:func:`build_references_section`).
+
+    Returns the text and ``{N: doc_id}`` (``citation_to_doc_id``).
+    """
+    own = list(_OWN_REFERENCES_RE.finditer(text))
+    if own:
+        text = text[:own[-1].start()].rstrip()
+    known = list(dict.fromkeys(d for d in doc_ids if d))
+    exact = set(known)
+
+    def resolve(agent_id: str) -> Optional[str]:
+        if agent_id in exact:
+            return agent_id
+        if len(agent_id) < MIN_DOCID_PREFIX:
+            return None
+        hits = [d for d in known if d.startswith(agent_id)]
+        return hits[0] if len(hits) == 1 else None
+
+    number_of: Dict[str, int] = {}
+
+    def replace(m: re.Match) -> str:
+        ids = [x for x in re.split(r"[\s,;]+", m.group("ids").strip()) if x]
+        docs = [resolve(x) for x in ids]
+        if not docs or any(d is None for d in docs):
+            if _NUMBER_BRACKET_RE.fullmatch(m.group("ids").strip()):
+                return f"({m.group('ids').strip()})"
+            return m.group(0)
+        markers: List[str] = []
+        for did in docs:
+            marker = f"[{number_of.setdefault(did, len(number_of) + 1)}]"
+            if marker not in markers:
+                markers.append(marker)
+        return "".join(markers)
+
+    numbered = _DOCID_CITATION_RE.sub(replace, text)
     return numbered, {n: did for did, n in number_of.items()}
 
 
@@ -722,7 +836,7 @@ def build_evidence_summary(
     reasoning_path: List[Dict[str, Any]],
     seen_top_k: int = 5,
     keep_last: int = 3,
-    max_text_length: int = MAX_PASSAGE_CHARS,
+    max_tokens: Optional[int] = MAX_PASSAGE_TOKENS,
 ) -> str:
     """Build windowed evidence summary from reasoning_path.
 
@@ -745,7 +859,7 @@ def build_evidence_summary(
                 entry += f"\n  Reasoning: {think}"
         else:
             docs = step.get("docs", [])
-            doc_text = passages2string(docs[:seen_top_k], max_text_length)
+            doc_text = passages2string(docs[:seen_top_k], max_tokens)
             entry = f"- Search: {sq}"
             if think:
                 entry += f"\n  Reasoning: {think}"
