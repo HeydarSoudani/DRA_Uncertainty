@@ -93,7 +93,7 @@ def run_chains(episodes: List[Episode], store: DocumentStore, engine: VLLMRollou
     """*group_size* chains per episode from its gold criteria; the chains of
     an episode are contiguous and share its index as ``group``.  A call's
     reply budget is the inference updater's or scorer's
-    (``BeliefTracker.max_tokens``, larger for a set query).  A scorer call
+    (``BeliefTracker.max_tokens``, larger for a multi-member query).  A scorer call
     gets *group_size* replies."""
     runs = [_Run(Chain(ep, g), BeliefTracker(ep, store.docs(ep), ep.gold_criteria_list()))
             for g, ep in enumerate(episodes) for _ in range(group_size)]

@@ -21,7 +21,7 @@ queries already there (0: none, the files are rewritten); without one,
 every kept query.  The criterion texts of the earlier builds are reused, and
 every query keeps its split.
 
-The gold annotation (``annotations.set_row``) comes from the intermediate info: the set and the rest criterion with the
+The gold annotation (``annotations.multi_member_row``) comes from the intermediate info: the set and the rest criterion with the
 members and their values and each member's documents
 (``entity_values[].passage_ids``), each member named by the page title
 (the first line) of its first document in ``wiki_partial`` (``member_titles``,
@@ -117,7 +117,7 @@ def build(paths: PoolPaths, gc: GoldCriteriaConfig, split_cfg: SplitConfig, limi
         pending += [(row, subset, info_of.get(str(row["id"]), {}), docs_of.get(str(row["id"]), []))
                     for row in rows if row["id"] not in drop]
     titles = member_titles([info for _, _, info, _ in pending])
-    gold = [annotations.set_row(str(row["id"]), f"trqa_{subset}", row["text"], str(row["answer"]), info, docs, titles)
+    gold = [annotations.multi_member_row(str(row["id"]), f"trqa_{subset}", row["text"], str(row["answer"]), info, docs, titles)
             for row, subset, info, docs in pending]
 
     if len(ids) != len(set(ids)):

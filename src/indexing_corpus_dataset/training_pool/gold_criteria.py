@@ -81,14 +81,14 @@ def _read(name: str) -> str:
 
 MULTI_HOP_SYSTEM = _read("multi_hop_system.txt")
 MULTI_HOP_USER = _read("multi_hop_user.txt")
-SET_SYSTEM = _read("set_system.txt")
-SET_USER = _read("set_user.txt")
+MULTI_MEMBER_SYSTEM = _read("multi_member_system.txt")
+MULTI_MEMBER_USER = _read("multi_member_user.txt")
 RETRY_NOTE = "\n\n" + _read("retry_note.txt")
 UNSTATED_NOTE = "\n\n" + _read("retry_note_unstated.txt")
 ORDER_NOTE = "\n\n" + _read("retry_note_order.txt")
 
 # The prompts of each query shape.
-PROMPTS = {"multi_hop": (MULTI_HOP_SYSTEM, MULTI_HOP_USER), "set": (SET_SYSTEM, SET_USER)}
+PROMPTS = {"multi_hop": (MULTI_HOP_SYSTEM, MULTI_HOP_USER), "multi_member": (MULTI_MEMBER_SYSTEM, MULTI_MEMBER_USER)}
 
 
 def prompt_hash(shape: str) -> str:
@@ -254,7 +254,7 @@ def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     return _failed(row, errors)
 
 
-def set_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
+def multi_member_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     """The texts of a set row (TRQA): the property phrase and the
     aggregation from the writer, then "<member>: <phrase>" per member, "any
     other member: <phrase>" and the aggregation."""
@@ -269,7 +269,7 @@ def set_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     errors: List[str] = []
     retry = ""
     for _ in range(2):
-        data = writer.ask(SET_SYSTEM, SET_USER.format(question=question, property=row["property"] or "",
+        data = writer.ask(MULTI_MEMBER_SYSTEM, MULTI_MEMBER_USER.format(question=question, property=row["property"] or "",
                                                       aggregation=row["aggregation"] or "", retry=retry))
         prop_text = str(data.get("property") or "").strip()
         agg_text = str(data.get("aggregation") or "").strip()
@@ -286,7 +286,7 @@ def set_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     return _failed(row, errors)
 
 
-def _set_shape(row: dict) -> bool:
+def _multi_member_layout(row: dict) -> bool:
     """A set row has one criterion per member, then the rest and the
     aggregate criterion."""
     kinds = [c["kind"] for c in row["criteria"]]
@@ -298,10 +298,14 @@ def criteria_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     ``texts_ok`` false and the reasons in ``errors``."""
     if not row["criteria"]:
         return _with_texts(row, [], True, [])
-    if row["query_shape"] == "set":
-        if not _set_shape(row):
-            return _failed(row, ["set query: expected one criterion per member, then the rest and the aggregate"])
-        return set_texts(row, writer)
+    if row["query_shape"] not in PROMPTS:
+        return _failed(row, [f"query shape {row['query_shape']!r} has no writer prompts (one of {sorted(PROMPTS)}; "
+                             "a row of 'set' predates the rename to 'multi_member': rebuild its annotations)"])
+    if row["query_shape"] == "multi_member":
+        if not _multi_member_layout(row):
+            return _failed(row, ["multi-member query: expected one criterion per member, then the rest and the "
+                                 "aggregate"])
+        return multi_member_texts(row, writer)
     return multi_hop_texts(row, writer)
 
 

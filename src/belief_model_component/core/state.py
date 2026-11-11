@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..text.matching import alnum, contains_words, squash
 from .issues import (
     ISSUE_AGAINST_ONLY, ISSUE_BAD_CLAIM, ISSUE_BAD_REF, ISSUE_BAD_REMOVAL, ISSUE_BAD_STATUS,
-    ISSUE_CERTAIN_WITH_RIVAL, ISSUE_COMPUTED, ISSUE_DUPLICATE_CANDIDATE, ISSUE_EMPTY_CANDIDATE,
+    ISSUE_CERTAIN_WITH_RIVAL, ISSUE_COMPUTED, ISSUE_DERIVED, ISSUE_DERIVED_UPDATE, ISSUE_DUPLICATE_CANDIDATE,
+    ISSUE_EMPTY_CANDIDATE,
     ISSUE_LISTED_AS_NEW, ISSUE_NEAR_DUPLICATE, ISSUE_NO_NEW_SUPPORT, ISSUE_NO_REASON, ISSUE_NO_SPAN,
     ISSUE_NO_SUPPORT, ISSUE_NOT_IN_TURN, ISSUE_NOT_LISTED, ISSUE_NOT_NEW_PASSAGE, ISSUE_READDED,
     ISSUE_REMOVE_UNLISTED, ISSUE_UNCHANGED, ISSUE_UNEQUAL_TIE, ISSUE_UNEXPECTED_CANDIDATE,
@@ -16,7 +17,7 @@ from .issues import (
 )
 from .reason_text import parse_reason, reason_labels
 from .types import (
-    DOC, NAMED_KINDS, NO_DOC_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED, REST, STATUS_LEVEL,
+    DERIVED_KINDS, DOC, NAMED_KINDS, NO_DOC_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED, REST, STATUS_LEVEL,
     THINK, UNKNOWN, Candidate, CandidateUpdate, Criterion, Observation, Proposal, RemovedCandidate, Support,
     exclusive, is_removed, parse_status,
 )
@@ -123,6 +124,10 @@ class BeliefState:
     - flags of a one-answer criterion, statuses kept: a "certain" candidate
       while another has support (``certain_with_rival``); two candidates
       with the same support and different statuses (``unequal_tie``).
+    - a target criterion of a multi-clue query (``DERIVED_KINDS``) takes no
+      observation (``derived_criterion``) and no candidate update
+      (``derived_update``): after each call its candidates are derived from
+      the clues before it (``_derive_targets``).
 
     Derived per criterion (``belief_lists``): its status, the highest of
     its candidates ("unknown" without candidates); its selected
@@ -226,8 +231,9 @@ class BeliefState:
 
         Phases, in order: admit the observations, apply the claims, apply
         the candidate updates, resolve the status changes deferred on
-        one-answer criteria, flag one-answer criteria whose statuses do not
-        follow their support."""
+        one-answer criteria, derive the target criteria from their clues,
+        flag one-answer criteria whose statuses do not follow their
+        support."""
         # The proposals a claim of this call rejected.
         call = _CallContext(step=step, call_docs=[{} for _ in self.criteria], claimed=[False] * len(self.criteria))
         self._admit_observations([*claims, *docs], call)
@@ -239,8 +245,10 @@ class BeliefState:
         for u in updates:
             self._apply_update(u, call, done)
         self._resolve_deferred(before, call)
+        self._derive_targets(call)
         for k in sorted(call.changed):
-            if exclusive(self.criteria[k].kind) and self.criteria[k].kind not in NO_DOC_KINDS:
+            kind = self.criteria[k].kind
+            if exclusive(kind) and kind not in NO_DOC_KINDS and kind not in DERIVED_KINDS:
                 self._flag_rivals(k, call.issues)
         return {"observations": [o.to_dict() for o in call.entered], "updates": call.records,
                 "changed": [self.criteria[k].id for k in sorted(call.changed)], "issues": call.issues}
@@ -256,6 +264,9 @@ class BeliefState:
             k = self._index.get(o.criterion)
             if k is None:
                 issues.append(_issue(o.criterion, ISSUE_UNKNOWN_CRITERION, "unknown criterion id", o))
+            elif self.criteria[k].kind in DERIVED_KINDS:
+                issues.append(_issue(o.criterion, ISSUE_DERIVED,
+                                     "the criterion is derived from its clues: no observation", o))
             elif o.source == DOC and o.doc_id is None:
                 issues.append(_issue(o.criterion, ISSUE_NOT_NEW_PASSAGE, "no passage of the call has this label", o))
             elif o.source == DOC and self.criteria[k].kind in NO_DOC_KINDS:
@@ -306,6 +317,10 @@ class BeliefState:
         k = self._index.get(u.id)
         if k is None:
             issues.append(_issue(u.id, ISSUE_UNKNOWN_CRITERION, f"candidate {name!r} of an unknown criterion id"))
+            return
+        if self.criteria[k].kind in DERIVED_KINDS:
+            issues.append(_issue(u.id, ISSUE_DERIVED_UPDATE, f"{name!r}: the criterion is derived from its clues; "
+                                                             "ignored"))
             return
         if not alnum(name):
             issues.append(_issue(u.id, ISSUE_EMPTY_CANDIDATE, "an update without a candidate name"))
@@ -360,6 +375,35 @@ class BeliefState:
                                           f"{existing.name!r}: {status!r} from {existing.status!r} with no new "
                                           f"passage on it, and no other candidate's support changed; kept"))
                 rec["status"] = existing.status
+
+    def _derive_targets(self, call: "_CallContext") -> None:
+        """Phase 5: the candidates of every target criterion, derived from
+        the clues before it (its closed criteria): a name listed on every
+        clue, at the lowest of its statuses there (a rival or a passage
+        against it on one clue lowers it), with the support of all of them.
+        A name missing from one clue is no candidate (its status there is
+        "unknown"); a target candidate kept from before keeps the step it
+        was added in."""
+        for k, c in enumerate(self.criteria):
+            if c.kind not in DERIVED_KINDS:
+                continue
+            clues = [j for j in range(k) if self.criteria[j].kind not in DERIVED_KINDS]
+            old = {alnum(x.name): x for x in self.candidates[k]}
+            derived: List[Candidate] = []
+            if clues:
+                for x in self.candidates[clues[0]]:
+                    on_clues = [self._listed(j, x.name) for j in clues]
+                    if any(y is None for y in on_clues):
+                        continue
+                    prev = old.get(alnum(x.name))
+                    derived.append(Candidate(
+                        name=x.name, status=min((y.status for y in on_clues), key=_level),
+                        added_step=prev.added_step if prev is not None else call.step,
+                        support=[s for y in on_clues for s in y.support]))
+            before = [(alnum(x.name), x.status, len(x.support)) for x in self.candidates[k]]
+            self.candidates[k] = derived
+            if [(alnum(x.name), x.status, len(x.support)) for x in derived] != before:
+                call.changed.add(k)
 
     def _support_key(self, k: int) -> frozenset:
         """The candidates of criterion *k* with their support (passage

@@ -46,7 +46,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from ..core.types import CRITERION_REF_RE, NO_DOC_KINDS, Candidate, Support, exclusive
+from ..core.types import CRITERION_REF_RE, DERIVED_KINDS, NO_DOC_KINDS, Candidate, Support, exclusive
 
 # A tag the model wrote itself; removed before its text enters the context.
 BELIEF_STATE_RE = re.compile(r"<belief_state\b[^>]*>.*?</belief_state>\s*", re.DOTALL)
@@ -68,6 +68,8 @@ def strip_belief_state(text: str) -> str:
 
 def criterion_type(kind: str) -> str:
     """The type of a criterion of *kind* as the belief update reads it."""
+    if kind in DERIVED_KINDS:
+        return "target"
     return "computed" if kind in NO_DOC_KINDS else "one answer" if exclusive(kind) else "several answers"
 
 
@@ -116,16 +118,19 @@ def format_belief(state: Any, removed: bool = False) -> str:
     """Every criterion of *state* with its candidates and their support,
     highest status first, or ``NO_CANDIDATE``, then its proposals; with
     *removed* (the final scorer's view), then the names the belief ruled
-    out (``BeliefState.ruled_out``)."""
+    out (``BeliefState.ruled_out``).  A target criterion's candidates are
+    shown without support lines: their support is the clues', shown there."""
     lines = []
     for k in range(len(state.criteria)):
         lines.append(criterion_head(state, k))
         cands = state.ordered(k)
+        derived = state.criteria[k].kind in DERIVED_KINDS
         if not cands:
             lines.append(f"  {NO_CANDIDATE}")
         for c in cands:
             lines.append(f"  {candidate_line(c)}")
-            lines.extend(f"    {line}" for line in support_lines(c))
+            if not derived:
+                lines.extend(f"    {line}" for line in support_lines(c))
         proposed = proposals_line(state, k)
         if proposed:
             lines.append(f"  {proposed}")

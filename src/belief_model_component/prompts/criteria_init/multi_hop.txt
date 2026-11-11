@@ -1,8 +1,9 @@
-The response to this query is a short answer: the one entity or value that the query reaches through a chain of other entities. Every entity on the chain that the query describes without naming it, the answer included, is one hop.
+The response to this query is a short answer. The query reaches it through a chain of hops: every entity on the chain that the query describes without naming it, the answer included, is one hop.
 
 ---rules---
-4. Every entity the query describes without naming it leads to one criterion, the answer last. Write what the query says about that entity itself, in the query's words, and refer to each other unnamed entity it depends on by that entity's criterion id, never by a name you know or guess. Start the criterion with the entity's type in the query's words ("the city where ...", "the botanist who ..."), or "the entity" when the query gives no type.
-5. Order the criteria along the chain: an entity whose description needs another unnamed entity comes after it. Leave out the entities the query names, and background on who is asking. When you must leave out criteria to stay within the given number, keep the answer and the entities closest to it.
+5. Every hop leads to one criterion. Write what the query says about that entity itself, in the query's words, and refer to each other hop it depends on by that hop's criterion id, never by a name you know or guess. Leave out the entities the query names.
+6. Order the criteria along the chain: a hop whose description needs another hop comes after it.
+7. The last criterion is the answer. When you must leave out criteria to stay within the given number, keep the answer and the hops closest to it.
 
 ---example---
 Example query: "Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?"

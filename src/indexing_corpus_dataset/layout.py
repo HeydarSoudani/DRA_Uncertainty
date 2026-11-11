@@ -122,10 +122,12 @@ class DatasetSpec:
                              request).  Report tasks get report prompts and no
                              intermediate answers.
         query_shape:         Shape of the dataset's queries, for the criteria
-                             extraction: ``"single_target"`` (clues of one
-                             entity or value), ``"multi_hop"`` (one entity
+                             extraction: ``"multi_clue"`` (a list of clues
+                             on one entity, the target: one criterion per
+                             clue, then the target, then the asked answer
+                             when it is not the target), ``"multi_hop"`` (one entity
                              reached through a chain of other entities: one
-                             criterion per hop), ``"set"`` (a value over every
+                             criterion per hop), ``"multi_member"`` (a value over every
                              member of a set) or ``"multi_aspect"`` (a report
                              on several aspects of a topic).
         max_criteria:        Cap on the number of criteria the criteria
@@ -200,14 +202,14 @@ DATASET_SPECS = {
     # (training_pool/annotations.py).
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
     # Long web pages and long multi-clue questions; grades: gold=2, evidence=1.
     # Both are evidence (the owners' qrel_evidence) for the binary metrics; the
     # owners define no gains, so gold (contains the answer) gets gain 2 by choice.
     "browsecomp_plus": DatasetSpec(
         dataset_year=None, subset="test", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
+        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="multi_clue", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
     # valuable 1).  The trajectory gold and the end-of-run Recall@N are >=3
@@ -247,7 +249,7 @@ DATASET_SPECS = {
     # intermediate info merged; TRQA's settings, corpus and indices.
     "trqa_validation": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="set", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_criteria=52, gold_criteria="annotation", criteria_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
 }
 

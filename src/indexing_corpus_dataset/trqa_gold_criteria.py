@@ -5,7 +5,7 @@ first needs them, and banked (``TRQAGoldCriteria`` is the producer of a
 ``layout.criteria_bank_path(..., "gold")``).
 
 Per query, the row of the training pools' format
-(``training_pool/annotations.py``, ``annotations.set_row``), as the
+(``training_pool/annotations.py``, ``annotations.multi_member_row``), as the
 trqa_validation pool builds its own: one criterion per member of the set
 ("<member>: <property>", its value and documents,
 ``entity_values[].passage_ids``), the rest criterion and the aggregate.  A
@@ -13,7 +13,7 @@ member is named by the page title of its first document, looked up in the
 corpus by id (``CorpusLookup``; wiki1 and wiki2: ``wiki_partial``); without
 a corpus (ecommerce), by TRQA's label.  The writer (the run's
 ``llm_criteria``, native reasoning off) writes the property phrase and the
-aggregation (``gold_criteria.set_texts``, the prompts of the pools), from
+aggregation (``gold_criteria.multi_member_texts``, the prompts of the pools), from
 which the criterion texts are built.
 
 Results:
@@ -117,7 +117,7 @@ class TRQAGoldCriteria(CriteriaSource):
         """What, besides the query, decides the gold criteria: the bank key
         of ``BankedCriteriaSource``."""
         return {"model": GOLD_CRITERIA_MODEL, "source": SOURCE, "writer": self.writer_model,
-                "prompt": prompt_hash("set")}
+                "prompt": prompt_hash("multi_member")}
 
     def prepare(self) -> None:
         """Build the corpus index of the member titles now, once, before
@@ -141,12 +141,12 @@ class TRQAGoldCriteria(CriteriaSource):
     def row(self, query_id: str, query: str) -> dict:
         """The query's annotation row, without criterion texts."""
         info = self._infos[query_id]
-        return annotations.set_row(query_id, f"trqa_{self.subset}", query, self._answers.get(query_id, ""), info,
+        return annotations.multi_member_row(query_id, f"trqa_{self.subset}", query, self._answers.get(query_id, ""), info,
                                    self._docs.get(query_id, []), self._titles(info))
 
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
         qid = str(query_id)
-        base: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": "set", "criteria_kind": GOLD_CRITERIA,
+        base: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": "multi_member", "criteria_kind": GOLD_CRITERIA,
                                 "writer": self.writer_model}
         if qid not in self._infos:
             return [], {**base, "errors": [f"gold criteria: no intermediate info for query {qid} of trqa {self.split}"]}

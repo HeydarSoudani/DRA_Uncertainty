@@ -578,45 +578,10 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
 
 
 # ============================================================================
-# CLI
+# Run settings
 # ============================================================================
-def _none_if_null(value: str) -> Optional[str]:
-    """Read the literal ``null`` on the CLI as None (auto-select), like the YAML."""
-    return None if value == "null" else value
-
-
-def _parse_args():
-    """Build and parse the CLI argument parser.
-
-    Only the frequently-varied knobs are declared as CLI arguments.  The
-    mostly-fixed variables live in a YAML config file (``--config``, default
-    experiments/configs/dra_inference.yaml) and are merged onto ``args`` afterwards;
-    any of them can still be overridden by passing the matching ``--flag`` on
-    the command line (handled via ``parse_known_args`` -> ``apply_config_to_args``).
-    """
-    parser = argparse.ArgumentParser(
-        description="Run deep research agents pipeline (unified)",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        allow_abbrev=False,  # only full flag names, e.g. --belief-mode
-    )
-
-    # ── File-backed config ─────────────────────────────────────────────────
-    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
-
-    # ── Frequently-varied knobs (everything else lives in --config) ─────────
-    parser.add_argument("--policy-model", type=str, default="glm", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
-    parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
-    parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
-    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its passage support, and the names the agent proposed) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses, and the agent's proposals as unverified; never anything gold-based) to the trajectory after each iteration's search results.")
-
-    # ── Run-control flags ───────────────────────────────────────────────────
-    parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
-    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (seen-doc retrieval; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus and deep_qa, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; with belief files, the uncertainty and belief update evaluations; trajectory) and writes the same metrics.md and per_query.csv as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and belief_eval/, so an unchanged run makes no LLM call.")
-    parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
-
-    args, extras = parser.parse_known_args()
+def _resolve_args(args, extras):
+    """Merge the YAML config and CLI overrides onto ``args`` and derive the agent settings."""
 
     # ── Merge file-backed config (+ any CLI overrides) onto args ────────────
     cli_subset = args.subset
@@ -649,7 +614,7 @@ def _parse_args():
 
 def main():
     """Main entry point."""
-    args    = _parse_args()
+    args    = _resolve_args(*parse_args())
 
     verbose = args.verbose and not args.quiet
 
@@ -786,6 +751,49 @@ def main():
         cleanup_event_loop()
         vllm_manager.shutdown()
 
+# ============================================================================
+# CLI arguments
+# ============================================================================
+def _none_if_null(value: str) -> Optional[str]:
+    """Read the literal ``null`` on the CLI as None (auto-select), like the YAML."""
+    return None if value == "null" else value
+
+
+def parse_args():
+    """Build the CLI argument parser and parse the command line.
+
+    Only the frequently-varied knobs are declared as CLI arguments.  The
+    mostly-fixed variables live in a YAML config file (``--config``, default
+    experiments/configs/dra_inference.yaml) and are merged onto ``args`` in
+    ``_resolve_args``; any of them can still be overridden by passing the
+    matching ``--flag`` on the command line (returned in ``extras``).
+    """
+    parser = argparse.ArgumentParser(
+        description="Run deep research agents pipeline (unified)",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        allow_abbrev=False,  # only full flag names, e.g. --belief-mode
+    )
+
+    # ── File-backed config ─────────────────────────────────────────────────
+    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
+
+    # ── Frequently-varied knobs (everything else lives in --config) ─────────
+    parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
+    parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
+    parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
+    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its passage support, and the names the agent proposed) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses, and the agent's proposals as unverified; never anything gold-based) to the trajectory after each iteration's search results.")
+
+    # ── Run-control flags ───────────────────────────────────────────────────
+    parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
+    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (seen-doc retrieval; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus and deep_qa, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; with belief files, the uncertainty and belief update evaluations; trajectory) and writes the same metrics.md and per_query.csv as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and belief_eval/, so an unchanged run makes no LLM call.")
+    parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
+
+    args, extras = parser.parse_known_args()
+    return args, extras
+
+
 if __name__ == "__main__":
     main()
 
@@ -825,8 +833,10 @@ if __name__ == "__main__":
 # EXAMPLE USAGE
 # ============================================================================
 #   CUDA_VISIBLE_DEVICES=5,6 python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
-#   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/inference/dra_inference.py --dataset neuclir --limit 1
-#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
 #   python experiments/inference/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
 #   python experiments/inference/dra_inference.py --num-gpus 4 --quiet --limit 9
 #   python experiments/inference/dra_inference.py --limit 1
+#   
+#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki1 --limit 1
+#   python experiments/inference/dra_inference.py --dataset neuclir --limit 1

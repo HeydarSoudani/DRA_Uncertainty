@@ -1,0 +1,21 @@
+The response to this query is a short answer. The query computes it over every member of a set, such as a count, a sum, an average, or the earliest or latest value among the members.
+
+---rules---
+5. Every member you are certain belongs to the set under the query's exact definition leads to one criterion, as "<member>: <property>". The property is what the query looks up for each member, in the query's words, with the qualifiers it gives (a year, a unit), and without a condition on the value or a computation: write "surface area", not "surface area of more than 10 km²". Leave out entities only related to the set (a similar role, a predecessor, a broader group) and members whose membership depends on how the definition is read.
+6. Then write "any other member: <property>", for the members you did not list. Write it even when you think your list is complete.
+7. The last criterion is the answer: how it follows from the members' values, in the query's words, starting with what it computes ("the number of ...", "the average ...", "the earliest ..."). It keeps the set with every condition that defines it and the conditions the query puts on the values.
+
+---example---
+Example query: "How many novels by Jules Verne that were published before 1870 were adapted into films?"
+Example output:
+{
+  "criteria": [
+    "Five Weeks in a Balloon: film adaptations",
+    "Journey to the Center of the Earth: film adaptations",
+    "From the Earth to the Moon: film adaptations",
+    "The Adventures of Captain Hatteras: film adaptations",
+    "In Search of the Castaways: film adaptations",
+    "any other member: film adaptations",
+    "the number of the novels by Jules Verne that were published before 1870 that were adapted into films"
+  ]
+}

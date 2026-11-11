@@ -1,10 +1,10 @@
----single_target---
-The query describes one entity or value by clues; every criterion is one clue on it.
+---multi_clue---
+The query describes one unnamed entity, the target, by clues. The first criteria are one clue each on the target; then the target criterion, "the <type> that meets c1 to c<k>", is the entity that meets every clue; then, when the query asks for something other than the target, the last criterion is that asked thing, and it refers to the target by its id.
 
 ---multi_hop---
 The query reaches one entity or value through a chain of entities; every criterion is one hop on the chain, and the answer of the last one is the answer to the query.
 
----set---
+---multi_member---
 The query asks for a value computed over the members of a set, such as a count; the criteria are one per known member, "<member>: <property>", then "any other member: <property>", whose answers are written "<member>: <value>", then the computation.
 
 ---multi_aspect---

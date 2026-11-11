@@ -11,17 +11,17 @@ Query row::
     {"id", "source",
      "split": "sft" | "rl" | "val" | None,       (``splits.py``)
      "text", "answer",          the question and its final answer
-     "query_shape": "multi_hop" | "set",
+     "query_shape": "multi_hop" | "multi_member",
      "level": "full" | "partial" | "query",      (``level``)
      "doc_ids": [...],          the query's qrels
      "criteria": [criterion],   [] when the source has no structure
-     "members": [{"entity", "value", "doc_ids"}],   set queries; else []
+     "members": [{"entity", "value", "doc_ids"}],   multi-member queries; else []
      "entity_names": [...],     every entity name of the gold structure
                                 (InfoSeek's tree, TRQA's members;
                                 ``mentions`` skips an answer inside a
                                 longer one); else []
-     "property": str | None,    the property of a set query; else None
-     "aggregation": str | None, how a set query's answer follows from
+     "property": str | None,    the property of a multi-member query; else None
+     "aggregation": str | None, how a multi-member query's answer follows from
                                 the members' values (TRQA, e.g.
                                 ``AVG_TOP_K``); else None
      "texts_ok": bool | None,   the criterion texts (gold_criteria.py):
@@ -55,7 +55,7 @@ What each source states:
                  only the answer has answers (the final answer); no doc_ids
                  (the URLs are the query's)
     frames       no criteria (final answer and qrels only)
-    trqa_wiki2   set: one criterion per member, "<member>: <property>"
+    trqa_wiki2   multi_member: one criterion per member, "<member>: <property>"
                  (answers = its value, doc_ids = its documents,
                  ``entity_values[].passage_ids``), then the rest criterion
                  "any other member: <property>" (answers and doc_ids empty:
@@ -72,7 +72,7 @@ What each source states:
 Step 1 builds the skeletons (criteria with the page keys of their
 documents, ``gold_keys``), step 2 resolves the keys to the fetched documents
 (``row``); the trqa_validation build writes its rows directly
-(``set_row``).  Both then have an LLM write the criterion texts
+(``multi_member_row``).  Both then have an LLM write the criterion texts
 (``gold_criteria.fill_texts``), and the split sets ``split``.
 """
 
@@ -362,7 +362,7 @@ def value_texts(value: Any) -> List[str]:
     return out
 
 
-def set_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: List[str],
+def multi_member_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: List[str],
             titles: Dict[str, str]) -> dict:
     """The annotation row of a TRQA query from its intermediate info
     (``entity_values``, ``property``, ``aggregation``): one criterion per
@@ -389,4 +389,4 @@ def set_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: L
     prop = (info.get("property") or {}).get("label") or None
     names = _dedup(n for m, label in zip(members, labels) for name in (m["entity"], label)
                    for n in entity_names(name))
-    return _row(qid, source, query, answer, "set", qrels, criteria, members, names, prop, info.get("aggregation"))
+    return _row(qid, source, query, answer, "multi_member", qrels, criteria, members, names, prop, info.get("aggregation"))

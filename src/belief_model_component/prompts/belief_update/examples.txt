@@ -1,4 +1,4 @@
----single_target---
+---multi_clue---
 Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
 Criteria, with their current candidates:
@@ -7,6 +7,8 @@ c1 (one answer): the painter who was born in a coastal town
 c2 (one answer): the painter who won the Ostra Prize in the 1920s
   (no candidate)
   proposed: "Anna Holm"
+c3 (target): the painter that meets c1 to c2
+  (no candidate)
 
 The agent's reasoning since the last update:
 [t2]
@@ -88,7 +90,7 @@ Output:
   ]
 }
 
----set---
+---multi_member---
 Query: What is the total length of the bridges over the river Varn that were built before 1900?
 
 Criteria, with their current candidates:

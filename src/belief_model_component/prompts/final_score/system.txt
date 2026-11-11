@@ -28,7 +28,7 @@ The final status depends on the answer's candidates:
 
 == Rules ==
 1. Judge from the belief only. The agent's last reasoning only tells which candidates the final answer relies on; it is not evidence, nor is the agent's confidence or your own knowledge.
-2. Where several criteria describe the answer, the answer's candidate is the same entity on each: a candidate that meets one criterion does not support the answer on another.
+2. Where several criteria describe the same entity (the clues and the target of a multi-clue query), the answer's candidate is the same entity on each: a candidate that meets one criterion does not support it on another. When the query asks for something about that entity, the answer's candidate on those criteria is the entity the final answer depends on, and on the last criterion it is the final answer itself.
 3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units).
 
 == Output Format ==

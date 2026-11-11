@@ -133,7 +133,7 @@ def build_belief_model(
         BeliefModel, belief_llm, build_belief_updater, build_criteria_source, build_final_scorer,
     )
 
-    query_shape = DATASET_SPECS[dataset].query_shape if dataset else "single_target"
+    query_shape = DATASET_SPECS[dataset].query_shape if dataset else "multi_clue"
     if dataset is None or split is None:
         criteria_source = None
         logger.warning("No dataset split; belief disabled")

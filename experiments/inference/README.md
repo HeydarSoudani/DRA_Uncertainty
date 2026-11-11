@@ -89,10 +89,10 @@ prompt, a shared core plus one block per shape:
 
 | Shape | Datasets | Criteria |
 |---|---|---|
-| single target | BrowseComp-Plus | every clue of the target, copied verbatim (no cap) |
+| multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets c1 to c5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
 | multi-hop | deep_qa | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
-| set | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
-| report | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
+| multi-member | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
+| multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
 `max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
 trqa_validation (52) and deep_qa's FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
@@ -106,9 +106,10 @@ Rules for report criteria:
 - Every criterion reads on its own, naming its subject instead of pointing back ("it", "these").
 - Criteria are distinct: none asks for what another one asks for.
 
-Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate` or `aspect`
-(one aspect of a report topic). All clues are closed; a multi-hop query's hops before its answer are `hop`, its answer
-closed (`criteria.parsing.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a set query's
+Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate`, `aspect`
+(one aspect of a report topic) or `target`. A multi-clue query's clues and asked answer are closed, its "meets c1 to
+c<k>" criterion a target (`criteria.parsing.target_index`); a multi-hop query's hops before its answer are `hop`, its answer
+closed (`criteria.parsing.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a multi-member query's
 members are closed, its "any other member" criterion rest and its last criterion aggregate (each added by code when the
 model leaves it out); all report criteria are aspects. A closed or aggregate criterion has one answer, so its
 candidates are alternatives; the others have several answers that hold together (members, values, facts; two entities
@@ -155,7 +156,7 @@ The banks:
   `CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
 - TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_validation pool makes its own
-  (`annotations.set_row`: one criterion per member, the rest and the aggregate; members named by the page title of
+  (`annotations.multi_member_row`: one criterion per member, the rest and the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `llm_criteria` writes
   the property phrase and the aggregation (the pools' prompts, `training_pool/prompts/set_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
@@ -230,6 +231,10 @@ Code applies the reply (`BeliefState.apply`):
   not count); otherwise `no_new_support`. A criterion is judged on its own parts: a part that refers to another
   criterion is met when a passage links the candidate to a candidate of that criterion, whatever that candidate's
   status, so a change of the referenced criterion moves nothing.
+- **Target.** A multi-clue query's target criterion takes no observation (`derived_criterion`) and no candidate
+  update (`derived_update`). After each call code derives its candidates from the clues before it: a name listed on
+  every clue, at the lowest of its statuses there, with their support (shown on the clues only). A rival or a passage
+  against it on one clue lowers it there.
 - **Removal.** A candidate the reply does not name keeps its status. "removed" is taken when a passage of the call
   speaks against the candidate (`against`), or for a proposal a claim of the call rejected; else flagged and kept
   (`bad_removal`; `remove_unlisted` for a name neither listed nor proposed). Removed candidates and dropped proposals
@@ -256,8 +261,8 @@ The statuses of a candidate, lowest first: `unlikely` (-1), `possible` (1), `pro
 `certain` (4); "unknown" (level 0) is the status of a criterion without candidates. The model writes the status: it
 weighs the support (how many parts passages state, how directly, how many sources agree, whether one speaks against
 it). Each dataset's prompt holds only the definitions of the types its query shape has
-(`prompts/belief_update/criterion_statuses.txt`; single_target: one answer; multi_hop: one answer and several answers;
-multi_aspect: several answers; set: all three):
+(`prompts/belief_update/criterion_statuses.txt`; multi_clue: one answer and target; multi_hop: one answer and several
+answers; multi_aspect: several answers; multi_member: one answer, several answers and computed):
 
 | status | several answers (candidates do not compete) | one answer (candidates compete) |
 |---|---|---|
@@ -291,7 +296,9 @@ The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed 
    unknown 1/3, possible 1/2, certain 1): q_k. With no status at 0, one weak criterion lowers s_t without fixing it at
    0. The status of a one-answer candidate already counts its rivals (two tied ones are at most "possible", 0.5), so
    the candidates share nothing.
-2. s_t is the geometric mean over the criteria. The rest criterion of a set query is left out.
+2. s_t is the geometric mean over the criteria. The rest criterion of a multi-member query is left out, and so is the
+   target criterion of a multi-clue query (its statuses are the lowest of the clues', so it would count the weakest
+   clue twice).
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
 scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,

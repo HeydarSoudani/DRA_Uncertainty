@@ -14,7 +14,7 @@ match and the judge live in ``evaluation.belief.gold``, shared with the
 belief update evaluation of inference runs.
 
 Only criteria with gold answers have gold (``gold_criterion``); the rest
-criterion of a set query has none until members are masked into it (the
+criterion of a multi-member query has none until members are masked into it (the
 gold lists every member as its own criterion), so it is left out.
 
 - ``NuggetGold``: a selected candidate of a criterion is correct when it

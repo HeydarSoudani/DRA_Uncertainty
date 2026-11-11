@@ -1,12 +1,15 @@
 """Parsing of the criteria extractor's reply: the items of a malformed
-list, the kind of each criterion from the query shape, a set query's
-layout, and references to later criteria."""
+list, the kind of each criterion from the query shape, a multi-member
+query's layout, a multi-clue query's layout check, the cap, and
+references to later criteria."""
 
 import json
 import re
 from typing import Any, Dict, List, Optional
 
-from ..core.types import AGGREGATE, ASPECT, CLOSED, CRITERION_REF_RE, HOP, MULTI_ASPECT, MULTI_HOP, REST, SET
+from ..core.types import (
+    AGGREGATE, ASPECT, CLOSED, CRITERION_REF_RE, HOP, MULTI_ASPECT, MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, REST, TARGET,
+)
 
 # One complete string item of the criteria list, for output that is not
 # valid JSON (cut at the token limit, or a stray character between items).
@@ -27,7 +30,7 @@ def salvage_items(body: str) -> List[Any]:
     return objects or [json.loads(f'"{t}"') for t in _ITEM_RE.findall(body)]
 
 
-# Subject of the rest criterion of a set query ("any other member: <property>").
+# Subject of the rest criterion of a multi-member query ("any other member: <property>").
 REST_SUBJECT = "any other member"
 
 
@@ -36,15 +39,78 @@ def _is_rest(text: str) -> bool:
     return " ".join(re.findall(r"[a-z]+", subject.lower())) in (REST_SUBJECT, REST_SUBJECT + "s")
 
 
+# The target criterion of a multi-clue query: "the <type> that meets c1 to c<k>".
+TARGET_RE = re.compile(r"\bmeets\s+c1\s+to\s+c(\d+)\b", re.IGNORECASE)
+
+
+def target_index(texts: List[str]) -> Optional[int]:
+    """The position of the target criterion among multi-clue criterion
+    *texts*: the first one after at least one clue that reads "meets c1 to
+    c<k>"; None without one."""
+    return next((k for k, t in enumerate(texts) if k >= 1 and TARGET_RE.search(t)), None)
+
+
+def clue_layout(texts: List[str]) -> List[str]:
+    """What the multi-clue criterion *texts* get wrong against the layout
+    the prompt asks for (clues, the target "meets c1 to c<k>" with k the
+    number of clues, at most the asked answer after it); [] when none."""
+    at = target_index(texts)
+    if at is None:
+        return ["no target criterion (\"the <type> that meets c1 to c<k>\")"]
+    out = []
+    k = int(TARGET_RE.search(texts[at]).group(1))
+    if k != at:
+        out.append(f"the target c{at + 1} meets c1 to c{k}, but {at} clues come before it")
+    if len(texts) - at - 1 > 1:
+        out.append(f"{len(texts) - at - 1} criteria after the target c{at + 1} (at most the asked answer)")
+    return out
+
+
+def cap_chain(items: List[str], cap: int, info: Dict[str, Any]) -> List[str]:
+    """Criterion texts *items* within *cap*: the last *cap* kept (the answer
+    and the criteria closest to it, as the prompt asks), the references
+    renumbered; a reference to a left-out criterion is replaced by that
+    criterion's text in parentheses (its own references expanded likewise).
+    A cut is noted in ``info["warnings"]`` and sets ``info["over_cap"]``."""
+    if len(items) <= cap:
+        return items
+    drop = len(items) - cap
+    expanded: List[str] = []
+
+    def _ref(m: "re.Match") -> str:
+        n = int(m.group(1))
+        if 1 <= n <= drop and n <= len(expanded):
+            return f"({expanded[n - 1]})"
+        if drop < n <= len(items):
+            return f"c{n - drop}"
+        return m.group(0)
+
+    for t in items[:drop]:
+        expanded.append(CRITERION_REF_RE.sub(_ref, t))
+    kept = [CRITERION_REF_RE.sub(_ref, t) for t in items[drop:]]
+    info.setdefault("warnings", []).append(f"cap: kept the last {cap} of {len(items)} criteria, dropped "
+                                           f"{items[:drop]}")
+    info["over_cap"] = True
+    return kept
+
+
 def criterion_kinds(shape: str, texts: List[str]) -> List[str]:
-    """Kind of each criterion of a *shape* query: every clue of a single
-    target is closed; a multi-hop query's hops before its answer are hops
-    (several answers), its answer closed (``shape_kinds``); a set query's
-    list (``set_layout``) is its members (closed), the rest criterion and
-    the aggregate; every report criterion is an aspect."""
+    """Kind of each criterion of a *shape* query: a multi-clue query's
+    clues and asked answer are closed, its target ("the <type> that meets
+    c1 to c<k>", ``target_index``) a target; a multi-hop query's hops
+    before its answer are hops (several answers), its answer closed
+    (``shape_kinds``); a multi-member query's list (``member_layout``) is its
+    members (closed), the rest criterion and the aggregate; every report
+    criterion is an aspect."""
     if shape == MULTI_ASPECT:
         return [ASPECT] * len(texts)
-    if shape == SET and len(texts) >= 2:
+    if shape == MULTI_CLUE:
+        kinds = [CLOSED] * len(texts)
+        at = target_index(texts)
+        if at is not None:
+            kinds[at] = TARGET
+        return kinds
+    if shape == MULTI_MEMBER and len(texts) >= 2:
         return [CLOSED] * (len(texts) - 2) + [REST, AGGREGATE]
     return shape_kinds(shape, [CLOSED] * len(texts))
 
@@ -59,8 +125,8 @@ def shape_kinds(shape: str, kinds: List[str]) -> List[str]:
     return [HOP if kind == CLOSED and k < len(kinds) - 1 else kind for k, kind in enumerate(kinds)]
 
 
-def set_layout(items: List[str], cap: Optional[int], info: Dict[str, Any]) -> List[str]:
-    """A set query's criteria as the prompt asks: the members, one rest
+def member_layout(items: List[str], cap: Optional[int], info: Dict[str, Any]) -> List[str]:
+    """A multi-member query's criteria as the prompt asks: the members, one rest
     criterion, then the aggregate, within *cap* (at least 3; None:
     uncapped) by leaving out members.  The aggregate is the first item after the rest criterion or,
     without one, the last item when it is not "<member>: <property>".  A

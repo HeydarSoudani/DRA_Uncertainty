@@ -7,6 +7,7 @@ sets of them that training reads (``UNCLEAN_REPLY``, ``GATE_ISSUES``)."""
 ISSUE_UNKNOWN_CRITERION = "unknown_criterion"      # also a candidate update of an unknown criterion
 ISSUE_NOT_NEW_PASSAGE = "not_new_passage"          # its label is no passage of the call
 ISSUE_COMPUTED = "computed_criterion"              # a passage observation on a computed criterion
+ISSUE_DERIVED = "derived_criterion"                # an observation on a target criterion (code derives it from the clues)
 ISSUE_NO_SPAN = "no_span"                          # a passage observation without a verified span
 ISSUE_NOT_IN_TURN = "not_in_turn"                  # a reasoning observation without a span of its turn
 ISSUE_BAD_CLAIM = "bad_claim"                      # a reasoning observation without a candidate or a valid claim
@@ -15,6 +16,7 @@ ISSUE_EMPTY_CANDIDATE = "empty_candidate"          # no candidate name
 ISSUE_BAD_STATUS = "bad_status"                    # no status of the scale nor "removed", or "unknown"
 ISSUE_DUPLICATE_CANDIDATE = "duplicate_candidate"  # a second update of one candidate in the reply
 ISSUE_UNEXPECTED_CANDIDATE = "unexpected_candidate"  # a criterion without a new observation
+ISSUE_DERIVED_UPDATE = "derived_update"            # a candidate update on a target criterion (code derives it)
 ISSUE_REMOVE_UNLISTED = "remove_unlisted"          # "removed" on a name that is neither listed nor proposed
 ISSUE_BAD_REMOVAL = "bad_removal"                  # "removed" without a passage that speaks against it: kept
 ISSUE_AGAINST_ONLY = "against_only"                # a status for a name only passages against: not added (a proposal stays one)
@@ -37,7 +39,7 @@ ISSUE_UNEQUAL_TIE = "unequal_tie"                  # one-answer candidates with 
 
 # Observations that did not enter for a reason of their own (the reply
 # should not have written them).
-REJECTED_OBSERVATION = (ISSUE_COMPUTED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN, ISSUE_BAD_CLAIM)
+REJECTED_OBSERVATION = (ISSUE_COMPUTED, ISSUE_DERIVED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN, ISSUE_BAD_CLAIM)
 # A candidate update whose status code corrected (the reply's status is
 # not the one kept).
 CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT)
@@ -46,7 +48,8 @@ CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT)
 # own, a status code corrected, a reason or label that misreads the belief
 # or cites a source with no observation on the criterion, a removal code
 # did not take, a candidate update code ignored (no observation on its
-# criterion in the call, or only passages against a name not listed), or
+# criterion in the call, only passages against a name not listed, or a
+# target criterion, which code derives), or
 # a one-answer criterion whose statuses do not follow its support
 # (``certain_with_rival``, ``unequal_tie``).  ``unknown_candidate`` is not
 # among them: a candidate the reply writes in other words than its spans
@@ -55,7 +58,8 @@ CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT)
 # (harmless for the belief).
 UNCLEAN_REPLY = (*REJECTED_OBSERVATION, *CORRECTED_STATUS, ISSUE_NO_REASON, ISSUE_WRONG_PREVIOUS,
                  ISSUE_NOT_LISTED, ISSUE_BAD_REF, ISSUE_REMOVE_UNLISTED, ISSUE_BAD_REMOVAL,
-                 ISSUE_UNEXPECTED_CANDIDATE, ISSUE_AGAINST_ONLY, ISSUE_CERTAIN_WITH_RIVAL, ISSUE_UNEQUAL_TIE)
+                 ISSUE_UNEXPECTED_CANDIDATE, ISSUE_DERIVED_UPDATE, ISSUE_AGAINST_ONLY,
+                 ISSUE_CERTAIN_WITH_RIVAL, ISSUE_UNEQUAL_TIE)
 # A reply with one of these fails the format gate of training: it names
 # what the call did not show, or writes an update code cannot take.
 GATE_ISSUES = (ISSUE_UNKNOWN_CRITERION, ISSUE_NOT_NEW_PASSAGE, ISSUE_EMPTY_CANDIDATE, ISSUE_BAD_STATUS,

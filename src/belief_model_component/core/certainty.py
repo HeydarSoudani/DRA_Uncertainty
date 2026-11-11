@@ -19,9 +19,11 @@ A fixed function, nothing learned:
    scores 0), a query with many criteria (a set
    query's members) is not pushed to 0 as by a product.
 
-The rest criterion of a set query is left out (``EXCLUDED_KINDS``): it
-stands for the members nobody listed, so it has no gold and no fixed
-answer.
+Left out (``EXCLUDED_KINDS``): the rest criterion of a multi-member
+query, which stands for the members nobody listed, so it has no gold and
+no fixed answer; and the target criterion of a multi-clue query, whose
+statuses are the lowest of the clues' (``core.types.DERIVED_KINDS``), so
+counting it would count the weakest clue twice.
 
 The beliefs are read as saved (``BeliefState.belief_lists``: per
 criterion ``{id, status, selected, candidates}``), so the same code scores a
@@ -32,10 +34,10 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..text.matching import alnum
-from .types import REST, UNKNOWN, UNLIKELY, status_probability
+from .types import REST, TARGET, UNKNOWN, UNLIKELY, status_probability
 
 # Criteria left out of the certainty score.
-EXCLUDED_KINDS = (REST,)
+EXCLUDED_KINDS = (REST, TARGET)
 
 
 def geometric_mean(scores: Sequence[float]) -> float:

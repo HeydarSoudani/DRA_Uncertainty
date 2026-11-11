@@ -1,4 +1,4 @@
----single_target---
+---multi_clue---
 Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
 Criteria, with their candidates:
@@ -11,6 +11,8 @@ c2 (one answer): the painter who won the Ostra Prize in the 1920s
   "Maja Strand": possible
     + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
   removed: "Anna Holm"
+c3 (target): the painter that meets c1 to c2
+  (no candidate)
 
 The agent's final answer:
 Anna Holm was born in the port town of Vik and is a well-known winner of the Ostra Prize, so she fits both clues.
@@ -22,10 +24,46 @@ Output:
 {
   "candidates": [
     {"id": "c1", "candidate": "Anna Holm"},
-    {"id": "c2", "candidate": "Anna Holm"}
+    {"id": "c2", "candidate": "Anna Holm"},
+    {"id": "c3", "candidate": null}
   ],
-  "reason": "Anna Holm is almost certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so the belief speaks against her.",
+  "reason": "Anna Holm is almost certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so she is no candidate of the target and the belief speaks against her.",
   "final_status": "unlikely"
+}
+
+Query: A composer studied in Vienna in the 1880s and wrote an opera about a lighthouse keeper. In what year was the composer's wife born?
+
+Criteria, with their candidates:
+c1 (one answer): the composer who studied in Vienna in the 1880s
+  "Karl Vogt": probable
+    + "Karl Vogt studied composition in Vienna from 1883 to 1886" [Karl Vogt]
+  "Emil Brandt": possible
+    + "Among the students of the Vienna Conservatory in 1885 was Emil Brandt" [Vienna Conservatory]
+c2 (one answer): the composer who wrote an opera about a lighthouse keeper
+  "Karl Vogt": almost certain
+    + "Vogt's opera The Keeper of Skarv tells the story of a lighthouse keeper" [The Keeper of Skarv]
+c3 (target): the composer that meets c1 to c2
+  "Karl Vogt": probable
+c4 (one answer): the birth year of the wife of c3
+  "1871": certain
+    + "In 1890 Vogt married the singer Lena Hart (born 1871)" [Karl Vogt]
+
+The agent's final answer:
+Karl Vogt studied in Vienna and wrote The Keeper of Skarv. His wife, the singer Lena Hart, was born in 1871.
+
+Final answer:
+1871
+
+Output:
+{
+  "candidates": [
+    {"id": "c1", "candidate": "Karl Vogt"},
+    {"id": "c2", "candidate": "Karl Vogt"},
+    {"id": "c3", "candidate": "Karl Vogt"},
+    {"id": "c4", "candidate": "1871"}
+  ],
+  "reason": "The birth year 1871 is certain for the wife of Karl Vogt, but Karl Vogt is only probable as the target, which identifies the answer, since Emil Brandt also studied in Vienna in the 1880s.",
+  "final_status": "probable"
 }
 
 ---multi_hop---
@@ -64,7 +102,7 @@ Output:
   "final_status": "probable"
 }
 
----set---
+---multi_member---
 Query: What is the total length of the bridges over the river Varn that were built before 1900?
 
 Criteria, with their candidates:

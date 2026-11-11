@@ -1,0 +1,32 @@
+The response to this query is a short answer. The query describes one unnamed entity, the target, by a list of clues; the answer is the target itself or something the query asks about it.
+
+---rules---
+5. Every clue leads to one criterion. Copy it as-is from the query, only replacing each word that refers to the target (such as "it", "its" or "this institution") with the target's type. Do not summarize, rephrase, merge or split it. A clue that involves another unnamed entity (a co-author, a parent, an article) stays one criterion on the target.
+6. After the clues, write one criterion for the target: "the <type> that meets c1 to c<k>", with k the number of clues.
+7. The last criterion is the answer. When the query asks for the target itself (its name), the target's criterion is the last one: write nothing after it. When the query asks for something other than the target, such as a value about it (a date, a count) or another entity related to it (its founder, a relative), write one more criterion for it, referring to the target by its id: "the <what is asked> of c<k+1>".
+8. A time the query sets for the whole question ("as of 2023") goes in the last criterion; a time inside a clue stays in that clue.
+
+---example---
+Example query: "Tell me the name of this lighthouse based on the following clues: - it was built before 1900 - its light was automated in the 1980s - it stands on an island whose population was under 500 in 2011 - its first keeper later became a painter."
+Example output:
+{
+  "criteria": [
+    "the lighthouse that was built before 1900",
+    "the lighthouse whose light was automated in the 1980s",
+    "the lighthouse that stands on an island whose population was under 500 in 2011",
+    "the lighthouse whose first keeper later became a painter",
+    "the lighthouse that meets c1 to c4"
+  ]
+}
+
+Example query: "A composer studied in Vienna in the 1880s. He wrote an opera about a lighthouse keeper, and his brother was the mayor of a port town. In what year was the composer's wife born?"
+Example output:
+{
+  "criteria": [
+    "the composer who studied in Vienna in the 1880s",
+    "the composer who wrote an opera about a lighthouse keeper",
+    "the composer whose brother was the mayor of a port town",
+    "the composer that meets c1 to c3",
+    "the birth year of the wife of c4"
+  ]
+}

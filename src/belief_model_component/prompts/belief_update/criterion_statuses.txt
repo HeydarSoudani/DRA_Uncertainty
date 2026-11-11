@@ -16,3 +16,6 @@
 
 ---computed---
 "computed" criterion: the agent computes its answer and no passage states it. The reasoning gives its candidates and sets their belief status: how completely the agent's computation uses the answers of the criteria it is computed from.
+
+---target---
+"target" criterion: the entity that meets every clue before it. Its candidates and their belief statuses are set from the clues: a name listed on every clue is a candidate, at the lowest of its belief statuses there. It takes no observation and no candidate update of its own.

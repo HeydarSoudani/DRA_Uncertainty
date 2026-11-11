@@ -25,14 +25,14 @@ a fixed function of the statuses:
 1. each status becomes a probability $p = (\ell + 2) / 6$ from its signed level $\ell$ (unlikely 1/6, unknown 1/3,
    possible 1/2, certain 1); $q_k$ is the criterion status's $p$ (a one-answer status already counts the competing
    candidates);
-2. $s_t$ is the geometric mean of the $q_k$, the rest criterion of a set query left out.
+2. $s_t$ is the geometric mean of the $q_k$, the rest criterion of a multi-member query left out.
 
 $$
 s_t = \Big(\prod_{k \in \mathcal{C}'} q_k\Big)^{1/|\mathcal{C}'|}
 $$
 
 The geometric mean lets one weak or contradicted criterion pull the score down, but unlike a product it does not
-push a query with many criteria (a set query's members) to 0. The final score $s_T$ is compared with the
+push a query with many criteria (a multi-member query's members) to 0. The final score $s_T$ is compared with the
 correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
 (`belief_model_component/update/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
 answer is correct and writes the status of the final answer on the belief's scale, read as a probability as a
@@ -73,7 +73,7 @@ Each status has a signed level $\ell$:
 | $\ell$ | −1 | 0 | 1 | 2 | 3 | 4 |
 
 The criteria follow the query shape of the dataset: `multi_hop` for deep_qa (one criterion per entity on the chain
-to the answer, the answer last), `set` for trqa_validation (one criterion per member, "<member>: <property>",
+to the answer, the answer last), `multi_member` for trqa_validation (one criterion per member, "<member>: <property>",
 then "any other member: <property>", then the aggregation, how the answer follows from the members' values).
 Training uses the queries with the full gold annotation (InfoSeek and TRQA): per criterion its gold answers and
 gold documents.
@@ -214,7 +214,7 @@ source does not state is an empty value (`[]` or `null`), never a missing key.
 | InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | its Wikipedia page |
 | WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the answer only (final answer) | none (the URLs are the query's) |
 | FRAMES | none | | |
-| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then "any other member: <property>" (`rest`); then the aggregation, how the answer follows from the values (`aggregate`) (`set`) | the member's value (`entity_values`); rest: none; aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); rest and aggregate: none |
+| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then "any other member: <property>" (`rest`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); rest: none; aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); rest and aggregate: none |
 | TRQA wiki1 | the same | the same | the same |
 
 Every TRQA member has its own criterion, so the rest criterion has no gold in the pool: training can hide some
@@ -251,8 +251,8 @@ the `annotations` section of `stats.json`, the same in both pools (written by de
 that was not fetched gives none, so a query can fall from full to partial) and writes the rows to
 `queries/queries_all.jsonl`. The trqa_validation build writes the same rows from the intermediate info. Query row:
 `id`, `source`, `split`, `text` (the question), `answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`,
-`members` (set queries: `entity`, `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the
-members), `property` and `aggregation` (set queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind`
+`members` (multi-member queries: `entity`, `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the
+members), `property` and `aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind`
 (`closed`, `rest`, `aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer and its prompt hash
 are in `stats.json` and `criterion_texts.jsonl`, not per row). Steps 2 and 4 and the trqa_validation build count the rows per source and
 level, the criteria per kind and with their answers, documents and gold, and check the row format.
@@ -276,7 +276,7 @@ answers, documents and level come from the source (`training_pool/gold_criteria.
 The writer runs before the split, so the rows are written
 with their texts; step 2 and the trqa_validation build need `OPENROUTER_API_KEY`. `texts_ok` is true when every text
 names none of the gold answers (a name inside a longer entity name, such as Groningen in "University of Groningen",
-does not count; set queries: neither the phrase nor the aggregation names a member, a value or the final answer that
+does not count; multi-member queries: neither the phrase nor the aggregation names a member, a value or the final answer that
 the question does not name; multi-hop queries: no number or capitalized word the question does not state), or when
 the query has no criteria (FRAMES, no LLM call); false when the texts failed for good (a leak, an unstated word or an
 invalid order after one retry with them given, no text for a criterion); null when the writer call failed (an error, a reply
@@ -329,7 +329,7 @@ answer? / does the text state it?). A turn states a
 criterion's gold answer by the same match; a (turn, criterion) pair without a match, whose gold documents were
 shown before the turn, is asked of the same judge. The verdicts are cached in
 `{output_root}/{training_data}/{policy_model}/answer_gold.jsonl`; `rl.answer_judge_model: null` uses the match only.
-The rest criterion of a set query has no gold yet (the gold lists every member as its own criterion) and is not
+The rest criterion of a multi-member query has no gold yet (the gold lists every member as its own criterion) and is not
 scored.
 
 Only finished queries are episodes, as dra_inference counts them: the trajectory ends with its meta line and, in a
@@ -437,7 +437,7 @@ its $r_{\mathrm{final}}$, normalized within those $G$ replies, and the update ca
 from format, assign and cal only, so neither task is credited with the other's reply. The agent is frozen, so the documents and agent turns of every
 step are fixed. Training on the student's own states, not the teacher's, keeps it ready for its own earlier errors
 (exposure bias; DAgger, Ross et al. 2011). A call's reply budget is the inference updater's (12,288 tokens, 16,384
-for a set query).
+for a multi-member query).
 
 **Groups.** The student runs $G = 8$ chains per episode at temperature 1. A group whose chains all score alike
 gives no gradient and is replaced by new episodes, with up to two more rollouts per iteration (DAPO's dynamic
@@ -509,8 +509,8 @@ Scores are the run's `metrics.md` (the inference evaluation, `experiments/infere
 runs get it too, being dra_inference runs): Recall@N, answer accuracy, the uncertainty group (s_T against the
 correctness, with the formula and verbal-confidence baselines) and, on the pools and TRQA, the belief update group
 (what the belief does with each gold document). Phases 2 and 3 score with `scoring.py`, which shares its measures
-and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (deep_qa) or `set` (trqa_validation) prompts; a
-dataset of another query shape (browsecomp_plus: `single_target`) gives it prompts it was not trained on.
+and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (deep_qa) or `multi_member` (trqa_validation) prompts; a
+dataset of another query shape (browsecomp_plus: `multi_clue`) gives it prompts it was not trained on.
 
 ```bash
 # serve the student on a GPU the inference workers do not use

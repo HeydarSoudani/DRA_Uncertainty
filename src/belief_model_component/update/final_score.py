@@ -45,7 +45,7 @@ from .repair import complete_with_repair
 # (unlikely 1/6, possible 1/2, probable 2/3, almost certain 5/6, certain 1).
 FINAL_STATUSES = tuple(s for s in BELIEF_STATUSES if s != UNKNOWN)
 
-# Output tokens of one call (a set query has up to ~50 criteria).
+# Output tokens of one call (a multi-member query has up to ~50 criteria).
 MAX_TOKENS = 4096
 
 # Characters of the answer turn's reasoning the scorer reads (its last
@@ -134,7 +134,7 @@ class LLMFinalScorer:
     """The final scorer call: one JSON-replying LLM call, its retries and
     its errors."""
 
-    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = "single_target",
+    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = "multi_clue",
                  max_tokens: int = MAX_TOKENS, temperature: float = 0.0, parse_retries: int = 1) -> None:
         if query_shape not in FINAL_SCORE_SYSTEMS:
             raise ValueError(f"no final scorer for query shape {query_shape!r}; "
@@ -174,7 +174,7 @@ FINAL_SCORE_REPAIR = ("Your reply could not be read. Respond with ONLY a raw JSO
                       + ", ".join(f'"{t}"' for t in FINAL_STATUSES) + ".")
 
 
-def build_final_scorer(llm_client: Any, model: str = "", query_shape: str = "single_target"
+def build_final_scorer(llm_client: Any, model: str = "", query_shape: str = "multi_clue"
                        ) -> Optional[LLMFinalScorer]:
     """The final scorer on one LLM client (named *model*) for the queries
     of one shape; None for a shape without one (a report)."""

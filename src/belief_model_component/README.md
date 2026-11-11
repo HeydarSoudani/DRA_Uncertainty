@@ -159,7 +159,7 @@ belief_state_tag            # inform only, not saved (the trajectory step has it
   call.
 - `certainty`: the certainty score s_t of the belief after the step
   (`core.certainty.certainty`: the geometric mean over the criteria of their
-  status's probability, the rest criterion left out); null without criteria.
+  status's probability, the rest and target criteria left out); null without criteria.
 - `intermediate_answers`: null when not configured or failed, `[]` when the
   model gave no answer. `intermediate_answer_status` says which: `ok`,
   `no_candidate` (`[]`), `unparsed` (reply without answer format), `failed`

@@ -20,10 +20,13 @@ does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
 records the kind as ``criteria_kind``.
 
 Each criterion is closed (one fact), a hop of a multi-hop query before its
-answer (which may have several answers), or, in a report request, an
-aspect of the topic.  A multi-hop criterion names only its own hop and
-refers to hops before it by their ids ("the town of c1"), never to a
-later one (``parsing.forward_refs``).  A set query lists its members as
+answer (which may have several answers), the target of a multi-clue query
+(the entity that meets the clues before it), or, in a report request, an
+aspect of the topic.  A criterion refers to criteria before it by their
+ids ("the town of c1", "the composer that meets c1 to c3"), never to a
+later one (``parsing.forward_refs``).  A capped list keeps the answer and
+the criteria closest to it (``parsing.cap_chain``); a multi-clue list is
+checked against its layout (``parsing.clue_layout``).  A multi-member query lists its members as
 closed criteria, then a rest criterion, "any other member: <property>",
 for the members the extractor did not list, then an aggregate criterion,
 how the answer follows from the members' values, as in the gold criteria
@@ -46,9 +49,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILVER_CRITERIA
 from utils.text_utils import parse_json_object
 
-from ..core.types import MULTI_ASPECT, QUERY_SHAPES, SET, Criterion
+from ..core.types import MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Criterion
 from ..prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
-from .parsing import criterion_kinds, forward_refs, salvage_items, set_layout, shape_kinds
+from .parsing import cap_chain, clue_layout, criterion_kinds, forward_refs, member_layout, salvage_items, shape_kinds
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +84,7 @@ class CriteriaSource(ABC):
 class LLMCriteriaSource(CriteriaSource):
     """Derives the criteria of the query with one LLM call.
 
-    The dataset's query shape (single target, multi-hop, set or
+    The dataset's query shape (multi-clue, multi-hop, multi-member or
     multi-aspect) picks the prompt and the kind of each criterion; the
     model only lists the criteria, as strings.  The shape is saved in
     *info* as ``query_shape``.
@@ -90,7 +93,7 @@ class LLMCriteriaSource(CriteriaSource):
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
             ``max_criteria`` in layout.DATASET_SPECS), or None (uncapped:
-            gold criteria); at least 3 for a set query (a member, the rest
+            gold criteria); at least 3 for a multi-member query (a member, the rest
             criterion and the aggregate).  A multi-aspect query lists every
             criterion the request states and is never capped (must be None).
         model_name: Saved in the meta line and in the bank key
@@ -98,7 +101,7 @@ class LLMCriteriaSource(CriteriaSource):
             included).
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
-        query_shape: ``"single_target"``, ``"multi_hop"``, ``"set"`` or
+        query_shape: ``"multi_clue"``, ``"multi_hop"``, ``"multi_member"`` or
             ``"multi_aspect"`` (the dataset's ``query_shape`` in
             layout.DATASET_SPECS).
         kind: ``"gold"`` or ``"silver"``, the kind of the criteria it lists
@@ -113,7 +116,7 @@ class LLMCriteriaSource(CriteriaSource):
         model_name: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        query_shape: str = "single_target",
+        query_shape: str = "multi_clue",
         kind: str = SILVER_CRITERIA,
     ) -> None:
         if query_shape not in QUERY_SHAPES:
@@ -123,8 +126,8 @@ class LLMCriteriaSource(CriteriaSource):
         if query_shape == MULTI_ASPECT and max_criteria is not None:
             raise ValueError(f"max_criteria={max_criteria} for a report request; its criteria are every "
                              "criterion the request states, uncapped (max_criteria null)")
-        if query_shape == SET and max_criteria is not None and max_criteria < 3:
-            raise ValueError(f"max_criteria={max_criteria} for a set query; it needs at least 3 "
+        if query_shape == MULTI_MEMBER and max_criteria is not None and max_criteria < 3:
+            raise ValueError(f"max_criteria={max_criteria} for a multi-member query; it needs at least 3 "
                              "(a member, the rest criterion and the aggregate)")
         self._shape = query_shape
         self.kind = kind
@@ -193,10 +196,16 @@ class LLMCriteriaSource(CriteriaSource):
             info["errors"].append("parse: empty criteria list")
             info["raw"] = raw
 
-        if self._shape == SET:
-            items = set_layout(items, self._max_criteria, info)
+        if self._shape == MULTI_MEMBER:
+            items = member_layout(items, self._max_criteria, info)
         elif self._max_criteria is not None:
-            items = items[:self._max_criteria]
+            items = cap_chain(items, self._max_criteria, info)
+        if self._shape == MULTI_CLUE and items:
+            layout = clue_layout(items)
+            if layout:
+                # Asked once more (``BankedCriteriaSource``), then kept.
+                info["warnings"] = info.get("warnings", []) + [f"layout: {'; '.join(layout)}"]
+                info["bad_layout"] = True
         criteria = [
             Criterion(id=f"c{k + 1}", text=t, kind=kind)
             for k, (t, kind) in enumerate(zip(items, criterion_kinds(self._shape, items)))
@@ -309,11 +318,12 @@ class BankedCriteriaSource(CriteriaSource):
             return self._banked(rec)
 
         # A salvaged reply is asked once more; salvaged again, the extraction
-        # fails.  A reply whose criteria refer to a later one is asked once
-        # more too, then kept (with its warning).
+        # fails.  A reply whose criteria refer to a later one, exceed the cap
+        # or (multi-clue) miss the layout is asked once more too, then kept
+        # (with its warning).
         for _ in range(2):
             criteria, info = self._inner.get(query_id, query)
-            if not info.get("salvaged") and not info.get("bad_order"):
+            if not any(info.get(flag) for flag in ("salvaged", "bad_order", "over_cap", "bad_layout")):
                 break
         if info.get("salvaged"):
             info = {**info, "errors": info.get("errors", []) + ["parse: truncated reply twice, not banked"]}

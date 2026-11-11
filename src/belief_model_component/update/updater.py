@@ -33,7 +33,7 @@ from utils.text_utils import MAX_PASSAGE_CHARS, cut_passage, parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import (
-    DOC, QUERY_SHAPES, SET, SINGLE_TARGET, THINK, CandidateUpdate, Observation, criterion_id, parse_claim,
+    DOC, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, CandidateUpdate, Observation, criterion_id, parse_claim,
 )
 from ..prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER_TEMPLATE, NO_TEXT, PASSAGE_TEMPLATE, TURN_TEMPLATE
 from ..text.matching import alnum_index, squash
@@ -43,11 +43,11 @@ from .repair import complete_with_repair
 
 logger = logging.getLogger(__name__)
 
-# Output tokens of one call; a set query (up to ~50 member criteria, each
+# Output tokens of one call; a multi-member query (up to ~50 member criteria, each
 # with its candidates) gets more, since a reply cut at the limit cannot be
 # parsed and the step's update is lost.
 DEFAULT_MAX_TOKENS = 12288
-SET_MAX_TOKENS = 16384
+MULTI_MEMBER_MAX_TOKENS = 16384
 
 # The three lists of a reply, in order.
 REPLY_KEYS = ("reasoning_observations", "passage_observations", "candidates")
@@ -70,7 +70,7 @@ class LLMBeliefUpdater:
     """The belief update call: one JSON-replying LLM call per step, its
     retries and its errors."""
 
-    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = SINGLE_TARGET,
+    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = MULTI_CLUE,
                  max_passage_chars: Optional[int] = MAX_PASSAGE_CHARS,
                  max_tokens: int = DEFAULT_MAX_TOKENS, temperature: float = 0.0, parse_retries: int = 1) -> None:
         if query_shape not in QUERY_SHAPES:
@@ -181,7 +181,7 @@ UPDATE_REPAIR = ("Your reply could not be read. Respond with ONLY a raw JSON obj
                  + ", ".join(f'"{k}"' for k in REPLY_KEYS) + ", in this order.")
 
 
-def build_belief_updater(llm_client: Any, model: str = "", query_shape: str = SINGLE_TARGET,
+def build_belief_updater(llm_client: Any, model: str = "", query_shape: str = MULTI_CLUE,
                          max_passage_chars: Optional[int] = MAX_PASSAGE_CHARS) -> LLMBeliefUpdater:
     """Build the belief updater on one LLM client (named *model*) for the
     queries of one shape.  A document is cut at *max_passage_chars*, the
@@ -191,5 +191,5 @@ def build_belief_updater(llm_client: Any, model: str = "", query_shape: str = SI
     return LLMBeliefUpdater(
         llm_client, model_name=model, query_shape=query_shape,
         max_passage_chars=max_passage_chars,
-        max_tokens=SET_MAX_TOKENS if query_shape == SET else DEFAULT_MAX_TOKENS,
+        max_tokens=MULTI_MEMBER_MAX_TOKENS if query_shape == MULTI_MEMBER else DEFAULT_MAX_TOKENS,
     )

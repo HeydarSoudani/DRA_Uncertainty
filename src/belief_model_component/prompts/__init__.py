@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Dict
 
-from ..core.types import MULTI_ASPECT, MULTI_HOP, QUERY_SHAPES, SET, SINGLE_TARGET
+from ..core.types import MULTI_ASPECT, MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, QUERY_SHAPES
 from .user_prompts import (
     BELIEF_UPDATE_USER_TEMPLATE,
     FINAL_SCORE_USER_TEMPLATE,
@@ -69,12 +69,13 @@ CRITERION_SHAPES = {k: v for k, v in _sections("belief_update/criterion_shapes.t
 # and the criterion types each query shape has (``criteria.parsing.criterion_kinds``):
 # closed criteria are "one answer", hops (a multi-hop query's criteria
 # before its answer), rest and aspect criteria "several answers", the
-# aggregate of a set query "computed".
+# aggregate of a multi-member query "computed", the target of a multi-clue
+# query "target".
 CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/criterion_statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
-    SINGLE_TARGET: ("one_answer",),
+    MULTI_CLUE: ("one_answer", "target"),
     MULTI_HOP: ("one_answer", "several_answers"),
-    SET: ("one_answer", "several_answers", "computed"),
+    MULTI_MEMBER: ("one_answer", "several_answers", "computed"),
     MULTI_ASPECT: ("several_answers",),
 }
 

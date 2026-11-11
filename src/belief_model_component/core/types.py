@@ -86,21 +86,25 @@ def status_probability(status: str) -> float:
 # Criterion kinds: a closed criterion is one fact with one answer; a hop is
 # an entity on the chain of a multi-hop query before its answer, which may
 # have several answers (two entities can both fit the description and lead
-# on to the same next hop); the rest criterion of a set query ("any other
+# on to the same next hop); the rest criterion of a multi-member query ("any other
 # member: <property>") stands for the members the extractor did not list;
-# an aggregate criterion of a set query is how its answer follows from the
+# an aggregate criterion of a multi-member query is how its answer follows from the
 # members' values (computed, no document states it); an aspect criterion is
-# one aspect of a report topic, whose answers are the facts on it.
+# one aspect of a report topic, whose answers are the facts on it; the
+# target criterion of a multi-clue query ("the composer that meets c1 to
+# c3") is the entity every clue before it describes, its candidates derived
+# from theirs (``DERIVED_KINDS``).
 CLOSED = "closed"
 HOP = "hop"
 REST = "rest"
 AGGREGATE = "aggregate"
 ASPECT = "aspect"
+TARGET = "target"
 
 # Exclusive kinds have one correct answer, so the values of such a
 # criterion are alternatives; the values of the other (cumulative) kinds
 # are answers that hold together (members, values, facts).
-EXCLUSIVE_KINDS = (CLOSED, AGGREGATE)
+EXCLUSIVE_KINDS = (CLOSED, AGGREGATE, TARGET)
 # Kinds whose candidates are names or figures a source writes out (checked
 # against the spans and titles of the criterion's passages; a rest
 # criterion's "<member>: <value>" each part).  An aggregate is computed,
@@ -110,6 +114,11 @@ NAMED_KINDS = (CLOSED, HOP, REST)
 # belief update takes no document observation on them, so their values
 # rest on the agent's turns only.
 NO_DOC_KINDS = (AGGREGATE,)
+# Kinds whose candidates code derives from other criteria, never the belief
+# update (``BeliefState._derive_targets``): a target's candidates are the
+# names listed on every clue before it, each at the lowest of its statuses
+# there, with their support.
+DERIVED_KINDS = (TARGET,)
 
 
 def exclusive(kind: str) -> bool:
@@ -117,16 +126,17 @@ def exclusive(kind: str) -> bool:
     return kind in EXCLUSIVE_KINDS
 
 
-# Query shapes (layout.DATASET_SPECS): one entity or value described by clues,
+# Query shapes (layout.DATASET_SPECS): one entity (the target) described by a
+# list of clues, the answer the target or something asked about it,
 # one entity reached through a chain of other entities (hops), a value
 # computed over every member of a set, or a report on several aspects of a
 # topic.  The shape picks the criteria-extraction prompt and the kind of each
 # criterion; the extractor never chooses either.
-SINGLE_TARGET = "single_target"
+MULTI_CLUE = "multi_clue"
 MULTI_HOP = "multi_hop"
-SET = "set"
+MULTI_MEMBER = "multi_member"
 MULTI_ASPECT = "multi_aspect"
-QUERY_SHAPES = (SINGLE_TARGET, MULTI_HOP, SET, MULTI_ASPECT)
+QUERY_SHAPES = (MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, MULTI_ASPECT)
 
 
 # A reference to another criterion in a criterion's text ("the town of c1").

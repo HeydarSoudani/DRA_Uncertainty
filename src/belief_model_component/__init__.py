@@ -25,12 +25,14 @@ from .core.types import (
     AGGREGATE,
     BELIEF_STATUSES,
     CLOSED,
+    DERIVED_KINDS,
     HOP,
     MULTI_ASPECT,
     NO_DOC_KINDS,
     REMOVED,
     REST,
     STATUS_LEVEL,
+    TARGET,
     UNKNOWN,
     Candidate,
     Criterion,
@@ -73,8 +75,8 @@ from .belief_model import BeliefModel
 
 __all__ = [
     # core
-    "AGGREGATE", "BELIEF_STATUSES", "CLOSED", "HOP", "MULTI_ASPECT", "NO_DOC_KINDS",
-    "REMOVED", "REST", "STATUS_LEVEL", "UNKNOWN",
+    "AGGREGATE", "BELIEF_STATUSES", "CLOSED", "DERIVED_KINDS", "HOP", "MULTI_ASPECT", "NO_DOC_KINDS",
+    "REMOVED", "REST", "STATUS_LEVEL", "TARGET", "UNKNOWN",
     "Candidate", "Criterion", "Observation", "Support",
     "exclusive", "status_probability",
     "GATE_ISSUES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",

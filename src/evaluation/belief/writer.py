@@ -67,8 +67,9 @@ The fields are described in ``belief_model_component/README.md``
 (``BeliefState.apply``: the issue codes).  A criterion's ``kind`` is
 ``closed`` (one fact with one answer), ``hop`` (a multi-hop query's
 entity before its answer, which may have several answers), ``rest`` (the members of a set the
-extractor did not list), ``aggregate`` (how a set query's answer follows
-from the members' values) or ``aspect`` (one aspect of a report topic).  A
+extractor did not list), ``aggregate`` (how a multi-member query's answer follows
+from the members' values), ``aspect`` (one aspect of a report topic) or
+``target`` (a multi-clue query's entity that meets every clue).  A
 step line is the iteration's update plus the light state: ``beliefs``
 is every criterion's belief after the step, ``updates`` the reply's
 candidate updates with their reasons, ``observations`` the
@@ -80,7 +81,16 @@ trajectory md (``belief_model_component.views.log_view``).
 
 Added within schema 42 (no new version, so earlier runs stay readable):
 the meta line's ``tokens``, the belief update and final scorer tokens of
-the sample (null when not counted; absent in earlier files).
+the sample (null when not counted; absent in earlier files).  A multi-clue
+query (BrowseComp-Plus, shape renamed from single_target; set renamed
+multi_member) lists its clues, then a target criterion ("the <type> that
+meets c1 to c<k>", kind ``target``), then the asked answer when it is not
+the target.  The target takes no observation or update (issues
+``derived_criterion``, ``derived_update``); its candidates are derived
+after each call (the names listed on every clue, at the lowest of their
+statuses there, with their support), and it is left out of s_t and
+``certainty_answer_formula``.  Only multi-clue files change; earlier
+BrowseComp-Plus files have no target criterion.
 
 schema_version 40 (was 39): a proposal records the step it was proposed
 in (``added_step``; ``step`` is its latest claim's), so a dropped
