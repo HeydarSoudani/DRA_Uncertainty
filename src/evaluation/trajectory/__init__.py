@@ -1,6 +1,6 @@
-"""Trajectory evaluation (the ``trajectory`` group of ``summary.json``).
+"""Trajectory evaluation (the ``trajectory`` group of the run's ``metrics.md``).
 
-* :class:`TrajectoryEvaluator`: step, search, document and token statistics.
+* :class:`TrajectoryEvaluator`: per query searches, forced answer and agent tokens.
 * :func:`save_trajectory`: the per-query ``trajectory/{query_id}.jsonl``.
 """
 

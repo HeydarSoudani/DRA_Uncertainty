@@ -9,14 +9,14 @@ belief must equal the saved one, else the query is left out), then s_T is
 computed four ways against the correctness y of the agent's answer
 (``accuracy.jsonl``):
 
-- ``scorer``: the final scorer (``belief_model_component.final_score``)
+- ``scorer``: the final scorer (``belief_model_component.update.final_score``)
   on b_{T-1} and the answer turn, as at inference;
 - ``scorer_no_belief``: the same prompt with the criteria only (no
   candidate, support, proposal or removed name): the query and the answer;
 - ``formula``: the fixed function of the statuses of b_{T-1}
-  (``certainty.certainty``);
+  (``core.certainty.certainty``);
 - ``answer_formula``: its form anchored on the scorer's answer's candidates
-  (``certainty.answer_certainty``).
+  (``core.certainty.answer_certainty``).
 
 Measures per variant (the queries every variant scored): AUROC, Kendall's
 tau-b, Brier score and ECE (10 bins), as in the belief model training
@@ -50,13 +50,13 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import numpy as np  # noqa: E402
 
-from belief_model_component import BeliefUpdateSignal, Criterion, build_belief_updater, build_final_scorer  # noqa: E402
-from belief_model_component.certainty import answer_certainty, certainty  # noqa: E402
-from belief_model_component.criteria import BeliefState  # noqa: E402
-from belief_model_component.criteria_init import belief_llm  # noqa: E402
-from belief_model_training.runs import passage_chars, read_correctness  # noqa: E402
+from belief_model_component import (  # noqa: E402
+    BeliefState, BeliefUpdateSignal, Criterion, answer_certainty, belief_llm, build_belief_updater,
+    build_final_scorer, certainty,
+)
+from belief_model_training.runs import read_correctness  # noqa: E402
 from belief_model_training.scoring import _final_measures  # noqa: E402
-from evaluation.belief.writer import _clean  # noqa: E402
+from evaluation.belief import clean_record, passage_chars  # noqa: E402
 from indexing_corpus_dataset.doc_lookup import CorpusLookup  # noqa: E402
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path  # noqa: E402
 from utils.io_utils import read_jsonl  # noqa: E402
@@ -81,7 +81,7 @@ class _SavedReplies:
 
 
 def _canonical(value: Any) -> str:
-    return json.dumps(_clean(value), sort_keys=True, ensure_ascii=False)
+    return json.dumps(clean_record(value), sort_keys=True, ensure_ascii=False)
 
 
 def replay_belief(lines: List[Dict[str, Any]], shape: str, max_chars: Optional[int],
@@ -98,7 +98,7 @@ def replay_belief(lines: List[Dict[str, Any]], shape: str, max_chars: Optional[i
         if r.get("called"):
             llm.replies.append(r.get("reply"))
         docs = [{"doc_id": d["doc_id"], "relevant_text": texts.get(d["doc_id"], "")} for d in r.get("docs") or []]
-        out = signal.score(docs, r["iteration"], r.get("agent_turn"))
+        out = signal.step(docs, r["iteration"], r.get("agent_turn"))
         if _canonical(out["beliefs"]) != _canonical(r.get("beliefs")):
             raise ValueError(f"iteration {r['iteration']}: replayed beliefs differ from the saved ones")
     return signal.state
@@ -189,10 +189,10 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(out_dir / "scores.jsonl", "w", encoding="utf-8") as f:
         for r in rows:
-            f.write(json.dumps(_clean(r), ensure_ascii=False) + "\n")
+            f.write(json.dumps(clean_record(r), ensure_ascii=False) + "\n")
     result = summary(rows)
-    (out_dir / "summary.json").write_text(json.dumps(_clean(result), indent=2) + "\n")
-    print(json.dumps(_clean(result), indent=2))
+    (out_dir / "summary.json").write_text(json.dumps(clean_record(result), indent=2) + "\n")
+    print(json.dumps(clean_record(result), indent=2))
 
 
 if __name__ == "__main__":

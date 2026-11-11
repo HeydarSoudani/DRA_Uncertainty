@@ -9,7 +9,7 @@ answer-anchored form (``answer_certainty``).
 A fixed function, nothing learned:
 
 1. per criterion a score q_k: the status of the criterion (its highest
-   candidate) as a probability (``types.status_probability``: (level + 2)
+   candidate) as a probability (``core.types.status_probability``: (level + 2)
    / 6, unlikely 1/6, unknown 1/3, possible 1/2, certain 1).  The status of
    a candidate of a one-answer criterion already counts its rivals (two
    tied candidates are each at most "possible"), so the score needs no
@@ -31,7 +31,8 @@ live belief and a saved one.
 import math
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .types import REST, UNKNOWN, UNLIKELY, alnum, status_probability
+from ..text.matching import alnum
+from .types import REST, UNKNOWN, UNLIKELY, status_probability
 
 # Criteria left out of the certainty score.
 EXCLUDED_KINDS = (REST,)

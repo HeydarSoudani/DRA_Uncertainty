@@ -1,19 +1,19 @@
-"""Retrieval evaluation (the ``retrieval`` group of ``summary.json``).
+"""Retrieval evaluation (the ``retrieval`` group of the run's ``metrics.md``).
 
-Three document levels share one base class and metric set:
+Three document levels share one base class:
 
-* :class:`SurfacedDocEvaluator`: all docs the retriever returned per step,
-  scored per fusion method by :func:`.fusion.run_fusion_eval`.
-* :class:`SeenDocEvaluator`: docs actually passed to the agent/LLM.
+* :class:`SurfacedDocEvaluator`: all docs the retriever returned per step
+  (saved only).
+* :class:`SeenDocEvaluator`: docs actually passed to the agent/LLM, scored
+  per query (Recall@N, Precision@N, N = the docs seen).
 * :class:`CitedDocEvaluator`: docs cited by the final report
-  (:mod:`.citations`).
+  (:mod:`.citations`; saved only).
 
 Each class also writes its per-query ``retrieval/{level}/{query_id}.trec``.
 """
 
 from .base import BaseDocRetrievalEvaluator
 from .cited import CitedDocEvaluator
-from .metrics import compute_trec_metrics, evaluate_results, metrics_at_n
 from .seen import SeenDocEvaluator
 from .surfaced import SurfacedDocEvaluator
 
@@ -22,7 +22,4 @@ __all__ = [
     "SurfacedDocEvaluator",
     "SeenDocEvaluator",
     "CitedDocEvaluator",
-    "compute_trec_metrics",
-    "evaluate_results",
-    "metrics_at_n",
 ]

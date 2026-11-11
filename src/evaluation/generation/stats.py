@@ -1,60 +1,16 @@
-"""Surface statistics of the generations, and their per-query files.
+"""The per-query generation file ``generation/{query_id}.md``.
 
-Reads ``result["generation"]`` (the report or short answer) of the unified
-result format ``{query_id: {"generation": str, "citation_to_doc_id": {...}?}}``.
+The generation (the report or short answer, with its References block) is
+saved as is; it is scored by the answer evaluators (``evaluation.answer``),
+not here.
 """
 
-import re
 from pathlib import Path
-from typing import Any, Dict, List
-
-from ..common import mean_or_none
-from ..judge import strip_references
-
-
-def _count_words(text: str) -> int:
-    return len(text.split()) if text else 0
-
-
-def _count_citations(text: str) -> int:
-    """Count citation markers of the form [N] in the text, not in its
-    appended References block (whose ``[N] doc_id`` lines are not citations)."""
-    return len(re.findall(r"\[\d+\]", strip_references(text)))
+from typing import Any, Dict
 
 
 class GenerationEvaluator:
-    """Length, word and citation statistics of the generations.
-
-    Usage::
-
-        evaluator = GenerationEvaluator()
-        metrics = evaluator.evaluate(results)
-    """
-
-    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """``num_queries``, ``avg_generation_length`` (chars),
-        ``avg_generation_words`` and, when any generation cites,
-        ``avg_citations`` (over the generations that cite or carry a
-        citation map)."""
-        char_lengths: List[int] = []
-        word_counts: List[int] = []
-        citation_counts: List[int] = []
-        for result in results.values():
-            generation = result.get("generation", "")
-            char_lengths.append(len(generation))
-            word_counts.append(_count_words(generation))
-            n_cit = _count_citations(generation)
-            if n_cit > 0 or result.get("citation_to_doc_id"):
-                citation_counts.append(n_cit)
-
-        metrics: Dict[str, Any] = {
-            "num_queries": len(results),
-            "avg_generation_length": mean_or_none(char_lengths) or 0.0,
-            "avg_generation_words": mean_or_none(word_counts) or 0.0,
-        }
-        if citation_counts:
-            metrics["avg_citations"] = mean_or_none(citation_counts)
-        return metrics
+    """Writer of the per-query generation file."""
 
     @staticmethod
     def save_item(query_id: str, result: Dict[str, Any], output_dir) -> None:

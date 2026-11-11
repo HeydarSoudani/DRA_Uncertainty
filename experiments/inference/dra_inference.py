@@ -58,7 +58,7 @@ warnings.filterwarnings("ignore", message=".*AttentionMaskConverter.*")
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
-from indexing_corpus_dataset.dataset_loaders import graded_qrels as to_graded_qrels, load_qrels, load_split, resolve_split_id
+from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
 from indexing_corpus_dataset.layout import DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_run_tag
 
 from deep_research_agents.agents import ALL_AGENTS
@@ -91,7 +91,6 @@ from utils.io_utils import (
     update_run_config_evaluation,
 )
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results
-from evaluation.retrieval.fusion import run_fusion_eval
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inference.yaml")
@@ -110,7 +109,6 @@ class RunPlan:
     queries: Dict[str, str]         # the queries still to run (resume and --limit applied)
     all_questions: Dict[str, str]   # every query of the split, for accuracy evaluation
     qrels: Dict[str, Dict[str, int]]         # at min_relevance_score
-    graded_qrels: Dict[str, Dict[str, int]]  # every official level with its gain
     answers: Dict[str, str]
     run_dir: str
 
@@ -156,10 +154,8 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
         query_key = DATASET_SPECS[dataset].query_key
 
     # ==================== Load Dataset ====================
-    # The qrels are read once, with every grade: GradedRecall@N and NDCG use
-    # every official level with its gain; the other metrics and the belief
-    # model use the grades at min_relevance_score.  Only queries with a
-    # relevant doc are run.
+    # The qrels are read once; the evaluation and the belief model use the
+    # grades at min_relevance_score.  Only queries with a relevant doc are run.
     queries, all_qrels, answers = load_split(data_path, file_data_set, query_key=query_key)
     if qrels_data_path != data_path:
         all_qrels = load_qrels(qrels_data_path, file_data_set)
@@ -170,7 +166,6 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
         if kept:
             qrels[qid] = kept
     queries = {qid: q for qid, q in queries.items() if qid in qrels}
-    graded_qrels = to_graded_qrels(all_qrels, DATASET_SPECS[dataset].relevance_gains)
     if answers:
         print(f"Loaded {len(answers)} ground-truth answers (accuracy evaluation available)")
 
@@ -230,7 +225,7 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
 
     return RunPlan(
         dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
-        all_questions=all_questions, qrels=qrels, graded_qrels=graded_qrels, answers=answers,
+        all_questions=all_questions, qrels=qrels, answers=answers,
         run_dir=run_dir,
     )
 
@@ -258,7 +253,7 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
     eval_only = kwargs["eval_only"]
 
     evaluators = build_evaluators(plan.qrels, kwargs, answers=answers, questions=plan.all_questions,
-                                  dataset=dataset, graded_qrels=plan.graded_qrels,
+                                  dataset=dataset,
                                   data_path=data_path, split=plan.split)
 
     if not eval_only and plan.queries:
@@ -267,7 +262,7 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
     # ==================== Read the run back from disk ====================
     # Every query of the run (this batch and earlier ones) is evaluated from
     # its saved files, at the end of a run as with --eval-only, so both write
-    # the same summary.json.
+    # the same metrics.md and per_query.csv.
     finished, unfinished = scan_queries(run_dir, require_belief=belief_mode != "off")
     if unfinished:
         print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl"
@@ -282,17 +277,10 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
         print(f"Could not load any results from {run_dir}.")
         return
 
-    # ==================== Multi-fusion evaluation ====================
-    # Fusion runs first so its per-method surfaced-doc metrics can be folded
-    # into the single summary.json written by evaluate_and_save.
-    fusion_metrics = {}
-    if results:
-        fusion_metrics = run_fusion_eval(results, plan.qrels, kwargs, run_dir, gain_qrels=plan.graded_qrels)
-
     # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE reports)
     # call the OpenRouter-hosted judge directly and reuse the verdicts saved in
     # the run directory; no local server to start.
-    evaluate_and_save(results, evaluators, run_dir, fusion_metrics=fusion_metrics)
+    evaluate_and_save(results, evaluators, run_dir, num_unfinished=len(unfinished))
 
     # ==================== Final status ==========================================
     print(f"\n{'=' * 80}")
@@ -314,7 +302,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
         worker_config["criteria_source"] = kwargs["criteria_source"]
 
     # ==================== Criteria, made and banked before the workers start ====================
-    # The belief model's criteria source (criteria_init); its workers then
+    # The belief model's criteria source (criteria.factory); its workers then
     # read every query's criteria from the bank.  After the vLLM servers are
     # up: a vllm/ belief model may be served next to the agent.
     if belief_mode != "off":
@@ -625,7 +613,7 @@ def _parse_args():
     # ── Run-control flags ───────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (generation, trajectory, seen/cited docs, fusion; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME) and writes the same summary.json as the run itself. Judge verdicts are reused from accuracy.jsonl and report_eval/, so an unchanged run makes no LLM call.")
+    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (seen-doc retrieval; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus and deep_qa, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; with belief files, the uncertainty and belief update evaluations; trajectory) and writes the same metrics.md and per_query.csv as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and belief_eval/, so an unchanged run makes no LLM call.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -695,8 +683,6 @@ def main():
         kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus, verbose, gpu_ids=gpu_ids)
         # ── Deep-research-pipeline-specific kwargs ────────────────────────
         kwargs.update({
-            "fusion_k": args.fusion_k,
-            "fusion_methods": args.fusion_methods,
             "eval_only": args.eval_only,
             "vllm_manager": vllm_manager,
             "total_gpus_on_machine": total_gpus_on_machine,
@@ -819,8 +805,7 @@ if __name__ == "__main__":
 #     ├── retrieval/
 #     │   ├── surfaced/{qid}.trec   surfaced-doc TREC (raw retriever output, col 6 = iter_N)
 #     │   ├── seen/{qid}.trec       seen-doc TREC (docs shown to the LLM)
-#     │   ├── cited/{qid}.trec      cited-doc TREC (docs cited by the LLM)
-#     │   └── fusion_{method}.trec  deduped fusion ranking, one aggregate over all queries
+#     │   └── cited/{qid}.trec      cited-doc TREC (docs cited by the LLM)
 #     ├── generation/{qid}.md   the final generation (with its References section)
 #     ├── belief/{qid}.jsonl    belief-model signals (belief on only): meta line + one line
 #     │                         per search iteration (evaluation.belief.writer)
@@ -831,15 +816,17 @@ if __name__ == "__main__":
 #     │   └── {qid}.md          the same trajectory, human-readable, written live
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
-#     └── summary.json          grouped: num_queries, retrieval{seen,cited,fusion},
-#                                        generation{correctness|nuggets,stats},
-#                                        trajectory
+#     ├── belief_eval/          belief update evaluation: events.csv, judge_cache.jsonl
+#     ├── metrics.md            one table: group | metric | value | ci_low | ci_high | n
+#     │                         (retrieval, generation, uncertainty, belief, trajectory)
+#     └── per_query.csv         every per-query value of every group
 #
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
 #   CUDA_VISIBLE_DEVICES=5,6 python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
 #   CUDA_VISIBLE_DEVICES=0,1,2 python experiments/inference/dra_inference.py --dataset neuclir --limit 1
+#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
 #   python experiments/inference/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
 #   python experiments/inference/dra_inference.py --num-gpus 4 --quiet --limit 9
 #   python experiments/inference/dra_inference.py --limit 1

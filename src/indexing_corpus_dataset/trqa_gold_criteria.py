@@ -31,8 +31,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from belief_model_component.criteria import BANK_ONLY, FINAL, GOLD_CRITERIA_MODEL, CriteriaSource
-from belief_model_component.types import Criterion
+from belief_model_component import BANK_ONLY, FINAL, GOLD_CRITERIA_MODEL, CriteriaSource, Criterion
 from utils.io_utils import iter_jsonl
 
 from .doc_lookup import CorpusLookup
@@ -86,7 +85,7 @@ class TRQAGoldCriteria(CriteriaSource):
     Args:
         split: TRQA split id.
         writer: LLM that writes the property phrase and the aggregation;
-            in the bank key (``criteria_init.bank_model_id``: a served
+            in the bank key (``criteria.factory.bank_model_id``: a served
             checkpoint's path included).
         llm_client: A client of *writer* (``complete(messages, **kwargs)``);
             None: an API client is created at the first call.

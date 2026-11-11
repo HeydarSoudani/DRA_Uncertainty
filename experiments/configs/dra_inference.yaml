@@ -65,12 +65,7 @@ criteria_source: gold              # gold | silver. Effective only on TRQA and t
 add_intermediate_answer: false      # Ask the agent for an intermediate answer after every search iteration (one extra LLM call per step; qa datasets only, never for report datasets)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
-k_values: [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000]  # K values for retrieval metrics
-interleaving_window: 3          # Block size for interleaving fusion
-rrf_k: 60                       # K parameter for reciprocal rank fusion
-fusion_k: 100                   # Only first K docs per list passed to fusion method
-fusion_methods: ["interleaving"]  # Subset of aggregation fusion methods to evaluate
-judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus accuracy and the Auto-ARGUE report evaluation of NeuCLIR / RAGTIME (OpenRouter; needs OPENROUTER_API_KEY). TRQA uses rule-based numeric match (no judge).
+judge_model: "openrouter/qwen/qwen3-32b"  # LLM-as-judge for BrowseComp-Plus and deep_qa accuracy, the Auto-ARGUE report evaluation of NeuCLIR / RAGTIME and the belief update evaluation's candidate check (a candidate the string match does not decide) (OpenRouter; needs OPENROUTER_API_KEY). TRQA accuracy uses rule-based numeric match (no judge).
 
 # ── Execution & output ───────────────────────────────────────────────────────
 output: null                    # Root dir for results; null = $DRA_OUTPUT_ROOT (layout.OUTPUT_ROOT, default run_outputs/)

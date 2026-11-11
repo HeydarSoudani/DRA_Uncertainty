@@ -47,13 +47,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from evaluation.metrics import mean_or_none
+
 from .config import RunPaths, TrainingConfig
 from .env import Chain, EpisodeSampler, run_chains
 from .episodes import DocumentStore, Episode
 from .rewards import TERMS, Reward
 from .rollout import VLLMRolloutEngine
 from .runs import check_same_settings, load_episodes, nugget_gold
-from .scoring import chain_values, mean_or_none, measures
+from .scoring import chain_values, measures
 from .sft import load_processor
 from .trainer import BeliefPPOTrainer, group_advantages
 

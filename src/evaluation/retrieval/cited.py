@@ -2,7 +2,7 @@
 
 "Cited" documents are those referenced by the final report, resolved by
 :func:`evaluation.retrieval.citations.resolve_cited_docs`.  They form a single
-ranked list (no per-step fusion).  Queries with no cited docs are skipped.
+ranked list.  Only saved (``retrieval/cited/{qid}.trec``), not scored.
 """
 
 from pathlib import Path
@@ -13,15 +13,8 @@ from .citations import resolve_cited_docs
 
 
 class CitedDocEvaluator(BaseDocRetrievalEvaluator):
-    """Retrieval quality restricted to the documents cited by the report.
-
-    Usage::
-
-        evaluator = CitedDocEvaluator(qrels=qrels, k_values=[1, 5, 10, 100])
-        metrics = evaluator.evaluate(results)
-    """
-
-    emit_metrics_at_n = True
+    """The documents cited by the report: the per-query TREC file
+    (:meth:`save_item`)."""
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:

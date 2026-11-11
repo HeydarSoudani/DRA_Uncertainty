@@ -4,7 +4,7 @@ An episode is one query of an inference run (``experiments/inference/dra_inferen
 on a training pool split, in ``monitor`` or ``off`` mode: the query and per
 search iteration the documents the agent was shown, in order, and the
 agent's turn of the iteration (its reasoning,
-``agent_turn.agent_turn_text``), then its answer turn
+``text.agent_turn.agent_turn_text``), then its answer turn
 (``trajectory/{qid}.jsonl`` and ``generation/{qid}.md``, ``read_episode``).  Its steps are numbered as
 the belief model numbers them (``iteration``, from 1, one per search
 iteration); ``agent_iteration`` is the agent's own counter, the key that
@@ -51,17 +51,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from belief_model_component import BeliefUpdateSignal, Criterion, build_belief_updater, build_final_scorer
-from belief_model_component.final_score import check_issues, parse_final_score
-from belief_model_component.agent_turn import agent_turn_text, answer_turn
-from belief_model_component.belief_model import unique_docs
-from belief_model_component.signals import CallPlan
-from belief_model_component.updater import Passage
+from belief_model_component import (
+    BeliefUpdateSignal, CallPlan, Criterion, Passage, agent_turn_text, answer_turn, build_belief_updater,
+    build_final_scorer, check_issues, parse_final_score,
+)
 from evaluation.belief import SCHEMA_VERSION
-from evaluation.belief.writer import _clean
+from evaluation.belief import clean_record
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path
 from utils.io_utils import read_jsonl
+from utils.text_utils import unique_docs
 
 from .config import Split
 
@@ -113,7 +112,7 @@ class Episode:
     steps: List[EpisodeStep]
     run_dir: str
     # Characters of one document the run's belief update read
-    # (``runs.passage_chars``); None: whole documents.
+    # (``evaluation.belief.passage_chars``); None: whole documents.
     max_passage_chars: Optional[int] = None
     # Monitor runs: the run's criteria, the model that wrote them.
     criteria: List[Dict[str, str]] = field(default_factory=list)
@@ -458,7 +457,7 @@ class BeliefTracker:
         ``{iteration, parsed, observations, updates, changed, issues,
         beliefs, ruled_out, final_score, certainty, certainty_label}``
         (``ruled_out``: ``BeliefState.ruled_out_lists`` of b_{T-1}, for
-        ``certainty.answer_certainty``)."""
+        ``core.certainty.answer_certainty``)."""
         score = parse_final_score(raw) if raw is not None else None
         return {"iteration": call.iteration, "parsed": score is not None, "observations": None, "updates": [],
                 "changed": [], "issues": [], "beliefs": self.signal.beliefs(),
@@ -491,7 +490,7 @@ class BeliefTracker:
 
 
 def _canonical(records: Any) -> str:
-    return json.dumps(_clean(records), sort_keys=True, ensure_ascii=False)
+    return json.dumps(clean_record(records), sort_keys=True, ensure_ascii=False)
 
 
 @dataclass

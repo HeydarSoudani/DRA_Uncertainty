@@ -45,12 +45,14 @@ from indexing_corpus_dataset.layout import (
 from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
-from belief_model_component.criteria import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, shape_kinds
-from belief_model_component.types import MULTI_ASPECT
+from belief_model_component import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, shape_kinds
+
+from evaluation.belief import passage_chars
+from evaluation.belief.gold import AnswerJudge
 
 from .config import RunPaths, Split, TrainingConfig
 from .episodes import Episode, annotate_gold, attach_teacher, read_episode
-from .nugget_gold import AnswerJudge, NuggetGold, annotate_stated
+from .nugget_gold import NuggetGold, annotate_stated
 
 logger = logging.getLogger(__name__)
 
@@ -207,24 +209,6 @@ def read_correctness(run_dir: Path) -> Dict[str, Optional[bool]]:
         label = row.get("correct", row.get("exact_match"))
         out[str(row["query_id"])] = None if row.get("judge_error") or label is None else bool(label)
     return out
-
-
-# Before the shared cut (schema 38) the belief update cut a short-answer
-# document at 3000 characters and read a report document whole.
-LEGACY_PASSAGE_CHARS = 3000
-
-
-def passage_chars(config: Dict, query_shape: str) -> Optional[int]:
-    """Characters of one document the belief update of a run read (or, a
-    run without the belief model, will read in training), from its
-    ``run_config.json`` *config*: the belief section's
-    ``max_passage_chars``, else the agent's (the shared cut, the same
-    value), else the cut of the runs before it was recorded."""
-    for section in ("belief_model", "agent"):
-        values = config.get(section) or {}
-        if "max_passage_chars" in values:
-            return values["max_passage_chars"]
-    return None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS
 
 
 def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "") -> List[Episode]:

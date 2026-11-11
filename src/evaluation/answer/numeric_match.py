@@ -7,10 +7,9 @@ official Total-Recall-QA repository:
 
     https://github.com/mahta-r/total-recall-qa/blob/main/c5_task_evaluation/metrics/generation_eval_metrics.py
 
-Metrics (as in ``run_evalution.py`` of that repository):
-    * ``exact_match``        fraction with an exact numeric match.
-    * ``soft_exact_match``   fraction within each tolerance % in
-                             ``[1, 5, 10, 20, 50, 90]``.
+Metric: ``exact_match``, the fraction with an exact numeric match (as in
+``run_evalution.py`` of that repository; its tolerant matches are not
+reported).
 
 The agent's final short answer is extracted from the generation by
 :func:`extract_prediction`.  The interface matches
@@ -23,14 +22,11 @@ import math
 import re
 from typing import Any, Dict, List
 
-from ..common import write_jsonl
+from utils.io_utils import write_jsonl
 from ..judge import strip_references
+from .confidence import verbal_confidence
 
 logger = logging.getLogger(__name__)
-
-# Tolerance percentages reported by the TRQA reference (run_evalution.py).
-DEFAULT_TOLERANCE_PCTS = (1.0, 5.0, 10.0, 20.0, 50.0, 90.0)
-
 
 # ---------------------------------------------------------------------------
 # Numeric matching, ported verbatim from total-recall-qa generation_eval_metrics
@@ -75,12 +71,9 @@ def extract_number_from_string(s):
         return None
 
 
-def soft_exact_match(prediction, gold, decimals=3, tolerance_pct=None):
-    """Compute soft exact match with optional tolerance.
-
-    Returns a dict with ``exact_match`` (bool) and, when *tolerance_pct* is
-    given, ``soft_match`` (bool within ``tolerance_pct`` % of gold).
-    """
+def numeric_exact_match(prediction, gold, decimals=3) -> bool:
+    """Whether the number of *prediction* equals the number of *gold*, both
+    rounded to *decimals* (False when either has none)."""
     pred_float = extract_number_from_string(prediction)
     gold_float = extract_number_from_string(gold)
 
@@ -89,31 +82,12 @@ def soft_exact_match(prediction, gold, decimals=3, tolerance_pct=None):
         pred_float = safe_float_convert(prediction)
     if gold_float is None:
         gold_float = safe_float_convert(gold)
-
     if pred_float is None or gold_float is None:
-        result = {"exact_match": False}
-        if tolerance_pct is not None:
-            result["soft_match"] = False
-        return result
+        return False
 
     npred = normalize_number(pred_float, decimals)
     ngold = normalize_number(gold_float, decimals)
-
-    if npred is None or ngold is None:
-        result = {"exact_match": False}
-        if tolerance_pct is not None:
-            result["soft_match"] = False
-        return result
-
-    exact = npred == ngold
-    result = {"exact_match": exact}
-
-    if tolerance_pct is not None:
-        abs_err = abs(npred - ngold)
-        soft = abs_err <= (tolerance_pct / 100.0) * abs(ngold) if ngold != 0 else (abs_err == 0)
-        result["soft_match"] = soft
-
-    return result
+    return npred is not None and ngold is not None and npred == ngold
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +120,7 @@ def extract_prediction(generation: str) -> str:
 # ---------------------------------------------------------------------------
 
 class NumericMatchEvaluator:
-    """Numeric exact / soft-exact match of the final answer.
+    """Numeric exact match of the final answer.
 
     Usage::
 
@@ -155,28 +129,21 @@ class NumericMatchEvaluator:
 
     Args:
         answers: ``query_id -> ground-truth answer``.
-        tolerance_pcts: Tolerance percentages of the soft match.
         decimals: Decimals kept before comparison.
     """
 
-    def __init__(
-        self,
-        answers: Dict[str, str],
-        tolerance_pcts=DEFAULT_TOLERANCE_PCTS,
-        decimals: int = 3,
-    ) -> None:
+    def __init__(self, answers: Dict[str, str], decimals: int = 3) -> None:
         self.answers = answers
-        self.tolerance_pcts = tuple(tolerance_pcts)
         self.decimals = decimals
 
     def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
-        """Exact and soft-exact match over the queries with a ground-truth answer
-        (*run_dir* is unused: the match needs no judge to cache).
+        """Exact match over the queries with a ground-truth answer (*run_dir*
+        is unused: the match needs no judge to cache).
 
-        Returns ``exact_match``, ``accuracy`` (the same value, for the
-        accuracy slot of the summary), ``soft_exact_match`` (``{pct:
-        fraction}``), ``num_correct``, ``num_evaluated`` and ``per_query``;
-        ``{}`` when no query has an answer.
+        Returns ``accuracy`` (the exact match), ``num_correct``,
+        ``num_evaluated``, ``num_judge_errors`` (0) and ``per_query``
+        (``{query_id, prediction, gold, exact_match, correct,
+        verbal_confidence}``); ``{}`` when no query has an answer.
         """
         evaluable_ids = [qid for qid in results if self.answers.get(qid)]
         if not evaluable_ids:
@@ -184,49 +151,31 @@ class NumericMatchEvaluator:
             return {}
 
         per_query: List[Dict[str, Any]] = []
-        exact_count = 0
-        soft_counts = {pct: 0 for pct in self.tolerance_pcts}
-
-        for qid in evaluable_ids:
+        for qid in sorted(evaluable_ids):
             gold = self.answers[qid]
-            prediction = extract_prediction(results[qid].get("generation", ""))
-
-            exact = soft_exact_match(prediction, gold, decimals=self.decimals)["exact_match"]
-            exact_count += exact
-
-            soft_flags: Dict[str, bool] = {}
-            for pct in self.tolerance_pcts:
-                soft = soft_exact_match(
-                    prediction, gold, decimals=self.decimals, tolerance_pct=pct,
-                )["soft_match"]
-                soft_flags[str(pct)] = soft
-                soft_counts[pct] += soft
-
+            generation = results[qid].get("generation", "")
+            prediction = extract_prediction(generation)
+            exact = numeric_exact_match(prediction, gold, decimals=self.decimals)
             per_query.append({
                 "query_id": qid,
                 "prediction": prediction,
                 "gold": gold,
                 "exact_match": exact,
-                "soft_match": soft_flags,
+                "correct": exact,
+                "verbal_confidence": verbal_confidence(generation),
             })
 
-        num_evaluated = len(per_query)
+        num_correct = sum(r["correct"] for r in per_query)
         return {
-            "exact_match": round(exact_count / num_evaluated, 5),
-            "accuracy": round(exact_count / num_evaluated, 5),
-            "soft_exact_match": {
-                str(pct): round(soft_counts[pct] / num_evaluated, 5)
-                for pct in self.tolerance_pcts
-            },
-            "num_correct": exact_count,
-            "num_evaluated": num_evaluated,
+            "accuracy": round(num_correct / len(per_query), 5),
+            "num_correct": num_correct,
+            "num_evaluated": len(per_query),
+            "num_judge_errors": 0,
             "per_query": per_query,
         }
 
     def save_results(self, metrics: Dict[str, Any], output_path) -> None:
-        """Write ``accuracy.jsonl``: one line per query.  The aggregates are
-        in ``summary.json``."""
+        """Write ``accuracy.jsonl``: one line per query."""
         if not metrics:
             return
         write_jsonl(output_path, metrics.get("per_query", []))
-        print(f"  Saved numeric-match results: {output_path}")

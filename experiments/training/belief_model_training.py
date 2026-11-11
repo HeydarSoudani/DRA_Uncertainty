@@ -164,6 +164,7 @@ if __name__ == "__main__":
 
 
 # Examples:
+# python experiments/training/belief_model_training.py --phase 1 --split sft --limit 1 --training-data trqa_validation
 # python experiments/training/belief_model_training.py --phase 1 --split sft --limit 1
 # python experiments/training/belief_model_training.py --phase 1 --split rl --limit 1
 # python experiments/training/belief_model_training.py --phase 1 --split val --limit 1

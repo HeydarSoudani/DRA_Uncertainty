@@ -99,14 +99,14 @@ def build_belief_model(
             and the recall so far.
         llm_criteria: Model that extracts each query's criteria from the
             question, and writes TRQA's gold criterion texts
-            (``belief_model_component.criteria_init``).  Without it there is
+            (``belief_model_component.criteria.factory``).  Without it there is
             no belief.
         max_criteria: Cap on the number of criteria the extractor lists per
             query, None for uncapped (gold); resolved from the dataset by
             ``resolve_dataset_defaults``.
         belief_judge_model: LLM behind the belief state (the belief
             update call); "" = *llm_criteria*.  A ``vllm/`` model is
-            served locally (``criteria_init.belief_llm``), e.g. a trained belief model.
+            served locally (``criteria.factory.belief_llm``), e.g. a trained belief model.
         add_intermediate_answer: Ask the agent for an intermediate answer
             after every search iteration (one extra LLM call per step).
         agent: Agent instance; its ``answer_from_trajectory`` gives the
@@ -116,7 +116,7 @@ def build_belief_model(
         dataset: Dataset name; intermediate answers only for ``task == "qa"``.
         split: Split id of the run's queries (the criteria banks).
         criteria_source: ``gold`` or ``silver``, a choice on TRQA and
-            trqa_validation only (``criteria_init``); a query without gold
+            trqa_validation only (``criteria.factory``); a query without gold
             criteria gets silver ones, so the belief model always runs.
             The criteria are read from the banks, made and added only when
             missing.  The belief update is still the
@@ -156,7 +156,7 @@ def build_belief_model(
         intermediate_answer_fn = agent.answer_from_trajectory
         print(f"Belief model: intermediate answers via {policy_model}.answer_from_trajectory")
 
-    belief_updater = final_scorer = None
+    belief_updater = final_scorer = judge_llm = None
     if criteria_source is not None:
         judge_model = belief_judge_model or llm_criteria
         judge_llm = belief_llm(judge_model)
@@ -176,6 +176,7 @@ def build_belief_model(
         policy_model=policy_model or "",
         inform=mode == "inform",
         final_scorer=final_scorer,
+        token_meter=getattr(judge_llm, "token_meter", None),
     )
 
 

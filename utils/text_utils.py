@@ -238,8 +238,8 @@ def _print_rows(label: str, rows) -> None:
 
 def verbose_print_criteria(summary: Dict[str, Any], *, agent_name: str = "") -> None:
     """Print the query's criteria once, before the first iteration
-    (``BeliefModel.criteria_summary``; see ``belief_model_component.belief_view``)."""
-    from belief_model_component.belief_view import criteria_lines
+    (``BeliefModel.criteria_summary``; see ``belief_model_component.views.log_view``)."""
+    from belief_model_component import criteria_lines
     prefix = f"[{agent_name}] " if agent_name else ""
     _print_rows(f"{prefix}[criteria]: ", criteria_lines(summary))
 
@@ -259,7 +259,7 @@ def verbose_print_belief(
     iteration), the labels of the iteration's
     documents, then the reply's issues and any errors.  With *final*, the
     final record (``BeliefModel.final``), without the gold row."""
-    from belief_model_component.belief_view import belief_lines
+    from belief_model_component import belief_lines
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[final belief]: " if final else f"{prefix}[Iter {iter_num}] [belief]: "
     _print_rows(label, belief_lines(record, criteria, final=final))

@@ -19,7 +19,7 @@ candidate the update does not name keeps its status; one a passage states fails 
 only when it has a new passage; otherwise the belief is carried forward. A
 criterion's status is the highest of its candidates. Each criterion is its own sequence of beliefs over the steps, and is scored on its own.
 
-The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/certainty.py`),
+The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/core/certainty.py`),
 a fixed function of the statuses:
 
 1. each status becomes a probability $p = (\ell + 2) / 6$ from its signed level $\ell$ (unlikely 1/6, unknown 1/3,
@@ -34,7 +34,7 @@ $$
 The geometric mean lets one weak or contradicted criterion pull the score down, but unlike a product it does not
 push a query with many criteria (a set query's members) to 0. The final score $s_T$ is compared with the
 correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
-(`belief_model_component/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
+(`belief_model_component/update/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
 answer is correct and writes the status of the final answer on the belief's scale, read as a probability as a
 candidate's status is; on a report it is $s_T$ of the final
 belief.
@@ -505,9 +505,11 @@ whether a precision term is needed. The rest criterion joins the rewards once me
 
 The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent with no,
 teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
-Scores are the run's `summary.json`: answer accuracy, Recall@N, GradedRecall@N. The belief files carry the
-certainty score per step (`certainty`) and the final line's s_T (`certainty`, with its baselines), to compare with the
-correctness in `accuracy.jsonl`. Belief quality itself is measured in phase 3 validation. The student is trained on the `multi_hop` (deep_qa) or `set` (trqa_validation) prompts; a
+Scores are the run's `metrics.md` (the inference evaluation, `experiments/inference/README.md#evaluation`; phase 1
+runs get it too, being dra_inference runs): Recall@N, answer accuracy, the uncertainty group (s_T against the
+correctness, with the formula and verbal-confidence baselines) and, on the pools and TRQA, the belief update group
+(what the belief does with each gold document). Phases 2 and 3 score with `scoring.py`, which shares its measures
+and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (deep_qa) or `set` (trqa_validation) prompts; a
 dataset of another query shape (browsecomp_plus: `single_target`) gives it prompts it was not trained on.
 
 ```bash
@@ -515,7 +517,7 @@ dataset of another query shape (browsecomp_plus: `single_target`) gives it promp
 CUDA_VISIBLE_DEVICES=0 vllm serve $RUN/phase3_rl/final --served-model-name belief-student --port 6020 --language-model-only &
 export BELIEF_VLLM_API_BASE=http://127.0.0.1:6020/v1
 
-COMMON="--dataset browsecomp_plus --policy-model glm --query-scorer-model openrouter/qwen/qwen3.6-27b --gpu-ids 1,2,3"
+COMMON="--dataset browsecomp_plus --policy-model glm --gpu-ids 1,2,3"
 python experiments/inference/dra_inference.py $COMMON --belief-mode off
 python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
     --llm-criteria openrouter/qwen/qwen3.6-27b --belief-judge-model openrouter/qwen/qwen3.6-27b
@@ -526,6 +528,4 @@ python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
 - The student is trained on the belief update and the final scorer, not the criteria init, so its runs take the
   teacher's criteria (`--llm-criteria`, read from the criteria bank) and only the updates and the final score
   come from the student.
-- `--query-scorer-model` is the phase 1 scorer in every run; its default is the belief model, which would make the
-  student score queries too.
 - Give the student run its own `--output`: teacher and student runs share the agent, dataset and belief mode.

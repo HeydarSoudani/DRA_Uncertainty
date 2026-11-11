@@ -7,7 +7,7 @@ whole trajectories, per criterion: the assignment of the sources to it
 (its gold documents, the turns that state its gold answer) and the
 calibration of its status at every step; plus the share of well-formed
 calls.  Its second task, on a short-answer query, is the final scorer
-(``belief_model_component.final_score``): s_T from b_{T-1} and the answer
+(``belief_model_component.update.final_score``): s_T from b_{T-1} and the answer
 turn, rewarded against the correctness of the agent's final answer in its
 own GRPO stream (on a report, s_T of the final beliefs).
 

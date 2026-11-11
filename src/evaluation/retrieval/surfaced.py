@@ -8,8 +8,7 @@ reloaded from disk keeps only the seen doc ids; its surfaced lists are rebuilt
 from ``retrieval/surfaced/{qid}.trec`` into ``surfaced_docs_iterations``
 (see ``utils.io_utils``).
 
-The run summary scores the surfaced docs with the fusion evaluation
-(:mod:`evaluation.retrieval.fusion`), which reuses :meth:`doc_iterations`.
+Only saved (``retrieval/surfaced/{qid}.trec``), not scored.
 """
 
 from typing import Any, Dict, List
@@ -45,15 +44,8 @@ def _trajectory_iterations(trajectory: List[Dict[str, Any]]) -> List[List[Dict[s
 
 
 class SurfacedDocEvaluator(BaseDocRetrievalEvaluator):
-    """Retrieval quality over all surfaced (retriever-returned) docs.
-
-    Usage::
-
-        evaluator = SurfacedDocEvaluator(qrels=qrels, k_values=[1, 5, 10, 100])
-        metrics = evaluator.evaluate(results)
-    """
-
-    emit_metrics_at_n = False
+    """All surfaced (retriever-returned) docs of a run: the per-query TREC
+    file (:meth:`save_item`)."""
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:

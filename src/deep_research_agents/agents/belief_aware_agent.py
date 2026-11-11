@@ -12,7 +12,7 @@ Loop, per query::
 The policy never writes the tag.  Everything behind it (criteria, signals,
 intermediate answers, ``belief/{qid}.jsonl``) is the shared
 :class:`belief_model_component.BeliefModel`, exactly as for any agent;
-see ``belief_model_component.belief_state`` for the tag layout.  The
+see ``belief_model_component.views.tag`` for the tag layout.  The
 ``--belief-mode`` flag applies as for the other agents:
 
     inform   the tag is appended after each search, and the system prompt

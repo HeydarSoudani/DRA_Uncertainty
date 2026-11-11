@@ -1,8 +1,8 @@
 """The belief as text: each criterion with its candidates, and the
 ``<belief_state>`` tag that ``--belief-mode inform`` injects.
 
-The belief state keeps per criterion its candidates (``types.Candidate``)
-and its proposals (``types.Proposal``).  The belief update prompt lists
+The belief state keeps per criterion its candidates (``core.types.Candidate``)
+and its proposals (``core.types.Proposal``).  The belief update prompt lists
 every criterion with its candidates, highest status first
 (``BeliefState.ordered``), each with its support: one line per passage
 observation that supports it (``+``) or speaks against it (``-``), its
@@ -46,7 +46,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from .types import CRITERION_REF_RE, NO_DOC_KINDS, Candidate, Support, exclusive
+from ..core.types import CRITERION_REF_RE, NO_DOC_KINDS, Candidate, Support, exclusive
 
 # A tag the model wrote itself; removed before its text enters the context.
 BELIEF_STATE_RE = re.compile(r"<belief_state\b[^>]*>.*?</belief_state>\s*", re.DOTALL)
@@ -115,8 +115,8 @@ def proposals_line(state: Any, k: int, label: str = "proposed") -> Optional[str]
 def format_belief(state: Any, removed: bool = False) -> str:
     """Every criterion of *state* with its candidates and their support,
     highest status first, or ``NO_CANDIDATE``, then its proposals; with
-    *removed* (the final scorer's view), then the names a passage ruled out
-    (``BeliefState.ruled_out``)."""
+    *removed* (the final scorer's view), then the names the belief ruled
+    out (``BeliefState.ruled_out``)."""
     lines = []
     for k in range(len(state.criteria)):
         lines.append(criterion_head(state, k))

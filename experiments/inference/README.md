@@ -78,7 +78,7 @@ criterion of the query its candidates (possible answers), each with a status of 
 how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
 passage supports yet. All criteria and belief
 calls are LLM calls: the criteria extractor
-uses `llm_criteria`, the belief update (`src/belief_model_component/updater.py`) `belief_judge_model` (default
+uses `llm_criteria`, the belief update (`src/belief_model_component/update/updater.py`) `belief_judge_model` (default
 `llm_criteria`).
 
 ### Criteria
@@ -96,7 +96,7 @@ prompt, a shared core plus one block per shape:
 
 `max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
 trqa_validation (52) and deep_qa's FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
-whose criteria are all gold, a `max_criteria` stops the run (`criteria_init.check_max_criteria`).
+whose criteria are all gold, a `max_criteria` stops the run (`criteria.factory.check_max_criteria`).
 
 Rules for report criteria:
 
@@ -108,7 +108,7 @@ Rules for report criteria:
 
 Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate` or `aspect`
 (one aspect of a report topic). All clues are closed; a multi-hop query's hops before its answer are `hop`, its answer
-closed (`criteria.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a set query's
+closed (`criteria.parsing.shape_kinds`, also applied to the pools' gold rows, which record every hop as closed); a set query's
 members are closed, its "any other member" criterion rest and its last criterion aggregate (each added by code when the
 model leaves it out); all report criteria are aspects. A closed or aggregate criterion has one answer, so its
 candidates are alternatives; the others have several answers that hold together (members, values, facts; two entities
@@ -133,7 +133,7 @@ gold criteria (FRAMES, failed texts) gets silver ones (`gold_missing` in its `cr
 `criteria_info` records `criteria_kind` (`gold` or `silver`), and a gold row's `gold_level`. `run_config.json`
 records `criteria_source` and the source used, `criteria_source_effective`.
 
-**Criteria init** (`belief_model_component/criteria_init.py`). The criteria are part of the belief model: it makes
+**Criteria init** (`belief_model_component/criteria/factory.py`). The criteria are part of the belief model: it makes
 each query's list once, at the start of the query (`BeliefModel.reset`). The run only passes the dataset,
 `criteria_source` and `llm_criteria`:
 
@@ -271,7 +271,7 @@ When several fit, the lowest is given. For a computed criterion the reasoning se
 computation uses the answers it is computed from). Differences from Agent-BRACE: it ranks "unknown" lowest; here it
 is the neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
 
-The update prompt reads each criterion with its candidates (`belief_state.format_belief`):
+The update prompt reads each criterion with its candidates (`views.tag.format_belief`):
 
 ```
 c1 (several answers): the town where the Varn Folk Museum was founded
@@ -285,7 +285,7 @@ c3 (one answer): the lighthouse that was designed by the engineer of c2
   proposed: "Kalvik Lighthouse"
 ```
 
-The certainty score s_t (`belief_model_component/certainty.py`) is a fixed function of the statuses:
+The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed function of the statuses:
 
 1. Each criterion's status (the highest of its candidates) becomes a probability, (level + 2) / 6 (unlikely 1/6,
    unknown 1/3, possible 1/2, certain 1): q_k. With no status at 0, one weak criterion lowers s_t without fixing it at
@@ -294,7 +294,7 @@ The certainty score s_t (`belief_model_component/certainty.py`) is a fixed funct
 2. s_t is the geometric mean over the criteria. The rest criterion of a set query is left out.
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
-scorer's (`belief_model_component/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
+scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
 the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
 and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
 and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
@@ -318,9 +318,8 @@ with `certainty_label`, `certainty_formula`, `certainty_answer_formula` and `fin
 trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each iteration and
 the final belief before the result. For evaluation only, never shown to the agent:
 
-- `new_item_precision` and `recall_so_far`, against the qrels at the dataset's `min_relevance_score`. NeuCLIR and
-  RAGTIME use grade 3 (the very valuable docs), while the end-of-run `GradedRecall@N` counts every official level
-  with its gain.
+- `new_item_precision` and `recall_so_far`, against the qrels at the dataset's `min_relevance_score` (NeuCLIR and
+  RAGTIME: grade 3, the very valuable docs), the same relevant docs as the end-of-run Recall@N.
 - Intermediate answers (BrowseComp-Plus and TRQA, all agents except `cpm_report`): after each iteration the agent's own
   model is asked, from its trajectory so far, for its most likely answer(s) in its answer format; it may give one,
   several or none (`IntermediateAnswerSignal`, prompt in `src/belief_model_component/prompts/`). They are saved as
@@ -329,7 +328,7 @@ the final belief before the result. For evaluation only, never shown to the agen
 ### Inform mode
 
 `--belief-mode inform` computes the same belief and also shows it to the agent: right after each iteration's search
-results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model_component/belief_state.py`):
+results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model_component/views/tag.py`):
 
 ```xml
 <belief_state step="2">
@@ -366,38 +365,90 @@ on how to use it); in `monitor` and `off` modes its prompt never mentions it.
 
 ## Evaluation
 
-A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same
-`summary.json`. The evaluators depend on the dataset:
+A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same files.
+Belief model training's phase 1 is a dra_inference run, so its runs get the same evaluation. Judge verdicts are
+reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU.
 
-| Dataset | Answer evaluation |
-|---|---|
-| BrowseComp-Plus | LLM judge (`--judge-model`), `accuracy.jsonl` |
-| TRQA | numeric match, `accuracy.jsonl` |
-| NeuCLIR, RAGTIME | Auto-ARGUE report scores, `report_eval/` |
+The measures, by group, in the order of the files and the log:
 
-Every dataset also gets retrieval (surfaced, seen and cited docs, fusion), generation statistics and trajectory
-statistics. Judge verdicts are reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes
-no LLM call and needs no GPU.
+| Group | Measures | Datasets |
+|---|---|---|
+| retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
+| generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
+| | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, judge failures | reports |
+| uncertainty | per score: AUROC [CI], Brier, ECE; s_T - verbal AUROC [CI]; queries judged, scored, excluded | QA, belief on |
+| belief | the belief update on gold documents (below) | TRQA, trqa_validation, deep_qa (InfoSeek), belief on |
+| trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
-The terminal log prints one EVALUATION SUMMARY block in the order of `summary.json`: retrieval (seen docs), generation
-(correctness or nuggets, and length), trajectory, then the time of each evaluation stage. Cited-doc and fusion
-metrics and the full @k tables are only in `summary.json`. `_eval_results_cache*.pkl.gz` files left by older code are
-no longer read and can be deleted.
+CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.metrics`). Nothing else is
+computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, soft match or length statistics (the
+raw outputs stay in the run, for `analysis/`).
 
-`src/evaluation/` follows the groups of `summary.json`; each group also writes its per-query files:
+**Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
+query out). The scores: `s_T` (the final scorer, the headline), `formula` and `answer formula` (the fixed function
+of the final statuses and its form on the scorer's answer candidates, ablations) and `verbal`, the agent's own
+`Confidence: X%` (glm, oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`; a generation
+without it has none). s_T and verbal are measured on the same queries: those with y, s_T and, when the run has
+any, a verbal confidence; an ablation on those of them where it has a value (its own n). Only belief files of the
+current schema are scored.
+
+**Belief update** (`src/evaluation/belief/evaluator.py`), on the queries whose criteria are the gold criteria with
+a gold answer and gold documents per criterion (TRQA members, InfoSeek hops; not the rest and aggregate criteria,
+not WebShaper or FRAMES, which have no gold documents per criterion). A **gold event** is a gold document of
+criterion k, new to the belief (not in an earlier step whose update call parsed), whose text as the update read it (the `max_passage_chars` cut) states k's gold
+answer. Per event:
+
+- `assigned`: the update wrote an observation of the document on k;
+- `rises`: the status level of k's gold candidate went up (a gold answer that is not a candidate is at 0,
+  unknown; one already "certain" that stays so counts as rising);
+- `correct_after` / `correct_end`: k's selected candidate (one of them, for several answers) is a gold answer,
+  after the step / in the final belief;
+- the funnel stage, one per event: `call_failed`, `not_assigned`, `no_gold_candidate`, `not_selected`,
+  `correct_lost`, `correct_kept`.
+
+The headline rates use the first gold event of each criterion: per query, then the mean over the queries with an
+event (macro, with CI); the pooled rate is the `(micro)` row. A **control event** is a new document observed on k
+that is not one of k's gold documents and does not state its answer; its change is the largest change of a
+non-gold candidate. `rise AUROC (gold vs control)` separates the gold events' changes from the control events'
+(pooled, CI over queries; gold events already at "certain" cannot rise and are left out). Also: the status calibration over every step of every scored criterion (the status
+probability against the selected candidate being correct: AUROC, Brier, ECE), and the reachability (per query,
+the share of scored criteria whose gold document was seen, and whose gold event happened). A candidate is a gold
+answer when it matches one, else when the judge (`judge_model`) says so, cached in
+`belief_eval/judge_cache.jsonl`.
+
+The terminal log prints one block, one line per group:
+
+```
+EVALUATION  trqa / wiki2_test / glm / monitor (gold criteria)  (n=200)
+retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
+generation   accuracy 0.310 (62/200)
+uncertainty  s_T AUROC 0.780 [0.71,0.84] ECE 0.090 | verbal AUROC 0.610 [0.53,0.69] ECE 0.310 (n 188)
+belief       assigned 0.830 | rises 0.710 | correct 0.640 | at end 0.580 | rise AUROC 0.860 (n 142)
+trajectory   searches 9.2 | agent tok 41234 | belief tok 23102 | forced 4
+```
+
+Every run can be compared in one table with `analysis/collect_results.py --root run_outputs` (one row per run, the
+headline measures as columns; `--all` for every measure, `--group` to keep some groups, `--ci` for the CIs):
+`results.md` and `results.csv`.
+
+`src/evaluation/` follows the groups; each group also writes its per-query files:
 
 ```
 src/evaluation/
 ├── runner.py        save_query_outputs, build_evaluators, load_run_results, evaluate_and_save
-├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports);
-│                    summary group generation.correctness / generation.nuggets
-├── retrieval/       surfaced / seen / cited evaluators, citations, TREC metrics, fusion evaluation
-├── trajectory/      TrajectoryEvaluator (statistics), save_trajectory
-├── generation/      GenerationEvaluator (length, words, citations, generation/{qid}.md)
-├── belief/          save_belief (belief/{qid}.jsonl schema)
-├── gold/            TRQA gold entities and the entity matcher (criteria reachability)
+├── report.py        metrics.md, per_query.csv and the log block
+├── metrics.py       AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with belief model training)
+├── retrieval/       surfaced / seen / cited doc levels and their TREC files; seen-doc Recall@N, Precision@N
+├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
+│                    verbal_confidence
+├── uncertainty/     UncertaintyEvaluator
+├── belief/          save_belief (belief/{qid}.jsonl schema), BeliefUpdateEvaluator, gold match and judge
+│                    (shared with belief model training)
+├── trajectory/      TrajectoryEvaluator (per query), save_trajectory
+├── generation/      the generation/{qid}.md writer
+├── gold/            per-criterion gold (TRQA gold bank, training pools); TRQA gold entities and their matcher
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
-└── common.py        file, statistics and terminal helpers
+└── common.py        file and statistics helpers
 ```
 
 ### Report evaluation (Auto-ARGUE)
@@ -437,8 +488,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 ├── retrieval/
 │   ├── surfaced/{qid}.trec         raw retriever output (all iterations, col 6 = iter_N)
 │   ├── seen/{qid}.trec             docs shown to the LLM
-│   ├── cited/{qid}.trec            docs cited by the LLM
-│   └── fusion_{method}.trec        deduped fusion ranking (aggregate over all queries)
+│   └── cited/{qid}.trec            docs cited by the LLM
 ├── generation/{qid}.md             the final generation (with its References section)
 ├── belief/{qid}.jsonl              belief on only: meta line (criteria, final belief) + one line per search iteration
 ├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, <belief_state> tags, per-turn
@@ -446,12 +496,18 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 │   └── {qid}.md                    the same trajectory, human-readable, written live
 ├── accuracy.jsonl                  per-query verdicts (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
-└── summary.json                    grouped metrics (retrieval / generation / trajectory)
+├── belief_eval/                    belief update evaluation: events.csv (one row per gold or control event),
+│                                   judge_cache.jsonl
+├── metrics.md                      every measure: group | metric | value | ci_low | ci_high | n
+└── per_query.csv                   every per-query value of every group
 ```
 
 `{agent}` is the `--policy-model` name (`oss_20b`, not the internal agent `oss`), as is `agent.policy_model` in
 `run_config.json`. `_{query_key}` is in the name only when it is not the dataset's default. Each fact has one file: the run settings are
-in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `summary.json` only.
+in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `metrics.md` only.
+`per_query.csv` repeats per-query values of the other files (correctness, s_T, verbal confidence, tokens): it is
+evaluation output, rebuilt by every evaluation and never read by inference or training. An evaluation removes the
+`summary.json` of earlier code.
 
 A query is finished when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other file
 of the query (and, with the belief model on, after its belief file).

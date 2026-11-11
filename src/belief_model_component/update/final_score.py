@@ -5,7 +5,7 @@ One call after the last step, in place of a belief update on the answer
 turn: it reads the query, the belief b_{T-1} (every criterion with its
 candidates, their statuses and support, the proposals and the names a
 passage ruled out: ``format_belief(state, removed=True)``) and the agent's
-answer turn (``agent_turn.answer_turn``), and replies with one JSON object:
+answer turn (``text.agent_turn.answer_turn``), and replies with one JSON object:
 
 - ``candidates``: per criterion, the answer's candidate (the one the
   answer relies on, or null);
@@ -13,14 +13,14 @@ answer turn (``agent_turn.answer_turn``), and replies with one JSON object:
 - ``final_status``: the status of the final answer, on the belief's scale
   (``FINAL_STATUSES``: the five candidate statuses, no "unknown", no
   "removed"), read as a probability as a candidate's status is
-  (``types.status_probability``).
+  (``core.types.status_probability``).
 
 The prompt shares the belief update's definitions and status definitions;
 the final answer is judged as a candidate of the query.
 
 The scorer weighs the criteria by how much each identifies the answer and
 anchors s_T on the agent's answer, which a fixed function of the statuses
-cannot (``certainty.certainty`` scores the belief, whatever the answer).
+cannot (``core.certainty.certainty`` scores the belief, whatever the answer).
 Short-answer queries only (``prompts.FINAL_SCORE_SYSTEMS``): a report has
 no single answer to judge.
 
@@ -33,12 +33,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils.text_utils import parse_json_object
 
-from .agent_turn import FINAL_ANSWER_HEADER
-from .belief_state import format_belief
-from .criteria import BeliefState
-from .prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
-from .types import BELIEF_STATUSES, UNKNOWN, alnum, criterion_id, parse_status, status_probability
-from .updater import complete_with_repair
+from ..core.state import BeliefState
+from ..core.types import BELIEF_STATUSES, UNKNOWN, criterion_id, parse_status, status_probability
+from ..prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
+from ..text.agent_turn import FINAL_ANSWER_HEADER
+from ..text.matching import alnum, squash
+from ..views.tag import format_belief
+from .repair import complete_with_repair
 
 # The status of the final answer, lowest first: the candidate statuses
 # (unlikely 1/6, possible 1/2, probable 2/3, almost certain 5/6, certain 1).
@@ -64,7 +65,7 @@ def scorer_answer_text(answer_turn: str, max_reasoning_chars: int = ANSWER_REASO
 
 
 def parse_final_status(value: Any) -> Optional[str]:
-    """The final status a reply writes (as ``types.parse_status``, a
+    """The final status a reply writes (as ``core.types.parse_status``, a
     trailing period and quotes ignored), None when it is none of
     ``FINAL_STATUSES``."""
     status = parse_status(str(value or "").strip(" .\"'"))
@@ -101,9 +102,9 @@ def parse_final_score(raw: str) -> Optional[FinalScore]:
     for item in data.get("candidates") if isinstance(data.get("candidates"), list) else []:
         if not isinstance(item, dict):
             continue
-        name = " ".join(str(item.get("candidate") or "").split())
+        name = squash(item.get("candidate"))
         candidates.append({"id": criterion_id(item.get("id")), "candidate": name or None})
-    return FinalScore(status=status, candidates=candidates, reason=" ".join(str(data.get("reason") or "").split()))
+    return FinalScore(status=status, candidates=candidates, reason=squash(data.get("reason")))
 
 
 def check_issues(score: FinalScore, state: BeliefState) -> List[str]:
@@ -160,7 +161,7 @@ class LLMFinalScorer:
         """``(score, raw, errors)``: *score* None when no reply parsed
         (*raw* the last reply, None when the first call raised).  A retry
         tells the model what was wrong with its reply
-        (``updater.complete_with_repair``)."""
+        (``repair.complete_with_repair``)."""
         return complete_with_repair(
             "LLMFinalScorer", self._llm, self.prompt(query, state, answer_turn), parse_final_score,
             FINAL_SCORE_REPAIR, f"no JSON object with a final_status of {list(FINAL_STATUSES)}", self._parse_retries,

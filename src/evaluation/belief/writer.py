@@ -17,7 +17,8 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
     line 1  {"record": "meta", "schema_version": 42, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
-             "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"}}
+             "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
+             "tokens": {"input_tokens": 51234, "output_tokens": 8120, "total_tokens": 59354, "num_calls": 9}}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
@@ -61,8 +62,8 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 42::
                                           "against": true}]}, ...],
              "agent_turn": "... Final answer: ...", "reply": "...", "errors": []}
 
-The fields are described in ``belief_model_component.belief_model``
-(step and final records, meta line) and ``belief_model_component.criteria``
+The fields are described in ``belief_model_component/README.md``
+(step and final records, meta line) and ``belief_model_component.criteria.sources``
 (``BeliefState.apply``: the issue codes).  A criterion's ``kind`` is
 ``closed`` (one fact with one answer), ``hop`` (a multi-hop query's
 entity before its answer, which may have several answers), ``rest`` (the members of a set the
@@ -75,7 +76,11 @@ observations that entered in the step (with their verified spans).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
-trajectory md (``belief_model_component.belief_view``).
+trajectory md (``belief_model_component.views.log_view``).
+
+Added within schema 42 (no new version, so earlier runs stay readable):
+the meta line's ``tokens``, the belief update and final scorer tokens of
+the sample (null when not counted; absent in earlier files).
 
 schema_version 40 (was 39): a proposal records the step it was proposed
 in (``added_step``; ``step`` is its latest claim's), so a dropped
@@ -90,13 +95,13 @@ and a label string with several labels ("d1, d2") is split.
 schema_version 39 (was 38): the final scorer writes the status of the
 final answer on the belief's scale (unlikely, possible, probable, almost
 certain, certain: ``certainty_label``; ``certainty`` its
-``types.status_probability``) in place of an ICD 203 likelihood, and per
+``core.types.status_probability``) in place of an ICD 203 likelihood, and per
 criterion only the answer's candidate (``final_score``: ``{status,
 candidates, reason, issues}``, no check).  Its prompt shares the belief
 update's definitions and status definitions.
 
 schema_version 38 (was 37): s_T of a short-answer query is the final
-scorer's (``belief_model_component.final_score``): one call reads b_{T-1}
+scorer's (``belief_model_component.update.final_score``): one call reads b_{T-1}
 and the answer turn (no final update) and writes, per criterion, the
 answer's candidate and its check, a reason and a likelihood (a word of
 ICD 203, ``certainty_label``; ``certainty`` its probability, null when
@@ -105,8 +110,9 @@ the call failed).  The final line adds ``certainty_label``,
 ``certainty_answer_formula`` (its form on the checks' candidates) and
 ``final_score``; a report keeps the final update (``certainty`` =
 ``certainty_formula``, the others null).  A removed candidate records
-``against`` (a passage spoke against it); the final scorer reads those
-names as removed.  One document length for the agent and the belief
+``against`` (ruled out: a passage or the agent's claim spoke against
+it, not a proposal dropped for room); the final scorer reads those names
+as removed.  One document length for the agent and the belief
 update (the run's ``max_passage_chars``, recorded in run_config's
 ``belief_model``): report documents are cut too.  A passage's title is
 its metadata title, else its front matter's, else its first line.
@@ -283,15 +289,15 @@ SCHEMA_VERSION = 42
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)
 
 
-def _clean(obj: Any) -> Any:
+def clean_record(obj: Any) -> Any:
     """JSON-safe copy: numpy scalars to Python, non-finite floats to None,
     floats rounded to 4 decimals, tuples and sets to lists."""
     if isinstance(obj, dict):
-        return {str(k): _clean(v) for k, v in obj.items()}
+        return {str(k): clean_record(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
-        return [_clean(v) for v in obj]
+        return [clean_record(v) for v in obj]
     if isinstance(obj, np.ndarray):
-        return _clean(obj.tolist())
+        return clean_record(obj.tolist())
     if isinstance(obj, (bool, np.bool_)):
         return bool(obj)
     if isinstance(obj, (int, np.integer)):
@@ -303,7 +309,7 @@ def _clean(obj: Any) -> Any:
 
 
 def _dump(obj: Dict[str, Any]) -> str:
-    return json.dumps(_clean(obj), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return json.dumps(clean_record(obj), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 def save_belief(query_id: str, question: str, result: Dict[str, Any], output_dir) -> None:

@@ -58,7 +58,7 @@ python experiments/inference/dra_inference.py \
 #
 # PRE-FLIGHT (recommended before the full run): same code path, 1 query per worker,
 # ~15 min of node time.  It exercises exactly what the full run does — worker spawn,
-# retriever load, OpenRouter routing, per-query save, eval, summary.json:
+# retriever load, OpenRouter routing, per-query save, eval, metrics.md:
 #     sbatch --time=00:30:00 --export=ALL,LIMIT=4 scripts/run_dra_inference.sh
 # Its 4 queries are real results and are kept: resume skips them, so the follow-up
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.

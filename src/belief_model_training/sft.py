@@ -9,13 +9,13 @@ written to ``samples.jsonl``).  Only queries with gold criteria are used
 teacher's replies on the gold criteria replayed (``episodes.replay_teacher``,
 the final call on the answer turn included), each call within the matched
 replay that passes the gate (``scoring.format_ok``) and, with
-``require_verified_spans``, that is clean (``criteria.UNCLEAN_REPLY``:
+``require_verified_spans``, that is clean (``core.issues.UNCLEAN_REPLY``:
 every observation entered the belief, no status corrected, no cited source
 without an observation, no reason that misreads the belief, no removal
 code did not take, no competing one-answer candidates).  On a short-answer
 query the final call is the final scorer's (the second task,
 ``task: score``): its sample is kept when the reply parses, its answer's
-candidates have no issue (``final_score.check_issues``) and its status agrees
+candidates have no issue (``update.final_score.check_issues``) and its status agrees
 with the correctness y of the agent's answer (|p - y| <= ``SCORE_AGREEMENT``,
 rejection sampling, so the student does not copy the teacher's
 miscalibration; "possible", p = 1/2, is kept for both y, so the student
@@ -65,7 +65,7 @@ import torch.nn.functional as F
 
 from utils.io_utils import read_jsonl, write_jsonl
 
-from belief_model_component.criteria import UNCLEAN_REPLY
+from belief_model_component import UNCLEAN_REPLY
 
 from .config import RunPaths, TrainingConfig
 from .episodes import DocumentStore, Episode, replay_teacher
@@ -137,7 +137,7 @@ class _Collator:
 
 
 def _clean(outcome: Dict) -> bool:
-    """The reply has no issue of ``criteria.UNCLEAN_REPLY``: every
+    """The reply has no issue of ``core.issues.UNCLEAN_REPLY``: every
     observation entered the belief or repeats one in it, no status was
     corrected by code, every reason opens with the candidate's current
     status (or "New:") and cites sources observed on its criterion, every

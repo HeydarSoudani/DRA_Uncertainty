@@ -1,7 +1,6 @@
-"""Generation statistics (``generation.stats`` in ``summary.json``).
+"""The per-query generation file.
 
-* :class:`GenerationEvaluator`: length, words and citation markers of the
-  generation, and the ``generation/{query_id}.md`` writer.
+* :class:`GenerationEvaluator`: the ``generation/{query_id}.md`` writer.
 """
 
 from .stats import GenerationEvaluator

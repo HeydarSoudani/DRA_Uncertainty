@@ -58,12 +58,12 @@ class AgentVerboseMixin:
 
     def _log_belief_md(self, record: dict, *, final: bool = False) -> None:
         """Write the readable belief of one iteration (or the final belief)
-        to the trajectory md only (``belief_model_component.belief_view``);
+        to the trajectory md only (``belief_model_component.views.log_view``);
         the belief file keeps the data."""
         if getattr(self, "_traj_logger", None) is None or record is None:
             return
         try:
-            from belief_model_component.belief_view import belief_md
+            from belief_model_component import belief_md
             self._log_block(belief_md(record, getattr(self, "_belief_criteria", None) or [], final=final))
         except Exception:
             logger.warning("Belief md block failed", exc_info=True)
@@ -225,7 +225,7 @@ class AgentVerboseMixin:
             step["iteration"] = iter_num
         tag = None
         if subqueries or docs:
-            from belief_model_component.agent_turn import agent_turn_text
+            from belief_model_component import agent_turn_text
             tag = self._observe_step(
                 subqueries, docs, iter_num, original_query,
                 seen_docs=seen_docs, trajectory=trajectory,
@@ -254,7 +254,7 @@ class AgentVerboseMixin:
         """Drop <belief_state> tags the model wrote itself (inform mode only)."""
         if not self._informs:
             return text
-        from belief_model_component.belief_state import strip_belief_state
+        from belief_model_component import strip_belief_state
         return strip_belief_state(text)
 
     @staticmethod
@@ -300,7 +300,7 @@ class AgentVerboseMixin:
             if self._is_verbose:
                 verbose_print_criteria(summary, agent_name=self._display_name)
             if getattr(self, "_traj_logger", None) is not None:
-                from belief_model_component.belief_view import criteria_md
+                from belief_model_component import criteria_md
                 self._log_block(criteria_md(summary))
         except Exception:
             logger.warning("Belief criteria log failed for %s", query_id, exc_info=True)
@@ -309,7 +309,7 @@ class AgentVerboseMixin:
         belief_model = getattr(self, "belief_model", None)
         if belief_model is None:
             return
-        from belief_model_component.agent_turn import answer_turn
+        from belief_model_component import answer_turn
         try:
             # The final belief update reads the answer turn (its reasoning and final answer).
             belief_model.finish(answer_turn(result.get("trajectory") or [], result.get("generation") or ""))

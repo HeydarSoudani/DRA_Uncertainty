@@ -16,7 +16,7 @@ valid answer is not counted against it):
     format   the gate (``format_ok``), per belief update call: the reply
              was not cut off, parses, names known criteria and passages of
              the call only, and gives each candidate update one valid status
-             (``criteria.GATE_ISSUES``); the chain's share of update calls
+             (``core.issues.GATE_ISSUES``); the chain's share of update calls
              that pass it (the final scorer's call has its own gate, in
              ``final``)
     assign   assignment of the sources to the criterion, from the
@@ -36,7 +36,7 @@ valid answer is not counted against it):
                          it: TP or FN
              FP: an observation the reply wrote that did not enter the
              belief for a reason of its own
-             (``criteria.REJECTED_OBSERVATION``: no verified span, no
+             (``core.issues.REJECTED_OBSERVATION``: no verified span, no
              span of the turn, a claim without a candidate or a valid
              claim, a document on a computed criterion).
              Every other observation is neutral (spans that give
@@ -54,16 +54,16 @@ valid answer is not counted against it):
     final    s_T against the correctness y of the agent's final answer:
              r_final = 1 - (s_T - y)^2 (``scorer_reward``; 0 when the final
              call fails the gate).  On a short-answer query s_T is the
-             final scorer's (``belief_model_component.final_score``, the
+             final scorer's (``belief_model_component.update.final_score``, the
              probability of the final answer's status; its gate: not cut off,
              parses);
              on a report, the certainty of the final beliefs
-             (``belief_model_component.certainty``, a fixed function of the
+             (``belief_model_component.core.certainty``, a fixed function of the
              statuses).  The measures report the scorer's s_T next to the
              fixed function on the final beliefs (with its other
              aggregators) and its form anchored on the scorer's answer's
              candidates
-             (``certainty.answer_certainty``), baselines only
+             (``core.certainty.answer_certainty``), baselines only
 
 The chain's ``assign`` and ``cal`` are the means over its criteria.  Two
 more per-criterion measures are reported, not rewarded: the recall of its
@@ -88,14 +88,16 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-from scipy.stats import kendalltau, rankdata
 
-from belief_model_component.certainty import AGGREGATORS, CERTAINTY_AGGREGATOR, answer_certainty, criterion_scores
-from belief_model_component.criteria import GATE_ISSUES, REJECTED_OBSERVATION
-from belief_model_component.types import BELIEF_STATUSES, NO_DOC_KINDS, REMOVED, UNKNOWN, exclusive, status_probability
+from belief_model_component import (
+    AGGREGATORS, BELIEF_STATUSES, CERTAINTY_AGGREGATOR, GATE_ISSUES, NO_DOC_KINDS, REJECTED_OBSERVATION, REMOVED,
+    UNKNOWN, answer_certainty, criterion_scores, exclusive, status_probability,
+)
+from evaluation.belief.gold import CANDIDATE, SPANS
+from evaluation.metrics import auroc as _auroc, brier as _brier, ece as _ece, mean_or_none, tau_b
 
 from .episodes import Episode, UpdaterCall
-from .nugget_gold import CANDIDATE, SPANS, NuggetGold, gold_criterion, matches, states
+from .nugget_gold import NuggetGold, gold_criterion, matches, states
 
 SIDES = ("doc", "think")
 
@@ -128,13 +130,6 @@ def _f1(tp: int, fp: int, fn: int) -> Optional[float]:
 
 def _ratio(num: int, den: int) -> Optional[float]:
     return num / den if den else None
-
-
-def mean_or_none(values: Iterable[Optional[float]]) -> Optional[float]:
-    """The mean of the defined *values* (None and NaN left out), None
-    when there is none."""
-    vals = [v for v in values if v is not None and not (isinstance(v, float) and math.isnan(v))]
-    return sum(vals) / len(vals) if vals else None
 
 
 def _is_doc(label: Any) -> bool:
@@ -386,25 +381,6 @@ def chain_values(episode: Episode, outcomes: Iterable[Dict[str, Any]],
 # Pooled measures
 # ---------------------------------------------------------------------------
 
-def _auroc(y: np.ndarray, s: np.ndarray) -> float:
-    """AUROC of score *s* for the binary label *y* (Mann-Whitney U, ties as
-    halves); NaN when one class is missing."""
-    pos, neg = int(y.sum()), int(len(y) - y.sum())
-    if pos == 0 or neg == 0:
-        return math.nan
-    ranks = rankdata(s)
-    return float((ranks[y == 1].sum() - pos * (pos + 1) / 2) / (pos * neg))
-
-
-def _ece(y: np.ndarray, s: np.ndarray, bins: int = 10) -> float:
-    """Expected calibration error over *bins* equal-width bins of *s*."""
-    if not len(y):
-        return math.nan
-    idx = np.minimum((s * bins).astype(int), bins - 1)
-    return float(sum(abs(s[idx == b].mean() - y[idx == b].mean()) * (idx == b).sum()
-                     for b in range(bins) if (idx == b).any()) / len(y))
-
-
 def _prf(tp: int, fp: int, fn: int) -> Dict[str, float]:
     p = tp / (tp + fp) if tp + fp else math.nan
     r = tp / (tp + fn) if tp + fn else math.nan
@@ -419,8 +395,8 @@ def _nan(value: Optional[float]) -> float:
 def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, float]:
     return {
         f"{prefix}_auroc": _auroc(y, s),
-        f"{prefix}_tau_b": float(kendalltau(s, y)[0]) if len(y) > 1 and len(set(y)) > 1 else math.nan,
-        f"{prefix}_brier": float(((s - y) ** 2).mean()) if len(y) else math.nan,
+        f"{prefix}_tau_b": tau_b(s, y),
+        f"{prefix}_brier": _brier(y, s),
         f"{prefix}_ece": _ece(y, s),
     }
 

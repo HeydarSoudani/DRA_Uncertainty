@@ -4,7 +4,7 @@ from typing import Optional
 
 from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TAG_FORMAT
 
-from ..types import MULTI_ASPECT
+from ..core.types import MULTI_ASPECT
 
 CRITERIA_INIT_USER_TEMPLATE = """\
 Query: {query}
@@ -36,7 +36,7 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
 
 # The belief update (``updater``), in the layout of the system prompt's
 # example: every criterion as "c1 (one answer): <text>" with its current
-# candidates, their support and its proposals (``belief_state.format_belief``),
+# candidates, their support and its proposals (``views.tag.format_belief``),
 # the agent's turns since the last update, each "[t<step>]" on its own line
 # before its text, then the passages new to the belief, each "[d<n>]" before
 # its text (whose first line is the title); no turn or no

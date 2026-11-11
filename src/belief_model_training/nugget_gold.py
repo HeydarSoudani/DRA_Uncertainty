@@ -9,7 +9,9 @@ ignored), outside a longer entity name of the query's gold structure that
 contains it, or, for a numeric answer, when a number of the text equals it
 (relative tolerance 1e-3, "12,388" = 12388).  Without a match an LLM judge
 decides (``AnswerJudge``, the correctness judge's model; null: the match
-alone), its verdicts cached on disk by text, so a pair is asked once.
+alone), its verdicts cached on disk by text, so a pair is asked once.  The
+match and the judge live in ``evaluation.belief.gold``, shared with the
+belief update evaluation of inference runs.
 
 Only criteria with gold answers have gold (``gold_criterion``); the rest
 criterion of a set query has none until members are masked into it (the
@@ -28,78 +30,16 @@ gold lists every member as its own criterion), so it is left out.
   states an answer from memory is found by the match only).
 """
 
-import hashlib
-import json
 import logging
-import re
-from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from belief_model_component.types import REST
-from indexing_corpus_dataset.training_pool.annotations import mentions
+from belief_model_component import REST
+# The match and the judge are shared with the evaluation (evaluation.belief.gold).
+from evaluation.belief.gold import CANDIDATE, SPANS, AnswerJudge, states
 
 from .episodes import Episode
 
 logger = logging.getLogger(__name__)
-
-_NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
-
-# The judge's question per kind of text: an agent turn (does it state the
-# answer?) or a value (is it the answer?).
-JUDGE_PROMPTS = {
-    "turn": """\
-Criterion: {criterion}
-Gold answer: {answers}
-
-Text:
-{text}
-
-Does the text state the gold answer of the criterion, in any wording (a name, a number in another format, or an unambiguous reference to it)? A text that only asks for it, searches for it without stating it, or states a different answer does not. Answer YES or NO.""",
-    "candidate": """\
-Criterion: {criterion}
-Gold answer: {answers}
-
-Candidate answer: {text}
-
-Is the candidate answer the gold answer of the criterion (or, when several gold answers are listed, one of them), in any wording (a name, a number in another format, or an unambiguous reference to it)? A candidate that names a different entity or value, or only part of a compound answer, is not. Answer YES or NO.""",
-}
-
-# Gold answers shown to the judge per criterion.
-MAX_JUDGE_ANSWERS = 50
-
-
-def _numbers(text: str) -> List[float]:
-    out = []
-    for m in _NUMBER.findall(text):
-        try:
-            out.append(float(m.replace(",", "")))
-        except ValueError:
-            continue
-    return out
-
-
-def _as_number(answer: str) -> Optional[float]:
-    try:
-        return float(answer.replace(",", ""))
-    except ValueError:
-        return None
-
-
-def states(turn: str, answers: List[str], others: List[str] = ()) -> bool:
-    """*turn* states one of *answers* (whole words outside the longer names
-    of *others*, or an equal number)."""
-    numbers = None
-    for answer in answers:
-        value = _as_number(answer)
-        if value is None:
-            if mentions(turn, answer, list(others)):
-                return True
-            continue
-        if numbers is None:
-            numbers = _numbers(turn)
-        if any(abs(n - value) <= 1e-3 * max(abs(value), 1.0) for n in numbers):
-            return True
-    return False
 
 
 def gold_criterion(episode: Episode, cid: str) -> Optional[Dict[str, Any]]:
@@ -121,67 +61,6 @@ def _criterion(episode: Episode, cid: str, answers: Optional[List[str]] = None) 
 def matches(episode: Episode, criterion: Dict[str, Any], text: str) -> bool:
     """*text* (an agent turn or a value) matches the gold of *criterion*."""
     return states(text, criterion["answers"], episode.gold_names)
-
-
-class AnswerJudge:
-    """The LLM fallback of ``states``, with its verdicts cached in *cache*
-    (JSONL, one ``{key, stated}`` per asked pair)."""
-
-    def __init__(self, model: str, cache: Path, workers: int = 16) -> None:
-        from evaluation.judge import YesNoJudge
-
-        self._judge = YesNoJudge(model)
-        self.model = model
-        self.cache_path = cache
-        self.workers = workers
-        self._cache: Dict[str, bool] = {}
-        if cache.exists():
-            for line in cache.read_text().splitlines():
-                if line.strip():
-                    row = json.loads(line)
-                    self._cache[row["key"]] = row["stated"]
-
-    def key(self, kind: str, criterion: Dict[str, Any], text: str) -> str:
-        blob = json.dumps([self.model, kind, criterion["text"], criterion["answers"], text], ensure_ascii=False)
-        return hashlib.sha1(blob.encode("utf-8")).hexdigest()
-
-    def uncached(self, items: List[Tuple[str, Dict[str, Any], str]]) -> int:
-        """How many distinct pairs of *items* are not cached yet (the ones
-        ``resolve`` sends to the judge)."""
-        return len({self.key(*item) for item in items} - self._cache.keys())
-
-    def resolve(self, items: List[Tuple[str, Dict[str, Any], str]]) -> Dict[str, bool]:
-        """The verdict of each ``(kind, criterion, text)``, by its ``key``;
-        uncached ones are asked (a reply without YES counts as no)."""
-        from evaluation.judge import judge_all, run_sync
-
-        keyed = {self.key(*item): item for item in items}
-        todo = [(k, item) for k, item in keyed.items() if k not in self._cache]
-        if todo:
-            def one(pair):
-                key, (kind, criterion, text) = pair
-                prompt = JUDGE_PROMPTS[kind].format(
-                    criterion=criterion["text"], answers=" | ".join(criterion["answers"][:MAX_JUDGE_ANSWERS]),
-                    text=text)
-                reply = run_sync(self._judge.ask([{"role": "user", "content": prompt}]))
-                return {"key": key, "stated": "YES" in reply.upper()}
-
-            rows = judge_all(todo, one, lambda pair, e: {"key": pair[0], "stated": None}, self.workers,
-                             "[answer gold]")
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.cache_path, "a") as fh:
-                for row in rows:
-                    if row["stated"] is None:
-                        continue
-                    self._cache[row["key"]] = row["stated"]
-                    fh.write(json.dumps(row) + "\n")
-        return {k: self._cache.get(k, False) for k in keyed}
-
-
-# The kinds of text ``NuggetGold`` resolves: a selected candidate (is it
-# the gold answer?) and an observation's spans (do they state it?).
-CANDIDATE = "candidate"
-SPANS = "turn"
 
 
 class NuggetGold:

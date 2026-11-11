@@ -69,7 +69,7 @@ from tqdm import tqdm
 
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 
-from ..common import mean_or_none
+from ..metrics import mean_or_none
 from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
 from .report_sentences import report_sentences
 
@@ -230,7 +230,6 @@ class ArgueReportEvaluator:
 
         evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path, max_chars=2000)
         metrics = evaluator.evaluate(results, run_dir)
-        print("\n".join(evaluator.summary_lines(metrics)))
 
     Args:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
@@ -414,32 +413,3 @@ class ArgueReportEvaluator:
             "judge_malformed": chat.malformed,
             "per_query": per_query,
         }
-
-    def summary(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """The ``generation.nuggets`` group of ``summary.json``."""
-        return {
-            "method": "auto_argue",
-            **{k: metrics[k] for k in ("num_evaluated", "num_without_nuggets", "num_empty_reports",
-                                       "num_judge_failures", "metrics")},
-            "judge_model": self.judge_model,
-            "auto_argue_commit": AUTO_ARGUE_COMMIT,
-            "max_chars": self.max_chars,
-        }
-
-    def summary_lines(self, metrics: Dict[str, Any]) -> List[str]:
-        """The terminal lines of the run summary for :meth:`evaluate`'s *metrics*."""
-        def f(value: Optional[float]) -> str:
-            return "n/a" if value is None else f"{value:.4f}"
-
-        m = metrics["metrics"]
-        return [
-            f"  Nuggets (Auto-ARGUE, {self.judge_model}): {metrics['num_evaluated']} reports"
-            f" (without nuggets {metrics['num_without_nuggets']},"
-            f" empty {metrics['num_empty_reports']},"
-            f" judge failures {metrics['num_judge_failures']})",
-            f"    coverage {f(m.get('nugget_coverage'))} (weighted {f(m.get('nugget_coverage_weighted'))})"
-            f" | sentence support {f(m.get('sentence_support'))}"
-            f" | F1 {f(m.get('f1'))} (weighted {f(m.get('f1_weighted'))})",
-            f"    citation support {f(m.get('citation_support'))}"
-            f" | citation relevance {f(m.get('citation_relevance'))}",
-        ]

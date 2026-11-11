@@ -50,7 +50,7 @@ Per request:
    ``dra_inference``; gold for BrowseComp-Plus, NeuCLIR and RAGTIME, whose
    criteria are the question's own, silver for TRQA); a request missing
    from it gets its criteria from
-   :class:`belief_model_component.criteria.LLMCriteriaSource` with the
+   :class:`belief_model_component.criteria.sources.LLMCriteriaSource` with the
    dataset's init prompt and ``max_criteria``, and they are added to it.
    TRQA with gold reads its gold bank, made on demand from the
    intermediate info (:mod:`indexing_corpus_dataset.trqa_gold_criteria`);
@@ -132,7 +132,9 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "src"):
 
 from tqdm import tqdm
 
-from evaluation.common import mean_or_none, read_jsonl, summary_stats, write_json, write_jsonl
+from evaluation.common import read_jsonl, summary_stats, write_json
+from evaluation.metrics import mean_or_none
+from utils.io_utils import write_jsonl
 from evaluation.gold import ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gold_entities, match_entities
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
@@ -141,10 +143,7 @@ from indexing_corpus_dataset.layout import (
     criteria_run_tag, default_corpus_path, effective_criteria_source, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
-from belief_model_component.criteria import CriteriaSource
-from belief_model_component.criteria_init import check_max_criteria
-from belief_model_component.updater import span_in_passage, split_span
-from belief_model_component.types import CLOSED, HOP
+from belief_model_component import CLOSED, HOP, CriteriaSource, check_max_criteria, span_in_passage, split_span
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object
 
@@ -171,11 +170,11 @@ LEVELS = ("support", "related")
 
 def criteria_source(args, split: str) -> CriteriaSource:
     """The criteria of the split's requests, as the belief model reads them
-    in dra_inference (``belief_model_component.criteria_init``, ``criteria_source``): the
+    in dra_inference (``belief_model_component.criteria.factory``, ``criteria_source``): the
     bank of the extractor's criteria (gold or silver), or the gold
     criteria of an annotation dataset (TRQA: its gold bank, made on demand
     from the intermediate info); a request without gold criteria gets none
-    and is left out.  Both have ``path``, ``lookup`` and ``get``."""
+    and is left out.  Each has ``path``, ``lookup`` (stored criteria only) and ``get``."""
     from belief_model_component import build_criteria_source
     return build_criteria_source(args.dataset, split, llm_criteria=args.llm_criteria, max_criteria=args.max_criteria,
                                  criteria_source=args.criteria_source, fallback=False)

@@ -71,11 +71,6 @@ FILE_BACKED_DEFAULTS = {
     "criteria_source": "gold",
     "add_intermediate_answer": False,
     # Evaluation
-    "k_values": [1, 3, 5, 10, 25, 50, 75, 100, 500, 1000],
-    "interleaving_window": 3,
-    "rrf_k": 60,
-    "fusion_k": 100,
-    "fusion_methods": ["interleaving"],
     "judge_model": "openrouter/qwen/qwen3-32b",
     # Execution & output
     "output": None,
@@ -154,7 +149,7 @@ def parse_cli_overrides(extras) -> dict:
     """Turn argparse ``parse_known_args`` leftovers into an overrides dict.
 
     Handles ``--key value``, ``--key=value``, repeated/space-separated list
-    values (``--k-values 1 3 5``), and bare boolean flags (``--eval-only``).
+    values (``--gpu-ids 1 2 3``), and bare boolean flags (``--eval-only``).
     Dashes in flag names are normalised to underscores to match attr names.
     """
     overrides: dict = {}
@@ -281,9 +276,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "seen_top_k":                 args.seen_top_k,
         "dataset":                    args.dataset,
         "min_relevance_score":        args.min_relevance_score,
-        "k_values":                   args.k_values,
-        "interleaving_window":        args.interleaving_window,
-        "rrf_k":                      args.rrf_k,
         "max_iteration":              args.max_iteration,
         "max_retries":                args.max_retries,
         "llm_max_tokens_per_call":    args.llm_max_tokens_per_call,

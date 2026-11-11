@@ -1,30 +1,30 @@
 """Evaluation of deep-research agent runs.
 
-The subpackages follow the groups of a run's ``summary.json``:
+The subpackages follow the groups of a run's ``metrics.md`` (``report``):
 
+retrieval
+    The surfaced / seen / cited document levels and their per-query TREC
+    files; the seen docs are scored (Recall@N, Precision@N).
 answer
     Answer correctness (``AccuracyEvaluator`` by LLM judge,
-    ``NumericMatchEvaluator`` by numeric match) and the report evaluation
-    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE); in
-    ``summary.json`` they are ``generation.correctness`` and
-    ``generation.nuggets``.
-retrieval
-    Surfaced / seen / cited document evaluators on one base class and metric
-    set, the citation helpers, and the surfaced-doc fusion evaluation
-    (``retrieval.fusion``).
-trajectory
-    Trajectory statistics (incl. token usage) and the per-query trajectory
-    file.
-generation
-    Generation statistics (``generation.stats``) and the per-query
-    generation file.
-gold
-    The gold entities of TRQA and the entity matcher, for the entity
-    reachability of the criteria (``analysis/criteria_reachability.py``).
+    ``NumericMatchEvaluator`` by numeric match), the report evaluation
+    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE) and the agent's
+    verbal confidence: the ``generation`` group.
+uncertainty
+    s_T and its baselines against correctness (``UncertaintyEvaluator``).
 belief
-    The per-query belief file.
+    The per-query belief file, the belief update evaluation
+    (``BeliefUpdateEvaluator``) and the gold match shared with training.
+trajectory
+    Per-query trajectory statistics and the per-query trajectory file.
+generation
+    The per-query generation file.
+gold
+    Per-criterion gold (TRQA's gold bank, the training pools) and TRQA's
+    gold entities with their matcher (``analysis/criteria_reachability.py``).
 
-Beside them: ``runner`` (evaluation of an inference run), ``judge`` (the
+Beside them: ``runner`` (evaluation of an inference run), ``report`` (its
+files and log), ``metrics`` (the shared measures), ``judge`` (the
 LLM-judge client) and ``common`` (file and statistics helpers).
 """
 

@@ -111,11 +111,13 @@ class DatasetSpec:
                              binary metrics (Recall@N, new_item_precision,
                              recall_so_far), the gold of the trajectory.
                              Queries with no qrel at this grade are not run.
-        relevance_gains:     Official gain of each qrel grade, for the
-                             end-of-run metrics over every official level
-                             (GradedRecall@N, NDCG);
-                             a grade not listed has gain 0.  Independent of
-                             ``min_relevance_score``.
+        relevance_gains:     Official gain of each qrel grade (a grade not
+                             listed has gain 0), independent of
+                             ``min_relevance_score``; its highest grade is
+                             the default grade of
+                             ``analysis/criteria_reachability.py`` (the run
+                             evaluation counts the grades at
+                             ``min_relevance_score`` only).
         task:                ``"qa"`` (short answer) or ``"report"`` (a report
                              request).  Report tasks get report prompts and no
                              intermediate answers.
@@ -208,9 +210,8 @@ DATASET_SPECS = {
         relevance_gains={1: 1, 2: 2}, task="qa", query_shape="single_target", max_criteria=None, gold_criteria="question", criteria_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8196,
     ),
     # Grades 0/1/3 are already the official points (very valuable 3, somewhat
-    # valuable 1).  The trajectory gold is >=3 (the belief state tracks
-    # the very valuable docs); every official level (1 and 3) counts in the
-    # end-of-run GradedRecall@N.
+    # valuable 1).  The trajectory gold and the end-of-run Recall@N are >=3
+    # (the belief state tracks the very valuable docs).
     # Only the 59 report-generation topics carry ``request``; 49 have a
     # grade-3 doc.
     # News docs: median ~350-420 tokens, 1024 covers ~90% whole.
@@ -220,9 +221,9 @@ DATASET_SPECS = {
         report_chars=2000, report_eval="argue", title_key="topic_title",
     ),
     # The NIST qrels keep the raw grades: 3 very valuable, 2 valuable, 1 topical,
-    # 0 irrelevant.  Official points 3/1/0/0, so grades 2 and 3 count in
-    # the end-of-run GradedRecall@N; the trajectory gold is >=3, as for
-    # NeuCLIR (24 of the 30 judged requests have a grade-3 doc).  ``text`` is
+    # 0 irrelevant.  Official points 3/1/0/0; the trajectory gold and the
+    # end-of-run Recall@N are >=3, as for NeuCLIR (24 of the 30 judged
+    # requests have a grade-3 doc).  ``text`` is
     # the report request (background + problem statement).
     "ragtime": DatasetSpec(
         dataset_year="2025", subset=None, query_key="text", min_relevance_score=3,
@@ -371,7 +372,7 @@ def criteria_bank_path(dataset: str, split: str, kind: str | None = None) -> Pat
     ``CRITERIA_ROOT/trqa/criteria_bank/silver/criteria_wiki2_test.jsonl``.
     A training pool has one bank for all its splits:
     ``CRITERIA_ROOT/training_pool/{pool}/criteria_bank/silver/criteria_all.jsonl``.
-    The belief model reads and adds to them (``belief_model_component.criteria_init``)."""
+    The belief model reads and adds to them (``belief_model_component.criteria.factory``)."""
     kind = kind or extraction_kind(dataset)
     if kind not in CRITERIA_SOURCES:
         raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")

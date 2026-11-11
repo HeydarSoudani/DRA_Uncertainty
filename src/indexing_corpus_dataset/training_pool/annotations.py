@@ -87,7 +87,7 @@ from utils.io_utils import write_jsonl
 QUERY_KEYS = ("id", "source", "split", "text", "answer", "query_shape", "level", "doc_ids", "criteria", "members",
               "entity_names", "property", "aggregation", "texts_ok", "errors")
 CRITERION_KEYS = ("id", "text", "answers", "doc_ids", "kind", "relations")
-# The kinds of criterion (belief_model_component.types): a rest criterion
+# The kinds of criterion (belief_model_component.core.types): a rest criterion
 # has no gold of its own, an aggregate one no documents (it is computed).
 CLOSED, REST, AGGREGATE = "closed", "rest", "aggregate"
 KINDS = (CLOSED, REST, AGGREGATE)

@@ -1,4 +1,4 @@
-"""Criteria init of the belief model: the criteria source of each query.
+"""Criteria factory of the belief model: the criteria source of each query.
 
 The belief model makes its criteria list once per sample
 (``BeliefModel.reset`` calls ``CriteriaSource.get``).  This module decides
@@ -53,7 +53,7 @@ from indexing_corpus_dataset.layout import (
 )
 from reasoner_component import create_generator, disable_native_thinking
 
-from .criteria import (
+from .sources import (
     GOLD_CRITERIA_MODEL, BankedCriteriaSource, CriteriaSource, FallbackCriteriaSource, GoldCriteriaSource,
     LLMCriteriaSource,
 )

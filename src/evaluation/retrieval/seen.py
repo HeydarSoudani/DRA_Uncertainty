@@ -48,18 +48,18 @@ def _extract_seen_iterations(
 
 
 class SeenDocEvaluator(BaseDocRetrievalEvaluator):
-    """Evaluate retrieval quality restricted to *seen* documents.
-
-    Per-step seen-doc lists are fused across iterations using the configured
-    fusion method, then evaluated with standard TREC metrics plus Metrics@N.
+    """Retrieval quality of the *seen* documents: per query the set of
+    distinct docs shown to the agent over the run, N of them, against the
+    relevant docs of the qrels (at the run's ``min_relevance_score``).
 
     Usage::
 
-        evaluator = SeenDocEvaluator(qrels=qrels, k_values=[1, 5, 10, 100])
-        metrics = evaluator.evaluate(results)
+        evaluator = SeenDocEvaluator(qrels=qrels)
+        out = evaluator.evaluate(results)
     """
 
-    emit_metrics_at_n = True
+    def __init__(self, qrels: Dict[str, Dict[str, int]]) -> None:
+        self.qrels = qrels
 
     @classmethod
     def doc_iterations(cls, result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
@@ -67,3 +67,21 @@ class SeenDocEvaluator(BaseDocRetrievalEvaluator):
         if not iterations:
             iterations = result.get("seen_docs_iterations", [])
         return iterations
+
+    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Per query with a relevant doc: ``{n_seen, recall_at_n,
+        precision_at_n}`` (Recall@N = relevant seen / relevant; Precision@N =
+        relevant seen / N, 0 when nothing was seen)."""
+        out: Dict[str, Dict[str, Any]] = {}
+        for qid, result in results.items():
+            relevant = {d for d, rel in (self.qrels.get(qid) or {}).items() if rel > 0}
+            if not relevant:
+                continue
+            seen = set(self.doc_ids(result))
+            hits = len(seen & relevant)
+            out[qid] = {
+                "n_seen": len(seen),
+                "recall_at_n": hits / len(relevant),
+                "precision_at_n": hits / len(seen) if seen else 0.0,
+            }
+        return out

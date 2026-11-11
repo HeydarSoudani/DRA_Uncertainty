@@ -6,6 +6,9 @@ arXiv:2508.06600), which adopts the prompt of OpenAI's BrowseComp
 simple-evals.  The judge model is :data:`evaluation.judge.DEFAULT_JUDGE_MODEL`.
 
 Scoring: binary (correct / incorrect).  Accuracy = #correct / #evaluated.
+The grading prompt is kept verbatim (its ``confidence`` field included, so
+saved verdicts stay valid), but that field is not used: the agent's own
+confidence is read from the generation (``answer.confidence``).
 
 A verdict is saved in ``accuracy.jsonl`` with a ``key`` hashing what was
 judged (question, cleaned response, gold answer, judge model, grader prompt);
@@ -21,10 +24,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from utils.io_utils import write_jsonl
 from utils.llm_client import LiteLLMClient
 
-from ..common import read_jsonl, write_jsonl
+from ..common import read_jsonl
 from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client, strip_references
+from .confidence import verbal_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +82,14 @@ def _parse_judge_response(text: str) -> Dict[str, Any]:
     """Parse the structured fields from the judge LLM's response.
 
     Returns a dict with keys:
-        extracted_final_answer, reasoning, correct (bool), confidence (int).
+        extracted_final_answer, reasoning, correct (bool), parse_error,
+        raw_response.  The judge's ``confidence`` field is not read (the
+        agent's own confidence is, from the generation).
     """
     result: Dict[str, Any] = {
         "extracted_final_answer": None,
         "reasoning": None,
         "correct": None,
-        "confidence": None,
         "parse_error": False,
         "raw_response": text,
     }
@@ -115,13 +121,6 @@ def _parse_judge_response(text: str) -> Dict[str, Any]:
     if reasoning_match:
         result["reasoning"] = reasoning_match.group(1).strip()
 
-    # Extract "confidence:" field
-    confidence_match = re.search(rf"(?:^|\n)\s*{_field_re('confidence')}\s*(\d+(?:\.\d+)?)\s*%?", text, re.IGNORECASE)
-    if confidence_match:
-        result["confidence"] = float(confidence_match.group(1))
-        if result["confidence"] > 100:
-            result["confidence"] = 100
-
     if result["correct"] is None:
         result["parse_error"] = True
 
@@ -150,7 +149,6 @@ def _error_record(reasoning: str, judge_input: str = "", judge_error: bool = Tru
         "judge_input": judge_input,
         "reasoning": reasoning,
         "correct": False,
-        "confidence": 0,
         "judge_error": judge_error,
         "raw_response": "",
     }
@@ -237,7 +235,7 @@ class AccuracyEvaluator:
             return {}
         path = Path(run_dir) / "accuracy.jsonl"
         return {r["query_id"]: r for r in read_jsonl(path)
-                if r.get("record") != "meta" and r.get("key") and not r.get("judge_error")}
+                if r.get("key") and not r.get("judge_error")}
 
     def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge every query with a ground-truth answer, reusing the verdicts
@@ -245,7 +243,8 @@ class AccuracyEvaluator:
 
         Returns ``accuracy``, ``num_correct``, ``num_evaluated``,
         ``num_judge_errors``, ``num_judged`` (judge calls made now) and
-        ``per_query`` (the judge records); ``{}`` when no query has an answer.
+        ``per_query`` (the judge records, with the agent's
+        ``verbal_confidence``); ``{}`` when no query has an answer.
         An empty generation is incorrect without a judge call.
         """
         evaluable_ids = [qid for qid in results if self.answers.get(qid)]
@@ -277,6 +276,10 @@ class AccuracyEvaluator:
                 max_workers=self.max_concurrent_judges, desc="[Judge]",
             )
 
+        # The agent's own confidence, read from the generation (never the
+        # judge's extraction, which defaults a missing one to 100).
+        for r in per_query:
+            r["verbal_confidence"] = verbal_confidence(results[r["query_id"]].get("generation", ""))
         num_correct = sum(1 for r in per_query if r["correct"])
         num_evaluated = len(per_query)
         return {
@@ -292,10 +295,9 @@ class AccuracyEvaluator:
         """Write ``accuracy.jsonl``: one line per query, its verdict and the
         cache ``key`` (without the raw judge response or the judged text,
         which is ``generation/{qid}.md``).  The aggregates are in
-        ``summary.json``, the judge model in ``run_config.json``."""
+        ``metrics.md``, the judge model in ``run_config.json``."""
         if not metrics:
             return
         fields = ("query_id", "key", "correct", "judge_error", "extracted_final_answer",
-                  "reasoning", "confidence")
+                  "reasoning", "verbal_confidence")
         write_jsonl(output_path, [{k: r.get(k) for k in fields} for r in metrics.get("per_query", [])])
-        print(f"  Saved accuracy results: {output_path}")
