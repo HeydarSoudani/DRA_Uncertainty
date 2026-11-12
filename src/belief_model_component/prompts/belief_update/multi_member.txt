@@ -1,0 +1,52 @@
+---terms---
+  A member criterion, "<member>: <property>", asks for the member's value, never the member itself; its parts are the member, the property and any time or place its wording sets. Whether a member belongs to the set is not a part.
+- Candidate: one possible answer of a criterion, named specifically.
+
+---rules---
+6. When a candidate's support changes, also give the competing candidates whose belief status changes with it.
+7. The aggregate criterion takes its candidates from the reasoning: an answer the reasoning computes is an agent claim on it. Extract the passages that state an input it needs, such as whether a member belongs to the set or the value of a member no criterion lists, and give a candidate of it only when a passage speaks against it, as "unlikely".
+
+---example---
+Query: What is the total length of the bridges over the river Varn that were built before 1900?
+
+Criteria, with their current candidates:
+c1 (one answer): Osby Bridge: length
+  "120 m": certain
+    + "The Osby Bridge, built in 1862, is 120 metres long" [Osby Bridge]
+c2 (one answer): Kalvik Bridge: length
+  (no candidate)
+  proposed: "85 m"
+c3 (aggregate): the total length of the bridges over the river Varn that were built before 1900
+  "205 m": unknown
+  passages on its inputs:
+    "The Osby Bridge, built in 1862" [Osby Bridge]
+
+The agent's reasoning since the last update:
+[t4]
+The Kalvik Bridge was built before 1900, so it counts. Osby Bridge is 120 m and Kalvik Bridge is about 85 m, so the total is 205 m. I should check whether other old bridges cross the Varn.
+
+Passages:
+[d6] Kalvik Bridge
+The Kalvik Bridge, built in 1903, is a stone arch bridge over the Varn, 92 metres long.
+
+[d7] Tirsa footbridge
+The Tirsa footbridge crosses the Varn at Tirsa. It was built in 1895 and is 40 metres long.
+
+Output:
+{
+  "reasoning_observations": [
+    {"id": "c1", "candidate": "120 m", "span": "Osby Bridge is 120 m", "agent_claim": "certain"},
+    {"id": "c2", "candidate": "85 m", "span": "Kalvik Bridge is about 85 m", "agent_claim": "probable"},
+    {"id": "c3", "candidate": "205 m", "span": "so the total is 205 m", "agent_claim": "certain"}
+  ],
+  "passage_observations": [
+    {"id": "c2", "passage": "d6", "spans": ["The Kalvik Bridge, built in 1903, is a stone arch bridge over the Varn, 92 metres long"]},
+    {"id": "c3", "passage": "d6", "spans": ["The Kalvik Bridge, built in 1903, is a stone arch bridge over the Varn"]},
+    {"id": "c3", "passage": "d7", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895 and is 40 metres long"]}
+  ],
+  "candidates": [
+    {"id": "c2", "candidate": "85 m", "support": [], "against": ["d6"], "reason": "Was proposed: d6 states that the Kalvik Bridge is 92 metres long, not 85 m, so a passage states that it fails a part.", "belief_status": "removed"},
+    {"id": "c2", "candidate": "92 metres", "support": ["d6"], "against": [], "reason": "New: d6 states that the Kalvik Bridge is 92 metres long, so it states every part directly, and no other candidate has support; that it was built in 1903 is not a part of this criterion.", "belief_status": "certain"},
+    {"id": "c3", "candidate": "205 m", "support": [], "against": ["d6", "d7"], "reason": "Was unknown: d6 states that the Kalvik Bridge was built in 1903, so the computation uses a bridge outside the set, and d7 states that the Tirsa footbridge, built in 1895, crosses the Varn, a bridge it leaves out.", "belief_status": "unlikely"}
+  ]
+}

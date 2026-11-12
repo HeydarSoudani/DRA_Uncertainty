@@ -51,7 +51,7 @@ its candidates (possible answers), each with an Agent-BRACE belief status
 (how likely it is an answer) and its support (the passage observations that
 support it or speak against it), and the names the agent proposed that no
 passage supports yet. Each query type has one status set
-(`prompts/belief_update/criterion_statuses.txt`): "one answer" for a
+(`prompts/belief_update/statuses.txt`): "one answer" for a
 short-answer query (every closed criterion: clues, hops, members' values),
 "aspect" for a report, where the status is the aspect's own (how well its
 facts with support back it; the facts are only kept or removed). An

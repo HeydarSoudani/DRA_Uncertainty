@@ -1,0 +1,59 @@
+---terms---
+  A criterion may refer to the answer of another criterion by its id ("the town of c1"). The parts of a criterion are the conditions its wording sets on its answer, the type of entity or value it asks for included.
+- Candidate: one possible answer of a criterion, named specifically.
+
+---rules---
+6. A part that refers to another criterion is met when a passage links the candidate to any candidate of that criterion, whatever its belief status.
+7. When a candidate's support changes, also give the competing candidates whose belief status changes with it.
+
+---example---
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+
+Criteria, with their current candidates:
+c1 (one answer): the town where the Varn Folk Museum was founded
+  "Osby": almost certain
+    + "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
+  "Tirsa": unlikely
+    + "a crafts museum with objects from the Varn valley opened in Tirsa in 1925" [Tirsa]
+c2 (one answer): the engineer who was born in the town of c1
+  (no candidate)
+  proposed: "Nils Berg"
+c3 (one answer): the lighthouse that was designed by the engineer of c2
+  (no candidate)
+
+The agent's reasoning since the last update:
+[t2]
+The museum page says "the folk museum of the Varn valley opened in Osby in 1921", so the town is Osby. Nils Berg may be the engineer born there, but the last search did not show his birthplace.
+
+[t3]
+I am fairly sure the lighthouse is the Kalvik Lighthouse, but I have not seen a source for it. I should search for lighthouses designed by engineers from Osby.
+
+Passages:
+[d2] Henrik Dahl
+Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby. He designed harbours and lighthouses along the coast.
+
+[d3] Skarv Lighthouse
+The Skarv Lighthouse, completed in 1889, was designed by Henrik Dahl.
+
+[d4] Nils Berg (engineer)
+Nils Berg (1861-1930) was a railway engineer born in Tirsa, where he spent most of his life.
+
+Output:
+{
+  "reasoning_observations": [
+    {"id": "c1", "candidate": "Osby", "span": "so the town is Osby", "agent_claim": "certain"},
+    {"id": "c2", "candidate": "Nils Berg", "span": "Nils Berg may be the engineer born there", "agent_claim": "possible"},
+    {"id": "c3", "candidate": "Kalvik Lighthouse", "span": "I am fairly sure the lighthouse is the Kalvik Lighthouse", "agent_claim": "probable"}
+  ],
+  "passage_observations": [
+    {"id": "c2", "passage": "d2", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]},
+    {"id": "c3", "passage": "d2", "spans": ["He designed harbours and lighthouses along the coast"]},
+    {"id": "c3", "passage": "d3", "spans": ["The Skarv Lighthouse, completed in 1889, was designed by Henrik Dahl"]},
+    {"id": "c2", "passage": "d4", "spans": ["Nils Berg (1861-1930) was a railway engineer born in Tirsa"]}
+  ],
+  "candidates": [
+    {"id": "c2", "candidate": "Henrik Dahl", "support": ["d2"], "against": [], "reason": "New: d2 states that he was an engineer born in Osby, a candidate of c1, so it states every part directly, but Nils Berg has the same support.", "belief_status": "possible"},
+    {"id": "c2", "candidate": "Nils Berg", "support": ["d4"], "against": [], "reason": "Was proposed: d4 states that he was an engineer born in Tirsa, a candidate of c1, so it states every part directly, whatever the belief status of Tirsa, but Henrik Dahl has the same support.", "belief_status": "possible"},
+    {"id": "c3", "candidate": "Skarv Lighthouse", "support": ["d3"], "against": [], "reason": "New: d3 states that it was designed by Henrik Dahl, a candidate of c2, so it states every part directly, whatever the belief status of Henrik Dahl, and no other candidate has support.", "belief_status": "certain"}
+  ]
+}

@@ -3,19 +3,20 @@ Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
 Criteria, with their candidates:
 c1 (one answer): the painter who was born in a coastal town
-  "Anna Holm": almost certain
-    + "Anna Holm (1890-1960) was a painter born in the port town of Vik" [Anna Holm]
+  "Anna Holm": certain
+    + "Anna Holm (1890-1960) was a painter born in the coastal town of Vik" [Anna Holm]
+  removed: "Lars Ek"
 c2 (one answer): the painter who won the Ostra Prize in the 1920s
-  "Erik Lind": possible
-    + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
-  "Maja Strand": possible
-    + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
+  "Maja Strand": almost certain
+    + "In 1927 the Ostra Prize for painting went to Maja Strand" [Ostra Prize]
+  "Erik Lind": unlikely
+    + "Erik Lind, a painter, received the Ostra Prize" [Erik Lind]
   removed: "Anna Holm"
 c3 (aggregate): the painter that meets c1 to c2
   (no candidate)
 
 The agent's final answer:
-Anna Holm was born in the port town of Vik and is a well-known winner of the Ostra Prize, so she fits both clues.
+Anna Holm was born in the coastal town of Vik and is a well-known winner of the Ostra Prize, so she fits both clues.
 
 Final answer:
 Anna Holm
@@ -27,7 +28,7 @@ Output:
     {"id": "c2", "candidate": "Anna Holm"},
     {"id": "c3", "candidate": null}
   ],
-  "reason": "Anna Holm is almost certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so she is no candidate of the target and the belief speaks against her.",
+  "reason": "Anna Holm is certain on the coastal birth, but she is removed on the prize decade, which identifies the answer, so she is no candidate of the target and the belief speaks against her.",
   "final_status": "unlikely"
 }
 
@@ -36,9 +37,9 @@ Query: A composer studied in Vienna in the 1880s and wrote an opera about a ligh
 Criteria, with their candidates:
 c1 (one answer): the composer who studied in Vienna in the 1880s
   "Karl Vogt": probable
-    + "Karl Vogt studied composition in Vienna from 1883 to 1886" [Karl Vogt]
-  "Emil Brandt": possible
-    + "Among the students of the Vienna Conservatory in 1885 was Emil Brandt" [Vienna Conservatory]
+    + "Karl Vogt studied composition in Vienna" [Karl Vogt]
+  "Emil Brandt": unlikely
+    + "Emil Brandt gave concerts in Vienna" [Emil Brandt]
 c2 (one answer): the composer who wrote an opera about a lighthouse keeper
   "Karl Vogt": almost certain
     + "Vogt's opera The Keeper of Skarv tells the story of a lighthouse keeper" [The Keeper of Skarv]
@@ -62,7 +63,7 @@ Output:
     {"id": "c3", "candidate": "Karl Vogt"},
     {"id": "c4", "candidate": "1871"}
   ],
-  "reason": "The birth year 1871 is certain for the wife of Karl Vogt, but Karl Vogt is only probable as the target, which identifies the answer, since Emil Brandt also studied in Vienna in the 1880s.",
+  "reason": "The birth year 1871 is certain for the wife of Karl Vogt, but Karl Vogt is only probable as the target, which identifies the answer, since no passage states that he studied in Vienna in the 1880s.",
   "final_status": "probable"
 }
 
@@ -79,10 +80,10 @@ c2 (one answer): the engineer who was born in the town of c1
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
   removed: "Nils Berg"
 c3 (one answer): the lighthouse that was designed by the engineer of c2
-  "Skarv Lighthouse": probable
+  "Skarv Lighthouse": almost certain
     + "The Skarv Lighthouse, completed in 1889, was designed by Henrik Dahl" [Skarv Lighthouse]
     + "The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl" [Skarv Lighthouse]
-  "Hamn Lighthouse": possible
+  "Hamn Lighthouse": unlikely
     + "The Skarv Lighthouse, completed in 1889, and the Hamn Lighthouse, completed in 1893, were among the coastal works of Henrik Dahl" [Skarv Lighthouse]
 
 The agent's final answer:
@@ -98,8 +99,8 @@ Output:
     {"id": "c2", "candidate": "Henrik Dahl"},
     {"id": "c3", "candidate": "Skarv Lighthouse"}
   ],
-  "reason": "The first two hops are certain, but the last, which identifies the answer, is only probable, since the Hamn Lighthouse is also among the engineer's works.",
-  "final_status": "probable"
+  "reason": "The first two hops are certain, but the last, which identifies the answer, is almost certain, not certain, since the Hamn Lighthouse also has support as a work of the engineer.",
+  "final_status": "almost certain"
 }
 
 ---multi_member---

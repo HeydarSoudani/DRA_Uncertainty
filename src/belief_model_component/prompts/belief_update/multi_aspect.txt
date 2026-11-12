@@ -1,0 +1,52 @@
+---terms---
+  Every criterion of a report is one aspect of its topic.
+- Candidate: one fact on an aspect, a short statement. The parts of a fact are the claims its statement makes, and a passage states them when it states those claims. A fact has no belief status of its own: its agent claim is how likely the reasoning says the fact holds.
+
+---output---
+On an aspect, a fact's "belief_status" is "kept" or "removed", and its reason opens with "Was kept:" once listed; one more object, with "candidate": null, gives the aspect's new belief status, with the reason "Was <current belief status>: ...".
+
+---example---
+Query: Write a report on the effects of the 2022 drought on farming in Norland, not including livestock.
+
+Criteria, with their current candidates:
+c1 (aspect): crop yield losses in Norland in 2022
+  status: probable
+  "Wheat yields fell by about a third"
+    + "the drought cut the 2022 wheat harvest sharply, by about a third in the south" [Norland farm news]
+    + "wheat yields were 31% below the five-year average" [Harvest outlook]
+  "Barley yields fell by nearly a fifth"
+    + "barley yields dropped by nearly a fifth after the dry summer" [Grain market bulletin]
+  proposed: "Barley yields fell by half"
+c2 (aspect): support measures for farmers in Norland in 2022, not livestock subsidies
+  status: unknown
+  (no candidate)
+
+The agent's reasoning since the last update:
+[t3]
+I also recall that barley yields fell by half, but I have not seen a source for it. The government release lists the whole drought package, so the support measures look complete.
+
+Passages:
+[d7] Crop report 2022
+In 2022, barley yields in Norland fell 18% below the five-year average.
+
+[d8] Drought package
+In September 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief and offered them low-interest loans for irrigation. Feed subsidies for livestock farms were also extended.
+
+Output:
+{
+  "reasoning_observations": [
+    {"id": "c1", "candidate": "Barley yields fell by half", "span": "I also recall that barley yields fell by half, but I have not seen a source for it", "agent_claim": "possible"}
+  ],
+  "passage_observations": [
+    {"id": "c1", "passage": "d7", "spans": ["In 2022, barley yields in Norland fell 18% below the five-year average"]},
+    {"id": "c2", "passage": "d8", "spans": ["In September 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief and offered them low-interest loans for irrigation"]}
+  ],
+  "candidates": [
+    {"id": "c1", "candidate": "Barley yields fell by nearly a fifth", "support": ["d7"], "against": [], "reason": "Was kept: d7 states that barley yields fell 18% in 2022, a second source for it.", "belief_status": "kept"},
+    {"id": "c1", "candidate": "Barley yields fell by half", "support": [], "against": ["d7"], "reason": "Was proposed: d7 states that barley yields fell 18%, not by half, so a passage states that it is wrong.", "belief_status": "removed"},
+    {"id": "c1", "candidate": null, "support": [], "against": [], "reason": "Was probable: every fact now rests on several passages, but the facts cover only the grain crops, not every side of the yield losses.", "belief_status": "almost certain"},
+    {"id": "c2", "candidate": "Drought relief of 40 euros per hectare for crop farmers", "support": ["d8"], "against": [], "reason": "New: d8 states that in 2022 the Norland government paid crop farmers 40 euros per hectare in drought relief.", "belief_status": "kept"},
+    {"id": "c2", "candidate": "Low-interest loans for irrigation for crop farmers", "support": ["d8"], "against": [], "reason": "New: d8 states that in 2022 the Norland government offered crop farmers low-interest loans for irrigation.", "belief_status": "kept"},
+    {"id": "c2", "candidate": null, "support": [], "against": [], "reason": "Was unknown: two facts, cash relief and loans, are on several sides of the support measures, but not every side, and both rest on d8 only; the feed subsidies for livestock are left out by the criterion.", "belief_status": "probable"}
+  ]
+}

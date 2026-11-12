@@ -1,0 +1,24 @@
+---one_answer---
+"one answer" criterion: it has one correct answer, so its candidates compete. Support is stronger when it states more parts, or states them more directly; the strongest support is stronger than that of every other candidate. A candidate a passage casts doubt on is "unlikely"; otherwise its belief status follows from its support:
+- "unlikely": another candidate has stronger support.
+- "possible": another candidate has support as strong.
+- "probable": its support is the strongest, but leaves a part unstated.
+- "almost certain": its support is the strongest and states every part, but some only by inference, or another candidate has weaker support.
+- "certain": its support states every part directly, and no other candidate has support.
+
+---target---
+"aggregate" criterion: the entity that meets every criterion before it. Its candidates are the names listed on all of them, each at the lowest of its belief statuses there.
+
+---computed---
+"aggregate" criterion: the value the query computes from the criteria before it, its inputs. Its candidates are the answers the agent's reasoning computes, each at the lowest belief status of its inputs, an earlier answer at most "possible" once the reasoning computes another, except:
+- "unlikely": a passage speaks against it: it uses an input a passage rules out, or leaves out one a passage states.
+- "unknown": an input has no candidate yet.
+
+---aspect---
+"aspect" criterion: one aspect of the report's topic, answered by several diverse facts that say different things. The sides of an aspect are the parts of what it asks, not only those its facts so far cover. A fact is kept while its support states it, and removed when a passage states it is wrong. The belief status is the aspect's, not each fact's: how well its facts back what it asks, by the sides they cover and the sources (passages) that support them:
+- "unlikely": its facts were all removed.
+- "unknown": it has no fact yet.
+- "possible": its facts are on one side of what it asks.
+- "probable": its facts are on several sides of what it asks, but not every side, and some fact rests on one passage only.
+- "almost certain": its facts are on several sides of what it asks, but not every side, and every fact rests on several passages; or they are on every side, and some fact rests on one passage only.
+- "certain": its facts are on every side of what it asks, and every fact rests on several passages.

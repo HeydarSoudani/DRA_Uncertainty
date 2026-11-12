@@ -181,9 +181,8 @@ Rules of a bank line:
 ### Belief update
 
 The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. A call
-(`system.txt` in `src/belief_model_component/prompts/belief_update/`, how each shape's criteria are read in `query_criteria.txt`,
-the status definitions of the shape's criterion types in `criterion_statuses.txt`, the per-shape example in
-`examples.txt`) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
+(`system.txt` in `src/belief_model_component/prompts/belief_update/`, the status definitions of the shape's criterion
+types in `statuses.txt`, and the shape's own `<shape>.txt`: its terms, its rules, its output notes and its example) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
 **When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when it has a document not
 judged before (labelled `d<n>` when first shown); a judged passage is never shown again. Otherwise no call
@@ -260,20 +259,21 @@ lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
 
 The statuses, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3), `certain` (4);
 "unknown" (level 0) is the status of a criterion without candidates. Each query type has one status set
-(`prompts/belief_update/criterion_statuses.txt`), and each dataset's prompt holds only its own: "one answer" for
-multi_clue, multi_hop and multi_member (plus the aggregate's rule for multi_clue and multi_member), "aspect" for
+(`prompts/belief_update/statuses.txt`), and each dataset's prompt holds only its own: "one answer" for
+multi_clue, multi_hop and multi_member (plus the aggregate: a target for multi_clue, a computation for multi_member), "aspect" for
 multi_aspect. A one-answer candidate's status combines its rivals and its own support (support is stronger when it
-states more parts, or states them more directly):
+states more parts, or states them more directly). A candidate a passage casts doubt on is "unlikely" (one a passage
+states fails a part is removed); otherwise:
 
 | status | one answer (candidates compete) |
 |---|---|
-| unlikely | another candidate has stronger support, or a passage speaks against it |
-| possible | another candidate has support as strong, or its support states its parts only by inference or in part |
-| probable | its support is the strongest and states some parts directly |
-| almost certain | its support is the strongest and states every part, some only by inference or in part |
+| unlikely | another candidate has stronger support |
+| possible | another candidate has support as strong |
+| probable | its support is the strongest, but leaves a part unstated |
+| almost certain | its support is the strongest and states every part, but some only by inference, or another candidate has weaker support |
 | certain | its support states every part directly, and no other candidate has support |
 
-When several fit, the lowest is given. A candidate is what its criterion asks for, never the member a member
+The definitions do not overlap, so the prompt has no tie-break rule. A candidate is what its criterion asks for, never the member a member
 criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
 written as a candidate or proposal (`subject_candidate`). Whether a member belongs to the set is judged on the
 aggregate: its passage observations state an input it needs (a member's membership, or the value of a member no
@@ -284,10 +284,10 @@ later (`aggregate_status` when the reply wrote another status). A computed aggre
 reasoning's claims only; an update never adds one (`not_computed`).
 
 A report's aspect (multi_aspect) has one status of its own, written by the reply's item on it without a candidate:
-how well its facts with support back what it asks, by their diversity (distinct facts, on different sides of the
-aspect, from different sources): unlikely, its facts all removed or spoken against; possible, one side or one source;
-probable, several sides from more than one source; almost certain, every side from several sources; certain, and
-every fact supported by more than one source. Its facts are only kept or removed. The status is the aspect's q_k; it
+how well its facts back what it asks, by the sides they cover and whether every fact rests on several passages:
+unlikely, its facts all removed; unknown, no fact yet; possible, one side; probable, several sides (not every one) with
+some fact on one passage only; almost certain, several sides with every fact on several passages, or every side with
+some fact on one passage only; certain, every side with every fact on several passages. Its facts are only kept or removed. The status is the aspect's q_k; it
 moves only with a passage on the aspect in the call, never with a claim alone (`aspect_no_passage`), is "unknown"
 with no fact and "unlikely" when a passage removed its last facts (a proposal the agent rejected does not count,
 `aspect_no_fact`), and "certain" needs every fact supported by two

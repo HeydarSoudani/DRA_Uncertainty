@@ -8,29 +8,26 @@ Output:
 - One JSON object, in the format below.
 
 == Definitions ==
-- Criterion: one piece of information that a complete response to the query must contain. A criterion may refer to the answer of another criterion by its id.
-  {query_criteria}
-- Candidate: one possible answer of a criterion, named specifically.
+- Criterion: one piece of information that a complete response to the query must contain.
+{shape_terms}
 - Support: the passage observations that state a part of the criterion for a candidate.
-- Against: the passage observations that state the candidate fails a part of the criterion, or cast doubt on one.
+- Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
 - Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
 - Answer's candidate: on each criterion the final answer relies on, the candidate it relies on: the answer itself on a criterion about the answer; on a criterion about another entity or value, the one the answer depends on.
 - Final status: how likely the final answer is the answer to the query, on the belief status scale. It weighs the answer's candidates: a criterion that few entities meet (a prize in a given decade) identifies the answer and weighs more than a broad one (being a painter).
 
 {status_definitions}
 
-The final status depends on the answer's candidates:
-- "unlikely": less likely than not: the belief speaks against it: an answer's candidate is "unlikely" or removed, or the answer leaves out a candidate at "probable" or above that it depends on (a member of a set), or a member that a passage states meets the set's conditions.
-- "possible": as likely as not: nothing speaks against it, but on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent; an aggregate's answer is at most "possible" while inputs it depends on have no answer at "probable" or above.
-- "probable": more likely than not: nothing speaks against it, and on every criterion that identifies the answer, the answer's candidate is at "probable" or above.
-- "almost certain": little doubt left: every answer's candidate is at "almost certain" or above.
+The final status depends on the answer's candidates. When the belief speaks against the final answer, it is "unlikely": less likely than not. The belief speaks against it when an answer's candidate is "unlikely" or removed, or the answer leaves out a candidate at "probable" or above that it depends on (a member of a set), or a member that a passage states meets the set's conditions. Otherwise:
+- "possible": as likely as not: on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent; or the answer is an aggregate's answer, and inputs it depends on have no answer at "probable" or above.
+- "probable": more likely than not: neither of these holds, but some answer's candidate is below "almost certain".
+- "almost certain": little doubt left: every answer's candidate is at "almost certain" or above, but some is not "certain".
 - "certain": no doubt left: every answer's candidate is "certain".
 
 == Rules ==
 1. Judge from the belief only. The agent's last reasoning only tells which candidates the final answer relies on; it is not evidence, nor is the agent's confidence or your own knowledge.
 2. Where several criteria describe the same entity (the clues and the target of a multi-clue query), the answer's candidate is the same entity on each: a candidate that meets one criterion does not support it on another. When the query asks for something about that entity, the answer's candidate on those criteria is the entity the final answer depends on, and on the last criterion it is the final answer itself.
 3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units). A candidate with another value is not the answer's candidate: give null, and judge the final answer itself.
-4. When several statuses fit the final answer, give the lowest.
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:

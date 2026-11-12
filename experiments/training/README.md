@@ -12,7 +12,7 @@ each with a status (how likely it is an answer, Agent-BRACE's verbal scale) and 
 only propose names (proposals, no status, not rivals) and make claims, saved but never shown to the update; a
 passage that supports a proposal makes it a candidate. The model writes the status from the support and, for a
 one-answer criterion, from the other candidates' support (per criterion type in
-`prompts/belief_update/criterion_statuses.txt`); code enforces only hard limits (no support: at most "possible",
+`prompts/belief_update/statuses.txt`); code enforces only hard limits (no support: at most "possible",
 `no_support`; no new support: the status kept, `no_new_support`). The candidates with their support (quoted spans
 and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
 candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call

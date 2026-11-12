@@ -73,8 +73,9 @@ def strip_belief_state(text: str) -> str:
 
 
 def criterion_type(kind: str) -> str:
-    """The type of a criterion of *kind* as the belief update reads it: the
-    name of its section of ``criterion_statuses.txt``."""
+    """The type of a criterion of *kind* as the belief update reads it, the
+    name its status definitions use (``prompts/belief_update/statuses.txt``:
+    a target and a computation are both "aggregate")."""
     return {AGGREGATE: "aggregate", ASPECT: "aspect"}.get(kind, "one answer")
 
 

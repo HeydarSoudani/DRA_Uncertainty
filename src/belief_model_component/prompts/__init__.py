@@ -2,18 +2,20 @@
 
 System prompts are one folder per stage next to this module: the
 criteria extractor (``criteria_init/``: the shared core ``system.txt``, its
-per-shape parts in ``<shape>.txt``)
-and the belief updater (``belief_update/``: the shared core ``system.txt``,
-how each shape's criteria are read in ``query_criteria.txt``, the status definitions of
-each criterion type in ``criterion_statuses.txt`` and the per-shape example in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
-with the same ``query_criteria.txt`` and its own per-shape example in
-``examples.txt``; short-answer shapes only).  User prompts are in
-``user_prompts`` and re-exported here.
+per-shape parts in ``<shape>.txt``), the belief updater (``belief_update/``:
+the shared core ``system.txt``, the status definitions of each criterion
+type in ``statuses.txt``, and per query shape ``<shape>.txt`` with its
+``terms`` (what its criteria's parts and candidates are), its own
+``rules`` (numbered after the core's), its ``output`` notes and its
+``example``) and the final scorer (``final_score/``: ``system.txt`` with the
+shape's ``terms`` and status definitions from ``belief_update/``, never its
+rules or output notes, and its own per-shape example in ``examples.txt``;
+short-answer shapes only).  User prompts are in ``user_prompts`` and
+re-exported here.
 """
 
 import re
 from pathlib import Path
-from typing import Dict
 
 from ..core.types import MULTI_ASPECT, MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, QUERY_SHAPES
 from .user_prompts import (
@@ -60,42 +62,50 @@ def _compose(stage: str, shape: str) -> str:
     return re.sub(r"^\{shape_\w+\}\n", "", text, flags=re.MULTILINE)
 
 
-# How the belief updater and the final scorer read the criteria of each query
-# shape (``belief_update/query_criteria.txt``): what their parts and answers are.
-QUERY_CRITERIA = {k: v for k, v in _sections("belief_update/query_criteria.txt").items() if k}
-
-# The status definitions of each criterion type (``belief_update/criterion_statuses.txt``)
-# and the criterion types each query shape has (``criteria.parsing.criterion_kinds``):
-# one status set per query type ("one answer" for the short-answer shapes,
-# "aspect" for a report), and the aggregate's rule where the shape has one
-# (the target of a multi-clue query, the computation of a multi-member one).
-CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/criterion_statuses.txt").items() if k}
+# The status definitions of each criterion type (``belief_update/statuses.txt``,
+# meaning only) and the criterion types each query shape has: "one answer"
+# for the short-answer shapes, "aspect" for a report, and the aggregate where
+# the shape has one, as a target (multi-clue: the entity that meets every
+# clue) or a computation (multi-member).  The input names both "aggregate"
+# (``views.tag.criterion_type``).
+CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
-    MULTI_CLUE: ("one_answer", "aggregate"),
+    MULTI_CLUE: ("one_answer", "target"),
     MULTI_HOP: ("one_answer",),
-    MULTI_MEMBER: ("one_answer", "aggregate"),
+    MULTI_MEMBER: ("one_answer", "computed"),
     MULTI_ASPECT: ("aspect",),
 }
 
-# One worked example of the belief update per query shape (``belief_update/examples.txt``).
-BELIEF_UPDATE_EXAMPLES = {k: v for k, v in _sections("belief_update/examples.txt").items() if k}
+# The belief update's sections of each query shape (``belief_update/<shape>.txt``):
+# ``terms``, ``rules``, ``output`` and ``example``.
+SHAPE_SECTIONS = {shape: _sections(f"belief_update/{shape}.txt") for shape in QUERY_SHAPES}
+
+_PLACEHOLDER_RE = re.compile(r"\{(?:shape_\w+|status_definitions|example)\}")
 
 
-def _call_system(stage: str, shape: str, examples: Dict[str, str]) -> str:
+def _call_system(stage: str, shape: str, example: str) -> str:
     """The system prompt of a belief model call (*stage*: ``belief_update``
     or ``final_score``) for a *shape* query: the stage's core with the
-    shape's ``query_criteria``, the status definitions of its criterion types (shared
-    by both stages) and the stage's example of the shape."""
+    shape's terms, the status definitions of its criterion types (shared
+    by both stages), its rules and output notes (placeholders only the
+    update has) and *example*.  A placeholder alone on its line whose text
+    is empty is removed with its line."""
+    sections = SHAPE_SECTIONS[shape]
     fills = {
-        "query_criteria": QUERY_CRITERIA[shape],
+        "shape_terms": sections.get("terms", ""),
         "status_definitions": "\n\n".join(CRITERION_STATUSES[t] for t in SHAPE_CRITERION_TYPES[shape]),
-        "example": examples[shape],
+        "shape_rules": sections.get("rules", ""),
+        "shape_output": sections.get("output", ""),
+        "example": example,
     }
     text = _read(f"{stage}/system.txt")
     for key, body in fills.items():
         if not body:
             text = text.replace("{" + key + "}\n", "")
         text = text.replace("{" + key + "}", body)
+    left = _PLACEHOLDER_RE.findall(text)
+    if left:
+        raise ValueError(f"{stage} prompt of {shape}: unfilled {left}")
     return text
 
 
@@ -103,7 +113,8 @@ def _call_system(stage: str, shape: str, examples: Dict[str, str]) -> str:
 # the cap on the number of criteria is the extractor's input
 # (``criteria_init_user``).  One belief update prompt per query shape.
 CRITERIA_INIT_SYSTEMS = {shape: _compose("criteria_init", shape) for shape in QUERY_SHAPES}
-BELIEF_UPDATE_SYSTEMS = {shape: _call_system("belief_update", shape, BELIEF_UPDATE_EXAMPLES) for shape in QUERY_SHAPES}
+BELIEF_UPDATE_SYSTEMS = {shape: _call_system("belief_update", shape, SHAPE_SECTIONS[shape]["example"])
+                         for shape in QUERY_SHAPES}
 
 # One worked example of the final scorer per query shape
 # (``final_score/examples.txt``); a shape without one (a report) has no
@@ -111,4 +122,4 @@ BELIEF_UPDATE_SYSTEMS = {shape: _call_system("belief_update", shape, BELIEF_UPDA
 FINAL_SCORE_EXAMPLES = {k: v for k, v in _sections("final_score/examples.txt").items() if k and v}
 
 
-FINAL_SCORE_SYSTEMS = {shape: _call_system("final_score", shape, FINAL_SCORE_EXAMPLES) for shape in FINAL_SCORE_EXAMPLES}
+FINAL_SCORE_SYSTEMS = {shape: _call_system("final_score", shape, example) for shape, example in FINAL_SCORE_EXAMPLES.items()}

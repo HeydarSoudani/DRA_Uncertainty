@@ -10,24 +10,22 @@ Output:
 - One JSON object, in the format below.
 
 == Definitions ==
-- Criterion: one piece of information that a complete response to the query must contain. A criterion may refer to the answer of another criterion by its id.
-  {query_criteria}
-- Candidate: one possible answer of a criterion, named specifically.
+- Criterion: one piece of information that a complete response to the query must contain.
+{shape_terms}
 - Support: the passage observations that state a part of the criterion for a candidate.
-- Against: the passage observations that state the candidate fails a part of the criterion, or cast doubt on one.
+- Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
 - Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
 - Agent claim: how likely the agent's reasoning says a candidate is an answer of its criterion, on the belief status scale, or "rejected" when the reasoning rules it out. Claims follow the names the agent is considering, but only passages set their belief status.
 
 {status_definitions}
 
 == Rules ==
-1. Judge each criterion on its own parts. A part that refers to another criterion ("the town of c1") is met when a passage links the candidate to any candidate of that criterion, whatever its belief status.
+1. Judge each criterion on its own parts.
 2. In subtask 1, leave the current belief aside: extract text for every criterion a passage states a part of, and from the reasoning only its own words, not the passage text it quotes.
-3. In subtask 2, a name from the reasoning stays proposed until a passage supports it, unless its criterion type takes candidates from the reasoning.
-4. When a candidate's support changes, also give the competing candidates whose belief status changes with it.
-5. Remove a listed or proposed name only when a passage states that it fails a part, or when the reasoning rejects it and no passage supports it.
-6. When several belief statuses fit a candidate, give the lowest.
-7. Write a listed or proposed name exactly as it is listed.
+3. In subtask 2, a name from the reasoning stays proposed until a passage supports it.
+4. Remove a listed or proposed name only when a passage states that it fails a part, or when the reasoning rejects it and no passage supports it.
+5. Write a listed or proposed name exactly as it is listed.
+{shape_rules}
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order. A list with no items is []. A span is copied exactly from one place in its source, in its language: the shortest part of a sentence that states it.
@@ -47,6 +45,7 @@ Respond with ONLY a raw JSON object, no markdown, no code blocks, with these key
   - "against": The labels of the passages of this update that speak against it.
   - "reason": One sentence: "Was <current belief status>: <why its support gives the new belief status>." For a proposed name: "Was proposed: ...". For a candidate only a passage names: "New: ...".
   - "belief_status": Its new belief status, or "removed".
+{shape_output}
 
 == Example ==
 {example}

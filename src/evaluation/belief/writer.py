@@ -12,7 +12,7 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 45::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 46::
 
     line 1  {"record": "meta", "schema_version": 45, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
@@ -80,6 +80,22 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 46 (was 45): same record fields; the belief prompts'
+statuses mean something else, so older files are not comparable.  The
+status definitions no longer overlap and the "give the lowest" rule is
+gone (update and final scorer): a one-answer candidate is "unlikely" when
+a passage casts doubt on it or a rival has stronger support, "possible"
+on a tie, "probable" when the strongest support leaves a part unstated,
+"almost certain" when it states every part but some by inference or a
+rival has weaker support, "certain" when every part is stated directly
+and no rival has support.  An aspect's status counts the sides its facts
+cover (one, several, every) and whether every fact rests on several
+passages.  The final status ladder is exclusive too.  Prompt files:
+``belief_update/statuses.txt`` (by criterion type: one_answer, target,
+computed, aspect) and ``belief_update/<shape>.txt`` (terms, rules, output
+notes, example) replace ``criterion_statuses.txt``, ``query_criteria.txt``
+and ``examples.txt``.
 
 schema_version 45 (was 44): two status sets.  Kinds ``hop``, ``rest`` and
 ``target`` are gone: a hop is ``closed`` (one answer), a multi-member
@@ -330,7 +346,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 45
+SCHEMA_VERSION = 46
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)
