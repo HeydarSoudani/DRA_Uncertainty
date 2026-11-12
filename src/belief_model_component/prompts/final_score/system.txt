@@ -1,19 +1,19 @@
 You are the final scorer of a deep research agent. Given the belief about each criterion of the query and the agent's final answer, give the final status: how likely the final answer is the answer to the query, from the belief only.
 
 Input:
-- The query and its criteria, each with its type and its candidates. Each candidate has its belief status and the passage texts that support it (+) or speak against it (-), each with the passage's title in brackets. The names the agent proposed that no passage supports are listed as proposed; the names removed from the belief are listed as removed. A computed criterion also lists the passage texts on its definition.
+- The query and its criteria, each with its type and candidates: a candidate with its belief status and the passage texts that support it (+) or speak against it (-), the names the agent proposed that no passage supports, and the names removed from the belief.
 - The agent's final answer, after its last reasoning.
 
 Output:
-- One JSON object with the answer's candidates and the final status, in the format below.
+- One JSON object, in the format below.
 
 == Definitions ==
 - Criterion: one piece of information that a complete response to the query must contain. A criterion may refer to the answer of another criterion by its id.
-  {shape_context}
-  The parts of a criterion are the conditions its wording sets, the type of answer it asks for included.
-- Candidate: one possible answer of a criterion, named specifically: an entity, a figure or a fact.
-- Support: the passage observations that state a part of the criterion for a candidate. Observations that state the candidate fails a part, or cast doubt on one, speak against it.
-- Belief status: the belief about a candidate: how likely it is the answer, "unlikely", "possible", "probable", "almost certain" or "certain", from lowest to highest, as defined below for each criterion type. When several fit, give the lowest.
+  {query_criteria}
+- Candidate: one possible answer of a criterion, named specifically.
+- Support: the passage observations that state a part of the criterion for a candidate.
+- Against: the passage observations that state the candidate fails a part of the criterion, or cast doubt on one.
+- Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
 - Answer's candidate: on each criterion the final answer relies on, the candidate it relies on: the answer itself on a criterion about the answer; on a criterion about another entity or value, the one the answer depends on.
 - Final status: how likely the final answer is the answer to the query, on the belief status scale. It weighs the answer's candidates: a criterion that few entities meet (a prize in a given decade) identifies the answer and weighs more than a broad one (being a painter).
 
@@ -21,7 +21,7 @@ Output:
 
 The final status depends on the answer's candidates:
 - "unlikely": less likely than not: the belief speaks against it: an answer's candidate is "unlikely" or removed, or the answer leaves out a candidate at "probable" or above that it depends on (a member of a set), or a member that a passage states meets the set's conditions.
-- "possible": as likely as not: nothing speaks against it, but on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent; a computed answer is at most "possible" while members it depends on have no answer at "probable" or above.
+- "possible": as likely as not: nothing speaks against it, but on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent; an aggregate's answer is at most "possible" while inputs it depends on have no answer at "probable" or above.
 - "probable": more likely than not: nothing speaks against it, and on every criterion that identifies the answer, the answer's candidate is at "probable" or above.
 - "almost certain": little doubt left: every answer's candidate is at "almost certain" or above.
 - "certain": no doubt left: every answer's candidate is "certain".
@@ -30,6 +30,7 @@ The final status depends on the answer's candidates:
 1. Judge from the belief only. The agent's last reasoning only tells which candidates the final answer relies on; it is not evidence, nor is the agent's confidence or your own knowledge.
 2. Where several criteria describe the same entity (the clues and the target of a multi-clue query), the answer's candidate is the same entity on each: a candidate that meets one criterion does not support it on another. When the query asks for something about that entity, the answer's candidate on those criteria is the entity the final answer depends on, and on the last criterion it is the final answer itself.
 3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units). A candidate with another value is not the answer's candidate: give null, and judge the final answer itself.
+4. When several statuses fit the final answer, give the lowest.
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:

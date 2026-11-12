@@ -15,8 +15,9 @@ The groups, in the order of the files and the log:
     uncertainty  s_T, its formula ablations and the agent's verbal confidence
                  against correctness (QA, belief model on); a report's s_T
                  against its nugget coverage (reports, belief model on)
-    belief       the belief update on gold documents (datasets with gold
-                 per criterion, belief model on)
+    belief       the belief's change at gold and control events, and per
+                 criterion its recall, answer reached and status calibration
+                 (datasets with gold per criterion, belief model on)
     trajectory   searches, agent and belief model tokens, forced answers
 
 A run with an output directory is always evaluated from its saved files, at
@@ -42,12 +43,12 @@ from utils.io_utils import load_result_from_saved_files
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
 from .belief import BeliefUpdateEvaluator, load_belief_files, read_run_config, save_belief
-from .belief.evaluator import BELIEF_EVAL_DIR
+from .belief.evaluator import BELIEF_EVAL_DIR, CALIBRATION_COLUMNS
 from .common import RULE
 from .metrics import mean
 from .generation import GenerationEvaluator
 from .gold.criteria import GOLD_DATASETS
-from .report import METRICS_FILE, PER_QUERY_FILE, Row, log_lines, write_metrics, write_per_query
+from .report import METRICS_FILE, PER_QUERY_FILE, Row, fmt, log_lines, write_metrics, write_per_query
 from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
 from .trajectory import TrajectoryEvaluator, save_trajectory
 from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
@@ -289,10 +290,10 @@ def evaluate_and_save(
     bel: Dict[str, Any] = {}
     if belief_files and ev.belief is not None:
         bel = timed("belief", ev.belief.evaluate, run_dir, belief_files, list(results))
-        if bel:
-            merge(bel["per_query"])
-            for metric, value, lo, hi, n in bel["rows"]:
-                add("belief", metric, value, lo, hi, n)
+    if bel:
+        merge(bel["per_query"])
+        for metric, value, lo, hi, n in bel["rows"]:
+            add("belief", metric, value, lo, hi, n)
 
     # ── Trajectory ───────────────────────────────────────────────────────
     traj = timed("trajectory", ev.trajectory.evaluate, results)
@@ -319,7 +320,12 @@ def evaluate_and_save(
     print("  Evaluation time: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings.items()))
     if run_dir is None:
         return
-    write_metrics(run_dir / METRICS_FILE, header, rows)
+    sections = []
+    if bel.get("calibration"):
+        sections.append(("Belief status calibration (final belief, per criterion)", list(CALIBRATION_COLUMNS),
+                         [[status, fmt(p, 2), fmt(n), fmt(hits), fmt(share, 2)]
+                          for status, p, n, hits, share in bel["calibration"]]))
+    write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
     # The grouped JSON summary of earlier evaluations is replaced by these files.
     (run_dir / "summary.json").unlink(missing_ok=True)

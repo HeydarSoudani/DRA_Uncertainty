@@ -9,21 +9,26 @@ answer-anchored form (``answer_certainty``).
 A fixed function, nothing learned:
 
 1. per criterion a score q_k: the status of the criterion (its highest
-   candidate) as a probability (``core.types.status_probability``: (level + 2)
-   / 6, unlikely 1/6, unknown 1/3, possible 1/2, certain 1).  The status of
-   a candidate of a one-answer criterion already counts its rivals (two
-   tied candidates are each at most "possible"), so the score needs no
-   share between them;
-2. s_t = the geometric mean of the q_k (``geometric_mean``): one weak or
-   contradicted criterion pulls it down (but not to 0, since no status
-   scores 0), a query with many criteria (a set
-   query's members) is not pushed to 0 as by a product.
+   candidate) as a probability (``core.types.STATUS_PROBABILITY``: unlikely
+   0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90,
+   certain 0.97).  The status of a candidate of a one-answer criterion
+   already counts its rivals (two tied candidates are each at most
+   "possible"), so the score needs no share between them;
+2. a short-answer query: s_t = the lowest q_k (``min``, the weakest
+   link).  The answer is correct only when every criterion it relies on
+   holds, and min is the upper bound of that conjunction (Frechet), exact
+   when the criteria hang together as here (they describe one entity);
+   it reads only the order of the statuses, so its ranking (AUROC) does
+   not depend on the table's values.  A report (every criterion
+   an aspect): s_t = the mean q_k (``mean``), the expected share of
+   aspects covered, since one thin aspect does not make a report wrong
+   (``aggregator_name``).
 
-Left out (``EXCLUDED_KINDS``): the rest criterion of a multi-member
-query, which stands for the members nobody listed, so it has no gold and
-no fixed answer; and the target criterion of a multi-clue query, whose
-statuses are the lowest of the clues' (``core.types.DERIVED_KINDS``), so
-counting it would count the weakest clue twice.
+Every criterion counts.  An aggregate's status is the lowest of its
+inputs' (``BeliefState._derive_aggregates``), so under ``min`` it adds
+only what its inputs do not show: a target joins the clues (a name must
+be listed on every one), a computed answer a passage speaks against is
+"unlikely".  An aspect's status is its own (``BeliefState.aspect_status``).
 
 The beliefs are read as saved (``BeliefState.belief_lists``: per
 criterion ``{id, status, selected, candidates}``), so the same code scores a
@@ -34,10 +39,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..text.matching import alnum
-from .types import REST, TARGET, UNKNOWN, UNLIKELY, status_probability
-
-# Criteria left out of the certainty score.
-EXCLUDED_KINDS = (REST, TARGET)
+from .types import ASPECT, UNKNOWN, UNLIKELY, status_probability
 
 
 def geometric_mean(scores: Sequence[float]) -> float:
@@ -47,15 +49,24 @@ def geometric_mean(scores: Sequence[float]) -> float:
     return math.exp(sum(math.log(q) for q in scores) / len(scores))
 
 
-# Other aggregators of the criterion scores, reported next to the
-# geometric mean in the teacher scores (information only).
+# The aggregators of the criterion scores: the certainty score's (min for a
+# short-answer query, mean for a report, ``aggregator_name``) and the others,
+# reported next to it in the teacher scores (information only).
 AGGREGATORS: Dict[str, Callable[[Sequence[float]], float]] = {
-    "geometric_mean": geometric_mean,
-    "mean": lambda q: sum(q) / len(q),
-    "product": lambda q: math.prod(q),
     "min": min,
+    "mean": lambda q: sum(q) / len(q),
+    "geometric_mean": geometric_mean,
+    "product": lambda q: math.prod(q),
 }
-CERTAINTY_AGGREGATOR = "geometric_mean"
+CERTAINTY_AGGREGATOR = "min"
+REPORT_AGGREGATOR = "mean"
+
+
+def aggregator_name(kinds: List[str]) -> str:
+    """The aggregator of the certainty score for criteria of *kinds*:
+    ``REPORT_AGGREGATOR`` when every criterion is an aspect (a report),
+    else ``CERTAINTY_AGGREGATOR``."""
+    return REPORT_AGGREGATOR if kinds and all(k == ASPECT for k in kinds) else CERTAINTY_AGGREGATOR
 
 
 def criterion_score(belief: Dict[str, Any]) -> float:
@@ -63,22 +74,23 @@ def criterion_score(belief: Dict[str, Any]) -> float:
     return status_probability(belief.get("status") or UNKNOWN)
 
 
-def criterion_scores(beliefs: List[Dict[str, Any]], kinds: List[str]) -> List[float]:
-    """q_k of every criterion the score counts, in order."""
-    return [criterion_score(s) for s, kind in zip(beliefs, kinds) if kind not in EXCLUDED_KINDS]
+def criterion_scores(beliefs: List[Dict[str, Any]]) -> List[float]:
+    """q_k of every criterion, in order."""
+    return [criterion_score(s) for s in beliefs]
 
 
 def certainty(beliefs: List[Dict[str, Any]], kinds: List[str],
-              aggregator: str = CERTAINTY_AGGREGATOR) -> Optional[float]:
+              aggregator: Optional[str] = None) -> Optional[float]:
     """s_t of a belief (per criterion its saved belief, the criteria of
-    *kinds*); None when no criterion counts."""
-    scores = criterion_scores(beliefs, kinds)
-    return AGGREGATORS[aggregator](scores) if scores else None
+    *kinds*), by *aggregator* (default ``aggregator_name``); None when no
+    criterion counts."""
+    scores = criterion_scores(beliefs)
+    return AGGREGATORS[aggregator or aggregator_name(kinds)](scores) if scores else None
 
 
 def answer_certainty(beliefs: List[Dict[str, Any]], kinds: List[str], answer_candidates: List[Dict[str, Any]],
                      ruled_out: Optional[Dict[str, List[str]]] = None,
-                     aggregator: str = CERTAINTY_AGGREGATOR) -> Optional[float]:
+                     aggregator: Optional[str] = None) -> Optional[float]:
     """s_T anchored on the agent's answer (a baseline of the final scorer):
     q_k is the status probability of the answer's candidate the scorer
     names on criterion k (``final_score``: ``{id, candidate}``):
@@ -90,8 +102,6 @@ def answer_certainty(beliefs: List[Dict[str, Any]], kinds: List[str], answer_can
     ruled_out = ruled_out or {}
     scores = []
     for belief, kind in zip(beliefs, kinds):
-        if kind in EXCLUDED_KINDS:
-            continue
         cid = belief.get("id")
         key = named.get(cid)
         status = next((x["status"] for x in belief.get("candidates") or [] if key and alnum(x["name"]) == key),
@@ -99,4 +109,4 @@ def answer_certainty(beliefs: List[Dict[str, Any]], kinds: List[str], answer_can
         if status is None:
             status = UNLIKELY if key and key in {alnum(n) for n in ruled_out.get(cid) or []} else UNKNOWN
         scores.append(status_probability(status))
-    return AGGREGATORS[aggregator](scores) if scores else None
+    return AGGREGATORS[aggregator or aggregator_name(kinds)](scores) if scores else None

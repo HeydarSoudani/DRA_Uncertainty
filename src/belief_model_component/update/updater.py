@@ -9,20 +9,18 @@ current candidates (name, status, support) and proposals, and replies
 with three lists:
 
 - ``reasoning_observations``: per candidate the reasoning names, assesses
-  or rejects, its criterion, turn label, the span of the turn and the
-  agent claim (``agent_claim``: a status, or "rejected"); a span counts
-  when it occurs in that turn;
+  or rejects, its criterion, the span of the reasoning and the agent
+  claim (``agent_claim``: a status, or "rejected"); its turn is the latest
+  turn the span occurs in, and a span counts when it occurs in one;
 - ``passage_observations``: per passage and criterion, the spans of the
   passage that state a part of the criterion; a span counts when it
   occurs in the passage as the call showed it (``span_in_passage``);
 - ``candidates``: per candidate whose support or status changes, the
   labels of the passages that support it or speak against it, its reason
   ("Was <status>: ...", "Was proposed: ..." or "New: ...", ``core.reason_text``)
-  and its new status (``belief_status``), or "removed";
-- ``coverage`` (a report's aspects only, ``MULTI_ASPECT``): per aspect
-  whose coverage changes, its reason ("Was <coverage>: ...") and its new
-  coverage status (``coverage_status``): how completely the passages cover
-  what the aspect asks for.
+  and its new status (``belief_status``), or "removed"; on a report's
+  aspect a fact is "kept" or "removed", and one item without a candidate
+  gives the aspect's own status.
 
 The answer turn is read as any other turn (its reasoning and final answer).
 
@@ -37,12 +35,11 @@ from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import (
-    DOC, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, CandidateUpdate, CoverageUpdate, Observation,
-    criterion_id, parse_claim,
+    DOC, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, CandidateUpdate, Observation, criterion_id, parse_claim,
 )
 from ..prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER_TEMPLATE, NO_TEXT, PASSAGE_TEMPLATE, TURN_TEMPLATE
 from ..text.matching import alnum_index, squash
-from ..text.passages import Passage, Turn, doc_label, reply_labels, span_in_passage, split_span, turn_label
+from ..text.passages import Passage, Turn, doc_label, reply_labels, span_in_passage, split_span
 from ..views.tag import format_belief
 from .repair import complete_with_repair
 
@@ -54,15 +51,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_TOKENS = 12288
 MULTI_MEMBER_MAX_TOKENS = 16384
 
-# The three lists of a reply, in order; a report's reply ends with a fourth,
-# the aspects' coverage (``reply_keys``).
+# The three lists of a reply, in order (every query shape).
 REPLY_KEYS = ("reasoning_observations", "passage_observations", "candidates")
-COVERAGE_KEY = "coverage"
-
-
-def reply_keys(query_shape: str) -> tuple:
-    """The lists of a reply for a *query_shape* query, in order."""
-    return REPLY_KEYS + ((COVERAGE_KEY,) if query_shape == MULTI_ASPECT else ())
 
 
 def _add_spans(o: Observation, cited: Any, text: str, index: Optional[Tuple[str, List[int]]]) -> None:
@@ -91,7 +81,7 @@ class LLMBeliefUpdater:
         self.name = f"llm:{model_name}"
         self.query_shape = query_shape
         self._system = BELIEF_UPDATE_SYSTEMS[query_shape]
-        self.reply_keys = reply_keys(query_shape)
+        self.reply_keys = REPLY_KEYS
         self._max_passage_tokens = max_passage_tokens
         self.max_tokens = max_tokens
         self._temperature = temperature
@@ -117,37 +107,36 @@ class LLMBeliefUpdater:
         ]
 
     def parse(self, raw: str, turns: List[Turn], passages: List[Passage], step: int,
-              ) -> Optional[Tuple[List[Observation], List[Observation], List[CandidateUpdate],
-                                  List[CoverageUpdate]]]:
-        """``(claims, docs, updates, coverage)`` of the reply *raw* of the call of
-        step *step*: the span of a claim checked against its turn (the only
-        turn when the call has one and the label is unknown; the claim's
-        step is its turn's), those of a document observation against its
+              ) -> Optional[Tuple[List[Observation], List[Observation], List[CandidateUpdate]]]:
+        """``(claims, docs, updates)`` of the reply *raw* of the call of
+        step *step*: the span of a claim checked against the call's turns
+        (its turn, and so its step, is the latest one the span occurs in),
+        those of a document observation against its
         passage as the call showed it (``shown_text``: a span from past the
         cut is not verified; its step is *step*), the items of one
-        criterion and passage merged; *coverage* the aspects' coverage
-        updates (empty unless a report); None unless the reply is a JSON
-        object with the shape's lists (``reply_keys``)."""
+        criterion and passage merged; None unless the reply is a JSON
+        object with the three lists (``REPLY_KEYS``)."""
         data = parse_json_object(raw or "")
         if data is None or not all(isinstance(data.get(key), list) for key in self.reply_keys):
             return None
 
-        by_turn = {f"t{n}": (n, text) for n, text in turns}
-        turn_indexes: Dict[str, Tuple[str, List[int]]] = {}
+        # The turn of a claim is the latest turn its span occurs in (the
+        # last turn, its span unverified, when it occurs in none).
+        turn_indexes = [(n, text, alnum_index(text)) for n, text in reversed(turns)]
         claims: List[Observation] = []
         for item in data["reasoning_observations"]:
             if not isinstance(item, dict):
                 continue
-            label = turn_label(item.get("turn"))
-            if label not in by_turn and len(turns) == 1:
-                label = f"t{turns[0][0]}"
-            turn_step, text = by_turn.get(label, (turns[-1][0] if turns else step, ""))
-            if text and label not in turn_indexes:
-                turn_indexes[label] = alnum_index(text)
-            o = Observation(criterion=criterion_id(item.get("id")), source=THINK, label=label or f"t{turn_step}",
+            span = item.get("span")
+            pieces = [p for c in (span if isinstance(span, list) else [span]) if c is not None
+                      for p in split_span(str(c))]
+            turn_step, text, index = next(
+                ((n, t, ix) for n, t, ix in turn_indexes if any(span_in_passage(t, p, ix) for p in pieces)),
+                turn_indexes[0] if turn_indexes else (step, "", None))
+            o = Observation(criterion=criterion_id(item.get("id")), source=THINK, label=f"t{turn_step}",
                             step=turn_step, candidate=squash(item.get("candidate")) or None,
                             claim=parse_claim(item.get("agent_claim")))
-            _add_spans(o, item.get("span"), text, turn_indexes.get(label))
+            _add_spans(o, span, text, index)
             claims.append(o)
 
         # Per passage label: its document, the text the call showed and that
@@ -177,10 +166,7 @@ class LLMBeliefUpdater:
                                    status=str(item.get("belief_status") or "").strip(),
                                    support=reply_labels(item.get("support")), against=reply_labels(item.get("against")))
                    for item in data["candidates"] if isinstance(item, dict)]
-        coverage = [CoverageUpdate(id=criterion_id(item.get("id")), reason=squash(item.get("reason")),
-                                   status=str(item.get("coverage_status") or "").strip())
-                    for item in data.get(COVERAGE_KEY) or [] if isinstance(item, dict)]
-        return claims, list(docs.values()), updates, coverage
+        return claims, list(docs.values()), updates
 
     def update(self, query: str, state: BeliefState, turns: List[Turn],
                passages: List[Passage], step: int) -> Tuple[Any, Optional[str], List[str]]:

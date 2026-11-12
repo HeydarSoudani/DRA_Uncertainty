@@ -12,7 +12,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from utils.io_utils import atomic_write_text, read_jsonl, write_jsonl
 
-from .gold.annotations import CLOSED, KINDS, LEVELS, REST, has_gold, problems
+from .gold.annotations import CLOSED, KINDS, LEVELS, has_gold, problems
 from .gold.criterion_texts import PROMPTS, prompt_hash
 
 
@@ -207,7 +207,7 @@ def annotation_stats(rows: List[dict]) -> dict:
             "criteria_per_query": distribution([len(r["criteria"]) for r in group]),
             "criteria": len(criteria),
             "kinds": {k: sum(c["kind"] == k for c in criteria) for k in KINDS},
-            "with_answers": sum(bool(c["answers"]) for c in criteria if c["kind"] != REST),
+            "with_answers": sum(bool(c["answers"]) for c in criteria),
             "with_docs": sum(bool(c["doc_ids"]) for c in criteria if c["kind"] == CLOSED),
             "with_gold": sum(has_gold(c) for c in criteria),
         }
@@ -234,7 +234,7 @@ def format_annotation_table(stats: dict) -> str:
     ]
     rows += [(f"  {k}", lambda s, k=k: s["kinds"][k]) for k in KINDS]
     rows += [
-        ("  with answers (not rest)", lambda s: share(s["with_answers"], s["criteria"] - s["kinds"][REST])),
+        ("  with answers", lambda s: share(s["with_answers"], s["criteria"])),
         ("  with docs (closed)", lambda s: share(s["with_docs"], s["kinds"][CLOSED])),
         ("  with their gold", lambda s: share(s["with_gold"], s["criteria"])),
     ]

@@ -8,7 +8,7 @@ Per query, the row of the training datasets' format
 (``training_datasets/gold/annotations.py``, ``annotations.multi_member_row``), as the
 trqa_validation dataset builds its own: one criterion per member of the set
 ("<member>: <property>", its value and documents,
-``entity_values[].passage_ids``), the rest criterion and the aggregate.  A
+``entity_values[].passage_ids``), then the aggregate.  A
 member is named by the page title of its first document, looked up in the
 corpus by id (``CorpusLookup``; wiki1 and wiki2: ``wiki_partial``); without
 a corpus (ecommerce), by TRQA's label.  The writer (the run's

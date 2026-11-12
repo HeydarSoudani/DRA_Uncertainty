@@ -104,15 +104,9 @@ def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
         if cited:
             move += f" [{cited}]"
         reason = " ".join(str(u.get("reason") or "").split())
-        out.append((str(u.get("id")), f'"{u.get("candidate")}": {move}' + (f" ({reason})" if reason else "")))
-    # An aspect's coverage update (a report): "coverage: <previous> -> <kept>".
-    for u in record.get("coverage") or []:
-        kept, written = u.get("status"), u.get("written")
-        move = f"{u.get('previous')} -> {kept}" if kept is not None else f"not taken (wrote {written})"
-        if kept is not None and written and written != kept:
-            move += f" (wrote {written})"
-        reason = " ".join(str(u.get("reason") or "").split())
-        out.append((str(u.get("id")), f"coverage: {move}" + (f" ({reason})" if reason else "")))
+        # An aspect's own status (an item without a candidate): "status: ...".
+        head = f'"{u.get("candidate")}"' if u.get("candidate") else "status"
+        out.append((str(u.get("id")), f"{head}: {move}" + (f" ({reason})" if reason else "")))
     return out
 
 

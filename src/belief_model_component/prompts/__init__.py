@@ -4,10 +4,9 @@ System prompts are one folder per stage next to this module: the
 criteria extractor (``criteria_init/``: the shared core ``system.txt``, its
 per-shape parts in ``<shape>.txt``)
 and the belief updater (``belief_update/``: the shared core ``system.txt``,
-the per-shape context in ``criterion_shapes.txt``, the status definitions of
-each criterion type in ``criterion_statuses.txt``, the output fields of some
-shapes in ``shape_output.txt`` and the per-shape example in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
-with the same per-shape context and its own per-shape example in
+how each shape's criteria are read in ``query_criteria.txt``, the status definitions of
+each criterion type in ``criterion_statuses.txt`` and the per-shape example in ``examples.txt``) and the final scorer (``final_score/``: ``system.txt``
+with the same ``query_criteria.txt`` and its own per-shape example in
 ``examples.txt``; short-answer shapes only).  User prompts are in
 ``user_prompts`` and re-exported here.
 """
@@ -61,28 +60,22 @@ def _compose(stage: str, shape: str) -> str:
     return re.sub(r"^\{shape_\w+\}\n", "", text, flags=re.MULTILINE)
 
 
-# The query shapes as the belief updater reads them (``belief_update/criterion_shapes.txt``): what a
-# criterion is and what its answers are.
-CRITERION_SHAPES = {k: v for k, v in _sections("belief_update/criterion_shapes.txt").items() if k}
+# How the belief updater and the final scorer read the criteria of each query
+# shape (``belief_update/query_criteria.txt``): what their parts and answers are.
+QUERY_CRITERIA = {k: v for k, v in _sections("belief_update/query_criteria.txt").items() if k}
 
 # The status definitions of each criterion type (``belief_update/criterion_statuses.txt``)
 # and the criterion types each query shape has (``criteria.parsing.criterion_kinds``):
-# closed criteria are "one answer", hops (a multi-hop query's criteria
-# before its answer), rest and aspect criteria "several answers", the
-# aggregate of a multi-member query "computed", the target of a multi-clue
-# query "target"; a report's aspects are "several answers" with their own
-# coverage ("aspect").
+# one status set per query type ("one answer" for the short-answer shapes,
+# "aspect" for a report), and the aggregate's rule where the shape has one
+# (the target of a multi-clue query, the computation of a multi-member one).
 CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/criterion_statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
-    MULTI_CLUE: ("one_answer", "target"),
-    MULTI_HOP: ("one_answer", "several_answers"),
-    MULTI_MEMBER: ("one_answer", "several_answers", "computed"),
-    MULTI_ASPECT: ("several_answers", "aspect"),
+    MULTI_CLUE: ("one_answer", "aggregate"),
+    MULTI_HOP: ("one_answer",),
+    MULTI_MEMBER: ("one_answer", "aggregate"),
+    MULTI_ASPECT: ("aspect",),
 }
-
-# The output fields only some query shapes have (``belief_update/shape_output.txt``):
-# a report's aspects' coverage.
-SHAPE_OUTPUTS = {k: v for k, v in _sections("belief_update/shape_output.txt").items() if k}
 
 # One worked example of the belief update per query shape (``belief_update/examples.txt``).
 BELIEF_UPDATE_EXAMPLES = {k: v for k, v in _sections("belief_update/examples.txt").items() if k}
@@ -91,12 +84,11 @@ BELIEF_UPDATE_EXAMPLES = {k: v for k, v in _sections("belief_update/examples.txt
 def _call_system(stage: str, shape: str, examples: Dict[str, str]) -> str:
     """The system prompt of a belief model call (*stage*: ``belief_update``
     or ``final_score``) for a *shape* query: the stage's core with the
-    shape's context, the status definitions of its criterion types (shared
+    shape's ``query_criteria``, the status definitions of its criterion types (shared
     by both stages) and the stage's example of the shape."""
     fills = {
-        "shape_context": CRITERION_SHAPES[shape],
+        "query_criteria": QUERY_CRITERIA[shape],
         "status_definitions": "\n\n".join(CRITERION_STATUSES[t] for t in SHAPE_CRITERION_TYPES[shape]),
-        "shape_output": SHAPE_OUTPUTS.get(shape, ""),
         "example": examples[shape],
     }
     text = _read(f"{stage}/system.txt")

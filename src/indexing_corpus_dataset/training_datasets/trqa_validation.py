@@ -21,7 +21,7 @@ queries already there (0: none, the files are rewritten); without one,
 every kept query.  The criterion texts of the earlier builds are reused, and
 every query keeps its split.
 
-The gold annotation (``annotations.multi_member_row``) comes from the intermediate info: the set and the rest criterion with the
+The gold annotation (``annotations.multi_member_row``) comes from the intermediate info: the set with the
 members and their values and each member's documents
 (``entity_values[].passage_ids``), each member named by the page title
 (the first line) of its first document in ``wiki_partial``

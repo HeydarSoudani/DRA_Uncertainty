@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 43::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 45::
 
-    line 1  {"record": "meta", "schema_version": 43, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 45, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -39,7 +39,6 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 43::
              "updates": [{"id": "c1", "candidate": "Osby", "reason": "New: d1 states ...",
                           "support": ["d1"], "against": [],
                           "written": "certain", "previous": null, "status": "certain"}, ...],
-             "coverage": [],
              "changed": ["c1"],
              "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
@@ -49,13 +48,13 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 43::
              "reply": "...",
              "intermediate_answer_reasoning": null, "errors": []}
     ...
-    last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.6667,
-             "certainty_label": "probable", "certainty_formula": 0.6934, "certainty_answer_formula": 0.6934,
+    last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.7,
+             "certainty_label": "probable", "certainty_formula": 0.5, "certainty_answer_formula": 0.5,
              "called": true,
              "final_score": {"status": "probable",
                              "candidates": [{"id": "c1", "candidate": "Osby"}, ...],
                              "reason": "...", "issues": []},
-             "beliefs": [...], "updates": [], "coverage": [], "changed": [], "observations": null, "issues": [],
+             "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [],
              "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": "possible", "basis": "reasoning",
@@ -66,22 +65,48 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 43::
 The fields are described in ``belief_model_component/README.md``
 (step and final records, meta line) and ``belief_model_component.criteria.sources``
 (``BeliefState.apply``: the issue codes).  A criterion's ``kind`` is
-``closed`` (one fact with one answer), ``hop`` (a multi-hop query's
-entity before its answer, which may have several answers), ``rest`` (the members of a set the
-extractor did not list), ``aggregate`` (how a multi-member query's answer follows
-from the members' values), ``aspect`` (one aspect of a report topic) or
-``target`` (a multi-clue query's entity that meets every clue).  A
-step line is the iteration's update plus the light state: ``beliefs``
-is every criterion's belief after the step, ``updates`` the reply's
-candidate updates with their reasons, ``coverage`` the reply's coverage
-updates of a report's aspects (``{id, reason, written, previous,
-status}``; an aspect's ``status`` in ``beliefs`` is its coverage),
-``observations`` the observations that entered in the step (with their
-verified spans; on an aggregate, a passage states a member's conditions).  The
+``closed`` (one fact with one answer: a clue, a hop, a member's value),
+``aggregate`` (it combines the criteria before it: a multi-clue query's
+target, "the <type> that meets c1 to c<k>", or how a multi-member query's
+answer follows from the members' values) or ``aspect`` (one aspect of a
+report topic).  A step line is the iteration's update plus the light
+state: ``beliefs`` is every criterion's belief after the step (an
+aspect's ``status`` is its own, its facts' ``status`` "kept"),
+``updates`` the reply's candidate updates with their reasons (an
+aspect's status item has ``candidate`` null), ``observations`` the
+observations that entered in the step (with their verified spans; on a
+computed aggregate, a passage states an input it needs).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 45 (was 44): two status sets.  Kinds ``hop``, ``rest`` and
+``target`` are gone: a hop is ``closed`` (one answer), a multi-member
+query has no rest criterion, a target is an ``aggregate``.  An
+aggregate's statuses are derived by code: the lowest status of its
+inputs, "unlikely" when a passage speaks against it (issue
+``aggregate_status`` when the reply wrote another).  A report's aspect
+has one status of the scale (``unknown`` with no fact; ``certain`` needs
+every fact supported by two documents), written by the reply's item
+without a candidate; its facts are ``kept`` or removed.  The
+``coverage`` field of step and final lines is gone, and the certainty
+formula counts every criterion (the target was left out).  Issues
+``bad_coverage``, ``coverage_no_passage``, ``coverage_no_fact`` become
+``bad_aspect_status``, ``aspect_no_passage``, ``aspect_no_fact``, with
+``aspect_one_source``, ``bad_fact_status`` (a fact neither "kept" nor
+"removed") and ``not_computed`` (an update naming a computed answer no
+claim gives) new.  The reply's ``reasoning_observations`` have
+no ``turn`` (code finds it from the span).
+
+schema_version 44 (was 43): same record fields, new numbers.  A status
+becomes a probability by the table ``core.types.STATUS_PROBABILITY``
+(unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost
+certain 0.90, certain 0.97; was (level + 2) / 6) in every number read
+from a status (``certainty`` of the final scorer, ``certainty_formula``,
+``certainty_answer_formula``, a step's ``certainty``).  The certainty
+formula of a short-answer query is the lowest criterion probability (was
+the geometric mean); of a report, their mean.
 
 schema_version 43 (was 42): step and final lines add ``coverage``, the
 coverage updates of a report's aspects (criterion kind ``aspect``; an
@@ -305,7 +330,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 45
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

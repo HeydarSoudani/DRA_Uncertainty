@@ -33,7 +33,6 @@ gold lists every member as its own criterion), so it is left out.
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from belief_model_component import REST
 # The match and the judge are shared with the evaluation (evaluation.belief.gold).
 from evaluation.belief.gold import CANDIDATE, SPANS, AnswerJudge, states
 
@@ -43,19 +42,9 @@ logger = logging.getLogger(__name__)
 
 
 def gold_criterion(episode: Episode, cid: str) -> Optional[Dict[str, Any]]:
-    """The gold criterion *cid* of *episode* when it has gold answers (not
-    the rest criterion), else None."""
+    """The gold criterion *cid* of *episode* when it has gold answers, else None."""
     c = episode.gold_by_id.get(cid)
-    return c if c is not None and c["answers"] and c["kind"] != REST else None
-
-
-def _criterion(episode: Episode, cid: str, answers: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
-    """The gold criterion *cid* (``gold_criterion``), with only *answers*
-    as its gold answers when given (None when *answers* is empty)."""
-    c = gold_criterion(episode, cid)
-    if c is None or answers is None:
-        return c
-    return {**c, "answers": list(answers)} if answers else None
+    return c if c is not None and c["answers"] else None
 
 
 def matches(episode: Episode, criterion: Dict[str, Any], text: str) -> bool:
@@ -75,14 +64,13 @@ class NuggetGold:
         self._verdicts: Dict[str, bool] = {}
 
     def resolve(self, items: Iterable[Tuple]) -> Dict[str, int]:
-        """Ask the judge about every ``(episode, criterion id, kind, text[,
-        answers])`` the match does not decide (*answers*: judge against
-        these gold answers of the criterion only, ``_criterion``); returns
-        counts (items, matched, asked: pairs not cached yet)."""
+        """Ask the judge about every ``(episode, criterion id, kind, text)``
+        the match does not decide; returns counts (items, matched, asked:
+        pairs not cached yet)."""
         counts = {"items": 0, "matched": 0, "asked": 0}
         todo = []
-        for episode, cid, kind, text, *rest in items:
-            c = _criterion(episode, cid, rest[0] if rest else None)
+        for episode, cid, kind, text in items:
+            c = gold_criterion(episode, cid)
             if c is None:
                 continue
             counts["items"] += 1
@@ -95,9 +83,8 @@ class NuggetGold:
             self._verdicts.update(self.judge.resolve(todo))
         return counts
 
-    def _has_gold(self, episode: Episode, cid: str, kind: str, text: str,
-                  answers: Optional[List[str]] = None) -> Optional[bool]:
-        c = _criterion(episode, cid, answers)
+    def _has_gold(self, episode: Episode, cid: str, kind: str, text: str) -> Optional[bool]:
+        c = gold_criterion(episode, cid)
         if c is None:
             return None
         if matches(episode, c, text):
@@ -106,14 +93,11 @@ class NuggetGold:
             return False
         return self._verdicts.get(self.judge.key(kind, c, text), False)
 
-    def correct(self, episode: Episode, cid: str, value: str,
-                answers: Optional[List[str]] = None) -> Optional[bool]:
-        """The candidate *value* of criterion *cid* is a gold answer (one of
-        *answers* when given); None when the criterion has no gold (or
-        *answers* is empty).  A candidate the judge was not asked about
-        (``resolve``, with the same *answers*) counts as wrong unless it
-        matches."""
-        return self._has_gold(episode, cid, CANDIDATE, value, answers)
+    def correct(self, episode: Episode, cid: str, value: str) -> Optional[bool]:
+        """The candidate *value* of criterion *cid* is a gold answer; None
+        when the criterion has no gold.  A candidate the judge was not
+        asked about (``resolve``) counts as wrong unless it matches."""
+        return self._has_gold(episode, cid, CANDIDATE, value)
 
     def stated(self, episode: Episode, cid: str, text: str) -> Optional[bool]:
         """The spans *text* of an observation on *cid* state its gold answer

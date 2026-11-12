@@ -1,64 +1,66 @@
-"""Belief update evaluation: what the belief model does with a gold document.
+"""Belief evaluation: what the belief model does with the gold evidence, and
+whether its final belief is correct and calibrated.
 
-Run on the queries whose criteria are gold criteria with a gold answer and
-gold documents per criterion (``evaluation.gold.criteria``: TRQA's members,
-InfoSeek's hops; a criterion without both, the rest and the aggregate
-criteria are left out).  Read from the saved belief files
-(``belief/{qid}.jsonl``), so it scores any run with the belief model on
-(monitor or inform), without calling the belief model.
+Run on the queries whose criteria are gold criteria
+(``evaluation.gold.criteria``: TRQA's members, InfoSeek's hops).  Read from
+the saved belief files (``belief/{qid}.jsonl``), so it scores any run with
+the belief model on (monitor or inform), without calling the belief model.
+
+**Scored criteria.** Every criterion with a gold answer: a closed one (a
+member's value or a hop, with gold documents) and an aggregate (gold answer
+only: no document states a computed value; scored at the end only).
 
 **Gold event** (criterion k, document d, step t): d is one of k's gold
 documents, new to the belief at step t (not in an earlier step whose update
-call parsed: the update shows only such documents), and its
-text as the update read it (the run's ``max_passage_tokens`` cut) states k's
-gold answer (string match, ``gold.states``).  A gold document whose answer
-is past the cut is not an event (counted in the reachability).  When the
-update call of step t failed, the document is shown again when retrieved
-again: the event is its first occurrence with a parsed call, else a
-``call_failed`` event at its first occurrence.
-
-Per gold event:
-
-- ``assigned``: the update wrote an observation of d on k (verified spans);
-- ``delta``: the level of k's gold candidate after the step minus before
-  (``core.types.STATUS_LEVEL``, -1 unlikely .. 4 certain; a gold answer that is
-  not a candidate is at 0, unknown; several gold candidates: the highest);
-  ``rises``: delta > 0, or the gold candidate was already "certain" and
-  stays so (``at_ceiling``);
-- ``correct_after`` / ``correct_end``: k's selected candidate (one-answer
-  criterion), or one of them (several answers), is a gold answer, after the
-  step / in the final belief;
-- ``stage`` (the funnel, one per event): ``call_failed``,
-  ``not_assigned``, ``no_gold_candidate`` (the gold answer is not among
-  k's candidates after the step), ``not_selected``, ``correct_lost``
-  (selected after the step, not at the end), ``correct_kept``.
+call parsed: the update shows only such documents), and its text as the
+update read it (the run's ``max_passage_tokens`` cut) states k's gold
+answer (string match, ``gold.states``, else the judge when the run has a
+judge model).  When the update call of step t failed, the document is shown
+again when retrieved again: the event is its first occurrence with a parsed
+call, else a ``call_failed`` event at its first occurrence.
 
 **Control event** (criterion k, step t): no gold event of k at t, and the
 update observed on k a new document that is not one of k's gold documents
-and whose text does not state the gold answer.  Its ``delta`` is the
-largest change of a non-gold candidate of k (absent = 0).  The AUROC of
-``delta`` between the first gold event of each criterion and the control
-events tells whether the belief rises because of the evidence; a gold
-event already at "certain" (``at_ceiling``) cannot rise and is left out
-of it.
+and whose text does not state the gold answer.
+
+The **gold candidate's probability** at a step: the status probability
+(``core.types.status_probability``) of k's gold candidate (several: the
+highest), "unknown" when the gold answer is not a candidate.  An event's
+change is that probability after the step minus before; an event whose gold
+candidate is already "certain" cannot rise and has no change.
 
 A candidate is a gold answer when it matches one (``gold.states``), else
 when the judge says so (``gold.AnswerJudge``, the run's ``judge_model``,
 cached in ``belief_eval/judge_cache.jsonl``; no judge model: the match
-only).
-
-Only belief files of the current ``SCHEMA_VERSION`` are scored
+only).  Only belief files of the current ``SCHEMA_VERSION`` are scored
 (``load_belief_files``; an older file counts as no belief file).
 
-Measures (``evaluate``): per query the rates over its first gold event of
-each criterion; the headline is their mean over the queries with an event
-(macro, bootstrap CI over queries), the pooled rate next to it (micro).  The
-status calibration pools every step of every scored criterion: the
-criterion's status probability (``core.types.status_probability``) against y,
-its selected candidate(s) correct (Brier, ECE, AUROC).  The reachability:
-per query, the share of scored criteria whose gold document was seen, and
-whose gold event happened.  Every event is written to
-``belief_eval/events.csv``.
+Per criterion (a value is None where it does not apply):
+
+    gold_change     the change at its first gold event (closed criteria)
+    control_change  the mean change over its control events (closed
+                    criteria)
+    recall          the share of its gold documents the agent saw (closed
+                    criteria)
+    reached         at the end, its selected candidate is a gold answer
+    reached_seen    ``reached``, for a closed criterion with a gold document
+                    seen (the belief's own share: no seen gold document is
+                    a retrieval failure)
+    brier           (p - y)^2 of its final status probability p against
+                    y = ``reached``
+
+Each row of ``metrics.md`` is one of them twice: the mean over the queries
+of each query's mean over its criteria (bootstrap CI over queries, n
+queries), and ``(c)``: the mean over every criterion (n criteria).  Below the
+table, the final status of every criterion with a Brier item, per status:
+how many, how many reached (``calibration``).
+
+In the files, for diagnosis: every gold and control event, with a gold
+event's funnel stage (``call_failed``, ``not_assigned``,
+``no_gold_candidate``, ``not_selected``, ``correct_lost``, ``correct_kept``),
+in ``belief_eval/events.csv``; per query in ``per_query.csv`` the means of
+its criteria and ``belief_correct`` (every scored closed criterion
+reached).
 """
 
 import csv
@@ -68,9 +70,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-import numpy as np
-
-from belief_model_component import (AGGREGATE, MULTI_ASPECT, REST, STATUS_LEVEL, UNKNOWN, exclusive,
+from belief_model_component import (AGGREGATE, MULTI_ASPECT, STATUS_LEVEL, UNKNOWN, exclusive,
                                     status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
@@ -78,27 +78,30 @@ from utils.text_utils import cut_chars, cut_passage
 
 from ..common import read_jsonl
 from ..gold.criteria import load_gold_rows, match_row
-from ..metrics import auroc, bootstrap_ci, brier, ece, mean
-from .gold import CANDIDATE, AnswerJudge, states
+from ..metrics import bootstrap_ci, mean
+from .gold import CANDIDATE, SPANS, AnswerJudge, states
 from .writer import SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
 #: Folder of the belief evaluation's files in the run directory.
 BELIEF_EVAL_DIR = "belief_eval"
-#: Funnel stages of a gold event, in order.
-STAGES = ("call_failed", "not_assigned", "no_gold_candidate", "not_selected", "correct_lost", "correct_kept")
-#: Per-event rates (over the first gold event of each criterion).
-EVENT_RATES = ("assigned", "rises", "correct_after", "correct_end")
-#: Criterion kinds with no documents or no gold answers of their own.
-_UNSCORED_KINDS = (REST, AGGREGATE)
-_CERTAIN = STATUS_LEVEL["certain"]
-EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_id", "assigned", "level_before",
-                "level_after", "delta", "at_ceiling", "rises", "correct_after", "correct_end", "stage")
+#: The per-criterion values, in row order: (row name, key).
+MEASURES = (("gold event: gold candidate change", "gold_change"),
+            ("control event: gold candidate change", "control_change"),
+            ("criterion recall", "recall"),
+            ("reached answer", "reached"),
+            ("reached answer, gold seen", "reached_seen"),
+            ("status Brier", "brier"))
+#: Columns of the calibration table below the main table.
+CALIBRATION_COLUMNS = ("status", "p", "criteria", "reached", "share reached")
+_CERTAIN = "certain"
+EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_id", "assigned", "p_before",
+                "p_after", "change", "correct_after", "correct_end", "stage")
 
 
-#: Text fields of a step or final line no evaluation reads (dropped by
-#: ``load_belief_files``, which keeps every query of a run in memory).
+#: Text fields no evaluation reads (dropped by ``load_belief_files``, which
+#: keeps every query of a run in memory).
 _TEXT_KEYS = ("agent_turn", "reply", "references", "intermediate_answer_reasoning")
 
 BeliefFile = Tuple[Optional[Dict], List[Dict], Optional[Dict]]
@@ -200,6 +203,12 @@ class _Query:
         self.gold = gold            # scored criterion id -> {id, text, kind, answers, doc_ids}
         self.names = names          # entity names of the gold structure (masked in the match)
 
+    def final_beliefs(self) -> Dict[str, Dict[str, Any]]:
+        """The belief per criterion at the end (the final line, else the
+        last step)."""
+        return _by_id((self.final or {}).get("beliefs")) or (
+            _by_id(self.steps[-1].get("beliefs")) if self.steps else {})
+
     def needed_doc_ids(self) -> Set[str]:
         """The documents whose text the events read: the gold documents of
         a scored criterion and the documents observed on one."""
@@ -220,14 +229,15 @@ class _Query:
 
 
 class BeliefUpdateEvaluator:
-    """The belief update measures of a run (module docstring).
+    """The belief measures of a run (module docstring).
 
     Args:
         dataset: Dataset name; only datasets with per-criterion gold are
             scored (``evaluation.gold.criteria``).
         split: File-level split id (TRQA's gold bank).
         corpus_path: The corpus the run retrieved from (document texts).
-        judge_model: Model of the candidate judge; None or "": match only.
+        judge_model: Model of the candidate and document judge; None or "":
+            match only.
     """
 
     def __init__(self, dataset: str, split: Optional[str], corpus_path: Optional[str],
@@ -255,10 +265,10 @@ class BeliefUpdateEvaluator:
                 continue
             gold = {}
             for run_c, gold_c in zip(meta["criteria"], row["criteria"]):
-                if run_c["kind"] in _UNSCORED_KINDS or not gold_c.get("answers") or not gold_c.get("doc_ids"):
+                if not gold_c.get("answers"):
                     continue
                 gold[run_c["id"]] = {"id": run_c["id"], "text": run_c["text"], "kind": run_c["kind"],
-                                     "answers": list(gold_c["answers"]), "doc_ids": set(gold_c["doc_ids"])}
+                                     "answers": list(gold_c["answers"]), "doc_ids": set(gold_c.get("doc_ids") or [])}
             if not gold:
                 counts["no_scored_criterion"] += 1
                 continue
@@ -274,93 +284,125 @@ class BeliefUpdateEvaluator:
         contents = CorpusLookup(self.corpus_path).contents(ids)
         return {i: cut(str(t).strip()) for i, t in contents.items()}
 
-    def _gold_names(self, queries: List[_Query], run_dir: Path) -> Dict[Tuple[str, str, str], bool]:
-        """``(qid, criterion id, name) -> is a gold answer`` for every
-        candidate name: the match, else the judge."""
+    @staticmethod
+    def _resolve(judge: Optional[AnswerJudge], verdict: Dict, todo: List[Tuple[Any, Tuple[str, Dict, str]]]) -> None:
+        """Fill *verdict* with the judge's answer on each ``(key, item)`` of
+        *todo* (no judge: False)."""
+        if not todo:
+            return
+        if judge is None:
+            verdict.update({key: False for key, _ in todo})
+            return
+        answers = judge.resolve([item for _, item in todo])
+        for key, item in todo:
+            verdict[key] = answers.get(judge.key(*item), False)
+
+    def _gold_names(self, queries: List[_Query], judge: Optional[AnswerJudge]) -> Dict[Tuple[str, str, str], bool]:
+        """``(qid, criterion id, name) -> True`` when the name is a gold
+        answer of a scored criterion: the match, else the judge."""
         verdict: Dict[Tuple[str, str, str], bool] = {}
-        todo: List[Tuple[Tuple[str, str, str], Dict[str, Any]]] = []
+        todo: List[Tuple[Tuple[str, str, str], Tuple[str, Dict, str]]] = []
         for q in queries:
-            for cid, name in set(q.candidate_names()):
-                c = q.gold[cid]
-                if states(name, c["answers"], q.names):
-                    verdict[(q.qid, cid, name)] = True
-                elif self.judge_model and name.strip():
-                    todo.append(((q.qid, cid, name), c))
+            pairs = [(cid, name, q.gold[cid]["text"], q.gold[cid]["answers"], q.names)
+                     for cid, name in set(q.candidate_names())]
+            for cid, name, text, answers, others in pairs:
+                key = (q.qid, cid, name)
+                if states(name, answers, others):
+                    verdict[key] = True
+                elif name.strip():
+                    todo.append((key, (CANDIDATE, {"text": text, "answers": answers}, name)))
                 else:
-                    verdict[(q.qid, cid, name)] = False
-        if todo:
-            judge = AnswerJudge(self.judge_model, run_dir / BELIEF_EVAL_DIR / "judge_cache.jsonl")
-            items = [(CANDIDATE, {"text": c["text"], "answers": c["answers"]}, key[2]) for key, c in todo]
-            answers = judge.resolve(items)
-            for (key, _), item in zip(todo, items):
-                verdict[key] = answers.get(judge.key(*item), False)
+                    verdict[key] = False
+        self._resolve(judge, verdict, todo)
+        return verdict
+
+    def _gold_docs(self, queries: List[_Query], shown: Dict[str, str],
+                   judge: Optional[AnswerJudge]) -> Dict[Tuple[str, str, str], bool]:
+        """``(qid, criterion id, doc id) -> True`` when a seen gold document
+        of the criterion states its gold answer in the text the update read:
+        the match, else the judge."""
+        verdict: Dict[Tuple[str, str, str], bool] = {}
+        todo: List[Tuple[Tuple[str, str, str], Tuple[str, Dict, str]]] = []
+        for q in queries:
+            seen = {d["doc_id"] for s in q.steps for d in s.get("docs") or [] if d.get("doc_id")}
+            for cid, c in q.gold.items():
+                for doc_id in c["doc_ids"] & seen:
+                    key, text = (q.qid, cid, doc_id), shown.get(doc_id, "")
+                    if states(text, c["answers"], q.names):
+                        verdict[key] = True
+                    elif text:
+                        todo.append((key, (SPANS, {"text": c["text"], "answers": c["answers"]}, text)))
+                    else:
+                        verdict[key] = False
+        self._resolve(judge, verdict, todo)
         return verdict
 
     # ------------------------------------------------------------------
-    # Events
+    # One query
     # ------------------------------------------------------------------
 
-    def _query_events(self, q: _Query, shown: Dict[str, str],
-                      is_gold: Dict[Tuple[str, str, str], bool]) -> Tuple[List[Dict], List[Tuple[float, int]], Dict]:
-        """The events of one query, its calibration items ``(p, y)`` and its
-        reachability counts."""
+    def _query(self, q: _Query, shown: Dict[str, str], is_gold: Dict[Tuple[str, str, str], bool],
+               doc_states: Dict[Tuple[str, str, str], bool]) -> Tuple[Dict[str, Dict], List[Dict]]:
+        """The per-criterion values of one query (``{criterion id: values}``,
+        module docstring) and its events."""
 
-        def gold_level(belief: Optional[Dict], cid: str) -> int:
-            levels = [STATUS_LEVEL.get(c.get("status"), 0) for c in (belief or {}).get("candidates") or []
-                      if is_gold.get((q.qid, cid, c.get("name") or ""), False)]
-            return max(levels) if levels else 0
+        def gold_name(cid: str, name: str) -> bool:
+            return is_gold.get((q.qid, cid, name or ""), False)
+
+        def gold_status(belief: Optional[Dict], cid: str) -> str:
+            statuses = [c.get("status") for c in (belief or {}).get("candidates") or []
+                        if gold_name(cid, c.get("name")) and c.get("status") in STATUS_LEVEL]
+            return max(statuses, key=STATUS_LEVEL.get) if statuses else UNKNOWN
 
         def has_gold_candidate(belief: Optional[Dict], cid: str) -> bool:
-            return any(is_gold.get((q.qid, cid, c.get("name") or ""), False)
-                       for c in (belief or {}).get("candidates") or [])
+            return any(gold_name(cid, c.get("name")) for c in (belief or {}).get("candidates") or [])
 
         def selected_correct(belief: Optional[Dict], cid: str) -> bool:
             selected = list((belief or {}).get("selected") or [])
             if exclusive(q.gold[cid]["kind"]):
                 selected = selected[:1]
-            return any(is_gold.get((q.qid, cid, name), False) for name in selected)
+            return any(gold_name(cid, name) for name in selected)
 
-        def other_levels(belief: Optional[Dict], cid: str) -> Dict[str, int]:
-            return {c.get("name") or "": STATUS_LEVEL.get(c.get("status"), 0)
-                    for c in (belief or {}).get("candidates") or []
-                    if not is_gold.get((q.qid, cid, c.get("name") or ""), False)}
+        def change(before: Optional[Dict], after: Optional[Dict], cid: str) -> Dict[str, Any]:
+            s_before, s_after = gold_status(before, cid), gold_status(after, cid)
+            p_before, p_after = status_probability(s_before), status_probability(s_after)
+            return {"p_before": p_before, "p_after": p_after,
+                    "change": None if s_before == _CERTAIN else p_after - p_before}
 
-        final_beliefs = _by_id((q.final or {}).get("beliefs")) or (
-            _by_id(q.steps[-1].get("beliefs")) if q.steps else {})
+        final = q.final_beliefs()
         prev: Dict[str, Dict] = {}
         events: List[Dict] = []
-        items: List[Tuple[float, int]] = []
         done: Set[Tuple[str, str]] = set()
         failed_first: Dict[Tuple[str, str], int] = {}
-        seen_gold: Set[str] = set()
+        seen: Dict[str, Set[str]] = {cid: set() for cid in q.gold}
         judged: Set[str] = set()   # documents of a step whose update call parsed
 
         for step in q.steps:
             t = step.get("iteration")
-            docs = step.get("docs") or []
+            docs = [d for d in step.get("docs") or [] if d.get("doc_id")]
             # A call failed when it was made and no reply parsed; a parse
             # error of an attempt that a retry recovered leaves an error
             # line on a step whose call succeeded.
             parsed = step.get("observations") is not None
             failed = bool(step.get("called")) and not parsed
-            fresh = {d["doc_id"] for d in docs if d.get("doc_id") and d["doc_id"] not in judged}
+            fresh = {d["doc_id"] for d in docs if d["doc_id"] not in judged}
             after = _by_id(step.get("beliefs")) or prev
             observed = {(o["id"], o.get("doc_id")) for o in step.get("observations") or [] if o.get("doc_id")}
             for cid, c in q.gold.items():
-                seen_gold.update(cid for d in docs if d["doc_id"] in c["doc_ids"])
+                if not c["doc_ids"]:
+                    continue
+                seen[cid] |= {d["doc_id"] for d in docs if d["doc_id"] in c["doc_ids"]}
                 gold_new = [d["doc_id"] for d in docs if d["doc_id"] in fresh and d["doc_id"] in c["doc_ids"]
-                            and (cid, d["doc_id"]) not in done
-                            and states(shown.get(d["doc_id"], ""), c["answers"], q.names)]
+                            and (cid, d["doc_id"]) not in done and doc_states.get((q.qid, cid, d["doc_id"]), False)]
                 for doc_id in gold_new:
                     if failed:
                         failed_first.setdefault((cid, doc_id), t)
                         continue
                     done.add((cid, doc_id))
                     failed_first.pop((cid, doc_id), None)
-                    before_l, after_l = gold_level(prev.get(cid), cid), gold_level(after.get(cid), cid)
                     assigned = (cid, doc_id) in observed
                     correct_after = selected_correct(after.get(cid), cid)
-                    correct_end = selected_correct(final_beliefs.get(cid), cid)
+                    correct_end = selected_correct(final.get(cid), cid)
                     if not assigned:
                         stage = "not_assigned"
                     elif not has_gold_candidate(after.get(cid), cid):
@@ -369,39 +411,27 @@ class BeliefUpdateEvaluator:
                         stage = "not_selected"
                     else:
                         stage = "correct_kept" if correct_end else "correct_lost"
-                    at_ceiling = before_l == _CERTAIN
-                    events.append({
-                        "query_id": q.qid, "criterion": cid, "kind": c["kind"], "type": "gold", "step": t,
-                        "doc_id": doc_id, "assigned": assigned, "level_before": before_l, "level_after": after_l,
-                        "delta": after_l - before_l, "at_ceiling": at_ceiling,
-                        "rises": after_l > before_l or (at_ceiling and after_l == _CERTAIN),
-                        "correct_after": correct_after, "correct_end": correct_end, "stage": stage,
-                    })
+                    events.append({"query_id": q.qid, "criterion": cid, "kind": c["kind"], "type": "gold",
+                                   "step": t, "doc_id": doc_id, "assigned": assigned,
+                                   **change(prev.get(cid), after.get(cid), cid),
+                                   "correct_after": correct_after, "correct_end": correct_end, "stage": stage})
                 if failed or gold_new:
                     continue
                 controls = [d["doc_id"] for d in docs if d["doc_id"] in fresh and (cid, d["doc_id"]) in observed
                             and d["doc_id"] not in c["doc_ids"]
                             and not states(shown.get(d["doc_id"], ""), c["answers"], q.names)]
                 if controls:
-                    before_o, after_o = other_levels(prev.get(cid), cid), other_levels(after.get(cid), cid)
-                    deltas = [after_o.get(n, 0) - before_o.get(n, 0) for n in set(before_o) | set(after_o)]
-                    delta = max(deltas) if deltas else 0
-                    events.append({
-                        "query_id": q.qid, "criterion": cid, "kind": c["kind"], "type": "control", "step": t,
-                        "doc_id": " ".join(controls), "assigned": True, "delta": delta, "rises": delta > 0,
-                    })
-            for cid in q.gold:
-                b = after.get(cid)
-                items.append((status_probability((b or {}).get("status") or UNKNOWN),
-                              int(selected_correct(b, cid))))
+                    events.append({"query_id": q.qid, "criterion": cid, "kind": c["kind"], "type": "control",
+                                   "step": t, "doc_id": " ".join(controls), "assigned": True,
+                                   **change(prev.get(cid), after.get(cid), cid)})
             if parsed:
                 judged |= fresh
             prev = after
 
         for (cid, doc_id), t in failed_first.items():
             events.append({"query_id": q.qid, "criterion": cid, "kind": q.gold[cid]["kind"], "type": "gold",
-                           "step": t, "doc_id": doc_id, "assigned": False, "rises": False, "correct_after": False,
-                           "correct_end": selected_correct(final_beliefs.get(cid), cid), "stage": "call_failed"})
+                           "step": t, "doc_id": doc_id, "assigned": False, "change": None, "correct_after": False,
+                           "correct_end": selected_correct(final.get(cid), cid), "stage": "call_failed"})
 
         # The first gold event of each criterion (step order).
         firsts: Dict[str, Dict] = {}
@@ -409,8 +439,25 @@ class BeliefUpdateEvaluator:
             firsts.setdefault(e["criterion"], e)
         for e in events:
             e["first"] = e["type"] == "gold" and firsts.get(e["criterion"]) is e
-        reach = {"criteria": len(q.gold), "gold_seen": len(seen_gold), "gold_event": len(firsts)}
-        return events, items, reach
+
+        values: Dict[str, Dict[str, Any]] = {}
+        for cid, c in q.gold.items():
+            has_docs = bool(c["doc_ids"])
+            reached = selected_correct(final.get(cid), cid)
+            controls = [e["change"] for e in events
+                        if e["type"] == "control" and e["criterion"] == cid and e["change"] is not None]
+            p = status_probability((final.get(cid) or {}).get("status") or UNKNOWN)
+            values[cid] = {
+                "kind": c["kind"],
+                "gold_change": (firsts.get(cid) or {}).get("change"),
+                "control_change": mean(controls) if controls else None,
+                "recall": len(seen[cid]) / len(c["doc_ids"]) if has_docs else None,
+                "reached": float(reached),
+                "reached_seen": float(reached) if has_docs and seen[cid] else None,
+                "brier": (p - float(reached)) ** 2,
+                "status": (final.get(cid) or {}).get("status") or UNKNOWN,
+            }
+        return values, events
 
     # ------------------------------------------------------------------
     # Evaluation
@@ -420,89 +467,66 @@ class BeliefUpdateEvaluator:
         """The measures over the run's queries with scored gold criteria,
         from their belief *files* (``load_belief_files``; a query of
         *query_ids* without one counts as ``no belief file``):
-        ``{per_query, rows, counts, events}`` (``rows``: ``(metric, value,
-        ci_low, ci_high, n)``); ``{}`` when no query has one."""
+        ``{per_query, rows, calibration, events}`` (``rows``: ``(metric,
+        value, ci_low, ci_high, n)``; ``calibration``: the rows of the
+        calibration table, ``CALIBRATION_COLUMNS``); ``{}`` when no query
+        has one."""
         run_dir = Path(run_dir)
         counts: Counter = Counter()
         queries = self._load(files, query_ids, counts)
+        if counts:
+            logger.info("belief evaluation: queries left out %s", dict(counts))
         if not queries:
-            if counts:
-                logger.info("belief update evaluation: no query with scored gold criteria (%s)", dict(counts))
             return {}
         shown = self._shown_texts(queries, run_dir)
-        is_gold = self._gold_names(queries, run_dir)
+        judge = AnswerJudge(self.judge_model, run_dir / BELIEF_EVAL_DIR / "judge_cache.jsonl") \
+            if self.judge_model else None
+        is_gold = self._gold_names(queries, judge)
+        doc_states = self._gold_docs(queries, shown, judge)
 
         events: List[Dict] = []
         per_query: Dict[str, Dict[str, Any]] = {}
-        groups = []   # per query: (first gold events, control events, calibration items, reach)
+        groups: List[List[Dict[str, Any]]] = []   # per query: the values of its criteria
         for q in queries:
-            q_events, items, reach = self._query_events(q, shown, is_gold)
+            values, q_events = self._query(q, shown, is_gold, doc_states)
             events += q_events
-            firsts = [e for e in q_events if e.get("first")]
-            controls = [e for e in q_events if e["type"] == "control"]
-            groups.append((firsts, controls, items, reach))
-            rec: Dict[str, Any] = {
-                "belief_criteria": reach["criteria"],
-                "belief_gold_seen": reach["gold_seen"] / reach["criteria"],
-                "belief_gold_event": reach["gold_event"] / reach["criteria"],
-            }
-            for name in EVENT_RATES:
-                rec[f"belief_{name}"] = mean([float(e[name]) for e in firsts]) if firsts else None
+            groups.append(list(values.values()))
+            rec: Dict[str, Any] = {"belief_criteria": len(values)}
+            for _, key in MEASURES:
+                rec[f"belief_{key}"] = _mean_of(values.values(), key)
+            members = [v for v in values.values() if v["kind"] != AGGREGATE]
+            rec["belief_correct"] = int(all(v["reached"] for v in members)) if members else None
             per_query[q.qid] = rec
 
-        rows = self._rows(groups, counts)
         self._write_events(run_dir, events)
-        return {"per_query": per_query, "rows": rows, "counts": dict(counts), "events": len(events)}
+        return {"per_query": per_query, "rows": self._rows(groups), "calibration": self._calibration(groups),
+                "events": len(events)}
 
     @staticmethod
-    def _rows(groups: List[Tuple], counts: Counter) -> List[Tuple[str, Any, Any, Any, Any]]:
+    def _rows(groups: List[List[Dict[str, Any]]]) -> List[Tuple[str, Any, Any, Any, Any]]:
         rows: List[Tuple[str, Any, Any, Any, Any]] = []
-        with_events = [g for g in groups if g[0]]
-        firsts = [e for g in groups for e in g[0]]
-        rows.append(("queries scored", len(groups), None, None, None))
-        rows.append(("criteria scored", sum(g[3]["criteria"] for g in groups), None, None, None))
-        for name, key in (("gold doc seen", "gold_seen"), ("gold event", "gold_event")):
-            def stat(gs, key=key):
-                return mean([g[3][key] / g[3]["criteria"] for g in gs])
-            rows.append((f"reach: {name}", stat(groups), *bootstrap_ci(groups, stat), len(groups)))
-        for name in EVENT_RATES:
-            def macro(gs, name=name):
-                return mean([mean([float(e[name]) for e in g[0]]) for g in gs if g[0]])
-            rows.append((name, macro(with_events), *bootstrap_ci(with_events, macro), len(with_events)))
-            rows.append((f"{name} (micro)", mean([float(e[name]) for e in firsts]), None, None, len(firsts)))
+        for name, key in MEASURES:
+            scored = [g for g in groups if _mean_of(g, key) is not None]
 
-        def rising(g):
-            # First gold events that can rise: a parsed call, below "certain".
-            return [e for e in g[0] if "delta" in e and not e["at_ceiling"]]
-
-        def rise_auroc(gs):
-            gold = [e["delta"] for g in gs for e in rising(g)]
-            controls = [e["delta"] for g in gs for e in g[1]]
-            return auroc(np.array([1] * len(gold) + [0] * len(controls)), np.array(gold + controls, dtype=float))
-
-        n_controls = sum(len(g[1]) for g in groups)
-        rows.append(("rise AUROC (gold vs control)", rise_auroc(groups), *bootstrap_ci(groups, rise_auroc),
-                     sum(len(rising(g)) for g in groups) + n_controls))
-        rows.append(("control rises", mean([float(e["rises"]) for g in groups for e in g[1]]), None, None,
-                     n_controls))
-        stages = Counter(e["stage"] for e in firsts)
-        for stage in STAGES:
-            rows.append((f"funnel: {stage}", stages[stage] / len(firsts) if firsts else None, None, None,
-                         len(firsts)))
-
-        def cal(fn):
-            def stat(gs):
-                items = [x for g in gs for x in g[2]]
-                return fn(np.array([y for _, y in items]), np.array([p for p, _ in items]))
-            return stat
-
-        n_items = sum(len(g[2]) for g in groups)
-        rows.append(("status AUROC", cal(auroc)(groups), *bootstrap_ci(groups, cal(auroc)), n_items))
-        rows.append(("status Brier", cal(brier)(groups), None, None, n_items))
-        rows.append(("status ECE", cal(ece)(groups), None, None, n_items))
-        for reason, n in sorted(counts.items()):
-            rows.append((f"skipped: {reason.replace('_', ' ')}", n, None, None, None))
+            def per_query(gs, key=key):
+                return mean([_mean_of(g, key) for g in gs])
+            pooled = [v[key] for g in groups for v in g if v[key] is not None]
+            rows.append((name, per_query(scored), *bootstrap_ci(scored, per_query), len(scored)))
+            rows.append((f"{name} (c)", mean(pooled), None, None, len(pooled)))
         return rows
+
+    @staticmethod
+    def _calibration(groups: List[List[Dict[str, Any]]]) -> List[Tuple[str, float, int, int, Optional[float]]]:
+        """Per status, highest first: ``(status, p, criteria, reached, share
+        reached)`` over the criteria with a Brier item."""
+        items = [v for g in groups for v in g if v["brier"] is not None]
+        out = []
+        for status in sorted(STATUS_LEVEL, key=STATUS_LEVEL.get, reverse=True):
+            with_status = [v for v in items if v["status"] == status]
+            hits = int(sum(v["reached"] for v in with_status))
+            out.append((status, status_probability(status), len(with_status), hits,
+                        hits / len(with_status) if with_status else None))
+        return out
 
     @staticmethod
     def _write_events(run_dir: Path, events: List[Dict]) -> None:
@@ -513,3 +537,9 @@ class BeliefUpdateEvaluator:
             writer.writeheader()
             for e in events:
                 writer.writerow({k: int(v) if isinstance(v := e.get(k), bool) else v for k in EVENT_FIELDS})
+
+
+def _mean_of(values: Iterable[Dict[str, Any]], key: str) -> Optional[float]:
+    """The mean of the defined *key* of *values*, None when there is none."""
+    vals = [v[key] for v in values if v[key] is not None]
+    return mean(vals) if vals else None

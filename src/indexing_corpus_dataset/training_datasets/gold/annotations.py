@@ -40,7 +40,7 @@ Criterion::
     {"id": "c1",
      "text": str | None,        written by the writer (criterion_texts.py)
      "answers": [...], "doc_ids": [...],
-     "kind": "closed" | "rest" | "aggregate",
+     "kind": "closed" | "aggregate",
      "relations": [...]}        the source structure the writer
                                 reads (hop relations with placeholders E1,
                                 E2, ... for the criteria, by position)
@@ -60,10 +60,8 @@ What each source states:
     frames       no criteria (final answer and qrels only)
     trqa_wiki2   multi_member: one criterion per member, "<member>: <property>"
                  (answers = its value, doc_ids = its documents,
-                 ``entity_values[].passage_ids``), then the rest criterion
-                 "any other member: <property>" (answers and doc_ids empty:
-                 every member has a criterion; training may hide some
-                 members under it), then the aggregate criterion (how the
+                 ``entity_values[].passage_ids``), then the aggregate
+                 criterion (how the
                  answer follows from the values; answers = the final answer,
                  no doc_ids: it is computed); members = TRQA's
                  ``entity_values``, its documents as doc_ids, each named by
@@ -91,21 +89,18 @@ from utils.io_utils import write_jsonl
 QUERY_KEYS = ("id", "source", "split", "text", "answer", "query_shape", "level", "doc_ids", "criteria", "members",
               "entity_names", "property", "aggregation", "texts_ok", "errors")
 CRITERION_KEYS = ("id", "text", "answers", "doc_ids", "kind", "relations")
-# The kinds of criterion (belief_model_component.core.types): a rest criterion
-# has no gold of its own, an aggregate one no documents (it is computed).
-CLOSED, REST, AGGREGATE = "closed", "rest", "aggregate"
-KINDS = (CLOSED, REST, AGGREGATE)
+# The kinds of criterion (belief_model_component.core.types): an aggregate
+# one has no documents (it is computed).
+CLOSED, AGGREGATE = "closed", "aggregate"
+KINDS = (CLOSED, AGGREGATE)
 MEMBER_KEYS = ("entity", "value", "doc_ids")
 FULL = "full"
 LEVELS = (FULL, "partial", "query")
 
 
 def has_gold(c: dict) -> bool:
-    """A criterion has its gold: answers and documents; a rest criterion
-    none (its members have their own criteria), an aggregate one answers
-    only (no document states a computed value)."""
-    if c["kind"] == REST:
-        return True
+    """A criterion has its gold: answers and documents; an aggregate one
+    answers only (no document states a computed value)."""
     if c["kind"] == AGGREGATE:
         return bool(c["answers"])
     return bool(c["answers"] and c["doc_ids"])
@@ -381,8 +376,8 @@ def multi_member_row(qid: str, source: str, query: str, answer: str, info: dict,
             titles: Dict[str, str]) -> dict:
     """The annotation row of a TRQA query from its intermediate info
     (``entity_values``, ``property``, ``aggregation``): one criterion per
-    member with its value and documents (``passage_ids``), the rest
-    criterion, and the aggregate criterion with the final answer.  A member
+    member with its value and documents (``passage_ids``), then the
+    aggregate criterion with the final answer.  A member
     is named by the title of its first document (*titles*: doc id -> page
     title), or by TRQA's label when it has none."""
     labels, members = [], []
@@ -397,10 +392,9 @@ def multi_member_row(qid: str, source: str, query: str, answer: str, info: dict,
         criteria = [_criterion(f"c{k}", CLOSED, [], value_texts(m["value"]), m["doc_ids"])
                     for k, m in enumerate(members, 1)]
         n = len(criteria)
-        criteria.append(_criterion(f"c{n + 1}", REST, [], [], []))
         # The final answer as the query states it, and a whole float without its ".0".
         answers = _dedup([answer, *value_texts(info.get("answer"))]) if answer else value_texts(info.get("answer"))
-        criteria.append(_criterion(f"c{n + 2}", AGGREGATE, [], answers, []))
+        criteria.append(_criterion(f"c{n + 1}", AGGREGATE, [], answers, []))
     prop = (info.get("property") or {}).get("label") or None
     names = _dedup(n for m, label in zip(members, labels) for name in (m["entity"], label)
                    for n in entity_names(name))

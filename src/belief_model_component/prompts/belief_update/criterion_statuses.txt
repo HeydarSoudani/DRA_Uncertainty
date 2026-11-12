@@ -1,35 +1,20 @@
 ---one_answer---
-"one answer" criterion: it has a single correct answer, so its candidates compete. A candidate's belief status depends on its passages and on the support of the other candidates:
-- "unlikely": less likely than not: another candidate has clearly stronger support, or a passage casts doubt on a part for it.
-- "possible": as likely as not: no passage states a part for it, or another candidate has support as strong.
-- "probable": more likely than not: passages state some parts for it, and its support is stronger than every other candidate's.
-- "almost certain": little doubt left: passages state every part for it, some perhaps only by inference or in part, none speaks against it, and every other candidate has clearly weaker support.
-- "certain": no doubt left: passages state every part for it directly, none speaks against it, and no other candidate has support.
+"one answer" criterion: it has one correct answer, so its candidates compete. Support is stronger when it states more parts, or states them more directly.
+- "unlikely": another candidate has stronger support, or a passage speaks against it.
+- "possible": another candidate has support as strong, or its support states its parts only by inference or in part.
+- "probable": its support is the strongest and states some parts directly.
+- "almost certain": its support is the strongest and states every part, some only by inference or in part.
+- "certain": its support states every part directly, and no other candidate has support.
 
----several_answers---
-"several answers" criterion: it may have several answers that hold together, so its candidates do not compete, except candidates that give different values of the same quantity (the same measure of the same thing, at the same time and place), which compete as the candidates of a "one answer" criterion do. Any other candidate's belief status depends only on its own passages:
-- "unlikely": a passage casts doubt on a part for it.
-- "possible": no passage states a part for it.
-- "probable": passages state some parts for it.
-- "almost certain": passages state every part for it, some perhaps only by inference or in part, and none speaks against it.
-- "certain": passages state every part for it directly, and none speaks against it.
-
----computed---
-"computed" criterion: the agent computes its answer and no passage states it. The reasoning gives its candidates; its passage observations state the conditions of its definition for a member, such as whether the member belongs to the set. A candidate's belief status is how completely the computation uses the right inputs: the members that the passages show meeting the set's conditions, each with the answer of its criterion:
-- "unlikely": the computation leaves out a member that a passage states meets the conditions, uses a member that a passage states fails them, or uses a value other than its criterion's answer.
-- "possible": the computation uses only some of the members it needs: members have no answer at "probable" or above, no passage states whether they meet the conditions, or it leaves out a member that a passage shows only may meet them.
-- "probable": the computation uses every listed member that a passage states meets the conditions, with their answers, but some answers are below "almost certain", or members may be missing.
-- "almost certain": as "probable", every answer it uses is at "almost certain" or above, and no member that a passage states meets the conditions is missing.
-- "certain": as "almost certain", every answer it uses is "certain", and passages state that every member it uses meets the conditions.
-
----target---
-"target" criterion: the entity that meets every clue before it. Its candidates and their belief statuses are set from the clues: a name listed on every clue is a candidate, at the lowest of its belief statuses there. It takes no observation and no candidate update of its own.
+---aggregate---
+"aggregate" criterion: it combines the answers of the criteria before it, its inputs; code sets its belief status, the lowest of its inputs', or "unlikely" when a passage speaks against it.
+When it is the entity that meets every criterion before it, its candidates are the names listed on all of them, and it takes no observation and no update. Otherwise its candidates are the answers the reasoning computes: extract the passages that state an input it needs, such as whether a member belongs to the set or the value of a member no criterion lists, and give a candidate only when a passage speaks against it (it uses an input a passage rules out, or leaves out one a passage states), as "unlikely".
 
 ---aspect---
-"aspect" criterion: one aspect of a report's topic. Its candidates are the facts on it, each written as one short statement, with the belief statuses of a "several answers" criterion. The aspect itself has a coverage status: how completely the passages cover what the aspect asks for, from the facts with support:
-- "unknown": no passage states a fact on it.
-- "possible": passages state facts on only a narrow part of what it asks.
-- "probable": passages state facts on most of what it asks, from more than one source.
-- "almost certain": passages state facts on all of what it asks, from several independent sources.
-- "certain": as "almost certain", and new passages add no new fact to it.
-The number of sources with facts on the aspect is a hint, not the rule: one source is usually "possible", two or three "probable", more "almost certain" or "certain", but what their facts cover decides.
+"aspect" criterion: one aspect of the report's topic, answered by several diverse facts, each one short statement; a fact is kept while its support states it, and removed when a passage speaks against it. The belief status is the aspect's, not each fact's: how well its facts back what it asks, by the diversity of the facts (they say different things) and of their sources (different passages).
+- "unlikely": its facts were all removed: passages speak against them.
+- "possible": its facts lack diversity: they are on one side of what it asks.
+- "probable": diverse facts, on several sides of what it asks, from limited sources.
+- "almost certain": diverse facts, on several sides of what it asks, from diverse sources.
+- "certain": diverse facts on every side of what it asks, each supported by diverse sources.
+In "candidates", a fact's "belief_status" is "kept" or "removed", and its reason opens with "Was kept:" once listed; one object with "candidate": null gives the aspect's new belief status, with the reason "Was <current belief status>: ...".

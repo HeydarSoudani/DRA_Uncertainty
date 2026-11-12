@@ -45,7 +45,7 @@ from indexing_corpus_dataset.layout import (
 from utils.config import POLICY_MODEL_TO_LLM
 from utils.io_utils import build_belief_config_name, build_dataset_dir_name, run_config_diffs, scan_queries
 
-from belief_model_component import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, shape_kinds
+from belief_model_component import GOLD_CRITERIA_LEVEL, GOLD_CRITERIA_MODEL, criterion_kinds
 
 from evaluation.belief import passage_tokens
 from evaluation.belief.gold import AnswerJudge
@@ -241,9 +241,9 @@ def load_episodes(cfg: TrainingConfig, name: str, *, teacher: bool, tag: str = "
             counts["not_run"] += 1
             continue
         episode.max_passage_tokens = max_passage_tokens
-        # The kinds as the belief reads them (a multi-hop query's hops, ``shape_kinds``).
+        # The kinds as the belief reads them (``criterion_kinds``, from the shape and the texts).
         rows = gold_criteria[qid]["criteria"]
-        kinds = shape_kinds(episode.query_shape, [c["kind"] for c in rows])
+        kinds = criterion_kinds(episode.query_shape, [c["text"] for c in rows])
         episode.gold_criteria = [{**c, "kind": kind} for c, kind in zip(rows, kinds)]
         episode.source = gold_criteria[qid]["source"]
         episode.gold_names = gold_criteria[qid]["entity_names"]

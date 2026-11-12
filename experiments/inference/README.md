@@ -91,7 +91,7 @@ prompt, a shared core plus one block per shape:
 |---|---|---|
 | multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets c1 to c5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
 | multi-hop | infoseek, webshaper_frames | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
-| multi-member | TRQA | one "member: property" per known member, then "any other member: property" for members found only by the search, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 50 members, the rest and the aggregate) |
+| multi-member | TRQA | one "member: property" per known member, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 51 members and the aggregate) |
 | multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
 `max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
@@ -106,15 +106,15 @@ Rules for report criteria:
 - Every criterion reads on its own, naming its subject instead of pointing back ("it", "these").
 - Criteria are distinct: none asks for what another one asks for.
 
-Each criterion has a `kind`, set by code from the shape: `closed` (one fact), `hop`, `rest`, `aggregate`, `aspect`
-(one aspect of a report topic) or `target`. A multi-clue query's clues and asked answer are closed, its "meets c1 to
-c<k>" criterion a target (`criteria.parsing.target_index`); a multi-hop query's hops before its answer are `hop`, its answer
-closed (`criteria.parsing.shape_kinds`, also applied to the training datasets' gold rows, which record every hop as closed); a multi-member query's
-members are closed, its "any other member" criterion rest and its last criterion aggregate (each added by code when the
-model leaves it out); all report criteria are aspects. A closed or aggregate criterion has one answer, so its
-candidates are alternatives; the others have several answers that hold together (members, values, facts; two entities
-can both fit a hop and lead on to the same next hop). No document states an aggregate (the agent computes
-it), so its candidates rest on the agent's turns only.
+Each criterion has a `kind`, set by code from the shape and the texts (`criteria.parsing.criterion_kinds`, also
+applied to the training datasets' gold rows): `closed` (one fact with one answer), `aggregate` (it combines the criteria
+before it) or `aspect` (one aspect of a report topic). A multi-clue query's clues and asked answer are closed, its
+"meets c1 to c<k>" criterion an aggregate, the target (`criteria.parsing.target_index`); every hop of a multi-hop query
+is closed; a multi-member query's members are closed and its last criterion an aggregate, the computation (added by
+code when the model leaves it out; an "any other member" item is dropped); all report criteria are aspects. A closed
+criterion has one answer, so its candidates are alternatives. An aggregate's statuses are code's: a target's
+candidates are the names listed on every clue, a computation's are the answers the agent's turns compute; each is at
+the lowest status of its inputs, "unlikely" when a passage speaks against it.
 
 **Gold and silver criteria.** Criteria are gold when they come from the question or from the dataset's annotation,
 silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_criteria`, `criteria_choice`):
@@ -156,7 +156,7 @@ The banks:
   `CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
 - TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
-  (`annotations.multi_member_row`: one criterion per member, the rest and the aggregate; members named by the page title of
+  (`annotations.multi_member_row`: one criterion per member, then the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `llm_criteria` writes
   the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
@@ -181,7 +181,7 @@ Rules of a bank line:
 ### Belief update
 
 The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. A call
-(`system.txt` in `src/belief_model_component/prompts/belief_update/`, the per-shape context in `criterion_shapes.txt`,
+(`system.txt` in `src/belief_model_component/prompts/belief_update/`, how each shape's criteria are read in `query_criteria.txt`,
 the status definitions of the shape's criterion types in `criterion_statuses.txt`, the per-shape example in
 `examples.txt`) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
@@ -252,54 +252,58 @@ Code applies the reply (`BeliefState.apply`):
   (`unchanged`); in a one-answer criterion, a "certain" candidate while another has support (`certain_with_rival`)
   and two candidates with the same support but different statuses (`unequal_tie`).
 
-Derived per criterion: its status, the highest of its candidates ("unknown" without one), and its selected
-candidate(s), among those at "possible" or above: for a one-answer criterion the first one listed, for a
-several-answers criterion every one; a proposal is never selected. `changed` lists the criteria whose candidates or
-proposals changed. When the call fails the belief stays as it was, its new documents are shown again when retrieved
-again and its turns' claims are lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
+Derived per criterion: its status, the highest of its candidates ("unknown" without one; an aspect's its own), and
+its selected candidate(s): for a one-answer criterion the first one listed at "possible" or above, for an aspect every
+fact; a proposal is never selected. `changed` lists the criteria whose candidates or proposals changed. When the call
+fails the belief stays as it was, its new documents are shown again when retrieved again and its turns' claims are
+lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
 
-The statuses of a candidate, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3),
-`certain` (4); "unknown" (level 0) is the status of a criterion without candidates. The model writes the status: it
-weighs the support (how many parts passages state, how directly, how many sources agree, whether one speaks against
-it). Each dataset's prompt holds only the definitions of the types its query shape has
-(`prompts/belief_update/criterion_statuses.txt`; multi_clue: one answer and target; multi_hop: one answer and several
-answers; multi_aspect: several answers and aspect; multi_member: one answer, several answers and computed). Candidates
-of a several-answers criterion that give different values of the same quantity compete as one-answer candidates do:
+The statuses, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3), `certain` (4);
+"unknown" (level 0) is the status of a criterion without candidates. Each query type has one status set
+(`prompts/belief_update/criterion_statuses.txt`), and each dataset's prompt holds only its own: "one answer" for
+multi_clue, multi_hop and multi_member (plus the aggregate's rule for multi_clue and multi_member), "aspect" for
+multi_aspect. A one-answer candidate's status combines its rivals and its own support (support is stronger when it
+states more parts, or states them more directly):
 
-| status | several answers (candidates do not compete) | one answer (candidates compete) |
-|---|---|---|
-| unlikely | a passage speaks against it without stating that it fails a part | another candidate has clearly stronger support, or a passage speaks against it |
-| possible | no passage states a part for it | no passage states a part, or another candidate has support as strong |
-| probable | passages state some parts | passages state some parts, its support stronger than every other's |
-| almost certain | every part stated, some only by inference or in part, none against | the same, and every other candidate's support clearly weaker |
-| certain | every part stated, none against | every part stated, none against, no other candidate has support |
+| status | one answer (candidates compete) |
+|---|---|
+| unlikely | another candidate has stronger support, or a passage speaks against it |
+| possible | another candidate has support as strong, or its support states its parts only by inference or in part |
+| probable | its support is the strongest and states some parts directly |
+| almost certain | its support is the strongest and states every part, some only by inference or in part |
+| certain | its support states every part directly, and no other candidate has support |
 
 When several fit, the lowest is given. A candidate is what its criterion asks for, never the member a member
 criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
-written as a candidate or proposal (`subject_candidate`; a rest criterion's name also needs its value). Whether a
-member belongs to the set is judged on the computed criterion: its passage observations state a member's conditions
-(shown as "passages on its definition"), and its candidate's status is how completely the computation uses the right
-inputs (unlikely when it leaves out a member a passage states meets the conditions, uses one that fails them, or a
-value other than its criterion's answer; possible while members lack an answer at probable or above; up to certain
-when every member it uses is stated to meet the conditions with a certain answer).
+written as a candidate or proposal (`subject_candidate`). Whether a member belongs to the set is judged on the
+aggregate: its passage observations state an input it needs (a member's membership, or the value of a member no
+criterion lists; shown as "passages on its inputs"). Code sets an aggregate's statuses: each candidate at the lowest
+status of its inputs (the closed criteria before it), "unlikely" when a passage speaks against it (it uses an input a
+passage rules out, or leaves out one a passage states), at most "possible" when the reasoning computed another answer
+later (`aggregate_status` when the reply wrote another status). A computed aggregate's candidates come from the
+reasoning's claims only; an update never adds one (`not_computed`).
 
-A report's aspect (multi_aspect) has its facts as several-answers candidates and its own **coverage** status, written
-by the update in the reply's `coverage` list: how completely the passages cover what the aspect asks for (unknown: no
-fact; possible: a narrow part; probable: most of it, more than one source; almost certain: all of it, several
-independent sources; certain: and new passages add nothing). The number of sources is given to the model as a hint,
-not as the rule. The coverage is the aspect's status (and so its q_k); it moves only with a passage on the aspect in
-the call and stays "unknown" while no passage supports a fact (`coverage_no_passage`, `coverage_no_fact`). A new fact
-whose words contain a listed one, or the reverse, joins it (`merged_duplicate`); a supporting span that shares no
-content word with its fact is flagged (`span_off_candidate`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it
-is the neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
+A report's aspect (multi_aspect) has one status of its own, written by the reply's item on it without a candidate:
+how well its facts with support back what it asks, by their diversity (distinct facts, on different sides of the
+aspect, from different sources): unlikely, its facts all removed or spoken against; possible, one side or one source;
+probable, several sides from more than one source; almost certain, every side from several sources; certain, and
+every fact supported by more than one source. Its facts are only kept or removed. The status is the aspect's q_k; it
+moves only with a passage on the aspect in the call, never with a claim alone (`aspect_no_passage`), is "unknown"
+with no fact and "unlikely" when a passage removed its last facts (a proposal the agent rejected does not count,
+`aspect_no_fact`), and "certain" needs every fact supported by two
+documents (`aspect_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
+"removed" is kept (`bad_fact_status`). A new fact whose words contain a listed one, or the
+reverse, joins it (`merged_duplicate`); a supporting span that shares no content word with its fact is flagged
+(`span_off_candidate`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
+neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
 
 The update prompt reads each criterion with its candidates (`views.tag.format_belief`):
 
 ```
-c1 (several answers): the town where the Varn Folk Museum was founded
+c1 (one answer): the town where the Varn Folk Museum was founded
   "Osby": certain
     + "The Varn Folk Museum was founded in Osby in 1921" [Osby]
-c2 (several answers): the engineer who was born in the town of c1
+c2 (one answer): the engineer who was born in the town of c1
   "Henrik Dahl": certain
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
 c3 (one answer): the lighthouse that was designed by the engineer of c2
@@ -309,20 +313,23 @@ c3 (one answer): the lighthouse that was designed by the engineer of c2
 
 The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed function of the statuses:
 
-1. Each criterion's status (the highest of its candidates) becomes a probability, (level + 2) / 6 (unlikely 1/6,
-   unknown 1/3, possible 1/2, certain 1): q_k. With no status at 0, one weak criterion lowers s_t without fixing it at
-   0. The status of a one-answer candidate already counts its rivals (two tied ones are at most "possible", 0.5), so
-   the candidates share nothing.
-2. s_t is the geometric mean over the criteria. The rest criterion of a multi-member query is left out, and so is the
-   target criterion of a multi-clue query (its statuses are the lowest of the clues', so it would count the weakest
-   clue twice).
+1. Each criterion's status (the highest of its candidates) becomes a probability, `core.types.STATUS_PROBABILITY`
+   (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97): q_k. The same table
+   turns every status into a number, the final scorer's included. The status of a one-answer candidate already counts
+   its rivals (two tied ones are at most "possible", 0.5), so the candidates share nothing.
+2. On a short-answer query s_t is the lowest q_k (the weakest link: the answer is correct only when every criterion
+   holds, and the minimum is the upper bound of that conjunction); it reads only the order of the statuses, so its
+   AUROC does not depend on the table's values. On a report (every criterion an aspect) s_t is the mean q_k, the
+   expected share of aspects covered. Every criterion counts: an aggregate's status is the lowest of its inputs', so
+   under the minimum it adds only what they do not show (a target joins the clues; a computed answer a passage speaks
+   against is "unlikely").
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
 scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
 the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
 and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
 and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
-status is (unlikely 1/6, possible 1/2, probable 2/3, almost certain 5/6, certain 1). The prompt shares the belief
+status is (unlikely 0.10, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97). The prompt shares the belief
 update's definitions and status definitions: the final answer is judged as a candidate of the query, the criteria
 weighed by how much each identifies the answer.
 The fixed function of the final statuses is kept next to it as a baseline (`certainty_formula`), with its form
@@ -400,9 +407,9 @@ The measures, by group, in the order of the files and the log:
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
-| uncertainty | per score: AUROC [CI], Brier, ECE; s_T - verbal AUROC [CI]; queries judged, scored, excluded | QA, belief on |
-| | s_T mean; s_T Kendall tau-b [CI] vs nugget coverage (and weighted); queries scored, excluded | reports, belief on |
-| belief | the belief update on gold documents (below) | TRQA, trqa_validation, infoseek, belief on |
+| uncertainty | queries scored; s_T and verbal: AUROC [CI], Brier; formula and answer formula: AUROC [CI] | QA, belief on |
+| | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
+| belief | gold and control event change, criterion recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
 CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.metrics`). Nothing else is
@@ -410,38 +417,39 @@ computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, so
 raw outputs stay in the run, for `analysis/`).
 
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
-query out). The scores: `s_T` (the final scorer, the headline), `formula` and `answer formula` (the fixed function
-of the final statuses and its form on the scorer's answer candidates, ablations) and `verbal`, the agent's own
-`Confidence: X%` (glm, oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`, "~85 %" and a
-fraction such as "0.85" accepted; a generation without it has none). s_T and verbal are measured on the same queries: those with y, s_T and, when the run has
-any, a verbal confidence; an ablation on those of them where it has a value (its own n). Only belief files of the
-current schema are scored. On a report dataset (`uncertainty/report.py`) s_T is the certainty of the final belief
-(the geometric mean of the aspects' coverage statuses; a report has no final scorer) and y the report's Auto-ARGUE
-nugget coverage: Kendall's tau-b with its CI over queries; an empty report is left out.
+query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
+oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`, "~85 %" and a fraction such as "0.85"
+accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
+the min of the criteria's status probabilities) and `answer formula` (the same on the candidates the scorer says the
+answer uses). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
+confidence. Rows: AUROC [CI] for every score, Brier for s_T and verbal. On a report dataset (`uncertainty/report.py`)
+s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
+final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the
+expected coverage); an empty report is left out. Left-out queries are logged.
 
-**Belief update** (`src/evaluation/belief/evaluator.py`), on the queries whose criteria are the gold criteria with
-a gold answer and gold documents per criterion (TRQA members, InfoSeek hops; not the rest and aggregate criteria,
-not WebShaper or FRAMES, which have no gold documents per criterion). A **gold event** is a gold document of
-criterion k, new to the belief (not in an earlier step whose update call parsed), whose text as the update read it (the `max_passage_tokens` cut) states k's gold
-answer. Per event:
+**Belief** (`src/evaluation/belief/evaluator.py`), on the queries whose criteria are the gold criteria (TRQA members,
+InfoSeek hops; not WebShaper or FRAMES, which have no gold per criterion). Scored criteria: a member or hop (gold
+answer and documents) and an aggregate (gold answer only).
 
-- `assigned`: the update wrote an observation of the document on k;
-- `rises`: the status level of k's gold candidate went up (a gold answer that is not a candidate is at 0,
-  unknown; one already "certain" that stays so counts as rising);
-- `correct_after` / `correct_end`: k's selected candidate (one of them, for several answers) is a gold answer,
-  after the step / in the final belief;
-- the funnel stage, one per event: `call_failed`, `not_assigned`, `no_gold_candidate`, `not_selected`,
-  `correct_lost`, `correct_kept`.
+- A **gold event** is a gold document of criterion k, new to the belief, whose text as the update read it (the
+  `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new
+  document observed on k that is not one of its gold documents and does not state its answer.
+- `gold event: gold candidate change`: the change of the gold candidate's status probability at the criterion's
+  first gold event (unknown -> certain = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
+  `control event: ...`: the same at its control events, which should be about 0. An event whose gold candidate is
+  already "certain" is left out.
+- `criterion recall`: the share of the criterion's gold documents the agent saw.
+- `reached answer`: at the end, the criterion's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
+  share).
+- `status Brier`: the final status probability against reached.
 
-The headline rates use the first gold event of each criterion: per query, then the mean over the queries with an
-event (macro, with CI); the pooled rate is the `(micro)` row. A **control event** is a new document observed on k
-that is not one of k's gold documents and does not state its answer; its change is the largest change of a
-non-gold candidate. `rise AUROC (gold vs control)` separates the gold events' changes from the control events'
-(pooled, CI over queries; gold events already at "certain" cannot rise and are left out). Also: the status calibration over every step of every scored criterion (the status
-probability against the selected candidate being correct: AUROC, Brier, ECE), and the reachability (per query,
-the share of scored criteria whose gold document was seen, and whose gold event happened). A candidate is a gold
-answer when it matches one, else when the judge (`judge_model`) says so, cached in
-`belief_eval/judge_cache.jsonl`.
+Each row comes twice: per query (each query's mean over its criteria, then the mean over queries, CI over queries)
+and `(c)`, the mean over every criterion. Below the table, the status calibration: per final status, how many
+criteria had it and how many reached the answer. A candidate is a gold answer when it matches one, else when the
+judge (`judge_model`) says so, cached in `belief_eval/judge_cache.jsonl`. For diagnosis, `belief_eval/events.csv`
+has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
+`not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`
+(every member or hop reached).
 
 The terminal log prints one block, one line per group:
 
@@ -449,8 +457,8 @@ The terminal log prints one block, one line per group:
 EVALUATION  trqa / wiki2_test / glm / monitor (gold criteria)  (n=200)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
-uncertainty  s_T AUROC 0.780 [0.71,0.84] ECE 0.090 | verbal AUROC 0.610 [0.53,0.69] ECE 0.310 (n 188)
-belief       assigned 0.830 | rises 0.710 | correct 0.640 | at end 0.580 | rise AUROC 0.860 (n 142)
+uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
+belief       gold change 0.620 | control change 0.030 | recall 0.710 | reached 0.520 (gold seen 0.730) | status Brier 0.180 (n 200)
 trajectory   searches 9.2 | agent tok 41234 | belief tok 23102 | forced 4
 ```
 

@@ -11,7 +11,7 @@ c2 (one answer): the painter who won the Ostra Prize in the 1920s
   "Maja Strand": possible
     + "The Ostra Prize for painting was awarded to Erik Lind in 1924 and to Maja Strand in 1927" [Ostra Prize]
   removed: "Anna Holm"
-c3 (target): the painter that meets c1 to c2
+c3 (aggregate): the painter that meets c1 to c2
   (no candidate)
 
 The agent's final answer:
@@ -42,7 +42,7 @@ c1 (one answer): the composer who studied in Vienna in the 1880s
 c2 (one answer): the composer who wrote an opera about a lighthouse keeper
   "Karl Vogt": almost certain
     + "Vogt's opera The Keeper of Skarv tells the story of a lighthouse keeper" [The Keeper of Skarv]
-c3 (target): the composer that meets c1 to c2
+c3 (aggregate): the composer that meets c1 to c2
   "Karl Vogt": probable
 c4 (one answer): the birth year of the wife of c3
   "1871": certain
@@ -70,11 +70,11 @@ Output:
 Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
 
 Criteria, with their candidates:
-c1 (several answers): the town where the Varn Folk Museum was founded
+c1 (one answer): the town where the Varn Folk Museum was founded
   "Osby": certain
     + "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
     + "The Varn Folk Museum was founded in Osby" [Varn Folk Museum]
-c2 (several answers): the engineer who was born in the town of c1
+c2 (one answer): the engineer who was born in the town of c1
   "Henrik Dahl": certain
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
   removed: "Nils Berg"
@@ -113,15 +113,12 @@ c2 (one answer): Kalvik Bridge: length
   "92 metres": certain
     + "The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long" [Kalvik Bridge]
   removed: "85 m"
-c3 (several answers): any other member: length
-  "Tirsa footbridge: 40 metres": certain
-    + "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
-c4 (computed): the total length of the bridges over the river Varn that were built before 1900
-  "212 m": probable
-  passages on its definition:
+c3 (aggregate): the total length of the bridges over the river Varn that were built before 1900
+  "212 m": unlikely
+  passages on its inputs:
     "The Osby Bridge, built in 1862" [Osby Bridge]
-    "The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn" [Kalvik Bridge]
-    "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895" [Tirsa footbridge]
+    "The Kalvik Bridge, opened in 1878, is a stone arch bridge over the Varn, 92 metres long" [Kalvik Bridge]
+    "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
 
 The agent's final answer:
 Osby Bridge is 120 m and Kalvik Bridge is 92 m, so the total is 212 m.
@@ -134,9 +131,8 @@ Output:
   "candidates": [
     {"id": "c1", "candidate": "120 m"},
     {"id": "c2", "candidate": "92 metres"},
-    {"id": "c3", "candidate": null},
-    {"id": "c4", "candidate": "212 m"}
+    {"id": "c3", "candidate": "212 m"}
   ],
-  "reason": "The total leaves out the Tirsa footbridge, which a passage shows built in 1895 and which is certain on c3, so the answer misses a member of the set it depends on.",
+  "reason": "The total is unlikely: it leaves out the Tirsa footbridge, which a passage shows built in 1895 over the Varn, so the answer misses a member of the set it depends on.",
   "final_status": "unlikely"
 }

@@ -22,17 +22,23 @@ criterion's status is the highest of its candidates. Each criterion is its own s
 The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/core/certainty.py`),
 a fixed function of the statuses:
 
-1. each status becomes a probability $p = (\ell + 2) / 6$ from its signed level $\ell$ (unlikely 1/6, unknown 1/3,
-   possible 1/2, certain 1); $q_k$ is the criterion status's $p$ (a one-answer status already counts the competing
-   candidates);
-2. $s_t$ is the geometric mean of the $q_k$, the rest criterion of a multi-member query left out.
+1. each status becomes a probability $p$ (`core.types.STATUS_PROBABILITY`: unlikely 0.10, unknown 0.25, possible
+   0.50, probable 0.70, almost certain 0.90, certain 0.97); $q_k$ is the criterion status's $p$ (a one-answer status
+   already counts the competing candidates);
+2. on a short-answer query $s_t$ is the lowest $q_k$; on a report (every criterion an aspect) it is their mean. Every
+   criterion counts (an aggregate's status is the lowest of its inputs').
 
 $$
-s_t = \Big(\prod_{k \in \mathcal{C}'} q_k\Big)^{1/|\mathcal{C}'|}
+s_t = \min_{k \in \mathcal{C}'} q_k \quad \text{(short answer)}, \qquad
+s_t = \frac{1}{|\mathcal{C}'|} \sum_{k \in \mathcal{C}'} q_k \quad \text{(report)}
 $$
 
-The geometric mean lets one weak or contradicted criterion pull the score down, but unlike a product it does not
-push a query with many criteria (a multi-member query's members) to 0. The final score $s_T$ is compared with the
+The answer is correct only when every criterion it relies on holds. The minimum is the upper bound of that
+conjunction (the Frechet bound), exact when the criteria describe one entity and so hold or fail together. It reads
+only the order of the statuses, so the ranking of $s_t$ (AUROC) does not depend on the values of the table; those
+values matter only to calibration. On a report one thin aspect does not make the report wrong, so the mean, the
+expected share of aspects covered, is used. The same table turns every status into a number (the final scorer's
+$s_T$, the status calibration, the rewards). The final score $s_T$ is compared with the
 correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
 (`belief_model_component/update/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
 answer is correct and writes the status of the final answer on the belief's scale, read as a probability as a
@@ -74,7 +80,7 @@ Each status has a signed level $\ell$:
 
 The criteria follow the query shape of the dataset: `multi_hop` for infoseek and webshaper_frames (one criterion per entity on the chain
 to the answer, the answer last), `multi_member` for trqa_validation (one criterion per member, "<member>: <property>",
-then "any other member: <property>", then the aggregation, how the answer follows from the members' values).
+then the aggregation, how the answer follows from the members' values).
 Training uses the queries with the full gold annotation (InfoSeek and TRQA): per criterion its gold answers and
 gold documents.
 
@@ -233,18 +239,17 @@ source; what the source does not state is an empty value (`[]` or `null`), never
 | InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | the first corpus chunk of its Wikipedia page and of the pages whose claims link to it |
 | WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the answer only (final answer) | none (the URLs are the query's) |
 | FRAMES | none | | |
-| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then "any other member: <property>" (`rest`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); rest: none; aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); rest and aggregate: none |
+| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); aggregate: none |
 | TRQA wiki1 | the same | the same | the same |
 
-Every TRQA member has its own criterion, so the rest criterion has no gold in the dataset: training can hide some
-members under it (their values and documents then become its gold), as at inference, where the belief model lists
-only the members it knows. The aggregate criterion has no documents since no document states the computed value.
+Every TRQA member has its own criterion. The aggregate criterion has no documents since no document states the
+computed value; a member the extractor did not list reaches the belief as a passage observation on the aggregate.
 
 `level` follows from the row and selects a group of queries:
 
 | `level` | The row has | Training can use |
 |---|---|---|
-| `full` | criteria, each with its gold: gold answers and gold documents (a `rest` criterion none, an `aggregate` one answers only) | per criterion: its answers and its documents; the final answer and the qrels |
+| `full` | criteria, each with its gold: gold answers and gold documents (an `aggregate` one answers only) | per criterion: its answers and its documents; the final answer and the qrels |
 | `partial` | criteria, some without answers or without documents | the criteria that have them; the final answer and the qrels |
 | `query` | no criteria | the final answer and the qrels only |
 
@@ -258,7 +263,7 @@ none; infoseek: the first chunk of the page) and writes the rows to `queries/que
 writes the same rows from the intermediate info. Query row: `id`, `source`, `split`, `text` (the question),
 `answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`, `members` (multi-member queries: `entity`,
 `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the members), `property` and
-`aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`, `rest`,
+`aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`,
 `aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer
 and its prompt hash are in `stats.json` and `criterion_texts.jsonl`, not per row).
 
@@ -275,8 +280,8 @@ of `training_datasets/gold/prompts/`, one system and one user prompt per query s
 - set (TRQA): the property phrase (what is looked up per member, with its year and unit, no condition) and the
   aggregation (what the answer computes over "the members": the property, the conditions on its values and how many
   members it takes, not what selects the members, which the member criteria carry), from the question, TRQA's property label
-  and its computation code. The member criteria "<member>: <phrase>" and the rest criterion "any other member:
-  <phrase>" are built from the phrase; the aggregate criterion is the aggregation.
+  and its computation code. The member criteria "<member>: <phrase>" are built from the phrase; the aggregate
+  criterion is the aggregation.
 
 The writer runs before the split, so the rows are written with their texts; a build with texts to write needs
 `OPENROUTER_API_KEY`. `texts_ok` is true when every text names none of the gold answers (a name inside a longer
@@ -333,8 +338,6 @@ answer? / does the text state it?). A turn states a
 criterion's gold answer by the same match; a (turn, criterion) pair without a match, whose gold documents were
 shown before the turn, is asked of the same judge. The verdicts are cached in
 `{output_root}/{training_data}/{policy_model}/answer_gold.jsonl`; `rl.answer_judge_model: null` uses the match only.
-The rest criterion of a multi-member query has no gold yet (the gold lists every member as its own criterion) and is not
-scored.
 
 Only finished queries are episodes, as dra_inference counts them: the trajectory ends with its meta line and, in a
 monitor run, the belief file exists. The qrels are read with the run's `dataset.min_relevance_score`. The runs a phase reads must share
@@ -342,7 +345,7 @@ their agent and searcher settings (`run_config.json`, the temperature included):
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
 runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
-that the run's criteria are the dataset's), that the belief file (schema 40, `SCHEMA_VERSION`) has one step per search iteration of the
+that the run's criteria are the dataset's), that the belief file (schema 45, `SCHEMA_VERSION`) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
 `recall_so_far` matches the qrels. Episodes without a verdict in `accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
@@ -350,7 +353,7 @@ evaluation) are counted and reported; `--eval-only` judges them.
 ## Scores and rewards
 
 The same scores rate the teacher (phase 2), reward the student's chains (phase 3) and validate them
-(`belief_model_training/scoring.py`, `chain_score`). Each criterion $k$ with gold answers (not the rest criterion)
+(`belief_model_training/scoring.py`, `chain_score`). Each criterion $k$ with gold answers
 is its own sequence of beliefs, one per step of the episode: a step without a call, or whose call failed, keeps
 the belief of the step before, and the answer turn is the last step. Each criterion is scored on its own, then
 the scores are averaged over the criteria, so neither a long episode nor a criterion with many updates weighs more.
@@ -370,11 +373,8 @@ over the chain's calls, documents and turns together:
 | any other observation | neutral | | |
 
 **WEP calibration** $\mathrm{cal}_k$: the mean over the steps of $1 - (p_{k,t} - y_{k,t})^2$, $p_{k,t}$ the
-probability of the criterion's status and $y_{k,t}$ whether its selected candidate(s) cover the criterion correctly: a one-answer
-criterion, whether its selected candidate is a gold answer (0 without one); a several-answers criterion, the share
-of its gold answers among its selected candidates. A hop of a multi-hop query is a several-answers criterion with one
-gold answer, so $y$ is whether its selected candidates include it; another valid answer (two entities that both fit
-the hop) is not counted against it.
+probability of the criterion's status and $y_{k,t}$ whether its selected candidate is a gold answer (0 without one).
+Every scored criterion has one answer (a hop, a member's value, an aggregate).
 
 **Final** $r_{\mathrm{final}} = 1 - (s_T - y)^2$, $s_T$ against the correctness of the agent's final answer; 0
 when the final call fails its gate. On a short-answer query $s_T$ is the final scorer's, so $r_{\mathrm{final}}$
@@ -397,7 +397,7 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 | per criterion | mean over the chains of the mean over their criteria: `crit_assign_f1`, `crit_doc_recall_obs`, `crit_value_accuracy`, `crit_cal` |
 | observation | precision, recall and F1 of document observations and claims, pooled |
 | calibration | Brier score, ECE and AUROC (on the items with a binary $y$) of the statuses of every (criterion, step) against $y_{k,t}$; gold rate and count per status (reliability) |
-| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`, and its mean, product and min) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
+| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`: min, or mean on a report; and each aggregator, `certainty_{min,mean,geometric_mean,product}_*`) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
 | rewards | mean `format`, `assign`, `cal`, $r_{\mathrm{final}}$ |
 
 ## Phase 2: SFT
@@ -503,7 +503,7 @@ mean reward, each term and the teacher-score measures, $s_T$ against $y$ include
 
 **Open.** One training dataset per run (`shared.training_data`): InfoSeek (infoseek) and TRQA (trqa_validation) are not yet
 mixed in one RL run. The non-gold passages are neutral in the source assignment; a judged sample of them will show
-whether a precision term is needed. The rest criterion joins the rewards once members are masked into it.
+whether a precision term is needed.
 
 ## Evaluation (dra_inference)
 

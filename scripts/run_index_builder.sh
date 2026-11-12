@@ -4,7 +4,7 @@
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=64
 #SBATCH --partition=gpu_h100
-#SBATCH --time=06:00:00
+#SBATCH --time=28:00:00
 #SBATCH --mem=480GB
 #SBATCH --output=script_logging/slurm_%A.out
 # Sizing (H100, qwen3_emb_4b, 4 GPUs; --time is ~1.5x wall):
@@ -13,6 +13,10 @@
 #   trqa             5.9M   512         32     ~131        ~3.3 h  05:00:00  ~120GB
 #   ragtime          4.0M   1024        32     ~55         ~6 h    10:00:00  ~85GB
 #   neuclir          10.0M  1024        32     ~55-61      ~14 h   24:00:00  ~206GB
+#   infoseek         11.2M  512         32     ~50-56 (e)  ~15 h   28:00:00  ~260GB (e)
+#   (e) estimated, not measured: wiki-25-512 docs average ~351 tokens after the
+#   512 cut vs ~150 for trqa, so ~2.3x trqa's per-doc cost. Disk: memmap and
+#   index ~115GB each.
 # Other retrievers on trqa (5.9M docs, 4 GPUs; docs/s/GPU estimated from a 20K-doc
 # H100 benchmark, scaled by the qwen3 benchmark-to-run ratio):
 #   retriever        max_length  batch  docs/s/GPU  wall      --time
@@ -32,15 +36,15 @@
 source scripts/_activate.sh
 mkdir -p script_logging
 
-RETRIEVER=spladepp            # bm25 | spladepp | bge | qwen3_emb_4b
-DATASET=trqa                  # trqa | neuclir | browsecomp_plus | ragtime | infoseek | webshaper_frames
+RETRIEVER=qwen3_emb_4b        # bm25 | spladepp | bge | qwen3_emb_4b
+DATASET=infoseek              # trqa | neuclir | browsecomp_plus | ragtime | infoseek | webshaper_frames
 
 case "$RETRIEVER" in
     bm25)              ARGS=() ;;
     spladepp|spladev3) ARGS=(--use_fp16 --max_length 256 --batch_size 512 --save_embedding) ;;
     # qwen3 embedding models (4B): max_length is auto-selected per dataset
     # (layout.DATASET_SPECS: browsecomp_plus 4096, neuclir/ragtime
-    # 1024, trqa 512). batch_size is corpus-dependent (measured on H100, see
+    # 1024, trqa/infoseek 512). batch_size is corpus-dependent (measured on H100, see
     # sizing notes above): long-doc corpora want a small batch (compute-bound);
     # short-doc corpora too (padding-bound, smaller batch = less wasted compute).
     qwen3_emb_*)

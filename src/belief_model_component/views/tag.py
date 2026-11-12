@@ -9,11 +9,11 @@ observation that supports it (``+``) or speaks against it (``-``), its
 spans and the passage's title in brackets (labels such as "d2" are local to
 one call, so they are never shown again); then the names the agent
 proposed that no passage supports yet; an aspect criterion (a report) shows
-its coverage first, and a computed criterion then the passage texts on its
-definition, such as whether a member meets the set's condition
-(``format_belief``)::
+its status first and its facts without a status, and a computed aggregate
+then the passage texts on its inputs, such as whether a member meets the
+set's condition (``format_belief``)::
 
-    c1 (several answers): the American theoretical physicist who shared his Nobel Prize with a Nobel Laureate from Pakistan
+    c1 (one answer): the American theoretical physicist who shared his Nobel Prize with a Nobel Laureate from Pakistan
       "Sheldon Glashow": certain
         + "Sheldon Lee Glashow ... is an American theoretical physicist" [Sheldon Glashow]
       "Steven Weinberg": probable
@@ -49,7 +49,7 @@ import re
 from html import escape
 from typing import Any, Dict, List, Optional
 
-from ..core.types import ASPECT, CRITERION_REF_RE, DERIVED_KINDS, DOC, NO_DOC_KINDS, Candidate, Support, exclusive
+from ..core.types import AGGREGATE, ASPECT, CRITERION_REF_RE, DOC, Candidate, Support, is_computed
 
 # A tag the model wrote itself; removed before its text enters the context.
 BELIEF_STATE_RE = re.compile(r"<belief_state\b[^>]*>.*?</belief_state>\s*", re.DOTALL)
@@ -62,9 +62,9 @@ NO_CANDIDATE = "(no candidate)"
 MAX_SUPPORT_LINES = 3
 # Characters of the spans of one support line.
 MAX_SUPPORT_CHARS = 300
-# Passage lines shown on a computed criterion's definition (one per passage,
+# Passage lines shown on a computed aggregate's inputs (one per passage,
 # the latest ones; the others are counted).
-MAX_DEFINITION_LINES = 40
+MAX_INPUT_LINES = 40
 
 
 def strip_belief_state(text: str) -> str:
@@ -73,12 +73,9 @@ def strip_belief_state(text: str) -> str:
 
 
 def criterion_type(kind: str) -> str:
-    """The type of a criterion of *kind* as the belief update reads it."""
-    if kind in DERIVED_KINDS:
-        return "target"
-    if kind == ASPECT:
-        return "aspect"
-    return "computed" if kind in NO_DOC_KINDS else "one answer" if exclusive(kind) else "several answers"
+    """The type of a criterion of *kind* as the belief update reads it: the
+    name of its section of ``criterion_statuses.txt``."""
+    return {AGGREGATE: "aggregate", ASPECT: "aspect"}.get(kind, "one answer")
 
 
 def criterion_head(state: Any, k: int) -> str:
@@ -87,9 +84,10 @@ def criterion_head(state: Any, k: int) -> str:
     return f"{c.id} ({criterion_type(c.kind)}): {c.text}"
 
 
-def candidate_line(c: Candidate) -> str:
-    """One candidate as shown: ``"<name>": <status>``."""
-    return f'"{c.name}": {c.status}'
+def candidate_line(c: Candidate, fact: bool = False) -> str:
+    """One candidate as shown: ``"<name>": <status>``; an aspect's fact
+    (*fact*) without a status: ``"<fact>"``."""
+    return f'"{c.name}"' if fact else f'"{c.name}": {c.status}'
 
 
 def _spans_text(spans: List[str]) -> str:
@@ -117,24 +115,25 @@ def support_lines(c: Candidate) -> List[str]:
     return lines
 
 
-def coverage_line(state: Any, k: int) -> Optional[str]:
-    """An aspect criterion's coverage (``BeliefState.coverage``), else None."""
-    return f"coverage: {state.coverage[k]}" if state.criteria[k].kind == ASPECT else None
+def aspect_line(state: Any, k: int) -> Optional[str]:
+    """An aspect criterion's status (``BeliefState.aspect_status``), else None."""
+    return f"status: {state.aspect_status[k]}" if state.criteria[k].kind == ASPECT else None
 
 
-def definition_lines(state: Any, k: int) -> List[str]:
-    """A computed criterion's passage observations (what passages state on
-    its definition, such as a member meeting the set's condition): a
+def input_lines(state: Any, k: int) -> List[str]:
+    """A computed aggregate's passage observations (what passages state on
+    its inputs, such as a member meeting the set's condition): a
     heading, then one line per passage, ``"<spans>" [<title>]``, at most
-    ``MAX_DEFINITION_LINES`` (the latest; "+N more sources" before them).
+    ``MAX_INPUT_LINES`` (the latest; "+N more sources" before them).
     Empty for other criteria or without one."""
-    if state.criteria[k].kind not in NO_DOC_KINDS:
+    c = state.criteria[k]
+    if not is_computed(c.kind, c.text):
         return []
     obs = [o for o in state.trace[k] if o.source == DOC and o.verified_spans]
     if not obs:
         return []
-    lines = ["passages on its definition:"]
-    hidden = len(obs) - MAX_DEFINITION_LINES
+    lines = ["passages on its inputs:"]
+    hidden = len(obs) - MAX_INPUT_LINES
     if hidden > 0:
         lines.append(f"  {hidden} more source" + ("s" if hidden > 1 else ""))
         obs = obs[hidden:]
@@ -151,24 +150,24 @@ def format_belief(state: Any, removed: bool = False) -> str:
     """Every criterion of *state* with its candidates and their support,
     highest status first, or ``NO_CANDIDATE``, then its proposals; with
     *removed* (the final scorer's view), then the names the belief ruled
-    out (``BeliefState.ruled_out``).  A target criterion's candidates are
-    shown without support lines: their support is the clues', shown there;
-    a computed criterion's too: its passages are listed once, as the
-    passages on its definition (``definition_lines``).  An aspect shows its
-    coverage first (``coverage_line``)."""
+    out (``BeliefState.ruled_out``).  An aggregate's candidates are shown
+    without support lines: a target's support is the clues', shown there; a
+    computed aggregate's passages are listed once, as the passages on its
+    inputs (``input_lines``).  An aspect shows its status first
+    (``aspect_line``) and its facts without a status."""
     lines = []
     for k in range(len(state.criteria)):
         lines.append(criterion_head(state, k))
-        coverage = coverage_line(state, k)
-        if coverage:
-            lines.append(f"  {coverage}")
+        kind = state.criteria[k].kind
+        aspect = aspect_line(state, k)
+        if aspect:
+            lines.append(f"  {aspect}")
         cands = state.ordered(k)
-        derived = state.criteria[k].kind in DERIVED_KINDS or state.criteria[k].kind in NO_DOC_KINDS
         if not cands:
             lines.append(f"  {NO_CANDIDATE}")
         for c in cands:
-            lines.append(f"  {candidate_line(c)}")
-            if not derived:
+            lines.append(f"  {candidate_line(c, fact=kind == ASPECT)}")
+            if kind != AGGREGATE:
                 lines.extend(f"    {line}" for line in support_lines(c))
         proposed = proposals_line(state, k)
         if proposed:
@@ -176,7 +175,7 @@ def format_belief(state: Any, removed: bool = False) -> str:
         ruled_out = state.ruled_out(k) if removed else []
         if ruled_out:
             lines.append("  removed: " + ", ".join(f'"{n}"' for n in ruled_out))
-        lines.extend(f"  {line}" for line in definition_lines(state, k))
+        lines.extend(f"  {line}" for line in input_lines(state, k))
     return "\n".join(lines)
 
 
@@ -189,9 +188,9 @@ def render_belief_state(record: Dict[str, Any], state: Any) -> Optional[str]:
     lines: List[str] = [f'<belief_state step="{record["iteration"]}">', "  <criteria>"]
     for i, c in enumerate(state.criteria, 1):
         text = escape(CRITERION_REF_RE.sub(r"k\1", c.text), quote=False)
-        coverage = coverage_line(state, i - 1)
-        body = ([escape(coverage, quote=False)] if coverage else []) + \
-               [escape(candidate_line(x), quote=False) for x in state.ordered(i - 1)]
+        aspect = aspect_line(state, i - 1)
+        body = ([escape(aspect, quote=False)] if aspect else []) + \
+               [escape(candidate_line(x, fact=c.kind == ASPECT), quote=False) for x in state.ordered(i - 1)]
         proposed = proposals_line(state, i - 1, "unverified")
         if proposed:
             body.append(escape(proposed, quote=False))

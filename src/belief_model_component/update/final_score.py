@@ -42,7 +42,8 @@ from ..views.tag import format_belief
 from .repair import complete_with_repair
 
 # The status of the final answer, lowest first: the candidate statuses
-# (unlikely 1/6, possible 1/2, probable 2/3, almost certain 5/6, certain 1).
+# (``core.types.STATUS_PROBABILITY``: unlikely 0.10, possible 0.50, probable
+# 0.70, almost certain 0.90, certain 0.97).
 FINAL_STATUSES = tuple(s for s in BELIEF_STATUSES if s != UNKNOWN)
 
 # Output tokens of one call (a multi-member query has up to ~50 criteria).

@@ -15,8 +15,9 @@ from typing import Any, Dict, List, Optional
 # out is removed (``REMOVED``), not kept at a lowest status.  The paper
 # ranks "unknown" lowest; here it is the neutral level 0 (no observation
 # gives a candidate); "unlikely" is below it (a passage speaks against the
-# candidate, or another candidate of a one-answer criterion has clearly
-# stronger support).
+# candidate, or another candidate of a one-answer criterion has stronger
+# support).  An aspect has one status of its own; its facts are kept or
+# removed (``KEPT``).
 BELIEF_STATUSES = (
     "unlikely",
     "unknown",
@@ -55,9 +56,20 @@ def is_removed(text: Any) -> bool:
     return str(text or "").strip().lower() == REMOVED
 
 
-# The highest status of a candidate no passage supports (a computed
-# criterion, ``NO_DOC_KINDS``, is exempt: the reasoning sets its status).
+# The highest status of a candidate no passage supports (an aggregate is
+# exempt: code sets its status from its inputs).
 NO_SUPPORT_MAX_STATUS = "possible"
+
+
+# What the update writes for a fact of an aspect in place of a status: the
+# fact stays (``REMOVED`` takes it out).  A fact has no status of its own;
+# the aspect has one (``BeliefState.aspect_status``).
+KEPT = "kept"
+
+
+def is_kept(text: Any) -> bool:
+    """Whether a reply's status *text* is ``KEPT`` (case and spaces ignored)."""
+    return str(text or "").strip().lower() == KEPT
 
 
 # What the reasoning says of a candidate (a claim): a status of the scale,
@@ -74,54 +86,50 @@ def parse_claim(text: Any) -> Optional[str]:
     return status if status not in (None, UNKNOWN) else None
 
 
+# Each status as a probability, the one scale of every number read from a
+# status (the certainty formula, the final scorer's s_T, the status
+# calibration and the training rewards).  "unlikely" (a passage speaks
+# against it) is near 0; "unknown" (no evidence) is below "possible";
+# "possible" is even odds; "certain" stays below 1, so a log or squared
+# error term never saturates.  Only the order of the statuses matters to a
+# ranking (AUROC); the values matter to calibration (Brier, ECE).
+STATUS_PROBABILITY: Dict[str, float] = {
+    "unlikely": 0.10,
+    "unknown": 0.25,
+    "possible": 0.50,
+    "probable": 0.70,
+    "almost certain": 0.90,
+    "certain": 0.97,
+}
+
+
 def status_probability(status: str) -> float:
-    """A status as a probability that the criterion is covered:
-    (level + 2) / 6: unlikely 1/6, unknown 1/3, possible 1/2, probable 2/3,
-    almost certain 5/6, certain 1.  No status scores 0, so one weak
-    criterion lowers the geometric mean of the certainty score without
-    fixing it at 0 (``core.certainty.geometric_mean``)."""
-    return (STATUS_LEVEL[status] + 2) / 6
+    """A status as a probability (``STATUS_PROBABILITY``)."""
+    return STATUS_PROBABILITY[status]
 
 
-# Criterion kinds: a closed criterion is one fact with one answer; a hop is
-# an entity on the chain of a multi-hop query before its answer, which may
-# have several answers (two entities can both fit the description and lead
-# on to the same next hop); the rest criterion of a multi-member query ("any other
-# member: <property>") stands for the members the extractor did not list;
-# an aggregate criterion of a multi-member query is how its answer follows from the
-# members' values (computed, no document states it); an aspect criterion is
-# one aspect of a report topic, whose answers are the facts on it; the
-# target criterion of a multi-clue query ("the composer that meets c1 to
-# c3") is the entity every clue before it describes, its candidates derived
-# from theirs (``DERIVED_KINDS``).
+# Criterion kinds: a closed criterion has one answer (a clue or the asked
+# thing of a multi-clue query, a hop of a multi-hop query, a member's value
+# of a multi-member query); an aggregate criterion combines the answers of
+# the criteria before it (its inputs), its status set by code
+# (``BeliefState._derive_aggregates``): the target of a multi-clue query
+# ("the composer that meets c1 to c3", ``is_target``), whose candidates are
+# the names listed on every clue, and the computation of a multi-member
+# query (``is_computed``), whose candidates the reasoning gives; an aspect
+# criterion is one aspect of a report topic: its candidates are the facts
+# on it, kept or removed, and the aspect has one status.
 CLOSED = "closed"
-HOP = "hop"
-REST = "rest"
 AGGREGATE = "aggregate"
 ASPECT = "aspect"
-TARGET = "target"
+CRITERION_KINDS = (CLOSED, AGGREGATE, ASPECT)
 
 # Exclusive kinds have one correct answer, so the values of such a
-# criterion are alternatives; the values of the other (cumulative) kinds
-# are answers that hold together (members, values, facts).
-EXCLUSIVE_KINDS = (CLOSED, AGGREGATE, TARGET)
+# criterion are alternatives; an aspect's facts hold together.
+EXCLUSIVE_KINDS = (CLOSED, AGGREGATE)
 # Kinds whose candidates are names or figures a source writes out (checked
-# against the spans and titles of the criterion's passages; a rest
-# criterion's "<member>: <value>" each part).  An aggregate is computed,
-# never checked.
-NAMED_KINDS = (CLOSED, HOP, REST)
-# Kinds whose answer no document states (the agent computes an aggregate):
-# the reasoning gives their candidates and their status is not capped for
-# lack of support.  A passage observed on such a criterion states a
-# condition of its definition for a member (whether the member belongs to
-# the set), which the computation's status weighs: the member criteria
-# only collect values, membership is judged here.
-NO_DOC_KINDS = (AGGREGATE,)
-# Kinds whose candidates code derives from other criteria, never the belief
-# update (``BeliefState._derive_targets``): a target's candidates are the
-# names listed on every clue before it, each at the lowest of its statuses
-# there, with their support.
-DERIVED_KINDS = (TARGET,)
+# against the spans and titles of the criterion's passages).  An aggregate
+# is combined, never checked.
+NAMED_KINDS = (CLOSED,)
 
 
 def exclusive(kind: str) -> bool:
@@ -129,19 +137,22 @@ def exclusive(kind: str) -> bool:
     return kind in EXCLUSIVE_KINDS
 
 
-# The coverage status of an aspect criterion (a report's aspect): how
-# completely the passages cover what the aspect asks for, written by the
-# belief update per aspect (``BeliefState.coverage``); it is the aspect's
-# status.  The scale of the candidate statuses from "unknown" (no passage
-# states a fact on it) up: coverage is never against an aspect.
-COVERAGE_STATUSES = BELIEF_STATUSES[BELIEF_STATUSES.index(UNKNOWN):]
+# The text of a multi-clue query's target: "the <type> that meets c1 to c<k>".
+TARGET_RE = re.compile(r"\bmeets\s+c1\s+to\s+c(\d+)\b", re.IGNORECASE)
 
 
-def parse_coverage(text: Any) -> Optional[str]:
-    """The coverage status *text* names (as ``parse_status``), None when it
-    is not one of ``COVERAGE_STATUSES``."""
-    status = parse_status(text)
-    return status if status in COVERAGE_STATUSES else None
+def is_target(kind: str, text: str) -> bool:
+    """Whether a criterion of *kind* and *text* is a target: an aggregate
+    whose candidates are derived from the clues before it (the names listed
+    on every one), never written by the belief update."""
+    return kind == AGGREGATE and TARGET_RE.search(text or "") is not None
+
+
+def is_computed(kind: str, text: str) -> bool:
+    """Whether a criterion of *kind* and *text* is a computed aggregate: its
+    candidates are the answers the reasoning computes from the criteria
+    before it, and no passage states them."""
+    return kind == AGGREGATE and not is_target(kind, text)
 
 
 # The entity a criterion is about, written before its colon: a multi-member
@@ -151,10 +162,11 @@ _PARENTHETICAL_RE = re.compile(r"\s*\([^)]*\)")
 
 def member_subject(criteria: List["Criterion"], k: int) -> Optional[str]:
     """The member criterion *k* is about, or None: a closed criterion
-    "<member>: <property>" of a multi-member query's list (one with a rest
-    criterion).  Its candidates are the member's value, never the member."""
+    "<member>: <property>" of a multi-member query's list (one with a
+    computed aggregate).  Its candidates are the member's value, never the
+    member."""
     c = criteria[k]
-    if c.kind != CLOSED or ":" not in c.text or not any(x.kind == REST for x in criteria):
+    if c.kind != CLOSED or ":" not in c.text or not any(is_computed(x.kind, x.text) for x in criteria):
         return None
     # The last separator: a member's name may hold one ("Star Wars: Episode IV: box office").
     subject = c.text.rsplit(": " if ": " in c.text else ":", 1)[0].strip()
@@ -272,7 +284,7 @@ class Support:
 
 # The basis of a candidate (derived from its support, never written by
 # the update): "passage" when a passage observation supports it or speaks
-# against it, "reasoning" when none does (a computed criterion's
+# against it, "reasoning" when none does (a computed aggregate's
 # candidates).
 PASSAGE = "passage"
 REASONING = "reasoning"
@@ -330,8 +342,8 @@ class RemovedCandidate:
     when removed (null for a proposal), the step it was added in and the
     step it was removed in, the reason (the update's, or the claim
     that rejected a proposal) and whether the call ruled it out
-    (``against``: a passage spoke against it, or the agent's claim did: the
-    removal of a computed criterion's candidate, a rejected proposal; not a
+    (``against``: a passage spoke against it, or the agent's claim did: a
+    rejected computed answer or proposal; not a
     proposal dropped for room).  The final scorer reads a ruled-out name as
     removed.  Saved, never shown to the update."""
     name: str
@@ -353,20 +365,12 @@ class CandidateUpdate:
     criterion id, the candidate, the labels of the call's passages whose
     observations support it (``support``) or speak against it
     (``against``), the reason of the change ("Was <status>: ...", "Was
-    proposed: ..." or "New: ...") and the new status (raw text)."""
+    proposed: ..." or "New: ...") and the new status (raw text).  On an
+    aspect, an item without a candidate carries the aspect's status, and a
+    fact's status is ``KEPT`` or ``REMOVED``."""
     id: str
     candidate: str
     reason: str
     status: str
     support: List[str] = field(default_factory=list)
     against: List[str] = field(default_factory=list)
-
-
-@dataclass
-class CoverageUpdate:
-    """One item of the reply's ``coverage`` list (a report's aspects), as
-    written: the criterion id, the reason ("Was <coverage>: ...") and the
-    new coverage status (raw text)."""
-    id: str
-    reason: str
-    status: str

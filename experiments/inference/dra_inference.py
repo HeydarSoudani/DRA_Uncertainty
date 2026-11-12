@@ -842,5 +842,5 @@ if __name__ == "__main__":
 #   python experiments/inference/dra_inference.py --limit 1
 #   
 #   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
-#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki1 --limit 1
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 1
 #   python experiments/inference/dra_inference.py --dataset neuclir --limit 1

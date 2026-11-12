@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def empty_update(errors: Optional[List[str]] = None) -> Dict[str, Any]:
     """The outcome of a step without a parsed call (``BeliefUpdateSignal``)."""
-    return {"called": False, "observations": None, "updates": [], "coverage": [], "changed": [], "issues": [],
+    return {"called": False, "observations": None, "updates": [], "changed": [], "issues": [],
             "beliefs": None, "reply": None, "errors": list(errors or [])}
 
 
@@ -183,8 +183,8 @@ class BeliefUpdateSignal:
         step *step* (*plan*): its passages are judged once it is applied
         (a reply that raises leaves them unjudged); returns the records
         of ``BeliefState.apply``."""
-        claims, doc_obs, updates, coverage = parsed
-        out = self._state.apply(claims, doc_obs, updates, step, coverage)
+        claims, doc_obs, updates = parsed
+        out = self._state.apply(claims, doc_obs, updates, step)
         self._judged.update(plan.keys)
         return out
 

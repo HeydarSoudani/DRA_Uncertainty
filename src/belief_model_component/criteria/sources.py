@@ -19,18 +19,16 @@ dataset's annotation; silver when an LLM extracts structure the question
 does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
 records the kind as ``criteria_kind``.
 
-Each criterion is closed (one fact), a hop of a multi-hop query before its
-answer (which may have several answers), the target of a multi-clue query
-(the entity that meets the clues before it), or, in a report request, an
-aspect of the topic.  A criterion refers to criteria before it by their
+Each criterion is closed (one fact with one answer: a clue, a hop, a
+member's value), an aggregate (the target of a multi-clue query, the
+entity that meets the clues before it, or the computation of a
+multi-member query), or, in a report request, an aspect of the topic.  A criterion refers to criteria before it by their
 ids ("the town of c1", "the composer that meets c1 to c3"), never to a
 later one (``parsing.forward_refs``).  A capped list keeps the answer and
 the criteria closest to it (``parsing.cap_chain``); a multi-clue list is
 checked against its layout (``parsing.clue_layout``).  A multi-member query lists its members as
-closed criteria, then a rest criterion, "any other member: <property>",
-for the members the extractor did not list, then an aggregate criterion,
-how the answer follows from the members' values, as in the gold criteria
-of the training datasets.  The kind follows from the dataset's query shape
+closed criteria, then an aggregate criterion, how the answer follows from
+the members' values, as in the gold criteria of the training datasets.  The kind follows from the dataset's query shape
 and the criterion's position (``parsing.criterion_kinds``); the extractor
 only lists the criteria.
 """
@@ -49,9 +47,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILVER_CRITERIA
 from utils.text_utils import parse_json_object
 
-from ..core.types import MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Criterion
+from ..core.types import CRITERION_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Criterion
 from ..prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
-from .parsing import cap_chain, clue_layout, criterion_kinds, forward_refs, member_layout, salvage_items, shape_kinds
+from .parsing import cap_chain, clue_layout, criterion_kinds, forward_refs, member_layout, salvage_items
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +91,8 @@ class LLMCriteriaSource(CriteriaSource):
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
         max_criteria: Cap on the number of criteria kept (the dataset's
             ``max_criteria`` in layout.DATASET_SPECS), or None (uncapped:
-            gold criteria); at least 3 for a multi-member query (a member, the rest
-            criterion and the aggregate).  A multi-aspect query lists every
+            gold criteria); at least 2 for a multi-member query (a member and
+            the aggregate).  A multi-aspect query lists every
             criterion the request states and is never capped (must be None).
         model_name: Saved in the meta line and in the bank key
             (``criteria.factory.bank_model_id``: a served checkpoint's path
@@ -126,9 +124,9 @@ class LLMCriteriaSource(CriteriaSource):
         if query_shape == MULTI_ASPECT and max_criteria is not None:
             raise ValueError(f"max_criteria={max_criteria} for a report request; its criteria are every "
                              "criterion the request states, uncapped (max_criteria null)")
-        if query_shape == MULTI_MEMBER and max_criteria is not None and max_criteria < 3:
-            raise ValueError(f"max_criteria={max_criteria} for a multi-member query; it needs at least 3 "
-                             "(a member, the rest criterion and the aggregate)")
+        if query_shape == MULTI_MEMBER and max_criteria is not None and max_criteria < 2:
+            raise ValueError(f"max_criteria={max_criteria} for a multi-member query; it needs at least 2 "
+                             "(a member and the aggregate)")
         self._shape = query_shape
         self.kind = kind
         self._system = CRITERIA_INIT_SYSTEMS[query_shape]
@@ -300,9 +298,13 @@ class BankedCriteriaSource(CriteriaSource):
         fields = {"query_id": query_id, "query": query, **self._fields}
         return hashlib.sha1(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def _banked(rec: Dict[str, Any]) -> Tuple[List[Criterion], Dict[str, Any]]:
+    def _banked(self, rec: Dict[str, Any]) -> Tuple[List[Criterion], Dict[str, Any]]:
         criteria = [Criterion(**c) for c in rec["criteria"]]
+        old = sorted({c.kind for c in criteria} - set(CRITERION_KINDS))
+        if old:
+            # A bank made before schema 45 (kinds hop, target, rest).
+            raise ValueError(f"{self.path}: banked criteria of kinds {old}, which the belief no longer takes "
+                             f"(kinds {CRITERION_KINDS}); delete the bank and rebuild it")
         return criteria, {**rec["info"], "bank": "hit" if criteria else "failed"}
 
     def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
@@ -378,8 +380,8 @@ class GoldCriteriaSource(CriteriaSource):
     (``layout.gold_criteria_path``, one row per query in the format of
     ``training_datasets/gold/annotations.py``, written by the dataset build): per query,
     its criteria with their gold answers and documents.  Only the criteria
-    (id, text, kind; a multi-hop query's hops as ``shape_kinds`` reads
-    them) reach the belief model, of a query whose row has
+    (id, text, kind; the kind as ``parsing.criterion_kinds`` gives it for
+    the shape) reach the belief model, of a query whose row has
     criteria with their texts (``texts_ok``), at any annotation ``level``
     (WebShaper's ``partial`` rows included); the info records the row's
     ``level`` as ``gold_level``.
@@ -400,7 +402,11 @@ class GoldCriteriaSource(CriteriaSource):
                     if line.strip():
                         row = json.loads(line)
                         criteria = row.get("criteria") or []
-                        kinds = shape_kinds(query_shape, [c["kind"] for c in criteria])
+                        if any(c.get("kind") == "rest" for c in criteria):
+                            raise ValueError(f"{self.path}: query {row['id']} has a rest criterion "
+                                             "(\"any other member\"), which the belief no longer takes; "
+                                             "rebuild the dataset's gold criteria")
+                        kinds = criterion_kinds(query_shape, [c["text"] for c in criteria])
                         self._rows[str(row["id"])] = {
                             "text": row.get("text"), "texts_ok": row.get("texts_ok"), "level": row.get("level"),
                             "criteria": [Criterion(id=c["id"], text=c["text"], kind=kind)

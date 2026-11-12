@@ -18,27 +18,27 @@ Layout:
 Code outside the package imports from here, never from a module path.
 """
 
-from .core.certainty import AGGREGATORS, CERTAINTY_AGGREGATOR, answer_certainty, certainty, criterion_scores
+from .core.certainty import (AGGREGATORS, CERTAINTY_AGGREGATOR, REPORT_AGGREGATOR, aggregator_name, answer_certainty,
+                             certainty, criterion_scores)
 from .core.issues import GATE_ISSUES, REJECTED_OBSERVATION, UNCLEAN_REPLY
 from .core.state import BeliefState
 from .core.types import (
     AGGREGATE,
+    ASPECT,
     BELIEF_STATUSES,
     CLOSED,
-    DERIVED_KINDS,
-    HOP,
+    KEPT,
     MULTI_ASPECT,
-    NO_DOC_KINDS,
     REMOVED,
-    REST,
     STATUS_LEVEL,
-    TARGET,
     UNKNOWN,
     Candidate,
     Criterion,
     Observation,
     Support,
     exclusive,
+    is_computed,
+    is_target,
     status_probability,
 )
 from .criteria.factory import (
@@ -48,7 +48,7 @@ from .criteria.factory import (
     check_max_criteria,
     prepare_criteria,
 )
-from .criteria.parsing import shape_kinds
+from .criteria.parsing import criterion_kinds
 from .criteria.sources import (
     BANK_ONLY,
     FINAL,
@@ -75,17 +75,17 @@ from .belief_model import BeliefModel
 
 __all__ = [
     # core
-    "AGGREGATE", "BELIEF_STATUSES", "CLOSED", "DERIVED_KINDS", "HOP", "MULTI_ASPECT", "NO_DOC_KINDS",
-    "REMOVED", "REST", "STATUS_LEVEL", "TARGET", "UNKNOWN",
+    "AGGREGATE", "ASPECT", "BELIEF_STATUSES", "CLOSED", "KEPT", "MULTI_ASPECT",
+    "REMOVED", "STATUS_LEVEL", "UNKNOWN",
     "Candidate", "Criterion", "Observation", "Support",
-    "exclusive", "status_probability",
+    "exclusive", "is_computed", "is_target", "status_probability",
     "GATE_ISSUES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",
     "BeliefState",
-    "AGGREGATORS", "CERTAINTY_AGGREGATOR", "answer_certainty", "certainty", "criterion_scores",
+    "AGGREGATORS", "CERTAINTY_AGGREGATOR", "REPORT_AGGREGATOR", "aggregator_name", "answer_certainty", "certainty", "criterion_scores",
     # criteria
     "BANK_ONLY", "FINAL", "GOLD_CRITERIA_LEVEL", "GOLD_CRITERIA_MODEL",
     "CriteriaSource", "LLMCriteriaSource", "BankedCriteriaSource", "FallbackCriteriaSource",
-    "shape_kinds",
+    "criterion_kinds",
     "belief_llm", "build_criteria_source", "check_criteria_inputs", "check_max_criteria", "prepare_criteria",
     # update
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",

@@ -31,9 +31,7 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
   (:func:`evaluation.gold.match_entities`), then one LLM call per request
   for the entities and member criteria left unmatched, for aliases, other
   spellings and transliterations (:class:`evaluation.gold.LLMEntityMatcher`).
-  The rest criterion ("any other member: ...") and the aggregate (and,
-  in banks of schema 18 and before, the set criterion) are left out: they
-  cover every member by construction.  Reachability is the
+  The aggregate is left out: it covers every member by construction.  Reachability is the
   share of reachable gold entities; the share of member criteria that name
   a gold entity (``member_precision``) is a secondary diagnostic.
 
@@ -143,7 +141,7 @@ from indexing_corpus_dataset.layout import (
     criteria_run_tag, default_corpus_path, effective_criteria_source, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
-from belief_model_component import CLOSED, HOP, CriteriaSource, check_max_criteria, span_in_passage, split_span
+from belief_model_component import CLOSED, CriteriaSource, check_max_criteria, span_in_passage, split_span
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object
 
@@ -508,13 +506,13 @@ def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> s
 
 
 def members_of(criteria: List[Dict]) -> List[Dict]:
-    """The member criteria (closed, and a multi-hop query's hops): not the
-    rest criterion, the aggregate or an older bank's set criterion; a text
+    """The member criteria (closed; a hop is closed too): not the
+    aggregate; a text
     that refers to another criterion by id has that criterion's text
     spelled out (``_resolved``)."""
     by_id = {c["id"]: c["text"] for c in criteria}
     return [{**c, "text": _resolved(c["text"], by_id, (c["id"],))}
-            for c in criteria if c.get("kind", CLOSED) in (CLOSED, HOP)]
+            for c in criteria if c.get("kind", CLOSED) == CLOSED]
 
 
 def entity_key(qid: str, entities: List[str], criteria: List[Dict], judge: str) -> str:

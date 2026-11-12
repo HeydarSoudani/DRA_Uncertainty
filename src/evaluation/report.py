@@ -1,11 +1,12 @@
 """The evaluation files of a run and its terminal log.
 
-- ``metrics.md``: a header (run, dataset, agent, belief mode, queries) and
+- ``metrics.md``: a header (run, dataset, agent, belief mode, queries),
   one aligned markdown table, one row per measure: ``group | metric |
   value | ci_low | ci_high | n`` (groups in order: retrieval, generation,
-  uncertainty, belief, trajectory).  Read in the editor as is, or in the
-  markdown preview; parsed back by ``read_metrics`` (the cross-run
-  collector, ``analysis/collect_results.py``).
+  uncertainty, belief, trajectory), then any extra section (a titled
+  table, e.g. the belief status calibration).  Read in the editor as is, or
+  in the markdown preview; the main table is parsed back by
+  ``read_metrics`` (the cross-run collector, ``analysis/collect_results.py``).
 - ``per_query.csv``: one row per query, every per-query value of every
   group (the aggregates of ``metrics.md`` are computed from them).
 - the log: one line per group with the headline measures (``log_lines``).
@@ -15,7 +16,7 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 #: Group order of the files and the log.
 GROUPS = ("retrieval", "generation", "uncertainty", "belief", "trajectory")
@@ -58,13 +59,24 @@ def table(header: List[str], body: List[List[str]]) -> List[str]:
     return [line(header), "|" + "|".join("-" * (w + 2) for w in widths) + "|"] + [line(r) for r in body]
 
 
-def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row]) -> None:
-    """Write ``metrics.md``: the *header* items as a list, then the table."""
+#: The note under the main table when a row is reported per criterion.
+CRITERION_NOTE = ("A row with (c) is the mean over every criterion (n criteria); the same row without it is the "
+                  "mean over the queries of each query's mean over its criteria (CI over queries, n queries).")
+
+
+def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row],
+                  sections: Sequence[Tuple[str, List[str], List[List[str]]]] = ()) -> None:
+    """Write ``metrics.md``: the *header* items as a list, the table, then
+    each of *sections* (``(title, columns, cell rows)``) as a titled table."""
     order = {g: i for i, g in enumerate(GROUPS)}
     rows = sorted(rows, key=lambda r: order.get(r.group, len(GROUPS)))
     body = [[r.group, r.metric, fmt(r.value), fmt(r.ci_low), fmt(r.ci_high), fmt(r.n)] for r in rows]
     lines = ["# Evaluation", ""] + [f"- {k}: {v}" for k, v in header.items()] + [""]
     lines += table(list(COLUMNS), body)
+    if any(r.metric.endswith(" (c)") for r in rows):
+        lines += ["", CRITERION_NOTE]
+    for title, columns, cells in sections:
+        lines += ["", f"## {title}", ""] + table(columns, cells)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -85,6 +97,8 @@ def read_metrics(path: Path) -> List[Row]:
     "n/a" as NaN, empty cells None)."""
     rows: List[Row] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            break   # the extra sections
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
         if len(cells) != len(COLUMNS) or cells[0] in ("group", "") or set(cells[0]) <= {"-"}:
             continue
@@ -123,6 +137,11 @@ def _val(rows: List[Row], group: str, metric: str, digits: int = 3) -> str:
     return "n/a" if r is None else fmt(r.value, digits)
 
 
+def _n(rows: List[Row], group: str, metric: str) -> str:
+    r = _get(rows, group, metric)
+    return "n/a" if r is None or r.n is None else str(r.n)
+
+
 def _ci(rows: List[Row], group: str, metric: str) -> str:
     r = _get(rows, group, metric)
     if r is None:
@@ -145,20 +164,25 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
         out.append(f"generation   nugget coverage {_val(rows, 'generation', 'nugget coverage')}"
                    f" | F1 {_val(rows, 'generation', 'nugget F1')}"
                    f" ({_val(rows, 'generation', 'evaluated')} reports)")
-    if "uncertainty" in groups:
+    if _get(rows, "uncertainty", "s_T AUROC"):
         line = (f"uncertainty  s_T AUROC {_ci(rows, 'uncertainty', 's_T AUROC')}"
-                f" ECE {_val(rows, 'uncertainty', 's_T ECE')}")
+                f" Brier {_val(rows, 'uncertainty', 's_T Brier')}")
         if _get(rows, "uncertainty", "verbal AUROC"):
             line += (f" | verbal AUROC {_ci(rows, 'uncertainty', 'verbal AUROC')}"
-                     f" ECE {_val(rows, 'uncertainty', 'verbal ECE')}")
+                     f" Brier {_val(rows, 'uncertainty', 'verbal Brier')}")
         out.append(line + f" (n {_val(rows, 'uncertainty', 'queries scored')})")
+    elif _get(rows, "uncertainty", "s_T tau-b vs nugget coverage"):
+        out.append(f"uncertainty  s_T tau-b vs coverage {_ci(rows, 'uncertainty', 's_T tau-b vs nugget coverage')}"
+                   f" Brier {_val(rows, 'uncertainty', 's_T Brier vs nugget coverage')}"
+                   f" (n {_val(rows, 'uncertainty', 'queries scored')})")
     if "belief" in groups:
-        out.append(f"belief       assigned {_val(rows, 'belief', 'assigned')}"
-                   f" | rises {_val(rows, 'belief', 'rises')}"
-                   f" | correct {_val(rows, 'belief', 'correct_after')}"
-                   f" | at end {_val(rows, 'belief', 'correct_end')}"
-                   f" | rise AUROC {_val(rows, 'belief', 'rise AUROC (gold vs control)')}"
-                   f" (n {_val(rows, 'belief', 'queries scored')})")
+        out.append(f"belief       gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
+                   f" | control change {_val(rows, 'belief', 'control event: gold candidate change')}"
+                   f" | recall {_val(rows, 'belief', 'criterion recall')}"
+                   f" | reached {_val(rows, 'belief', 'reached answer')}"
+                   f" (gold seen {_val(rows, 'belief', 'reached answer, gold seen')})"
+                   f" | status Brier {_val(rows, 'belief', 'status Brier')}"
+                   f" (n {_n(rows, 'belief', 'reached answer')})")
     line = (f"trajectory   searches {_val(rows, 'trajectory', 'searches', 1)}"
             f" | agent tok {_val(rows, 'trajectory', 'agent tokens', 0)}")
     if _get(rows, "trajectory", "belief tokens"):

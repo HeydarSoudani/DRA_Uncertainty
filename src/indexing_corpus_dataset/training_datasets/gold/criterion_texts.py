@@ -16,8 +16,7 @@ of the question, from the question and the criteria's source structure:
                 renumbered in that order (``_order``, ``_with_texts``)
     set         the property phrase and the aggregation from the question,
                 its property and its computation (TRQA): the member
-                criteria "<member>: <property>" and the rest criterion
-                "any other member: <property>" are built from the phrase,
+                criteria "<member>: <property>" are built from the phrase,
                 the aggregate criterion is the aggregation
 
 The prompts are the files of ``prompts/`` (one system and one user prompt
@@ -61,7 +60,7 @@ from tqdm import tqdm
 from utils.io_utils import drop_partial_line, iter_jsonl
 from utils.text_utils import parse_json_object
 
-from .annotations import AGGREGATE, CLOSED, REST, mentions, normalize
+from .annotations import AGGREGATE, CLOSED, mentions, normalize
 from ..config import GoldCriteriaConfig, DatasetPaths
 
 log = logging.getLogger(__name__)
@@ -255,14 +254,14 @@ def multi_hop_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
 
 def multi_member_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
     """The texts of a set row (TRQA): the property phrase and the
-    aggregation from the writer, then "<member>: <phrase>" per member, "any
-    other member: <phrase>" and the aggregation."""
+    aggregation from the writer, then "<member>: <phrase>" per member and
+    the aggregation."""
     question = row["text"]
     members = [m["entity"] for m in row["members"]]
     # What the phrase and the aggregation must not name: the members (their
     # titles and TRQA's labels), their values and the final answer, unless
     # the question names them.
-    values = [t for c in row["criteria"] if c["kind"] != REST for t in c["answers"]]
+    values = [t for c in row["criteria"] for t in c["answers"]]
     others = row["entity_names"] + values
     names = [n for n in dict.fromkeys(others) if not mentions(question, n, others)]
     errors: List[str] = []
@@ -280,16 +279,15 @@ def multi_member_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
             errors.append(f"writer: texts name {leaked}")
             retry = RETRY_NOTE.format(names=", ".join(f'"{n}"' for n in leaked))
             continue
-        texts = [f"{m}: {prop_text}" for m in members] + [f"any other member: {prop_text}", agg_text]
+        texts = [f"{m}: {prop_text}" for m in members] + [agg_text]
         return _with_texts(row, texts, True, [])
     return _failed(row, errors)
 
 
 def _multi_member_layout(row: dict) -> bool:
-    """A set row has one criterion per member, then the rest and the
-    aggregate criterion."""
+    """A set row has one criterion per member, then the aggregate criterion."""
     kinds = [c["kind"] for c in row["criteria"]]
-    return kinds == [CLOSED] * len(row["members"]) + [REST, AGGREGATE]
+    return kinds == [CLOSED] * len(row["members"]) + [AGGREGATE]
 
 
 def criteria_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
@@ -302,8 +300,8 @@ def criteria_texts(row: dict, writer: "CriteriaWriter") -> Dict[str, Any]:
                              "a row of 'set' predates the rename to 'multi_member': rebuild its annotations)"])
     if row["query_shape"] == "multi_member":
         if not _multi_member_layout(row):
-            return _failed(row, ["multi-member query: expected one criterion per member, then the rest and the "
-                                 "aggregate"])
+            return _failed(row, ["multi-member query: expected one criterion per member, then the aggregate "
+                                 "(a row with a rest criterion predates its removal: rebuild its annotations)"])
         return multi_member_texts(row, writer)
     return multi_hop_texts(row, writer)
 

@@ -4,6 +4,7 @@ The belief update writes, per candidate that is new, removed or whose
 status changes, one sentence in this form (``prompts/belief_update/system.txt``)::
 
     Was <current status>: <why its support gives the new status>.
+    Was kept: <...>                  (a listed fact of an aspect)
     Was proposed: <...>              (a name the agent proposed)
     New: <...>                       (a candidate only a passage names)
 
@@ -16,7 +17,7 @@ and with which status, or proposed) and the source labels it cites ("d<n>" a pas
 import re
 from typing import List, NamedTuple, Optional
 
-from .types import parse_status
+from .types import KEPT, is_kept, parse_status
 
 # Quotes the model may write around a name.
 _QUOTE = "\"“”"
@@ -31,7 +32,7 @@ _LABEL_RE = re.compile(r"(?<![A-Za-z0-9])([dt]\d+)(?![A-Za-z0-9])", re.IGNORECAS
 
 class ReasonOpening(NamedTuple):
     new: bool                 # "New:"
-    previous: Optional[str]   # the status after "Was" (None for "New:", "Was proposed:", or a word that is no status)
+    previous: Optional[str]   # the status after "Was" ("kept" for a fact; None for "New:", "Was proposed:", or a word that is no status)
     proposed: bool = False    # "Was proposed:"
 
 
@@ -44,7 +45,8 @@ def parse_reason(text: str) -> Optional[ReasonOpening]:
     if m:
         if m.group("status").strip().lower() == _PROPOSED:
             return ReasonOpening(False, None, True)
-        return ReasonOpening(False, parse_status(m.group("status")))
+        word = m.group("status")
+        return ReasonOpening(False, KEPT if is_kept(word) else parse_status(word))
     return None
 
 

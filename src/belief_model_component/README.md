@@ -50,7 +50,14 @@ The belief state b_t gives each criterion of a fixed per-query criteria list
 its candidates (possible answers), each with an Agent-BRACE belief status
 (how likely it is an answer) and its support (the passage observations that
 support it or speak against it), and the names the agent proposed that no
-passage supports yet.
+passage supports yet. Each query type has one status set
+(`prompts/belief_update/criterion_statuses.txt`): "one answer" for a
+short-answer query (every closed criterion: clues, hops, members' values),
+"aspect" for a report, where the status is the aspect's own (how well its
+facts with support back it; the facts are only kept or removed). An
+aggregate (a multi-clue query's target, a multi-member query's
+computation) has no status set: code sets its statuses, the lowest of its
+inputs', "unlikely" when a passage speaks against a candidate.
 
 A step with a new passage makes one call (b_t = f(query, b_{t-1}, o_t)). It
 records the claims of the agent's turns since the last call (reasoning
@@ -138,12 +145,14 @@ belief_state_tag            # inform only, not saved (the trajectory step has it
     `{name, claim, step, added_step}` (`step` its latest claim's).
   - `status` and `selected` are derived from the candidates: the
     criterion's status on the scale `core.types.BELIEF_STATUSES` and its
-    selected candidate(s) (`BeliefState.belief_lists`).
+    selected candidate(s) (`BeliefState.belief_lists`); an aspect's
+    `status` is its own, its facts' `status` "kept".
 - `updates`: the reply's candidate updates,
   `{id, candidate, reason, support, against, written, previous, status}`.
   The reason is saved here only, never shown; `status` is the one code kept:
   "removed" for a removed candidate, "proposed" for a name kept as a
-  proposal, null when the update was not taken.
+  proposal, null when the update was not taken; an aspect's status item has
+  `candidate` null.
 - `changed`: the ids of the criteria whose candidates or proposals changed.
 - `observations`: the observations that entered the belief in the call
   (claims `{id, label, step, candidate, claim, spans}`, passage observations
@@ -158,8 +167,9 @@ belief_state_tag            # inform only, not saved (the trajectory step has it
   read by the step's call or by the next one. `reply`: the raw reply of the
   call.
 - `certainty`: the certainty score s_t of the belief after the step
-  (`core.certainty.certainty`: the geometric mean over the criteria of their
-  status's probability, the rest and target criteria left out); null without criteria.
+  (`core.certainty.certainty`: over the criteria their status's probability,
+  `core.types.STATUS_PROBABILITY`; the lowest on a short-answer query, the
+  mean on a report; every criterion counted); null without criteria.
 - `intermediate_answers`: null when not configured or failed, `[]` when the
   model gave no answer. `intermediate_answer_status` says which: `ok`,
   `no_candidate` (`[]`), `unparsed` (reply without answer format), `failed`

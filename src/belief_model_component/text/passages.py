@@ -61,11 +61,6 @@ def doc_label(value: Any) -> str:
     return _label(value, "d")
 
 
-def turn_label(value: Any) -> str:
-    """A turn label as the reply writes it ("t4", "[t4]", 4) as "t4"."""
-    return _label(value, "t")
-
-
 _LABEL_SEP_RE = re.compile(r"[,;\s]+")
 
 

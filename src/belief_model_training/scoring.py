@@ -5,13 +5,13 @@ One set of scores and measures, used to assess the teacher on the phase 1
 episodes (``assess``, on its replayed calls), to reward the student's
 chains in phase 3 (``rewards``) and to validate them.  A belief chain (the
 calls of one episode) is scored by ``chain_score``.  Each criterion with
-gold answers (``nugget_gold.gold_criterion``: not the rest criterion) is
+gold answers (``nugget_gold.gold_criterion``) is
 its own sequence of beliefs, one per step of the episode (a step
 without a call, or whose call failed, carries the belief of the step
-before; the answer turn is the last step), and is scored on its own.  A
-hop of a multi-hop query is a several-answers criterion, so y is whether
-its selected candidates include the gold one (``value_gold``; another
-valid answer is not counted against it):
+before; the answer turn is the last step), and is scored on its own.
+Every scored criterion has one answer (a hop, a member's value, an
+aggregate), so y is whether its selected candidate is a gold answer
+(``value_gold``):
 
     format   the gate (``format_ok``), per belief update call: the reply
              was not cut off, parses, names known criteria and passages of
@@ -45,11 +45,8 @@ valid answer is not counted against it):
              here (it is charged in ``format`` only); its passages are
              shown again by the next call and counted there
     cal      calibration of the status at every step: 1 - (p - y)^2, p the
-             status probability and y whether the criterion is correctly
-             covered by its selected candidate(s) (``value_gold``: a one-answer
-             criterion, its selected candidate is a gold answer; a
-             several-answers one, the share of its gold answers its selected
-             candidates cover, each answer counted once); the mean over
+             status probability and y whether the criterion's selected
+             candidate is a gold answer (``value_gold``); the mean over
              the steps
     final    s_T against the correctness y of the agent's final answer:
              r_final = 1 - (s_T - y)^2 (``scorer_reward``; 0 when the final
@@ -90,14 +87,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 
 from belief_model_component import (
-    AGGREGATORS, BELIEF_STATUSES, CERTAINTY_AGGREGATOR, GATE_ISSUES, NO_DOC_KINDS, REJECTED_OBSERVATION, REMOVED,
-    UNKNOWN, answer_certainty, criterion_scores, exclusive, status_probability,
+    AGGREGATORS, BELIEF_STATUSES, GATE_ISSUES, REJECTED_OBSERVATION, REMOVED, is_computed,
+    UNKNOWN, aggregator_name, answer_certainty, criterion_scores, status_probability,
 )
 from evaluation.belief.gold import CANDIDATE, SPANS
 from evaluation.metrics import auroc as _auroc, brier as _brier, ece as _ece, mean_or_none, tau_b
 
 from .episodes import Episode, UpdaterCall
-from .nugget_gold import NuggetGold, gold_criterion, matches, states
+from .nugget_gold import NuggetGold, gold_criterion, matches
 
 SIDES = ("doc", "think")
 
@@ -136,45 +133,18 @@ def _is_doc(label: Any) -> bool:
     return str(label or "").startswith("d")
 
 
-def _open_answers(episode: Episode, cid: str, selected: List[str]) -> Tuple[set, List[str], List[str]]:
-    """For a several-answers criterion: the gold answers its *selected*
-    candidates state by string match, the answers none states (open), and
-    the candidates that match no answer (left for the judge, which is
-    asked about the open answers only, so an alias of a matched answer
-    does not count twice)."""
-    c = gold_criterion(episode, cid)
-    found, unmatched = set(), []
-    for v in selected:
-        hit = [a for a in c["answers"] if states(v, [a], episode.gold_names)]
-        if hit:
-            found.update(hit)
-        else:
-            unmatched.append(v)
-    return found, [a for a in c["answers"] if a not in found], unmatched
-
-
-def value_gold(episode: Episode, cid: str, belief: Dict[str, Any], kind: str, gold: NuggetGold) -> float:
-    """y of a criterion's belief: whether criterion *cid* is correctly
-    covered by its selected candidate(s).  A one-answer criterion: its (first) selected candidate is a gold
-    answer (0 without one); a several-answers criterion: the share of its
-    gold answers its selected candidates cover: the answers they state by
-    string match, plus one per other candidate the judge finds to be one
-    of the answers still open (``_open_answers``), at most as many as are
-    open."""
+def value_gold(episode: Episode, cid: str, belief: Dict[str, Any], gold: NuggetGold) -> float:
+    """y of a criterion's belief: whether the (first) selected candidate of
+    criterion *cid* is a gold answer (0 without one)."""
     by = list(belief.get("selected") or [])
-    if exclusive(kind):
-        return float(bool(by) and bool(gold.correct(episode, cid, by[0])))
-    found, open_answers, unmatched = _open_answers(episode, cid, by)
-    extra = sum(1 for v in unmatched if open_answers and gold.correct(episode, cid, v, open_answers))
-    total = len(found) + len(open_answers)
-    return (len(found) + min(extra, len(open_answers))) / total
+    return float(bool(by) and bool(gold.correct(episode, cid, by[0])))
 
 
 def _expected_docs(episode: Episode, call: UpdaterCall, cid: str) -> set:
     """The gold documents of *cid* new in the call whose shown text has a
     gold answer: each should give an observation with it."""
     c = gold_criterion(episode, cid)
-    if c is None or c["kind"] in NO_DOC_KINDS:
+    if c is None or is_computed(c["kind"], c["text"]):
         return set()
     shown = call.shown_text()
     return {d for d in set(shown) & set(c["doc_ids"]) if matches(episode, c, shown[d])}
@@ -282,7 +252,7 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
             s = current.get(cid) or _unknown(cid)
             key = (cid, tuple(s.get("selected") or []))
             if key not in ys:
-                ys[key] = value_gold(episode, cid, s, kinds[cid], gold)
+                ys[key] = value_gold(episode, cid, s, gold)
             per[cid]["items"].append((s.get("status") or UNKNOWN, ys[key]))
 
     criteria: Dict[str, Dict[str, Any]] = {}
@@ -310,8 +280,9 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
         ordered = [next((b for b in beliefs if b.get("id") == c["id"]), _unknown(c["id"]))
                    for c in episode.gold_criteria or []]
         kind_list = [c["kind"] for c in episode.gold_criteria or []]
-        scores = criterion_scores(ordered, kind_list)
+        scores = criterion_scores(ordered)
         s = {name: (agg(scores) if scores else None) for name, agg in AGGREGATORS.items()}
+        s_formula = s[aggregator_name(kind_list)]
         y = episode.correct
         r = s_scorer = s_answer = None
         i = by_t.get(None)
@@ -322,9 +293,10 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
                 s_scorer = outcome["certainty"]
                 s_answer = answer_certainty(ordered, kind_list, outcome["final_score"]["candidates"],
                                             outcome.get("ruled_out"))
-        elif y is not None and s[CERTAINTY_AGGREGATOR] is not None:
-            r = (1.0 - (s[CERTAINTY_AGGREGATOR] - float(y)) ** 2) if final_ok else 0.0
-        final = {"s": s, "s_scorer": s_scorer, "s_answer": s_answer, "y": y, "r_final": r}
+        elif y is not None and s_formula is not None:
+            r = (1.0 - (s_formula - float(y)) ** 2) if final_ok else 0.0
+        final = {"s": s, "s_formula": s_formula, "s_scorer": s_scorer, "s_answer": s_answer, "y": y,
+                 "r_final": r}
 
     return {
         "format": _ratio(sum(update_gates), len(update_gates)),
@@ -344,12 +316,9 @@ def chain_values(episode: Episode, outcomes: Iterable[Dict[str, Any]],
                  beliefs: Optional[List[Dict[str, Any]]] = None) -> List[Tuple]:
     """The texts ``chain_score`` asks the gold about, each once, for
     ``NuggetGold.resolve``: ``(episode, criterion id, SPANS, text)`` of
-    every observation's spans, and per selected candidate of a criterion
-    the call changed (``changed``) or of the final *beliefs*
-    ``(episode, criterion id, CANDIDATE, text[, open answers])`` (a
-    several-answers criterion: judged against its answers still open,
-    ``value_gold``)."""
-    kinds = _kinds(episode)
+    every observation's spans, and per criterion the call changed
+    (``changed``) or of the final *beliefs* its first selected candidate,
+    ``(episode, criterion id, CANDIDATE, text)`` (``value_gold``)."""
     # Each text once (the episode is the same for all: left out of the key).
     out: Dict[Tuple, None] = {}
 
@@ -357,12 +326,7 @@ def chain_values(episode: Episode, outcomes: Iterable[Dict[str, Any]],
         cid, selected = s["id"], list(s.get("selected") or [])
         if not selected or gold_criterion(episode, cid) is None:
             return
-        if exclusive(kinds.get(cid, "")):
-            out[(cid, CANDIDATE, selected[0])] = None
-            return
-        _, open_answers, unmatched = _open_answers(episode, cid, selected)
-        for v in unmatched if open_answers else []:
-            out[(cid, CANDIDATE, v, tuple(open_answers))] = None
+        out[(cid, CANDIDATE, selected[0])] = None
 
     for o in outcomes:
         for x in o.get("observations") or []:
@@ -442,12 +406,13 @@ def measures(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
     finals = [s["final"] for s in scores if s["final"] is not None]
     out.update({"format": _nan(mean_or_none(s["format"] for s in scores)), "assign": _nan(mean_or_none(s["assign"] for s in scores)),
                 "cal": _nan(mean_or_none(s["cal"] for s in scores)), "r_final": _nan(mean_or_none(f["r_final"] for f in finals))})
-    judged = [f for f in finals if f["y"] is not None and f["s"][CERTAINTY_AGGREGATOR] is not None]
+    judged = [f for f in finals if f["y"] is not None and f["s_formula"] is not None]
     y = np.array([float(f["y"]) for f in judged])
     out["final_judged"] = len(judged)
+    # The certainty score (min, or mean on a report), then every aggregator.
+    out.update(_final_measures("certainty", np.array([f["s_formula"] for f in judged]), y))
     for name in AGGREGATORS:
-        prefix = "certainty" if name == CERTAINTY_AGGREGATOR else f"certainty_{name}"
-        out.update(_final_measures(prefix, np.array([f["s"][name] for f in judged]), y))
+        out.update(_final_measures(f"certainty_{name}", np.array([f["s"][name] for f in judged]), y))
     # The final scorer, and the fixed function anchored on its answer's candidates, on
     # the episodes it scored (the fixed function again on the same ones).
     scored_finals = [f for f in finals if f["y"] is not None and f.get("s_scorer") is not None]
@@ -455,7 +420,7 @@ def measures(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
     out["final_scored"] = len(scored_finals)
     for prefix, values in (("certainty_scorer", [f["s_scorer"] for f in scored_finals]),
                            ("certainty_answer", [f["s_answer"] for f in scored_finals]),
-                           ("certainty_formula_scored", [f["s"][CERTAINTY_AGGREGATOR] for f in scored_finals])):
+                           ("certainty_formula_scored", [f["s_formula"] for f in scored_finals])):
         out.update(_final_measures(prefix, np.array(values, dtype=float), ys))
     return out
 
