@@ -1,18 +1,16 @@
-"""Final score ablation: does the belief help the final scorer judge the
-agent's answer?
+"""Final score ablation: the final scorer against the fixed functions of
+the belief, in judging the agent's answer.
 
 Rescores saved monitor runs of a short-answer dataset without rerunning
 the agent.  Per query, the belief before the answer turn (b_{T-1}) is
 rebuilt by replaying the run's saved belief update replies
 (``BeliefUpdateSignal`` with a client that returns them; every replayed
 belief must equal the saved one, else the query is left out), then s_T is
-computed four ways against the correctness y of the agent's answer
+computed three ways against the correctness y of the agent's answer
 (``accuracy.jsonl``):
 
 - ``scorer``: the final scorer (``belief_model_component.update.final_score``)
   on b_{T-1} and the answer turn, as at inference;
-- ``scorer_no_belief``: the same prompt with the criteria only (no
-  candidate, support, proposal or removed name): the query and the answer;
 - ``formula``: the fixed function of the statuses of b_{T-1}
   (``core.certainty.certainty``);
 - ``answer_formula``: its form anchored on the scorer's answer's candidates
@@ -52,7 +50,7 @@ import numpy as np  # noqa: E402
 
 from belief_model_component import (  # noqa: E402
     BeliefState, BeliefUpdateSignal, Criterion, answer_certainty, belief_llm, build_belief_updater,
-    build_final_scorer, certainty,
+    build_final_scorer, certainty, is_computed,
 )
 from belief_model_training.runs import read_correctness  # noqa: E402
 from belief_model_training.scoring import _final_measures  # noqa: E402
@@ -63,7 +61,7 @@ from utils.io_utils import read_jsonl  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-VARIANTS = ("scorer", "scorer_no_belief", "formula", "answer_formula")
+VARIANTS = ("scorer", "formula", "answer_formula")
 
 
 class _SavedReplies:
@@ -146,18 +144,17 @@ def ablate_run(run_dir: Path, model: Optional[str], limit: Optional[int],
         kinds = [c.kind for c in state.criteria]
         beliefs = state.belief_lists()
         with_belief = _score(scorer, meta["question"], state, final["agent_turn"])
-        without = _score(scorer, meta["question"], BeliefState(state.criteria), final["agent_turn"])
         rows.append({
             "run": str(run_dir), "query_id": qid, "y": y,
             "scorer": with_belief["s"], "scorer_label": with_belief["label"],
-            "scorer_no_belief": without["s"], "scorer_no_belief_label": without["label"],
             "formula": certainty(beliefs, kinds),
-            "answer_formula": answer_certainty(beliefs, kinds, with_belief["candidates"], state.ruled_out_lists())
+            "answer_formula": answer_certainty(beliefs, kinds, with_belief["candidates"], state.ruled_out_lists(),
+                                               computed=[is_computed(c.kind, c.text) for c in state.criteria])
             if with_belief["s"] is not None
             else None,
             "answer_candidates": with_belief["candidates"],
-            "replies": {"scorer": with_belief["reply"], "scorer_no_belief": without["reply"]},
-            "errors": with_belief["errors"] + without["errors"],
+            "replies": {"scorer": with_belief["reply"]},
+            "errors": with_belief["errors"],
         })
         print(f"{qid}: y={int(y)} " + " ".join(f"{v}={rows[-1][v]:.3f}" if rows[-1][v] is not None else f"{v}=null"
                                                for v in VARIANTS), flush=True)

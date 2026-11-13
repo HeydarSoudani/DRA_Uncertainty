@@ -385,7 +385,11 @@ class BeliefState:
                                                                   f"'{KEPT}' nor '{REMOVED}'; taken as kept"))
         else:
             status = REMOVED if is_removed(u.status) else parse_status(u.status)
-            if status is None or (status == UNKNOWN and not computed):
+            # "unknown" on a one-answer name: no passage supports it, so it
+            # stays proposed (``_update``); never on a listed candidate,
+            # which has support, nor with passages cited.
+            if status is None or (status == UNKNOWN and not computed
+                                  and (u.support or u.against or self._listed(k, name) is not None)):
                 issues.append(_issue(u.id, ISSUE_BAD_STATUS,
                                      f"candidate {name!r}: status {u.status!r} is not a candidate status"))
                 return
@@ -421,11 +425,6 @@ class BeliefState:
         support_moved = {k for k in before if self._support_key(k) != before[k]} if call.deferred else set()
         for k, existing, status, rec in call.deferred:
             if exclusive(self.criteria[k].kind) and k in support_moved:
-                if not existing.supports() and _cap(status) != status:
-                    call.issues.append(_issue(self.criteria[k].id, ISSUE_NO_SUPPORT,
-                                              f"{existing.name!r}: {status!r} with no passage supporting it; "
-                                              f"set to {_cap(status)!r}"))
-                    status = _cap(status)
                 existing.status = status
                 rec["status"] = existing.status
                 call.changed.add(k)
@@ -700,9 +699,6 @@ class BeliefState:
             return False
         self._check_reason(k, rec["candidate"], reason, existing, proposal, issues)
         computed = self._computed(k)
-        # The hard limit on a candidate no passage supports (not an
-        # aggregate, whose status code derives, nor an aspect's fact).
-        capped = not computed and c.kind != ASPECT
 
         if existing is None:
             if computed:
@@ -712,8 +708,10 @@ class BeliefState:
                 rec["status"] = None
                 return False
             if not entries:
-                issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: no passage of the call supports it or speaks "
-                                                             "against it; kept as proposed"))
+                # "unknown" is the status of a name no passage supports: no issue.
+                if status != UNKNOWN:
+                    issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: no passage of the call supports it or "
+                                                                 "speaks against it; kept as proposed"))
                 rec["status"] = "proposed"
                 if proposal is None:
                     self._add_proposal(k, name, None, step, issues)
@@ -741,10 +739,6 @@ class BeliefState:
             if proposal is not None:
                 cand.claim, cand.claim_step = proposal.claim, proposal.step
                 self.proposals[k].remove(proposal)
-            if capped and not cand.supports() and _cap(status) != status:
-                issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{name!r}: {status!r} with no passage supporting it; "
-                                                             f"set to {_cap(status)!r}"))
-                cand.status = _cap(status)
             self._check_spans(k, cand.name, entries, issues)
             self.candidates[k].append(cand)
             rec["status"] = cand.status
@@ -762,10 +756,6 @@ class BeliefState:
             return False
         existing.support.extend(added)
         self._check_spans(k, existing.name, added, issues)
-        if capped and not existing.supports() and _cap(status) != status:
-            issues.append(_issue(c.id, ISSUE_NO_SUPPORT, f"{existing.name!r}: {status!r} with no passage supporting "
-                                                         f"it; set to {_cap(status)!r}"))
-            status = _cap(status)
         moved = bool(added) or status != existing.status
         existing.status = status
         rec["status"] = status

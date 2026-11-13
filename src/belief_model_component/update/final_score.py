@@ -11,16 +11,21 @@ answer turn (``text.agent_turn.answer_turn``), and replies with one JSON object:
   answer relies on, or null);
 - ``reason``: one sentence;
 - ``final_status``: the status of the final answer, on the belief's scale
-  (``FINAL_STATUSES``: the five candidate statuses, no "unknown", no
+  (``FINAL_STATUSES``: every belief status, "unknown" included, no
   "removed"), read as a probability as a candidate's status is
   (``core.types.status_probability``).
 
-The prompt shares the belief update's definitions and status definitions;
-the final answer is judged as a candidate of the query.
-
-The scorer weighs the criteria by how much each identifies the answer and
-anchors s_T on the agent's answer, which a fixed function of the statuses
-cannot (``core.certainty.certainty`` scores the belief, whatever the answer).
+The prompt shares the belief update's definitions and status definitions.
+The final status is the lowest belief status of the answer's candidates,
+a name only proposed or absent counting as one no passage supports
+("unknown", or "unlikely" when another candidate has support) and a
+removed one as "unlikely"; an answer the query computes is judged as a
+candidate of the computed aggregate (the lowest status of its inputs,
+"unlikely" when it uses an input a passage rules out or leaves out one a
+passage states) (``core.certainty.answer_certainty`` is its
+fixed-function form on the scorer's answer's candidates).  The scorer
+anchors s_T on the agent's answer, which ``core.certainty.certainty``
+cannot (it scores the belief, whatever the answer).
 Short-answer queries only (``prompts.FINAL_SCORE_SYSTEMS``): a report has
 no single answer to judge.
 
@@ -34,17 +39,17 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils.text_utils import parse_json_object
 
 from ..core.state import BeliefState
-from ..core.types import BELIEF_STATUSES, UNKNOWN, criterion_id, parse_status, status_probability
+from ..core.types import BELIEF_STATUSES, criterion_id, parse_status, status_probability
 from ..prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
 from ..text.agent_turn import FINAL_ANSWER_HEADER
 from ..text.matching import alnum, squash
 from ..views.tag import format_belief
 from .repair import complete_with_repair
 
-# The status of the final answer, lowest first: the candidate statuses
-# (``core.types.STATUS_PROBABILITY``: unlikely 0.10, possible 0.50, probable
-# 0.70, almost certain 0.90, certain 0.97).
-FINAL_STATUSES = tuple(s for s in BELIEF_STATUSES if s != UNKNOWN)
+# The status of the final answer, lowest first: the belief statuses
+# (``core.types.STATUS_PROBABILITY``: unlikely 0.10, unknown 0.25, possible
+# 0.50, probable 0.70, almost certain 0.90, certain 0.97).
+FINAL_STATUSES = BELIEF_STATUSES
 
 # Output tokens of one call (a multi-member query has up to ~50 criteria).
 MAX_TOKENS = 4096

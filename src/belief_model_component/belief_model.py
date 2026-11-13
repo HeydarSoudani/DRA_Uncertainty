@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set
 from utils.text_utils import doc_id as _doc_id, unique_docs
 
 from .core.certainty import answer_certainty
-from .core.types import Criterion
+from .core.types import Criterion, is_computed
 from .criteria.sources import CriteriaSource
 from .eval_signals.intermediate_answer import AnswerFn, IntermediateAnswerSignal
 from .eval_signals.retrieval_gain import RetrievalGainSignal
@@ -193,7 +193,9 @@ class BeliefModel:
             errors.append(f"final_score: {e}")
         beliefs = self._belief.beliefs()
         kinds = [c.kind for c in state.criteria]
-        s_answer = answer_certainty(beliefs, kinds, score.candidates, state.ruled_out_lists()) if score else None
+        computed = [is_computed(c.kind, c.text) for c in state.criteria]
+        s_answer = (answer_certainty(beliefs, kinds, score.candidates, state.ruled_out_lists(), computed=computed)
+                    if score else None)
         return self._final_record(
             step, answer_turn, errors,
             certainty=_round(score.probability) if score else None,

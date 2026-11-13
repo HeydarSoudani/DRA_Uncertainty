@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 46::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 48::
 
-    line 1  {"record": "meta", "schema_version": 45, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 48, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -80,6 +80,28 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 48 (was 47): same record fields, new numbers.  The
+certainty formula (``certainty_formula``, and s_t of every step) is the
+mean of the status probabilities on every query shape (was the min on a
+short-answer query), over the criteria the updater judges: an aggregate
+is left out (its status is derived from its inputs).  The answer formula
+(``certainty_answer_formula``) is the same mean on the answer's
+candidates, a computed aggregate kept, a target left out.  The final
+scorer is unchanged.
+
+schema_version 47 (was 46): same record fields.  "unknown" is a
+one-answer status (no passage supports the name and no other candidate
+has support: a proposal) and a final status: the final scorer's final
+status is the lowest belief status of the answer's candidates, a name
+only proposed or absent counting as one no passage supports ("unknown",
+or "unlikely" when another candidate has support), a removed one as
+"unlikely", and an answer the query computes is judged as a candidate
+of the computed aggregate (was: own ladder, weighted by the criteria
+that identify the answer).  ``certainty_answer_formula`` scores an
+unlisted or proposed name so (was: always "unknown"), and an unlisted
+answer on a computed aggregate at the lowest score of its inputs.  An update writing "unknown" on a name
+without support keeps it proposed with no issue.
 
 schema_version 46 (was 45): same record fields; the belief prompts'
 statuses mean something else, so older files are not comparable.  The
@@ -346,7 +368,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 48
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

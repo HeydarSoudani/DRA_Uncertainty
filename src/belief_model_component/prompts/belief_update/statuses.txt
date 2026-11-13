@@ -1,6 +1,7 @@
 ---one_answer---
 "one answer" criterion: it has one correct answer, so its candidates compete. Support is stronger when it states more parts, or states them more directly; the strongest support is stronger than that of every other candidate. A candidate a passage casts doubt on is "unlikely"; otherwise its belief status follows from its support:
 - "unlikely": another candidate has stronger support.
+- "unknown": no passage supports it, and no other candidate has support.
 - "possible": another candidate has support as strong.
 - "probable": its support is the strongest, but leaves a part unstated.
 - "almost certain": its support is the strongest and states every part, but some only by inference, or another candidate has weaker support.

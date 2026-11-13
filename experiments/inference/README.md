@@ -90,7 +90,7 @@ prompt, a shared core plus one block per shape:
 | Shape | Datasets | Criteria |
 |---|---|---|
 | multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets c1 to c5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
-| multi-hop | infoseek, webshaper_frames | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in the town of c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
+| multi-hop | infoseek, webshaper_frames | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
 | multi-member | TRQA | one "member: property" per known member, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 51 members and the aggregate) |
 | multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
@@ -303,10 +303,10 @@ The update prompt reads each criterion with its candidates (`views.tag.format_be
 c1 (one answer): the town where the Varn Folk Museum was founded
   "Osby": certain
     + "The Varn Folk Museum was founded in Osby in 1921" [Osby]
-c2 (one answer): the engineer who was born in the town of c1
+c2 (one answer): the engineer who was born in c1
   "Henrik Dahl": certain
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
-c3 (one answer): the lighthouse that was designed by the engineer of c2
+c3 (one answer): the lighthouse that was designed by c2
   (no candidate)
   proposed: "Kalvik Lighthouse"
 ```
@@ -317,26 +317,27 @@ The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed 
    (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97): q_k. The same table
    turns every status into a number, the final scorer's included. The status of a one-answer candidate already counts
    its rivals (two tied ones are at most "possible", 0.5), so the candidates share nothing.
-2. On a short-answer query s_t is the lowest q_k (the weakest link: the answer is correct only when every criterion
-   holds, and the minimum is the upper bound of that conjunction); it reads only the order of the statuses, so its
-   AUROC does not depend on the table's values. On a report (every criterion an aspect) s_t is the mean q_k, the
-   expected share of aspects covered. Every criterion counts: an aggregate's status is the lowest of its inputs', so
-   under the minimum it adds only what they do not show (a target joins the clues; a computed answer a passage speaks
-   against is "unlikely").
+2. s_t is the mean q_k over the criteria the updater judges, on every query shape: the expected share of criteria
+   that hold, so a change on any criterion moves it. An aggregate is left out: its status is derived from its inputs
+   (the lowest of them), so it would count its weakest input twice. How much each criterion counts for the final
+   answer is the final scorer's to judge (s_T below), not the formula's.
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
 scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
 the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
 and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
 and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
-status is (unlikely 0.10, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97). The prompt shares the belief
-update's definitions and status definitions: the final answer is judged as a candidate of the query, the criteria
-weighed by how much each identifies the answer.
+status is (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97). The prompt shares
+the belief update's definitions and status definitions: the final status is the lowest belief status of the answer's
+candidates, a name only proposed or absent counting as one no passage supports ("unknown", or "unlikely" when another
+candidate has support) and a removed one as "unlikely"; an answer the query computes is judged as a candidate of the
+computed aggregate (the lowest status of its inputs, "unlikely" when it uses an input a passage rules out or leaves
+out one a passage states).
 The fixed function of the final statuses is kept next to it as a baseline (`certainty_formula`), with its form
 anchored on the answer's candidates (`certainty_answer_formula`: a candidate's status, "unlikely" for a name a
-passage ruled out, "unknown" for a proposal or an unlisted name). On a report, s_T is the fixed function of the
-belief after the final update. `analysis/final_score_ablation.py` rescores saved runs: the scorer with and without
-the belief, and both formulas.
+passage ruled out, for a proposal or an unlisted name "unknown" when the criterion lists no candidate, else
+"unlikely"; an unlisted answer on a computed aggregate at the lowest score of its inputs). On a report, s_T is the fixed function of the belief after the final update.
+`analysis/final_score_ablation.py` rescores saved runs: the scorer and both formulas.
 
 Saved in `belief/{qid}.jsonl` (schema in `src/evaluation/belief/writer.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
@@ -420,8 +421,8 @@ raw outputs stay in the run, for `analysis/`).
 query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
 oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`, "~85 %" and a fraction such as "0.85"
 accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
-the min of the criteria's status probabilities) and `answer formula` (the same on the candidates the scorer says the
-answer uses). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
+the mean of the status probabilities of the criteria the updater judges, aggregates left out) and `answer formula`
+(the same on the candidates the scorer says the answer uses, a computed aggregate kept). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
 confidence. Rows: AUROC [CI] for every score, Brier for s_T and verbal. On a report dataset (`uncertainty/report.py`)
 s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
 final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the

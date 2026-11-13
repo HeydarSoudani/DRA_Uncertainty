@@ -12,7 +12,7 @@ ISSUE_NOT_IN_TURN = "not_in_turn"                  # a reasoning observation wit
 ISSUE_BAD_CLAIM = "bad_claim"                      # a reasoning observation without a candidate or a valid claim
 # A candidate update that is not taken:
 ISSUE_EMPTY_CANDIDATE = "empty_candidate"          # no candidate name
-ISSUE_BAD_STATUS = "bad_status"                    # no status of the scale nor "removed", or "unknown"
+ISSUE_BAD_STATUS = "bad_status"                    # no status of the scale nor "removed", or "unknown" on a listed or cited name
 ISSUE_BAD_FACT_STATUS = "bad_fact_status"          # an aspect's fact neither "kept" nor "removed": taken as kept
 ISSUE_NOT_COMPUTED = "not_computed"                # a new name on a computed aggregate that no claim computes: not added
 ISSUE_DUPLICATE_CANDIDATE = "duplicate_candidate"  # a second update of one candidate in the reply
@@ -37,7 +37,7 @@ ISSUE_SPAN_OFF_CANDIDATE = "span_off_candidate"    # a supporting span of an asp
 ISSUE_UNCHANGED = "unchanged"                      # no new support and the status written is the current one
 ISSUE_READDED = "readded"                          # a name the belief dropped before (information only)
 # A status code corrected (the hard limits):
-ISSUE_NO_SUPPORT = "no_support"                    # no passage supports the candidate: at most "possible", or a new name kept as proposed
+ISSUE_NO_SUPPORT = "no_support"                    # a new name no passage of the call supports, written above "unknown": kept as proposed
 ISSUE_NO_NEW_SUPPORT = "no_new_support"            # a status change without new support (nor, one answer, another candidate's support changed): kept
 ISSUE_ASPECT_NO_FACT = "aspect_no_fact"            # an aspect with no fact kept: "unlikely" when a passage removed a fact, else "unknown"
 ISSUE_ASPECT_ONE_SOURCE = "aspect_one_source"      # an aspect "certain" with a fact supported by one document only: set to "almost certain"

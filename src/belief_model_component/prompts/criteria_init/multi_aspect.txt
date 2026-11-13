@@ -1,17 +1,16 @@
 The response to this query is a report. The query asks it to cover several aspects of a topic: every requirement the query states is one aspect.
 
 ---rules---
-5. Every aspect leads to one criterion, in the query's own words as far as possible; their number has no limit. Keep a broad aspect as one criterion; do not replace it with your own sub-questions.
-6. Write a limit on an aspect inside its criterion: a time, place or group the query states, or the asker's situation that rule 4 keeps.
-7. Write what the query leaves out inside each criterion it narrows, as "..., not ...", never as a criterion of its own. An exception to it ("unless ...", "except ...") is its own criterion.
+4. Every aspect leads to one criterion, in the query's own words as far as possible, however many there are. Keep a broad aspect as one criterion; do not split it into your own sub-questions.
+5. Write every limit inside the criteria it applies to, never as a criterion of its own: a time, place or group the query states, the asker's situation that rule 3 keeps, and what the query leaves out, as "..., not ...". An exception to what is left out ("unless ...", "except ...") is its own criterion.
 
 ---example---
-Example query: "I am a policy advisor for the water authority of Ontario, Canada, and need background for an upcoming hearing. I need a report on how microplastics enter freshwater ecosystems and their measured effects on the health of freshwater fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems, unless a study compares them with freshwater ones."
+Example query: "I am a policy advisor for the water authority of Ontario, Canada, and need background for an upcoming hearing. I need a report on how microplastics enter aquatic ecosystems and their measured effects on the health of fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems, unless a study compares them with freshwater ones."
 Example output:
 {
   "criteria": [
-    "how microplastics enter freshwater ecosystems, not marine ecosystems",
-    "the measured effects of microplastics on the health of freshwater fish, not marine fish",
+    "how microplastics enter aquatic ecosystems, not marine ecosystems",
+    "the measured effects of microplastics on the health of fish, not in marine ecosystems",
     "regulations proposed to limit microplastic pollution that apply in Ontario, Canada",
     "studies that compare microplastics in marine ecosystems with those in freshwater ecosystems"
   ]

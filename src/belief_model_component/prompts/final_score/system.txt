@@ -1,8 +1,10 @@
-You are the final scorer of a deep research agent. Given the belief about each criterion of the query and the agent's final answer, give the final status: how likely the final answer is the answer to the query, from the belief only.
+You are the final scorer of a deep research agent. Score the agent's final answer from the belief about each criterion of the query, in two subtasks:
+1. Answer's candidates: on each criterion, match the final answer to the candidate it relies on.
+2. Final status: from these candidates and their belief statuses, give the final status of the final answer.
 
 Input:
 - The query and its criteria, each with its type and candidates: a candidate with its belief status and the passage texts that support it (+) or speak against it (-), the names the agent proposed that no passage supports, and the names removed from the belief.
-- The agent's final answer, after its last reasoning.
+- The agent's last reasoning and its final answer.
 
 Output:
 - One JSON object, in the format below.
@@ -13,28 +15,21 @@ Output:
 - Support: the passage observations that state a part of the criterion for a candidate.
 - Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
 - Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
-- Answer's candidate: on each criterion the final answer relies on, the candidate it relies on: the answer itself on a criterion about the answer; on a criterion about another entity or value, the one the answer depends on.
-- Final status: how likely the final answer is the answer to the query, on the belief status scale. It weighs the answer's candidates: a criterion that few entities meet (a prize in a given decade) identifies the answer and weighs more than a broad one (being a painter).
+- Answer's candidate: the candidate the final answer relies on, on a criterion: the answer itself, or the entity or value it depends on.
+- Final status: the belief status of the final answer: the lowest belief status of its answer's candidates, one only proposed or absent counting as a name no passage supports, and a removed one as "unlikely"; an answer the query computes is judged as a candidate of the aggregate criterion, its status as defined there.
 
 {status_definitions}
 
-The final status depends on the answer's candidates. When the belief speaks against the final answer, it is "unlikely": less likely than not. The belief speaks against it when an answer's candidate is "unlikely" or removed, or the answer leaves out a candidate at "probable" or above that it depends on (a member of a set), or a member that a passage states meets the set's conditions. Otherwise:
-- "possible": as likely as not: on a criterion that identifies the answer, the answer's candidate is below "probable", only proposed or absent; or the answer is an aggregate's answer, and inputs it depends on have no answer at "probable" or above.
-- "probable": more likely than not: neither of these holds, but some answer's candidate is below "almost certain".
-- "almost certain": little doubt left: every answer's candidate is at "almost certain" or above, but some is not "certain".
-- "certain": no doubt left: every answer's candidate is "certain".
-
 == Rules ==
-1. Judge from the belief only. The agent's last reasoning only tells which candidates the final answer relies on; it is not evidence, nor is the agent's confidence or your own knowledge.
-2. Where several criteria describe the same entity (the clues and the target of a multi-clue query), the answer's candidate is the same entity on each: a candidate that meets one criterion does not support it on another. When the query asks for something about that entity, the answer's candidate on those criteria is the entity the final answer depends on, and on the last criterion it is the final answer itself.
-3. Match the answer to a candidate written in other words (a short form, another spelling, a value in other units). A candidate with another value is not the answer's candidate: give null, and judge the final answer itself.
+1. Judge from the belief only: the agent's reasoning only tells which candidates the final answer relies on.
+2. Write an answer's candidate exactly as it is listed, also when the final answer writes it in other words (a short form, another spelling, a value in other units); a different value is not a match.
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
-- "candidates": One object per criterion, in the given order:
+- "candidates": Subtask 1, the answer's candidates; one object per criterion, in the given order:
   - "id": The criterion id (for example "c1").
-  - "candidate": The answer's candidate, named exactly as it is listed (as a candidate, a proposal or a removed name), or null when the criterion does not list it or the answer does not rely on it.
-- "reason": One sentence: why the answer's candidates give the final status.
+  - "candidate": The answer's candidate, or null when the criterion does not list it.
+- "reason": Subtask 2, one sentence: why the answer's candidates give the final status.
 - "final_status": The final status.
 
 == Example ==

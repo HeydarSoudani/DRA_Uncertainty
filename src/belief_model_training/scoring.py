@@ -88,7 +88,7 @@ import numpy as np
 
 from belief_model_component import (
     AGGREGATORS, BELIEF_STATUSES, GATE_ISSUES, REJECTED_OBSERVATION, REMOVED, is_computed,
-    UNKNOWN, aggregator_name, answer_certainty, criterion_scores, status_probability,
+    CERTAINTY_AGGREGATOR, UNKNOWN, answer_certainty, counted, criterion_scores, status_probability,
 )
 from evaluation.belief.gold import CANDIDATE, SPANS
 from evaluation.metrics import auroc as _auroc, brier as _brier, ece as _ece, mean_or_none, tau_b
@@ -280,9 +280,9 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
         ordered = [next((b for b in beliefs if b.get("id") == c["id"]), _unknown(c["id"]))
                    for c in episode.gold_criteria or []]
         kind_list = [c["kind"] for c in episode.gold_criteria or []]
-        scores = criterion_scores(ordered)
+        scores = criterion_scores(counted(ordered, kind_list))
         s = {name: (agg(scores) if scores else None) for name, agg in AGGREGATORS.items()}
-        s_formula = s[aggregator_name(kind_list)]
+        s_formula = s[CERTAINTY_AGGREGATOR]
         y = episode.correct
         r = s_scorer = s_answer = None
         i = by_t.get(None)
@@ -292,7 +292,9 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
             if final_ok:
                 s_scorer = outcome["certainty"]
                 s_answer = answer_certainty(ordered, kind_list, outcome["final_score"]["candidates"],
-                                            outcome.get("ruled_out"))
+                                            outcome.get("ruled_out"),
+                                            computed=[is_computed(c["kind"], c["text"])
+                                                      for c in episode.gold_criteria or []])
         elif y is not None and s_formula is not None:
             r = (1.0 - (s_formula - float(y)) ** 2) if final_ok else 0.0
         final = {"s": s, "s_formula": s_formula, "s_scorer": s_scorer, "s_answer": s_answer, "y": y,
@@ -409,7 +411,7 @@ def measures(scores: List[Dict[str, Any]]) -> Dict[str, Any]:
     judged = [f for f in finals if f["y"] is not None and f["s_formula"] is not None]
     y = np.array([float(f["y"]) for f in judged])
     out["final_judged"] = len(judged)
-    # The certainty score (min, or mean on a report), then every aggregator.
+    # The certainty score (the mean over the counted criteria), then every aggregator.
     out.update(_final_measures("certainty", np.array([f["s_formula"] for f in judged]), y))
     for name in AGGREGATORS:
         out.update(_final_measures(f"certainty_{name}", np.array([f["s"][name] for f in judged]), y))

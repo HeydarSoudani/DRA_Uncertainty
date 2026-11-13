@@ -23,7 +23,7 @@ Each criterion is closed (one fact with one answer: a clue, a hop, a
 member's value), an aggregate (the target of a multi-clue query, the
 entity that meets the clues before it, or the computation of a
 multi-member query), or, in a report request, an aspect of the topic.  A criterion refers to criteria before it by their
-ids ("the town of c1", "the composer that meets c1 to c3"), never to a
+ids ("born in c1", "the composer that meets c1 to c3"), never to a
 later one (``parsing.forward_refs``).  A capped list keeps the answer and
 the criteria closest to it (``parsing.cap_chain``); a multi-clue list is
 checked against its layout (``parsing.clue_layout``).  A multi-member query lists its members as

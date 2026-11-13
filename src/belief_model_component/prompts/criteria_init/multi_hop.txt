@@ -1,9 +1,8 @@
 The response to this query is a short answer. The query reaches it through a chain of hops: every entity on the chain that the query describes without naming it, the answer included, is one hop.
 
 ---rules---
-5. Every hop leads to one criterion. Write what the query says about that entity itself, in the query's words, and refer to each other hop it depends on by that hop's criterion id, never by a name you know or guess. Leave out the entities the query names.
-6. Order the criteria along the chain: a hop whose description needs another hop comes after it.
-7. The last criterion is the answer. When you must leave out criteria to stay within the given number, keep the answer and the hops closest to it.
+4. Every hop leads to one criterion: what the query says about that entity, referring to each earlier hop by its id, never by a name you know or guess. Order the criteria along the chain, each after the hops it needs.
+5. The last criterion is the answer. When the given number is too small, keep the answer and the hops closest to it.
 
 ---example---
 Example query: "Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?"
@@ -11,7 +10,7 @@ Example output:
 {
   "criteria": [
     "the town where the Varn Folk Museum was founded",
-    "the engineer who was born in the town of c1",
-    "the lighthouse that was designed by the engineer of c2"
+    "the engineer who was born in c1",
+    "the lighthouse that was designed by c2"
   ]
 }

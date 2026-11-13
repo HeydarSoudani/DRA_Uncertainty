@@ -494,7 +494,7 @@ _CRITERION_REF_RE = re.compile(r"\bc(\d+)\b")
 
 
 def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> str:
-    """*text* with each reference to another criterion ("the town of c1")
+    """*text* with each reference to another criterion ("born in c1")
     followed by that criterion's own text, resolved the same way, in
     brackets, so the text reads without the list."""
     def sub(m: "re.Match") -> str:

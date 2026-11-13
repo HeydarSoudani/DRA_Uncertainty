@@ -1,5 +1,5 @@
 ---terms---
-  A criterion may refer to the answer of another criterion by its id ("the town of c1"). The parts of a criterion are the conditions its wording sets on its answer, the type of entity or value it asks for included.
+  A criterion may refer to the answer of another criterion by its id ("the birthplace of c1"). The parts of a criterion are the conditions its wording sets on its answer, the type of entity or value it asks for included.
 - Candidate: one possible answer of a criterion, named specifically.
 
 ---rules---
@@ -15,10 +15,10 @@ c1 (one answer): the town where the Varn Folk Museum was founded
     + "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
   "Tirsa": unlikely
     + "a crafts museum with objects from the Varn valley opened in Tirsa in 1925" [Tirsa]
-c2 (one answer): the engineer who was born in the town of c1
+c2 (one answer): the engineer who was born in c1
   (no candidate)
   proposed: "Nils Berg"
-c3 (one answer): the lighthouse that was designed by the engineer of c2
+c3 (one answer): the lighthouse that was designed by c2
   (no candidate)
 
 The agent's reasoning since the last update:

@@ -3,12 +3,11 @@ A criterion is one piece of information that a complete response to the query mu
 
 == Rules ==
 1. Every criterion:
-   - asks for information, not for how the response is written: leave out instructions on format or length, and the response's own interpretation or advice.
-   - names its subject instead of pointing back with words such as "it", "they", "these" or "the above"; it may refer to the answer of an earlier criterion by its id, as in "the town of c1". A criterion that asks for one unnamed entity starts with the entity's type in the query's words ("the city where ...", "the botanist who ..."), or "the entity" when the query gives no type.
-   - is distinct: no two criteria ask for the same information, and none asks for part of another, apart from a criterion that combines earlier ones by their ids.
-2. Keep the query's scope: do not narrow or widen it with your own dates, periods, places, groups, categories or entities. When the query says "during the war", write "during the war", not a range of years.
-3. Do not add facts that are not in the query, such as a guess at the answer, other than what the rules below ask for.
-4. Leave out background on who is asking and why, unless it limits what information applies (such as the asker's country).
+   - asks for information, not for how the response is written (format, length) or for its own opinion or advice.
+   - names its subject, never "it", "they" or "the above". It may refer to an earlier criterion's answer by its id ("the birthplace of c1"). An unnamed entity is written as its type in the query's words ("the city where ..."), or "the entity" when the query gives none.
+   - is distinct: it does not repeat another criterion or part of one, apart from a criterion that combines earlier ones by their ids.
+2. Keep the query's scope: add no dates, places, groups or entities of your own and no guess at the answer, and drop none of the limits the query states, unless a rule below asks for it. Write "during the war", not a range of years.
+3. Leave out who is asking and why, unless it limits what information applies (such as the asker's country).
 {shape_rules}
 
 == Output Format ==

@@ -18,8 +18,7 @@ Layout:
 Code outside the package imports from here, never from a module path.
 """
 
-from .core.certainty import (AGGREGATORS, CERTAINTY_AGGREGATOR, REPORT_AGGREGATOR, aggregator_name, answer_certainty,
-                             certainty, criterion_scores)
+from .core.certainty import AGGREGATORS, CERTAINTY_AGGREGATOR, answer_certainty, certainty, counted, criterion_scores
 from .core.issues import GATE_ISSUES, REJECTED_OBSERVATION, UNCLEAN_REPLY
 from .core.state import BeliefState
 from .core.types import (
@@ -81,7 +80,7 @@ __all__ = [
     "exclusive", "is_computed", "is_target", "status_probability",
     "GATE_ISSUES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",
     "BeliefState",
-    "AGGREGATORS", "CERTAINTY_AGGREGATOR", "REPORT_AGGREGATOR", "aggregator_name", "answer_certainty", "certainty", "criterion_scores",
+    "AGGREGATORS", "CERTAINTY_AGGREGATOR", "answer_certainty", "certainty", "counted", "criterion_scores",
     # criteria
     "BANK_ONLY", "FINAL", "GOLD_CRITERIA_LEVEL", "GOLD_CRITERIA_MODEL",
     "CriteriaSource", "LLMCriteriaSource", "BankedCriteriaSource", "FallbackCriteriaSource",

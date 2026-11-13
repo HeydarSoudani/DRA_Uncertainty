@@ -25,19 +25,15 @@ a fixed function of the statuses:
 1. each status becomes a probability $p$ (`core.types.STATUS_PROBABILITY`: unlikely 0.10, unknown 0.25, possible
    0.50, probable 0.70, almost certain 0.90, certain 0.97); $q_k$ is the criterion status's $p$ (a one-answer status
    already counts the competing candidates);
-2. on a short-answer query $s_t$ is the lowest $q_k$; on a report (every criterion an aspect) it is their mean. Every
-   criterion counts (an aggregate's status is the lowest of its inputs').
+2. $s_t$ is the mean of the $q_k$ over the criteria the updater judges, $\mathcal{C}'$ (every criterion but an
+   aggregate, whose status is derived from its inputs), on every query shape.
 
 $$
-s_t = \min_{k \in \mathcal{C}'} q_k \quad \text{(short answer)}, \qquad
-s_t = \frac{1}{|\mathcal{C}'|} \sum_{k \in \mathcal{C}'} q_k \quad \text{(report)}
+s_t = \frac{1}{|\mathcal{C}'|} \sum_{k \in \mathcal{C}'} q_k
 $$
 
-The answer is correct only when every criterion it relies on holds. The minimum is the upper bound of that
-conjunction (the Frechet bound), exact when the criteria describe one entity and so hold or fail together. It reads
-only the order of the statuses, so the ranking of $s_t$ (AUROC) does not depend on the values of the table; those
-values matter only to calibration. On a report one thin aspect does not make the report wrong, so the mean, the
-expected share of aspects covered, is used. The same table turns every status into a number (the final scorer's
+It is the expected share of criteria that hold, so a change on any criterion moves it. How much each criterion counts
+for the final answer is left to the final scorer ($s_T$ below). The same table turns every status into a number (the final scorer's
 $s_T$, the status calibration, the rewards). The final score $s_T$ is compared with the
 correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
 (`belief_model_component/update/final_score.py`): one call on $b_{T-1}$ and the answer turn judges how likely the
@@ -397,7 +393,7 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 | per criterion | mean over the chains of the mean over their criteria: `crit_assign_f1`, `crit_doc_recall_obs`, `crit_value_accuracy`, `crit_cal` |
 | observation | precision, recall and F1 of document observations and claims, pooled |
 | calibration | Brier score, ECE and AUROC (on the items with a binary $y$) of the statuses of every (criterion, step) against $y_{k,t}$; gold rate and count per status (reliability) |
-| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`: min, or mean on a report; and each aggregator, `certainty_{min,mean,geometric_mean,product}_*`) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
+| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`: the mean over the counted criteria; and each aggregator, `certainty_{min,mean,geometric_mean,product}_*`) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
 | rewards | mean `format`, `assign`, `cal`, $r_{\mathrm{final}}$ |
 
 ## Phase 2: SFT

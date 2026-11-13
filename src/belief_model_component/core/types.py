@@ -7,8 +7,7 @@ from typing import Any, Dict, List, Optional
 
 # The status of a candidate: how likely it is an answer of its criterion,
 # as the passages show it (the agent's reasoning only proposes names: a
-# candidate without passage support is never above "possible",
-# ``NO_SUPPORT_MAX_STATUS``); the status of a criterion is derived from its
+# name without passage support stays proposed); the status of a criterion is derived from its
 # candidates (the highest one; "unknown" without candidates).  One of the
 # seven words of Agent-BRACE's verbal belief scale (arXiv 2605.11436),
 # lowest level first, without its "doubtful": a candidate a passage rules
@@ -56,8 +55,11 @@ def is_removed(text: Any) -> bool:
     return str(text or "").strip().lower() == REMOVED
 
 
-# The highest status of a candidate no passage supports (an aggregate is
-# exempt: code sets its status from its inputs).
+# The highest status of an earlier answer of a computed aggregate once the
+# reasoning computes another (``BeliefState._derive_aggregates``), and the
+# lowest status a selected candidate has.  A one-answer candidate always
+# has passage support: a name without it stays proposed ("unknown", or
+# "unlikely" when another candidate has support).
 NO_SUPPORT_MAX_STATUS = "possible"
 
 
@@ -193,7 +195,7 @@ MULTI_ASPECT = "multi_aspect"
 QUERY_SHAPES = (MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, MULTI_ASPECT)
 
 
-# A reference to another criterion in a criterion's text ("the town of c1").
+# A reference to another criterion in a criterion's text ("born in c1").
 CRITERION_REF_RE = re.compile(r"\bc(\d+)\b")
 
 
