@@ -5,7 +5,8 @@ One call after the last step, in place of a belief update on the answer
 turn: it reads the query, the belief b_{T-1} (every criterion with its
 candidates, their statuses and support, the proposals and the names a
 passage ruled out: ``format_belief(state, removed=True)``) and the agent's
-answer turn (``text.agent_turn.answer_turn``), and replies with one JSON object:
+final response (``scorer_answer_text``: no citations, no confidence line;
+the end of the reasoning only when the response is the answer alone), and replies with one JSON object:
 
 - ``candidates``: per criterion, the answer's candidate (the one the
   answer relies on, or null);
@@ -33,6 +34,7 @@ The same prompt serves the prompted teacher and the trained student (the
 belief model's second task).
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,20 +56,41 @@ FINAL_STATUSES = BELIEF_STATUSES
 # Output tokens of one call (a multi-member query has up to ~50 criteria).
 MAX_TOKENS = 4096
 
-# Characters of the answer turn's reasoning the scorer reads (its last
-# ones, the conclusion); the final answer is always shown whole.
+# Characters of the answer turn's reasoning the scorer reads when the final
+# response is the answer alone (its last ones, the conclusion).
 ANSWER_REASONING_CHARS = 2000
+
+# A citation in the agent's response: a bracketed document id (one with a
+# digit), or a list of them ("[5412]", "【68484】", "[15641‑0005]", "[12, 34]").
+_ID = r"[\w\-\u2010-\u2011.:/]+"
+_CITATION_RE = re.compile(r"[ \t\u202f\u00a0]*[\[【](?=[^\]】]*\d)" + _ID + r"(?:\s*[,;]\s*" + _ID + r")*[\]】]")
+# The agent's confidence line ("Confidence: 75%", "**Confidence:** 75%").
+_CONFIDENCE_RE = re.compile(r"^[ \t>*#_-]*confidence[*_ \t]*:.*(?:\n|$)", re.IGNORECASE | re.MULTILINE)
+
+
+def clean_response(response: str) -> str:
+    """The agent's final response as the scorer reads it: its citations
+    and its confidence line removed (the scorer judges from the belief,
+    and s_T is compared with the agent's verbal confidence)."""
+    text = _CONFIDENCE_RE.sub("", _CITATION_RE.sub("", response))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def scorer_answer_text(answer_turn: str, max_reasoning_chars: int = ANSWER_REASONING_CHARS) -> str:
-    """The answer turn as the scorer reads it: the last
-    *max_reasoning_chars* of its reasoning, then the final answer."""
+    """The answer turn as the scorer reads it: the agent's final response
+    (``clean_response``) when it explains the answer (more than one line);
+    a response that is the answer alone comes after the last
+    *max_reasoning_chars* of the reasoning, under ``FINAL_ANSWER_HEADER``."""
     text = answer_turn.strip()
     cut = text.rfind(FINAL_ANSWER_HEADER)
-    reasoning, answer = (text[:cut].strip(), text[cut:]) if cut >= 0 else ("", text)
+    reasoning, response = (text[:cut].strip(), text[cut + len(FINAL_ANSWER_HEADER):]) if cut >= 0 else ("", text)
+    response = clean_response(response)
+    if len([line for line in response.splitlines() if line.strip()]) > 1 or not reasoning:
+        return response
     if len(reasoning) > max_reasoning_chars:
         reasoning = "..." + reasoning[-max_reasoning_chars:].lstrip(".")
-    return "\n\n".join(p for p in (reasoning, answer) if p)
+    reasoning = _CITATION_RE.sub("", reasoning)
+    return f"{reasoning}\n\n{FINAL_ANSWER_HEADER}\n{response}"
 
 
 def parse_final_status(value: Any) -> Optional[str]:

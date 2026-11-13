@@ -841,6 +841,6 @@ if __name__ == "__main__":
 #   python experiments/inference/dra_inference.py --num-gpus 4 --quiet --limit 9
 #   python experiments/inference/dra_inference.py --limit 1
 #   
-#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
+#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 2 --num-gpus 1
 #   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 1
 #   python experiments/inference/dra_inference.py --dataset neuclir --limit 1

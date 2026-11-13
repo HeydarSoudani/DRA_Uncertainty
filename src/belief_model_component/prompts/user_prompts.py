@@ -9,26 +9,22 @@ from ..core.types import MULTI_ASPECT
 CRITERIA_INIT_USER_TEMPLATE = """\
 Query: {query}
 
-{instruction} This list will be FIXED for the entire search.\
+{instruction}\
 """
 
-# The extractor's instruction: a report request lists every criterion it
-# states, uncapped; any other query lists its criteria within the cap, or
-# uncapped (gold criteria, layout.DatasetSpec.max_criteria None).
-_CRITERIA_INIT_INSTRUCTIONS = {
-    MULTI_ASPECT: "List the criteria of this query: every criterion the query states.",
-}
-_DEFAULT_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query."
+# The extractor's instruction, the same for every shape: the cap on the
+# number of criteria is a run setting (None: uncapped, as for gold
+# criteria, layout.DatasetSpec.max_criteria None); a report request is
+# never capped (its shape prompt lists every requirement it states).
+_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query."
 _CAPPED_CRITERIA_INIT_INSTRUCTION = "List the criteria of this query, at most {max_criteria}."
 
 
 def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> str:
     """The criteria extractor's user message for a *shape* query, within
     *max_criteria* (None: uncapped; a report request is never capped)."""
-    if shape in _CRITERIA_INIT_INSTRUCTIONS:
-        instruction = _CRITERIA_INIT_INSTRUCTIONS[shape]
-    elif max_criteria is None:
-        instruction = _DEFAULT_CRITERIA_INIT_INSTRUCTION
+    if max_criteria is None or shape == MULTI_ASPECT:
+        instruction = _CRITERIA_INIT_INSTRUCTION
     else:
         instruction = _CAPPED_CRITERIA_INIT_INSTRUCTION.format(max_criteria=max_criteria)
     return CRITERIA_INIT_USER_TEMPLATE.format(query=query, instruction=instruction)
@@ -53,15 +49,15 @@ The agent's reasoning since the last update:
 Passages:
 {passages}
 
-Extract the agent claims of the reasoning and the text of each passage that states a part of a criterion, then give the support and the belief status of every candidate they change.\
+Update the belief about each criterion of the query.\
 """
 
 NO_TEXT = "(none)"
 
 # The final scorer (``final_score``): the query, the belief before the
 # answer turn in the update's layout, the names a passage ruled out
-# included (``format_belief(state, removed=True)``), and the agent's answer
-# turn (its last reasoning, then "Final answer:" and the answer).
+# included (``format_belief(state, removed=True)``), and the agent's final
+# response (``update.final_score.scorer_answer_text``).
 FINAL_SCORE_USER_TEMPLATE = """\
 Query: {query}
 
@@ -71,7 +67,7 @@ Criteria, with their candidates:
 The agent's final answer:
 {answer}
 
-Find the answer's candidate on each criterion, then give the final status.\
+Score the agent's final answer.\
 """
 
 # One turn of the belief update's user message.

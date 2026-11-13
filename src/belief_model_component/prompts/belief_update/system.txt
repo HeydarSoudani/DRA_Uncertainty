@@ -14,9 +14,10 @@ Output:
 {shape_terms}
 - Support: the passage observations that state a part of the criterion for a candidate.
 - Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
-- Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
+- Belief status: how likely a candidate is an answer of its criterion, as defined in Belief Statuses for each criterion type.
 - Agent claim: how likely the agent's reasoning says a candidate is an answer of its criterion, on the belief status scale, or "rejected" when the reasoning rules it out. Claims follow the names the agent is considering, but only passages set their belief status.
 
+== Belief Statuses ==
 {status_definitions}
 
 == Rules ==

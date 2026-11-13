@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 48::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 49::
 
-    line 1  {"record": "meta", "schema_version": 48, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 49, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -80,6 +80,17 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 49 (was 48): same record fields, prompt changes only.
+The status definitions have their own section ("== Belief Statuses ==")
+in the belief update and final scorer prompts; each user prompt closes
+with one general sentence ("List the criteria of this query.", "Update
+the belief about each criterion of the query.", "Score the agent's final
+answer."; the criteria init's "FIXED" sentence and its report variant
+dropped, so the criteria bank's prompt key changes); the final scorer
+reads the agent's final response without citations or confidence line
+(the end of the reasoning only when the response is the answer alone)
+and has no "judge from the belief only" rule.
 
 schema_version 48 (was 47): same record fields, new numbers.  The
 certainty formula (``certainty_formula``, and s_t of every step) is the
@@ -368,7 +379,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 48
+SCHEMA_VERSION = 49
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

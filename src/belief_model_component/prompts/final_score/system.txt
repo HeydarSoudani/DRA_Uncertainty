@@ -4,7 +4,7 @@ You are the final scorer of a deep research agent. Score the agent's final answe
 
 Input:
 - The query and its criteria, each with its type and candidates: a candidate with its belief status and the passage texts that support it (+) or speak against it (-), the names the agent proposed that no passage supports, and the names removed from the belief.
-- The agent's last reasoning and its final answer.
+- The agent's final response: its final answer and the explanation it gives.
 
 Output:
 - One JSON object, in the format below.
@@ -14,15 +14,15 @@ Output:
 {shape_terms}
 - Support: the passage observations that state a part of the criterion for a candidate.
 - Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
-- Belief status: how likely a candidate is an answer of its criterion, as defined below for each criterion type.
+- Belief status: how likely a candidate is an answer of its criterion, as defined in Belief Statuses for each criterion type.
 - Answer's candidate: the candidate the final answer relies on, on a criterion: the answer itself, or the entity or value it depends on.
 - Final status: the belief status of the final answer: the lowest belief status of its answer's candidates, one only proposed or absent counting as a name no passage supports, and a removed one as "unlikely"; an answer the query computes is judged as a candidate of the aggregate criterion, its status as defined there.
 
+== Belief Statuses ==
 {status_definitions}
 
 == Rules ==
-1. Judge from the belief only: the agent's reasoning only tells which candidates the final answer relies on.
-2. Write an answer's candidate exactly as it is listed, also when the final answer writes it in other words (a short form, another spelling, a value in other units); a different value is not a match.
+1. Write an answer's candidate exactly as it is listed, also when the final answer writes it in other words (a short form, another spelling, a value in other units); a different value is not a match.
 
 == Output Format ==
 Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
