@@ -29,8 +29,7 @@ def save_trajectory(query_id: str, question: str, result: Dict[str, Any], output
 
     Not stored here, since it lives in its own file: the final generation
     (``generation/{qid}.md``), the surfaced ranking
-    (``retrieval/surfaced/{qid}.trec``), the belief-model signals
-    (``belief/{qid}.jsonl``) and the cited docs
+    (``retrieval/surfaced/{qid}.trec``) and the cited docs
     (``retrieval/cited/{qid}.trec``).
     """
     out_dir = Path(output_dir)

@@ -50,7 +50,6 @@ class SearchO1_Agent(BasicAgent):
             f"\n{think}\n"
             f"<|begin_search_query|>{sq}<|end_search_query|>\n"
             f"<|begin_search_result|>{search_result}<|end_search_result|>\n"
-            f"{self._belief_state_suffix(step)}"
         )
 
     def get_reasoning_think(self, text: str) -> Optional[str]:
@@ -126,7 +125,6 @@ class SearchO1_Agent(BasicAgent):
                 break
 
             # Extract search query
-            output_text = self._strip_belief_state(output_text)
             tmp_think = self.get_reasoning_think(output_text) or ''
             tmp_think = tmp_think.replace("\n", ' ').replace("\n\n", ' ')
             tmp_query = self.get_search_query(output_text)
@@ -178,13 +176,7 @@ class SearchO1_Agent(BasicAgent):
             input_prompt += current_step_text
 
             messages = [{"role": "user", "content": input_prompt}]
-            tag = self._observe_and_record(
-                reasoning_path, step, tmp_query, seen_docs, iter_num, question,
-                trajectory=messages,
-            )
-            if tag:
-                input_prompt += f"{tag}\n"
-                messages = [{"role": "user", "content": input_prompt}]
+            self._record_iteration(reasoning_path, step, tmp_query, seen_docs, iter_num)
 
         pred_answer = reasoning_path[-1].get('prediction') if reasoning_path else None
 

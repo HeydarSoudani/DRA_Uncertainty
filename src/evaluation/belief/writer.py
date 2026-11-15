@@ -6,15 +6,15 @@ iteration, then one ``final`` line (the final scorer on the agent's
 answer turn, or on a report one more update, when it has one).  The files are the input of the offline analysis
 and of belief model training.  Every line carries ``query_id``;
 correctness labels stay in the accuracy output (``accuracy.jsonl``, same
-``query_id`` key).  The run settings (agent, mode, criteria and belief
-update models, criteria cap, retriever) are in the run's
-``run_config.json``; the per-iteration seen doc ids, queries and
-``<belief_state>`` tags in the trajectory file
-(``trajectory/{query_id}.jsonl``).
+``query_id`` key).  The run settings (agent, criteria and belief update
+models, criteria cap, retriever) are in the run's ``run_config.json``; the
+per-iteration seen doc ids and queries in the trajectory file
+(``trajectory/{query_id}.jsonl``), which the belief stage reads
+(``orchestration.belief_stage``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 51::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 52::
 
-    line 1  {"record": "meta", "schema_version": 51, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 52, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -26,7 +26,6 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 51::
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
              "certainty": 0.4807, "called": true,
-             "intermediate_answers": null, "intermediate_answer_status": "disabled",
              "docs": [{"doc_id": "doc17", "new": true, "label": "d1"}, ...],
              "beliefs": [{"id": "c1", "status": "confirmed", "selected": ["Osby"],
                           "candidates": [{"name": "Osby", "status": "confirmed", "basis": "passage",
@@ -46,8 +45,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 51::
              "issues": [{"id": "c2", "code": "span_unverified", "detail": "no verified span", "label": "d3"}],
              "notes": [{"id": "c1", "code": "candidate_readded", "detail": "'Varby': dropped before, written again"}],
              "agent_turn": "...",
-             "reply": "...",
-             "intermediate_answer_reasoning": null, "errors": []}
+             "reply": "...", "errors": []}
     ...
     last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.7,
              "certainty_label": "probable", "certainty_formula": 0.5, "certainty_answer_formula": 0.5,
@@ -79,8 +77,14 @@ observations that entered in the step (with their verified spans; on a
 computed aggregate, a passage states an input it needs).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
-removed from it (``removed``, never shown).  The readable belief is in the
-trajectory md (``belief_model_component.views.log_view``).
+removed from it (``removed``, never shown).  The readable belief is in
+``belief/{query_id}.md`` (``belief_model_component.views.log_view``).
+
+schema_version 52 (was 51): the belief model runs over saved trajectories
+(the belief stage) and no longer asks the agent for intermediate answers:
+the step fields ``intermediate_answers``, ``intermediate_answer_status`` and
+``intermediate_answer_reasoning`` are gone.  The belief and its updates are
+unchanged.
 
 schema_version 51 (was 50): the issue codes are one table
 (``belief_model_component.core.issues.ISSUES``: each code's effect,
@@ -406,15 +410,12 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 
-SCHEMA_VERSION = 51
-
-# Kept in memory for the agent, not saved (the trajectory step has it).
-_UNSAVED_STEP_KEYS = ("belief_state_tag",)
+SCHEMA_VERSION = 52
 
 
 def clean_record(obj: Any) -> Any:
@@ -440,18 +441,14 @@ def _dump(obj: Dict[str, Any]) -> str:
     return json.dumps(clean_record(obj), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
-def save_belief(query_id: str, question: str, result: Dict[str, Any], output_dir) -> None:
-    """Write ``{output_dir}/{query_id}.jsonl`` from the result dict.
-
-    Reads ``belief_meta``, ``belief_steps`` and ``belief_final`` (attached by
-    ``_attach_belief_stats`` in the agent mixin); does nothing when the
-    belief model was off.  Writes to a temporary file first, so an interrupted
-    write never leaves a truncated file.
+def save_belief(query_id: str, question: str, meta: Dict[str, Any], steps: List[Dict[str, Any]],
+                final: Optional[Dict[str, Any]], output_dir) -> None:
+    """Write ``{output_dir}/{query_id}.jsonl``: the *meta* line
+    (``BeliefModel.meta``), one line per step record (``BeliefModel.steps``)
+    and the *final* record (``BeliefModel.final``, none when None).  Writes
+    to a temporary file first, so an interrupted write never leaves a
+    truncated file.
     """
-    meta = result.get("belief_meta")
-    if meta is None:
-        return
-
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -463,10 +460,8 @@ def save_belief(query_id: str, question: str, result: Dict[str, Any], output_dir
     tmp_path = out_dir / f".{query_id}.jsonl.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write(_dump(header) + "\n")
-        for step in result.get("belief_steps") or []:
-            step = {k: v for k, v in step.items() if k not in _UNSAVED_STEP_KEYS}
+        for step in steps:
             f.write(_dump({"record": "step", "query_id": query_id, **step}) + "\n")
-        final = result.get("belief_final")
         if final is not None:
             f.write(_dump({"record": "final", "query_id": query_id, **final}) + "\n")
     os.replace(tmp_path, path)

@@ -85,7 +85,7 @@ class ReActAgent(BasicAgent):
 
         return self.current_step_template.format(
             think=think, action_text=action_text, observation=observation,
-        ) + self._belief_state_suffix(step) + "\n"
+        ) + "\n"
 
     # ------------------------------------------------------------------
     # Observation dispatch
@@ -93,8 +93,6 @@ class ReActAgent(BasicAgent):
 
     def get_observation(self, action_type: str, action_entity: str) -> tuple:
         """Execute an action and return its observation.
-
-        The belief model is called by the main loop, not here.
 
         Returns:
             (docs, obs, done)
@@ -151,7 +149,7 @@ class ReActAgent(BasicAgent):
                         think=entry["thought"],
                         action_text=action_text,
                         observation=entry["observation"],
-                    ) + self._belief_state_suffix(entry)
+                    )
                 )
 
         return "\n".join(parts)
@@ -258,7 +256,6 @@ class ReActAgent(BasicAgent):
                 break
 
             # Extract thought from <think> tags
-            output_text = self._strip_belief_state(output_text)
             think_content = self.get_think(output_text)
             if think_content:
                 thought = think_content.replace("\n", " ").strip()
@@ -350,28 +347,8 @@ class ReActAgent(BasicAgent):
                         "component_doc_ids": component_doc_ids,
                         "tokens": self._step_tokens(),
                     }
-                    # The prompt the next call would see, including this step;
-                    # built separately so input_prompt is not touched.
-                    context = (
-                        base_prompt + self._build_recent_history_context()
-                        if self.use_plan else input_prompt
-                    )
-                    context += self.current_step_template.format(
-                        think=thought, action_text=action_text, observation=obs,
-                    ) + "\n"
-                    tag = self._observe_and_record(
-                        reasoning_path, step,
-                        action_entity, docs[:self.seen_top_k], display_iter, self.query,
-                        seen_docs=docs[:self.seen_top_k],
-                        trajectory=[
-                            {"role": "system", "content": ""},
-                            {"role": "user", "content": context},
-                        ],
-                    )
-                    if tag:
-                        # Shown after this step's observation, in both the
-                        # linear prompt and the plan-mode history context.
-                        history_entry["belief_state"] = tag
+                    self._record_iteration(reasoning_path, step, action_entity, docs[:self.seen_top_k], display_iter,
+                                           seen_docs=docs[:self.seen_top_k])
 
                 # Hard-coded: update plan after each search observation
                 if self.use_plan:
@@ -411,7 +388,7 @@ class ReActAgent(BasicAgent):
                     think=thought,
                     action_text=action_text,
                     observation=obs,
-                ) + self._belief_state_suffix(history_entry)
+                )
                 input_prompt += current_step_text + "\n"
 
         # ---- force Finish if the loop ended without one ----

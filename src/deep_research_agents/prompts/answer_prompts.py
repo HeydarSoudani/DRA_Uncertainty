@@ -5,14 +5,11 @@
 - REPORT_FINAL_INSTRUCTION / REPORT_MAX_TURNS_INSTRUCTION -- the same for
   report tasks, which ask for the report instead of an answer.
 - force_answer_prompt       -- a force-answer instruction plus an answer format.
-- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...)
-  and AGENT_ANSWER_FORMATS, the format each agent answers in.
-- AnswerCandidateOutput dataclass + extraction helpers, shared by the final
-  answer evaluation and the belief model's intermediate answers.
+- Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...).
+- AnswerCandidateOutput dataclass + extraction helpers, used by the final
+  answer evaluation.
 
 The forced answer is a user message; the agent keeps its own system prompt.
-
-The intermediate-answer instruction lives in ``belief_model_component.prompts.user_prompts``.
 """
 
 import json
@@ -100,21 +97,6 @@ DRTULU_FORMAT = "Provide your answer using <answer>...</answer> tags."
 
 SELFASK_FORMAT = "So the final answer is: "
 
-# Answer format of each agent; others get TAG_FORMAT.  Parsed back by
-# extract_answer_candidates (_AGENT_TO_PATTERNS below).
-AGENT_ANSWER_FORMATS = {
-    "searcho1":    BOXED_FORMAT,
-    "react":       REACT_FORMAT,
-    "drtulu":      DRTULU_FORMAT,
-    "selfask":     SELFASK_FORMAT,
-    "oss":         OSS_FORMAT,
-    "glm":         OSS_FORMAT,
-    "cpm_explore": CPM_EXPLORE_FORMAT,
-    "tongyi":      TAG_FORMAT,
-    "webweaver":   WEBWEAVER_FORMAT,
-}
-
-
 def force_answer_prompt(answer_format: str, instruction: str = FINAL_ANSWER_INSTRUCTION) -> str:
     """The force-answer user message: *instruction*, a blank line, *answer_format*."""
     return f"{instruction}\n\n{answer_format}"
@@ -153,7 +135,7 @@ def _parse_candidate_list(text: str) -> List[str]:
         return [c.strip().strip('"').strip("'") for c in inner.split(",") if c.strip()]
     return [stripped]
 
-# Parser patterns of each agent's answer format (AGENT_ANSWER_FORMATS).
+# Parser patterns of each agent's answer format.
 _AGENT_TO_PATTERNS = {
     "searcho1":    ["boxed"],
     "react":       ["finish_action"],

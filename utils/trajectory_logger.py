@@ -115,6 +115,10 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
     (``sub_iter`` is ``None`` or ``0``), mirroring how ``think`` appears only on
     the first subquery — the later subqueries (``1.2``, ``1.3``, …) share the
     same action and are left unannotated.
+
+    Every line of a search iteration carries its ``search_step``
+    (``BasicAgent._record_iteration``), the key the belief stage groups an
+    iteration's lines by.
     """
     search_query = step.get("search_query")
     if search_query:
@@ -130,8 +134,8 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
             line["seen_docs"] = seen
         if step.get("tokens") is not None:
             line["tokens"] = step["tokens"]
-        if step.get("belief_state"):
-            line["belief_state"] = step["belief_state"]
+        if step.get("search_step") is not None:
+            line["search_step"] = step["search_step"]
         return line
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
@@ -150,9 +154,16 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
         line["generation"] = step["generation"]
     if step.get("tokens") is not None:
         line["tokens"] = step["tokens"]
+    if step.get("search_step") is not None:
+        # A search step without ``search_query`` (ReAct keeps it in
+        # ``query``): its query and seen docs, for the belief stage.
+        if step.get("query"):
+            line["query"] = step["query"]
+        seen = seen_doc_ids(step)
+        if seen:
+            line["seen_docs"] = seen
+        line["search_step"] = step["search_step"]
     return line
-
-
 
 
 def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -161,8 +172,11 @@ def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dic
     Carries what the trajectory steps themselves don't: the step/search/iteration
     counts and the agent-specific payloads in
     :data:`utils.config.AGENT_META_KEYS` that are persisted nowhere else.  The
-    final generation is in ``generation/{qid}.md`` only.  Written last, it marks
-    the query as finished.
+    final generation is in ``generation/{qid}.md`` only; ``agent_generation``
+    (set by ``orchestration.run_query``) is the generation as the agent
+    returned it, before the pipeline appends a References section and
+    renumbers its docid citations (``build_references_section``): the answer
+    the belief stage reads.  Written last, it marks the query as finished.
     """
     meta: Dict[str, Any] = {
         "record": "meta",
@@ -171,6 +185,7 @@ def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dic
         "num_steps": result.get("num_steps", 0),
         "num_searches": result.get("num_searches", 0),
         "num_iterations": result.get("num_iterations"),
+        "agent_generation": result.get("agent_generation"),
     }
     for optional_key in AGENT_META_KEYS:
         if result.get(optional_key):
@@ -194,7 +209,7 @@ _RENDERED_KEYS = frozenset({
     "think", "search_query", "query", "generation", "prediction", "conclusion",
     "observation", "docs", "all_docs", "component_doc_ids", "seen_docs",
     "action_type", "action", "phase", "iteration", "sub_iter", "tokens",
-    "output", "input", "belief_state",
+    "output", "input", "search_step",
 })
 
 
@@ -251,10 +266,7 @@ def render_step_md(
     would have wanted.  Documents get ``doc_id``, title and a short snippet;
     their full text lives in ``retrieval/surfaced/{qid}.trec``.  The title is
     the document's metadata title, else the one the belief model reads from
-    its text (``passage_title``: front matter, else first line).  With the
-    belief model on, a document also gets its belief label (the step's
-    ``belief_labels``, md only: the label the belief log cites), "shown
-    before" when an earlier step showed it.
+    its text (``passage_title``: front matter, else first line).
     """
     action = infer_action_type(step)
     phase = step.get("phase")
@@ -279,16 +291,12 @@ def render_step_md(
         seen = seen_doc_ids(step)
         if not seen:
             seen = [d.get("doc_id") or d.get("id") or "?" for d in docs[:10]]
-        labels = step.get("belief_labels") or {}
         lines = []
         for rank, did in enumerate(seen, 1):
             doc = by_id.get(did) or {}
-            known = labels.get(did) or {}
-            label = f"**{known['label']}** · " if known.get("label") else ""
-            again = " *(shown before)*" if known.get("label") and not known.get("new") else ""
             # Two trailing spaces = a hard break, so the snippet stays inside
             # the list item instead of merging into the title's paragraph.
-            lines.append(f"{rank}. {label}`{did}` — {_doc_title(doc)}{again}  ")
+            lines.append(f"{rank}. `{did}` — {_doc_title(doc)}  ")
             snippet = _snippet(doc, doc_snippet_chars)
             lines.append(f"   {snippet}" if snippet else "   *(no text)*")
         parts.append(
@@ -303,10 +311,6 @@ def render_step_md(
     observation = step.get("observation")
     if observation:
         parts.append(f"**Observation**\n\n{str(observation).strip()}")
-
-    belief_state = step.get("belief_state")
-    if belief_state:
-        parts.append(f"**Belief state** (injected)\n\n{_fence(belief_state, 'xml')}")
 
     for key, heading_text in (("prediction", "Prediction"),
                               ("conclusion", "Conclusion"),

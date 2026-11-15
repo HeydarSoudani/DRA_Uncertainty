@@ -32,7 +32,7 @@ DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
 SUBSET=                            # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
 POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
-BELIEF_MODE=off                    # off | monitor | inform (belief_aware shows the <belief_state> tag only in inform)
+STAGE=${STAGE:-generate}           # generate | belief | eval | all (belief: no GPU needed, see experiments/inference/README.md)
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
 NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
 
@@ -41,7 +41,7 @@ python experiments/inference/dra_inference.py \
     ${SUBSET:+--subset "$SUBSET"} \
     --retriever "$RETRIEVER" \
     --policy-model "$POLICY_MODEL" \
-    --belief-mode "$BELIEF_MODE" \
+    --stage "$STAGE" \
     --limit "$LIMIT" \
     --num-gpus "$NUM_GPUS" \
     --quiet
@@ -51,9 +51,9 @@ python experiments/inference/dra_inference.py \
 # file — that alone was ~1 MB of the 2.3 MB GLM log).  What remains is the GPU plan, the
 # worker split, one "[Worker i] n/m done" line per finished query, and the eval summary.
 #
-# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/oss_20b_api_gpt-oss-20b/belief-off/
-# Resume is automatic: queries whose trajectory/{qid}.jsonl ends with its meta line (and,
-# with the belief model on, that have belief/{qid}.jsonl) are skipped, and --limit is
+# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/oss_20b_api_gpt-oss-20b/
+# Resume is automatic: the generate stage skips queries whose trajectory/{qid}.jsonl ends
+# with its meta line, the belief stage those with belief/{qid}.jsonl, and --limit is
 # applied to what REMAINS, so a re-submit continues rather than restarts.
 #
 # PRE-FLIGHT (recommended before the full run): same code path, 1 query per worker,
@@ -64,4 +64,5 @@ python experiments/inference/dra_inference.py \
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.
 #
 # Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --limit 1 --num-gpus 1
-# Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --eval-only --num-gpus 0
+# Belief:     python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --stage belief
+# Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --stage eval

@@ -3,8 +3,8 @@ whether its final belief is correct and calibrated.
 
 Run on the queries whose criteria are gold criteria
 (``evaluation.gold.criteria``: TRQA's members, InfoSeek's hops).  Read from
-the saved belief files (``belief/{qid}.jsonl``), so it scores any run with
-the belief model on (monitor or inform), without calling the belief model.
+the saved belief files (``belief/{qid}.jsonl``, the belief stage), without
+calling the belief model.
 
 **Scored criteria.** Every criterion with a gold answer: a closed one (a
 member's value or a hop, with gold documents) and an aggregate (gold answer
@@ -103,7 +103,7 @@ EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_i
 
 #: Text fields no evaluation reads (dropped by ``load_belief_files``, which
 #: keeps every query of a run in memory).
-_TEXT_KEYS = ("agent_turn", "reply", "references", "intermediate_answer_reasoning")
+_TEXT_KEYS = ("agent_turn", "reply", "references")
 
 BeliefFile = Tuple[Optional[Dict], List[Dict], Optional[Dict]]
 

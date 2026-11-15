@@ -47,7 +47,7 @@ from ..core.types import BELIEF_STATUSES, criterion_id, parse_status, status_pro
 from ..prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
 from ..text.agent_turn import FINAL_ANSWER_HEADER
 from ..text.matching import alnum, squash
-from ..views.tag import format_belief
+from ..views.belief_text import format_belief
 from .repair import complete_with_repair
 
 # The status of the final answer, lowest first: the belief statuses

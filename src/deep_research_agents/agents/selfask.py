@@ -97,16 +97,7 @@ class SelfAsk_Agent(BasicAgent):
             'component_doc_ids': [d.get('doc_id', '') for d in cur_search_docs[:self.seen_top_k]],
             'tokens': self._step_tokens(),
         }
-        tag = self._observe_and_record(
-            reasoning_path, step, search_query, seen_docs_init, 0, question,
-            seen_docs=seen_docs_init,
-            trajectory=messages,
-        )
-        if tag:
-            # The initial retrieval's tag opens the running text, right after
-            # the prompt; it stays there for the whole run.
-            text = f"{tag}\n"
-            messages[-1]['content'] += text
+        self._record_iteration(reasoning_path, step, search_query, seen_docs_init, 0, seen_docs=seen_docs_init)
 
         output_text = ""
         for idx in range(self.max_iteration):
@@ -128,7 +119,6 @@ class SelfAsk_Agent(BasicAgent):
                     return reasoning_path, answer, iter_num
                 break
 
-            output_text = self._strip_belief_state(output_text)
             if "So the final answer is:" in output_text:
                 self._notify_progress("answer", iter_num)
                 pred = self.extract_final_answer(output_text)
@@ -187,13 +177,7 @@ class SelfAsk_Agent(BasicAgent):
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": prompt_head + text + step_text + prefill}
             ]
-            tag = self._observe_and_record(
-                reasoning_path, step, search_query, seen_docs, iter_num, question,
-                trajectory=messages,
-            )
-            if tag:
-                # Between the follow-up and the intermediate-answer prefill.
-                step_text += f"{tag}\n"
+            self._record_iteration(reasoning_path, step, search_query, seen_docs, iter_num)
             text += step_text + prefill
             messages[-1]['content'] = prompt_head + text
 

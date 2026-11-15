@@ -296,8 +296,6 @@ class DrTulu_Agent(BasicAgent):
             if not response_text:
                 self._vprint(iter_num, "error", "Empty response, stopping")
                 break
-            # The model's own <belief_state> tags never enter the history.
-            response_text = self._strip_belief_state(response_text)
 
             # 2. Parse first <call_tool> action (DR-Tulu tool action)
             tool_info, matched_tool = self._find_first_tool_call(response_text)
@@ -363,11 +361,7 @@ class DrTulu_Agent(BasicAgent):
             #    reasoning with the retrieved evidence (DR-Tulu output handling).
             messages = [*messages, {"role": "user", "content": tool_output_xml}]
 
-            self._observe_and_record(
-                reasoning_path, step, tool_query or "", seen_docs, iter_num, query,
-                seen_docs=seen_docs,
-                trajectory=messages, messages=messages,
-            )
+            self._record_iteration(reasoning_path, step, tool_query or "", seen_docs, iter_num, seen_docs=seen_docs)
 
         # ── Force final answer if budget exhausted on a search step ─────────
         # When max_iteration is reached and the last step was a search (not an answer),

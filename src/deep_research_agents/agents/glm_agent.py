@@ -17,7 +17,6 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from reasoner_component import REASONING_FALLBACK_PREFIX
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE, REPORT_QUERY_TEMPLATE
@@ -114,7 +113,6 @@ class GLM_Agent(BasicAgent):
 
         # Per-call output caps.
         self._max_tokens_per_call = 4096
-        self._intermediate_answer_max_tokens = 1024
 
         from utils.token_meter import TokenMeter
         self.token_meter = TokenMeter()
@@ -161,26 +159,6 @@ class GLM_Agent(BasicAgent):
             if parts:
                 return "\n".join(parts)
         return None
-
-    # ── Intermediate answer (Chat Completions, same client as main loop) ────
-
-    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
-        """Same direct openai client as the main loop, within the output budget."""
-        cfg = self.inference_config
-        messages = self._intermediate_answer_messages(trajectory, instruction)
-        remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
-        response = self._openai_client().chat.completions.create(
-            model=cfg.model_name,
-            messages=messages,
-            max_tokens=min(remaining_tokens, self._intermediate_answer_max_tokens),
-            **self._chat_sampling_kwargs(),
-        )
-        message = response.choices[0].message
-        raw = message.content or ""
-        reasoning = self._read_reasoning(message)
-        if not raw.strip() and reasoning:
-            return REASONING_FALLBACK_PREFIX + reasoning
-        return raw
 
     # _force_answer_chat_in_conversation() and _force_answer_chat_compressed()
     # inherited from BasicAgent
@@ -282,9 +260,6 @@ class GLM_Agent(BasicAgent):
 
             message = response.choices[0].message
             cur_reasoning = self._read_reasoning(message)
-            if message.content and self._informs:
-                # The model's own <belief_state> tags never enter the history.
-                message.content = self._strip_belief_state(message.content)
             cur_text = message.content
             official_tool_calls = message.tool_calls or []
 
@@ -439,11 +414,7 @@ class GLM_Agent(BasicAgent):
                         tc.get("id", ""), error_msg,
                     ))
 
-            self._observe_and_record(
-                reasoning_path, _iter_steps,
-                _iter_subqueries, _iter_seen_docs, iteration, query,
-                trajectory=messages, messages=messages,
-            )
+            self._record_iteration(reasoning_path, _iter_steps, _iter_subqueries, _iter_seen_docs, iteration)
 
             iteration += 1
 

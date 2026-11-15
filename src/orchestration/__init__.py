@@ -69,52 +69,34 @@ def setup_retriever_from_args(args):
 # Belief model factory
 # ===========================================================================
 
-# Agents that write a long report rather than a short answer.
-NO_INTERMEDIATE_ANSWER_AGENTS = ("cpm_report",)
-
-
 def build_belief_model(
-    mode: str,
     *,
+    dataset: str,
+    split: str,
     max_criteria: Optional[int],
-    add_intermediate_answer: bool,
     qrels=None,
     llm_criteria: Optional[str] = None,
     belief_judge_model: str = "",
-    agent=None,
-    policy_model: Optional[str] = None,
-    dataset: Optional[str] = None,
-    split: Optional[str] = None,
     criteria_source: str = GOLD_CRITERIA,
     max_passage_tokens: int = MAX_PASSAGE_TOKENS,
 ):
-    """Build the belief model, or None when *mode* is ``"off"``.
-
-    Shared by the main process (run_pipeline) and spawned GPU workers.
+    """Build the belief model of the belief stage (``orchestration.belief_stage``).
 
     Args:
-        mode: ``"off"``, ``"monitor"`` (observe only) or ``"inform"``
-            (observe and inject a ``<belief_state>`` tag into the trajectory).
+        dataset: Dataset name (its query shape and criteria source).
+        split: Split id of the run's queries (the criteria banks).
+        max_criteria: Cap on the number of criteria the extractor lists per
+            query, None for uncapped (gold); resolved from the dataset by
+            ``resolve_dataset_defaults``.
         qrels: Thresholded relevance judgements, for the new-item precision
             and the recall so far.
         llm_criteria: Model that extracts each query's criteria from the
             question, and writes TRQA's gold criterion texts
             (``belief_model_component.criteria.factory``).  Without it there is
             no belief.
-        max_criteria: Cap on the number of criteria the extractor lists per
-            query, None for uncapped (gold); resolved from the dataset by
-            ``resolve_dataset_defaults``.
         belief_judge_model: LLM behind the belief state (the belief
             update call); "" = *llm_criteria*.  A ``vllm/`` model is
             served locally (``criteria.factory.belief_llm``), e.g. a trained belief model.
-        add_intermediate_answer: Ask the agent for an intermediate answer
-            after every search iteration (one extra LLM call per step).
-        agent: Agent instance; its ``answer_from_trajectory`` gives the
-            per-step intermediate answers.
-        policy_model: Agent type name (answer format, intermediate answer
-            gating).
-        dataset: Dataset name; intermediate answers only for ``task == "qa"``.
-        split: Split id of the run's queries (the criteria banks).
         criteria_source: ``gold`` or ``silver``, a choice on TRQA and
             trqa_validation only (``criteria.factory``); a query without gold
             criteria gets silver ones, so the belief model always runs.
@@ -124,37 +106,15 @@ def build_belief_model(
         max_passage_tokens: Tokens of one document the belief update
             reads (its first ones), the agents' own (the run's shared setting).
     """
-    if mode == "off":
-        return None
-    if mode not in ("monitor", "inform"):
-        raise ValueError(f"unknown belief model mode {mode!r}; expected 'off', 'monitor' or 'inform'")
-
     from belief_model_component import (
         BeliefModel, belief_llm, build_belief_updater, build_criteria_source, build_final_scorer,
     )
 
-    query_shape = DATASET_SPECS[dataset].query_shape if dataset else "multi_clue"
-    if dataset is None or split is None:
-        criteria_source = None
-        logger.warning("No dataset split; belief disabled")
-    else:
-        criteria_source = build_criteria_source(
-            dataset, split, llm_criteria=llm_criteria, max_criteria=max_criteria,
-            criteria_source=criteria_source,
-        )
-
-    intermediate_answer_fn = None
-    if not add_intermediate_answer:
-        print("Belief model: intermediate answers disabled (--add-intermediate-answer false)")
-    elif (
-        agent is not None
-        and policy_model not in NO_INTERMEDIATE_ANSWER_AGENTS
-        # Only short-answer tasks: a report has no answer candidates.
-        and dataset is not None and DATASET_SPECS[dataset].task == "qa"
-        and hasattr(agent, "answer_from_trajectory")
-    ):
-        intermediate_answer_fn = agent.answer_from_trajectory
-        print(f"Belief model: intermediate answers via {policy_model}.answer_from_trajectory")
+    query_shape = DATASET_SPECS[dataset].query_shape
+    criteria_source = build_criteria_source(
+        dataset, split, llm_criteria=llm_criteria, max_criteria=max_criteria,
+        criteria_source=criteria_source,
+    )
 
     belief_updater = final_scorer = judge_llm = None
     if criteria_source is not None:
@@ -172,9 +132,6 @@ def build_belief_model(
         criteria_source=criteria_source,
         belief_updater=belief_updater,
         qrels=qrels or {},
-        intermediate_answer_fn=intermediate_answer_fn,
-        policy_model=policy_model or "",
-        inform=mode == "inform",
         final_scorer=final_scorer,
         token_meter=getattr(judge_llm, "token_meter", None),
     )
@@ -438,23 +395,6 @@ def _init_worker(worker_id: int, worker_config: dict):
         max_passage_tokens=worker_config["max_passage_tokens"],
     )
 
-    belief_model = build_belief_model(
-        mode=worker_config["belief_mode"],
-        qrels=worker_config.get("qrels"),
-        llm_criteria=worker_config["llm_criteria"],
-        max_criteria=worker_config["max_criteria"],
-        belief_judge_model=worker_config["belief_judge_model"],
-        add_intermediate_answer=worker_config["add_intermediate_answer"],
-        agent=agent if hasattr(agent, "belief_model") else None,
-        policy_model=policy_model,
-        dataset=dataset,
-        split=worker_config.get("split"),
-        criteria_source=worker_config.get("criteria_source", GOLD_CRITERIA),
-        max_passage_tokens=worker_config["max_passage_tokens"],
-    )
-    if belief_model is not None and hasattr(agent, "belief_model"):
-        agent.belief_model = belief_model
-
     print(f"[Worker {worker_id}] Initialisation complete", flush=True)
     return agent, search_tool, verbose
 
@@ -490,6 +430,10 @@ def run_query(agent, run_dir, query_id: str, query_text: str, *, policy_model: s
         if result is None:
             return None
         result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
+        # The generation as the agent returned it, before the References
+        # section (which also renumbers docid citations): the answer the
+        # belief stage reads (trajectory meta line).
+        result["agent_generation"] = result["generation"]
         # Append a References section to the generation (CPMReport already has one)
         references = build_references_section(result)
         if references:
@@ -512,8 +456,7 @@ def gpu_worker(worker_id: int, query_items: list, run_dir: str, worker_config: d
     """
     # With live progress bars in the parent, this process's init prints would
     # land between the bars' in-place redraws and scramble them.  Hold them
-    # back; on failure they go to stderr, otherwise worker 0 forwards the
-    # belief model config lines (the same in every worker) to be printed once.
+    # back; on failure they go to stderr.
     live_bars = bool(worker_config.get("live_bars", False))
     init_out = io.StringIO()
     try:
@@ -529,10 +472,6 @@ def gpu_worker(worker_id: int, query_items: list, run_dir: str, worker_config: d
         if progress_queue is not None:
             progress_queue.put(None)
         return []
-    if live_bars and worker_id == 0 and progress_queue is not None:
-        for line in init_out.getvalue().splitlines():
-            if line.startswith("Belief model:"):
-                progress_queue.put(("log", line))
 
     from evaluation.runner import QUERY_OUTPUT_DIRS
 
@@ -584,10 +523,6 @@ def gpu_worker(worker_id: int, query_items: list, run_dir: str, worker_config: d
             print(f"  [Worker {worker_id}] ✓ Saved: {query_id}", flush=True)
 
     agent.cleanup()
-    # As run_pipeline does: drop the belief model's model and callback references.
-    belief_model = getattr(agent, "belief_model", None)
-    if belief_model is not None:
-        belief_model.close()
     if verbose:
         print(
             f"[Worker {worker_id}] Completed {len(finished)}/{len(query_items)} queries",

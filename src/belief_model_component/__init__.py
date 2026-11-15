@@ -1,8 +1,9 @@
 """Belief model: a prompted belief state over each query's criteria, plus
 per-step signals, for deep research agents.
 
-Plugged into any agent with ``--belief-mode monitor`` (observe only) or
-``inform`` (also inject a ``<belief_state>`` tag into the trajectory).  The
+Run over saved agent trajectories by the belief stage of
+``experiments/inference/dra_inference.py`` (``--stage belief``,
+``orchestration.belief_stage``); it never changes what the agent does.  The
 design is described in ``README.md``.
 
 Layout:
@@ -11,8 +12,8 @@ Layout:
     update/         updater, signal (BeliefUpdateSignal), final_score, repair
     criteria/       sources, parsing, factory (the criteria C of a query)
     text/           matching, passages, agent_turn (plain string helpers)
-    views/          tag (prompt view and <belief_state> tag), log_view
-    eval_signals/   retrieval_gain, intermediate_answer (evaluation only)
+    views/          belief_text (the belief as prompt text), log_view
+    eval_signals/   retrieval_gain (evaluation only)
     prompts/        system prompts and user templates
 
 Code outside the package imports from here, never from a module path.
@@ -60,7 +61,6 @@ from .criteria.sources import (
     FallbackCriteriaSource,
     LLMCriteriaSource,
 )
-from .eval_signals.intermediate_answer import IntermediateAnswerSignal
 from .text.agent_turn import agent_turn_text, answer_turn
 from .text.passages import Passage, passage_title, span_in_passage, split_span
 from .update.final_score import (
@@ -70,8 +70,7 @@ from .update.final_score import (
 )
 from .update.signal import BeliefUpdateSignal, CallPlan
 from .update.updater import LLMBeliefUpdater, build_belief_updater
-from .views.log_view import belief_doc_labels, belief_lines, belief_md, criteria_lines, criteria_md
-from .views.tag import strip_belief_state
+from .views.log_view import belief_lines, belief_md, criteria_lines, criteria_md
 from .belief_model import BeliefModel
 
 __all__ = [
@@ -93,12 +92,10 @@ __all__ = [
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "check_issues", "parse_final_score",
     # text
-    "Passage", "passage_title", "belief_doc_labels", "agent_turn_text", "answer_turn", "span_in_passage", "split_span",
+    "Passage", "passage_title", "agent_turn_text", "answer_turn", "span_in_passage", "split_span",
     # views
-    "strip_belief_state",
     "belief_lines", "belief_md", "criteria_lines", "criteria_md",
     # evaluation only
-    "IntermediateAnswerSignal",
     # entry point
     "BeliefModel",
 ]

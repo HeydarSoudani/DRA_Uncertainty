@@ -2,8 +2,6 @@
 
 from typing import Optional
 
-from deep_research_agents.prompts.answer_prompts import AGENT_ANSWER_FORMATS, TAG_FORMAT
-
 from ..core.types import MULTI_ASPECT
 
 CRITERIA_INIT_USER_TEMPLATE = """\
@@ -32,7 +30,7 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
 
 # The belief update (``updater``), in the layout of the system prompt's
 # example: every criterion as "c1 (one answer): <text>" with its current
-# candidates, their support and its proposals (``views.tag.format_belief``),
+# candidates, their support and its proposals (``views.belief_text.format_belief``),
 # the agent's turns since the last update, each "[t<step>]" on its own line
 # before its text, then the passages its last search returned (new or shown
 # before, a passage keeping its label), each "[d<n>]" before
@@ -75,19 +73,3 @@ Score the agent's final answer.\
 TURN_TEMPLATE = "[{label}]\n{text}"
 # One passage of the belief update's user message.
 PASSAGE_TEMPLATE = "[{label}] {text}"
-
-
-# Intermediate answer: a user message appended to the agent's conversation at
-# the end of every turn (the agent keeps its own system prompt). The model gives
-# one answer, several (as a list in the agent's answer field) or none.
-INTERMEDIATE_ANSWER_INSTRUCTION = """\
-Pause the search here. Based on all the information above, provide what you consider the most likely answer so far.
-If several answers are plausible, list them in the answer as [answer 1, answer 2].
-If the evidence is insufficient to answer, respond with 'no candidate'.\
-"""
-
-
-def intermediate_answer_instruction(policy_model: str) -> str:
-    """The instruction plus the agent's answer format."""
-    fmt = AGENT_ANSWER_FORMATS.get(policy_model, TAG_FORMAT)
-    return f"{INTERMEDIATE_ANSWER_INSTRUCTION}\n\n{fmt}"

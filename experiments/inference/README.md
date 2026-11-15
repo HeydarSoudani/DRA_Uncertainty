@@ -1,7 +1,7 @@
 # Inference
 
-`dra_inference.py` runs one deep research agent over one dataset split, optionally with the belief model next to it,
-evaluates the run and saves every step. This README covers how to run it, what the belief model computes, how runs
+`dra_inference.py` runs one deep research agent over one dataset split and saves every step (the generate stage),
+runs the belief model over the saved trajectories (the belief stage) and evaluates the run. This README covers how to run it, what the belief model computes, how runs
 are evaluated, and the output files. Datasets and indices must be built first
 (see the [root README](../../README.md#data-and-indices)).
 
@@ -11,14 +11,13 @@ are evaluated, and the output files. Datasets and indices must be built first
 - [Belief model](#belief-model)
   - [Criteria](#criteria)
   - [Belief update](#belief-update)
-  - [Inform mode](#inform-mode)
 - [Evaluation](#evaluation)
   - [Report evaluation (Auto-ARGUE)](#report-evaluation-auto-argue)
 - [Output format](#output-format)
 
 ## Running
 
-On Slurm, edit `DATASET` / `SUBSET` / `RETRIEVER` / `POLICY_MODEL` / `BELIEF_MODE` at the top of the wrapper and
+On Slurm, edit `DATASET` / `SUBSET` / `RETRIEVER` / `POLICY_MODEL` / `STAGE` at the top of the wrapper and
 submit it:
 
 ```bash
@@ -32,7 +31,7 @@ python experiments/inference/dra_inference.py \
     --dataset browsecomp_plus \
     --retriever qwen3_emb_4b \
     --policy-model glm \
-    --belief-mode monitor \
+    --stage all \
     --num-gpus 0
 ```
 
@@ -41,38 +40,45 @@ python experiments/inference/dra_inference.py \
 | `--dataset`, `--subset` | `trqa` (`wiki1` / `wiki2` / `ecommerce`), `neuclir` (`news` / `technical`), `browsecomp_plus`, `ragtime`; unset subset = the dataset's default |
 | `--retriever` | must have an index built for the dataset |
 | `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
-| `--belief-mode` | `off`, `monitor` (default), `inform` |
-| `--num-gpus` | query-level workers, one per GPU; `0` = auto-detect |
-| `--limit N` | first N queries only |
-| `--eval-only` | evaluate the saved run, no generation |
+| `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
+| `--criteria-source` | `gold` or `silver` criteria of the belief model (TRQA, trqa_validation) |
+| `--num-gpus` | query-level workers of the generate stage, one per GPU; `0` = auto-detect |
+| `--limit N` | each stage runs at most N queries |
 
 Every other setting (top_k, rerankers, criteria LLM, judges, eval k-values, ...) is in
 `experiments/configs/dra_inference.yaml` and can be overridden with the matching `--flag`.
 
-Quick checks:
+The stages:
+
+| `--stage` | Runs |
+|---|---|
+| `generate` | the agent on the queries without a finished trajectory, then the evaluation |
+| `belief` | the belief model over the finished trajectories without a belief file, then the evaluation |
+| `eval` | the evaluation only, from the saved files |
+| `all` | `generate`, then `belief`, then the evaluation |
+
+The agent runs once; any number of belief model versions can then run over the same trajectories. The belief stage
+needs no agent, retriever or GPU: it reads each search iteration's queries, the ids of the documents the agent was
+shown and the agent's turn from `trajectory/{qid}.jsonl`, reads the documents' text from the corpus by id
+(`CorpusLookup`, shaped as the run's retriever returns a document), and the answer from `generation/{qid}.md`
+(`src/orchestration/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
 
 ```bash
-# single-query smoke test
-python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1 --num-gpus 0
-# evaluate an already-saved run, no generation
-python experiments/inference/dra_inference.py --dataset browsecomp_plus --eval-only --num-gpus 0
+python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage generate --limit 3
+python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage belief
+python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage eval
 ```
 
-A resumed run skips the queries already finished and runs the others again. A resume whose `dataset`, `agent`,
-`searcher` or `belief_model` settings differ from the run's `run_config.json` is refused, so every query of a
-directory ran with the same settings.
+Every stage resumes: the generate stage skips the queries with a finished trajectory, the belief stage those with a
+belief file. A generate stage whose `dataset`, `agent` or `searcher` settings differ from the run's `run_config.json`
+is refused, so every trajectory of a directory ran with the same settings. A belief stage whose belief settings
+(criteria source and cap, criteria and belief update models) differ from the run's `belief_model` section replaces
+the run's beliefs (`belief/`, `belief_eval/`) and runs every query again; copy them first to keep them.
 
 ## Belief model
 
-The belief model (`src/belief_model_component/`) can be plugged into any agent:
-
-| `--belief-mode` | Effect |
-|---|---|
-| `off` | disabled |
-| `monitor` | computes and saves the belief state; never changes the trajectory |
-| `inform` | as `monitor`, and also shows a `<belief_state>` tag to the agent after each search |
-
-It follows Agent-BRACE (Singh et al., 2026, arXiv:2605.11436), adapted to search: the environment is the retriever,
+The belief model (`src/belief_model_component/`) runs in the belief stage, over the saved trajectories of any agent;
+it never changes what the agent does. It follows Agent-BRACE (Singh et al., 2026, arXiv:2605.11436), adapted to search: the environment is the retriever,
 the observation of a search iteration is its documents and the agent's turn, and the belief state gives each
 criterion of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
 how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
@@ -311,7 +317,7 @@ reverse, joins it (`fact_merged`); a supporting span that shares no content word
 (`span_off_fact`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
 neutral level 0; its "doubtful" is a removal here. "confirmed" is the paper's top label ("certain" before schema 50).
 
-The update prompt reads each criterion with its candidates (`views.tag.format_belief`):
+The update prompt reads each criterion with its candidates (`views.belief_text.format_belief`):
 
 ```
 c1 (one answer): the town where the Varn Folk Museum was founded
@@ -360,60 +366,17 @@ candidates, proposals}`, each candidate with its `support` and the agent's `clai
 reply (with their reasons and support labels), the criteria it `changed`, the `observations` that entered (claims and
 passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
 criterion every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
-with `certainty_label`, `certainty_formula`, `certainty_answer_formula` and `final_score` (status, answer's candidates, reason, issues). The same belief is readable in the
-trajectory md (`trajectory/{qid}.md`): the criteria before the first step, a belief table after each iteration and
-the final belief before the result. For evaluation only, never shown to the agent:
-
-- `new_item_precision` and `recall_so_far`, against the qrels at the dataset's `min_relevance_score` (NeuCLIR and
-  RAGTIME: grade 3, the very valuable docs), the same relevant docs as the end-of-run Recall@N.
-- Intermediate answers (BrowseComp-Plus and TRQA, all agents except `cpm_report`): after each iteration the agent's own
-  model is asked, from its trajectory so far, for its most likely answer(s) in its answer format; it may give one,
-  several or none (`IntermediateAnswerSignal`, prompt in `src/belief_model_component/prompts/`). They are saved as
-  is, not evaluated.
-
-### Inform mode
-
-`--belief-mode inform` computes the same belief and also shows it to the agent: right after each iteration's search
-results, one `<belief_state>` tag is appended to the trajectory (`src/belief_model_component/views/tag.py`):
-
-```xml
-<belief_state step="2">
-  <criteria>
-    <k1>the town where the Varn Folk Museum was founded
-      "Osby": confirmed
-    </k1>
-    <k2>the engineer who was born in the town of k1
-      "Henrik Dahl": almost certain
-    </k2>
-    <k3>the lighthouse that was designed by the engineer of k2
-      unverified: "Kalvik Lighthouse"
-    </k3>
-  </criteria>
-</belief_state>
-```
-
-The tag is descriptive only: each criterion with its candidates and statuses (no support), and the names the agent
-proposed as `unverified`; a criterion id in a criterion's text is written with the tag's own id ("of k1"). Gold-based fields
-(`new_item_precision`, `recall_so_far`, relevant counts) stay in `belief/{qid}.jsonl` for analysis. Where the tag goes:
-
-| agents | place |
-|---|---|
-| searchr1, research, stepsearch, searcho1, react | appended to the prompt after the search-result block |
-| selfask | between `Follow up: …` and the `Intermediate answer:` prefill (the initial retrieval's tag after the prompt) |
-| glm, oss, tongyi, drtulu, cpm_explore | appended to the iteration's last tool / result message |
-| webweaver | appended to the planner's search observation |
-| cpm_report | appended to the current information of the next plan / write prompt |
-
-The tag is saved once, as `belief_state` on the search step in `trajectory/{qid}.jsonl`. Tags the model writes itself
-are removed in the prompt-string agents. The system prompts are unchanged, except for `belief_aware`: in `inform`
-mode its system prompt introduces the tag (one section, `belief_section.txt`, the same for every task, with no advice
-on how to use it); in `monitor` and `off` modes its prompt never mentions it.
+with `certainty_label`, `certainty_formula`, `certainty_answer_formula` and `final_score` (status, answer's candidates, reason, issues). The same belief is readable in
+`belief/{qid}.md`: the criteria, a belief table after each iteration (with the labels of its documents) and the
+final belief. For evaluation only: `new_item_precision` and `recall_so_far`, against the qrels at the dataset's
+`min_relevance_score` (NeuCLIR and RAGTIME: grade 3, the very valuable docs), the same relevant docs as the
+end-of-run Recall@N.
 
 ## Evaluation
 
-A run is evaluated from its saved files, both at its end and with `--eval-only`, so the two write the same files.
-Belief model training's phase 1 is a dra_inference run, so its runs get the same evaluation. Judge verdicts are
-reused for queries whose input is unchanged, so `--eval-only` on an unchanged run makes no LLM call and needs no GPU.
+A run is evaluated from its saved files at the end of every stage, so every stage writes the same files. Judge
+verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run makes no LLM call and
+needs no GPU. The uncertainty and belief groups score the queries with a belief file.
 
 The measures, by group, in the order of the files and the log:
 
@@ -469,7 +432,7 @@ has every event with a gold event's funnel stage (`call_failed`, `not_assigned`,
 The terminal log prints one block, one line per group:
 
 ```
-EVALUATION  trqa / wiki2_test / glm / monitor (gold criteria)  (n=200)
+EVALUATION  trqa / wiki2_test / glm / qwen3.6-27b (gold criteria)  (n=200)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
 uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
@@ -503,8 +466,8 @@ src/evaluation/
 
 ### Report evaluation (Auto-ARGUE)
 
-On the report datasets (`report_eval: "argue"` in `layout.DATASET_SPECS`: NeuCLIR, RAGTIME), every run and every
-`--eval-only` pass scores the reports against the nuggets with the official
+On the report datasets (`report_eval: "argue"` in `layout.DATASET_SPECS`: NeuCLIR, RAGTIME), every evaluation
+scores the reports against the nuggets with the official
 [Auto-ARGUE](https://github.com/hltcoe/auto-argue) package (`src/evaluation/answer/argue.py`). There is no flag. The
 package runs unmodified with our judge (`judge_model`, Qwen3-32B, temperature 0, reasoning off) instead of its
 Llama-3.3-70B.
@@ -536,18 +499,19 @@ pip install --no-deps "auto-argue @ git+https://github.com/hltcoe/auto-argue.git
 ## Output format
 
 ```
-$DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-gold]/
-├── run_config.json                 every resolved setting: dataset, agent (temperature included), searcher,
-│                                   belief model, evaluation
+$DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/
+├── run_config.json                 every resolved setting: dataset, agent (temperature included), searcher
+│                                   (generate stage), belief_model (belief stage), evaluation
 ├── retrieval/
 │   ├── surfaced/{qid}.trec         raw retriever output (all iterations, col 6 = iter_N)
 │   ├── seen/{qid}.trec             docs shown to the LLM
 │   └── cited/{qid}.trec            docs cited by the LLM
 ├── generation/{qid}.md             the final generation (with its References section)
-├── belief/{qid}.jsonl              belief on only: meta line (criteria, final belief) + one line per search iteration
-├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, <belief_state> tags, per-turn
-│   │                               diagnostics), then the meta line (counts, agent data)
+├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, the search_step of a search
+│   │                               iteration), then the meta line (counts, agent data, agent_generation)
 │   └── {qid}.md                    the same trajectory, human-readable, written live
+├── belief/{qid}.jsonl              belief stage: meta line (criteria) + one line per search iteration + final line
+│   └── {qid}.md                    the same belief, human-readable
 ├── accuracy.jsonl                  per-query verdicts (datasets with answers)
 ├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
 ├── belief_eval/                    belief update evaluation: events.csv (one row per gold or control event),
@@ -563,5 +527,7 @@ in `run_config.json` only, the final generation in `generation/{qid}.md` only, t
 evaluation output, rebuilt by every evaluation and never read by inference or training. An evaluation removes the
 `summary.json` of earlier code.
 
-A query is finished when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other file
-of the query (and, with the belief model on, after its belief file).
+A query is generated when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other
+file of the query; its belief is done when `belief/{qid}.jsonl` exists (written last, atomically). The meta line's
+`agent_generation` is the generation as the agent returned it, the answer the belief stage reads; `generation/{qid}.md`
+has the References section the pipeline appends, with docid citations renumbered `[N]`.

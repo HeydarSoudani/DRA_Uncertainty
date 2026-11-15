@@ -1,9 +1,10 @@
 # Belief model component
 
 A prompted belief state over each query's criteria, plus per-step signals,
-for deep research agents. It plugs into any agent with `--belief-mode monitor`
-(observe only) or `inform` (also inject a `<belief_state>` tag into the
-trajectory).
+for deep research agents. It runs in the belief stage of
+`experiments/inference/dra_inference.py` (`--stage belief`,
+`src/orchestration/belief_stage.py`), over the saved trajectories of any
+agent, and never changes what the agent does.
 
 ## Layout
 
@@ -31,18 +32,16 @@ belief_model_component/
     passages.py      span checks, passage titles, reply labels, Passage, Turn
     agent_turn.py    the agent's turn as the update reads it
   views/             text renderings of the belief
-    tag.py           the belief as the update and final scorer prompts read it, the <belief_state> tag
+    belief_text.py   the belief as the update and final scorer prompts read it
     log_view.py      readable console and markdown logs
   eval_signals/      evaluation only, never shown to the agent
     retrieval_gain.py
-    intermediate_answer.py
   prompts/           system prompts (.txt) and user templates
 ```
 
 Imports between the folders go one way: `text` -> `core` -> `prompts` ->
 `views` -> `update` -> `belief_model` (`core` reads `text.matching`, so
-`text` is the lowest layer); `criteria` reads `core.types` and `prompts`,
-`eval_signals` reads `prompts`.
+`text` is the lowest layer); `criteria` reads `core.types` and `prompts`.
 
 ## The belief
 
@@ -75,29 +74,25 @@ statuses. On a short-answer query, the final scorer reads b_{T-1} and the
 agent's answer turn and judges how likely the answer is correct (s_T, a word
 of estimative probability); on a report the answer turn is one more update
 and s_T the certainty of the final belief. For evaluation only, it also
-saves the retrieval gain against the qrels and the agent's intermediate
-answers.
+saves the retrieval gain against the qrels.
 
 ## Per sample
 
 ```
 reset(query_id, query)   the criteria list C is created once (fixed for the
                          sample); b_0 has no candidate ("unknown")
-observe(...)             called once at the end of every search iteration
-                         with the iteration's queries and seen documents;
-                         returns and stores the step record
+observe(...)             called once per search iteration of the saved
+                         trajectory with the iteration's queries, seen
+                         documents and the agent's turn; returns and stores
+                         the step record
 finish(answer_turn)      once, after the last step: the final scorer on the
                          agent's answer turn (short-answer queries; a report:
                          one more update); stores the final record
 ```
 
-With `inform=False` (`monitor`) the model never changes the trajectory; with
-`inform=True` (`inform`) each record also carries `belief_state_tag`, the
-`<belief_state>` tag the agent appends to its context (`views.tag`).
-
 Order inside `observe` (the step's documents and the agent's turn move the
-belief from b_{t-1} to b_t): b_t, then the retrieval gain, then the
-intermediate answer (both for evaluation only). When the step has a document
+belief from b_{t-1} to b_t): b_t, then the retrieval gain (for evaluation
+only). When the step has a document
 (new or shown before, with the same label), one belief update call reads the agent's turns
 since the last call and those passages, records the claims of the turns and
 the observations of the passages, and gives the support and status of every
@@ -118,15 +113,15 @@ new_item_precision,
 num_new_relevant, num_repeated_relevant, num_irrelevant,
 recall_so_far, num_relevant_seen, num_relevant,
 certainty, called,
-intermediate_answers, intermediate_answer_status,
 docs[], beliefs[], updates[], changed[], observations[], issues[], notes[],
-agent_turn, reply, intermediate_answer_reasoning, errors[],
-belief_state_tag            # inform only, not saved (the trajectory step has it)
+agent_turn, reply, errors[]
 ```
 
 - `iteration` counts the observed search iterations from 1, the same for
   every agent; `agent_iteration` is the agent's own counter, whose base and
   meaning differ per agent.
+- `num_subqueries`: the iteration's search queries, as the trajectory saves
+  them (`cpm_report` saves one per search, its keywords joined).
 - A value that could not be computed is null, never 0; the reason is in
   `errors` (or a component is not configured: no criteria, no qrels).
 - `docs`: per document of the step, `{doc_id, new, label}`. `new` when its
@@ -173,11 +168,6 @@ belief_state_tag            # inform only, not saved (the trajectory step has it
   (`core.certainty.certainty`: over the criteria their status's probability,
   `core.types.STATUS_PROBABILITY`; the lowest on a short-answer query, the
   mean on a report; every criterion counted); null without criteria.
-- `intermediate_answers`: null when not configured or failed, `[]` when the
-  model gave no answer. `intermediate_answer_status` says which: `ok`,
-  `no_candidate` (`[]`), `unparsed` (reply without answer format), `failed`
-  (call raised; see `errors`) or `disabled` (not configured, e.g.
-  `--add-intermediate-answer false`).
 
 ### Final record
 

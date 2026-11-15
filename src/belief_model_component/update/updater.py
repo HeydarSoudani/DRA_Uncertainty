@@ -41,7 +41,7 @@ from ..core.types import (
 from ..prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER_TEMPLATE, NO_TEXT, PASSAGE_TEMPLATE, TURN_TEMPLATE
 from ..text.matching import alnum_index, squash
 from ..text.passages import Passage, Turn, doc_label, reply_labels, span_in_passage, split_span
-from ..views.tag import format_belief
+from ..views.belief_text import format_belief
 from .repair import complete_with_repair
 
 logger = logging.getLogger(__name__)

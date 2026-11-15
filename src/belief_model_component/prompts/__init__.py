@@ -25,7 +25,6 @@ from .user_prompts import (
     PASSAGE_TEMPLATE,
     TURN_TEMPLATE,
     criteria_init_user,
-    intermediate_answer_instruction,
 )
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
@@ -67,7 +66,7 @@ def _compose(stage: str, shape: str) -> str:
 # for the short-answer shapes, "aspect" for a report, and the aggregate where
 # the shape has one, as a target (multi-clue: the entity that meets every
 # clue) or a computation (multi-member).  The input names both "aggregate"
-# (``views.tag.criterion_type``).
+# (``views.belief_text.criterion_type``).
 CRITERION_STATUSES = {k: v for k, v in _sections("belief_update/statuses.txt").items() if k}
 SHAPE_CRITERION_TYPES = {
     MULTI_CLUE: ("one_answer", "target"),

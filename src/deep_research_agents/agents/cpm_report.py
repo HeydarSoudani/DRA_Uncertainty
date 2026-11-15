@@ -117,8 +117,7 @@ class CPMReport(BasicAgent):
             response = await self._llm_call_vllm(messages, temperature, max_tokens)
         else:
             response = await self._llm_call_api(messages, temperature, max_tokens)
-        # The model's own <belief_state> tags never reach the parsers.
-        return self._strip_belief_state(response or "")
+        return response or ""
 
     async def _llm_call_api(
         self,
@@ -175,7 +174,6 @@ class CPMReport(BasicAgent):
             "extend_time": 0,
             "extend_result": "",
             "retrieved_info": "",
-            "belief_state": "",  # inform mode: tag of the last search, shown after retrieved_info
             "parsed": True,
             "retry_count": 0,
             "citation_registry": {},
@@ -276,7 +274,6 @@ class CPMReport(BasicAgent):
                 elif current_state == "search":
                     # If search fails, try to continue anyway with empty results
                     state["retrieved_info"] = ""
-                    state["belief_state"] = ""
                     state["retry_count"] = 0  # Reset retry count
                     # Transition based on cursor
                     if cursor == "outline":
@@ -414,7 +411,7 @@ class CPMReport(BasicAgent):
         # Extract passages from fused docs
         fused_passages = []
         for idx, doc in enumerate(fused_docs):
-            # Whole and stripped, as every agent and the belief model read it;
+            # Whole and stripped, as every agent and the belief stage read it;
             # cut to the shared max_passage_tokens when shown (_process_passages_with_citation).
             text = doc_text(doc, None)
             if not text:
@@ -457,16 +454,11 @@ class CPMReport(BasicAgent):
             "all_docs": fused_docs,
         })
 
-        # Kept apart from retrieved_info, whose text is parsed for citations;
-        # joined to it only in the prompt (_current_information).
-        tag = self._observe_step(
-            keywords, seen_docs, step, state["query"],
-            seen_docs=seen_docs,
-            trajectory=state["trajectory"],
-        )
-        state["belief_state"] = tag or ""
-        if tag:
-            state["trajectory"][-1]["belief_state"] = tag
+        # Every search is a search iteration (``search_step``, see
+        # ``_record_iteration``); its step is recorded at the end of the run
+        # (``_build_reasoning_path``).
+        self._vprint_docs(step, seen_docs)
+        state["trajectory"][-1]["search_step"] = self._next_search_step()
 
         return state
 
@@ -1196,10 +1188,8 @@ class CPMReport(BasicAgent):
 
     @staticmethod
     def _current_information(state: Dict[str, Any]) -> str:
-        """The prompt's current information: the last search's passages, then
-        its <belief_state> tag in inform mode."""
-        tag = state.get("belief_state")
-        return f"{state['retrieved_info']}\n{tag}" if tag else state["retrieved_info"]
+        """The prompt's current information: the last search's passages."""
+        return state["retrieved_info"]
 
     def _extract_doc_ids_from_cited_text(self, text: str, state: Dict[str, Any], limit: int = 20) -> tuple[int, list[str]]:
         """Extract doc IDs from text containing citations.
@@ -1481,12 +1471,9 @@ class CPMReport(BasicAgent):
     def _build_reasoning_path(self, state: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Convert CPM-Report trajectory into the standardised reasoning_path format."""
         reasoning_path: List[Dict[str, Any]] = []
-        belief_model = getattr(self, "belief_model", None)
-        belief_records = {r.get("agent_iteration"): r for r in getattr(belief_model, "steps", None) or []}
         for entry in state.get("trajectory", []):
             rp_entry: Dict[str, Any] = {
-                # The state machine's step: the iteration the belief model
-                # got for a search (its agent_iteration).
+                # The state machine's step (a search's iteration).
                 "iteration": entry.get("step"),
                 "think": entry.get("think", ""),
                 "action_type": entry.get("action", entry.get("state", "")),
@@ -1494,8 +1481,8 @@ class CPMReport(BasicAgent):
             traj_state = entry.get("state", "")
 
             if traj_state == "search":
-                if entry.get("belief_state"):
-                    rp_entry["belief_state"] = entry["belief_state"]
+                if entry.get("search_step") is not None:
+                    rp_entry["search_step"] = entry["search_step"]
                 keywords = entry.get("input", {}).get("keywords", [])
                 rp_entry["search_query"] = "; ".join(keywords) if keywords else ""
                 all_docs = entry.get("all_docs", [])
@@ -1516,16 +1503,7 @@ class CPMReport(BasicAgent):
             rp_entry["_cpm_step"] = entry.get("step")
             rp_entry["_cpm_output"] = entry.get("output", {})
 
-            if traj_state == "search":
-                from belief_model_component import belief_doc_labels
-                labels = belief_doc_labels(belief_records.get(entry.get("step")))
-                if labels:
-                    rp_entry["belief_labels"] = labels
             self._record_step(reasoning_path, rp_entry)
-            # The steps reach the trajectory md only now, so the belief of a
-            # search step (its agent_iteration is the step) is written here.
-            if traj_state == "search":
-                self._log_belief_md(belief_records.get(entry.get("step")))
 
         return reasoning_path
 

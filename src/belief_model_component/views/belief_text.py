@@ -1,5 +1,4 @@
-"""The belief as text: each criterion with its candidates, and the
-``<belief_state>`` tag that ``--belief-mode inform`` injects.
+"""The belief as text: each criterion with its candidates.
 
 The belief state keeps per criterion its candidates (``core.types.Candidate``)
 and its proposals (``core.types.Proposal``).  The belief update prompt lists
@@ -22,37 +21,12 @@ set's condition (``format_belief``)::
     c2 (one answer): the Nobel Laureate from Pakistan who shared his Nobel Prize with the physicist of c1
       (no candidate)
 
-The agent's claims are never shown to the update.  At the end of every
-search iteration the agent reads one tag, each criterion with its
-candidates and statuses (no support) and its proposals as unverified, its
-own id "k<n>" in place of the criterion id::
-
-    <belief_state step="3">
-      <criteria>
-        <k1>the town where the Varn Folk Museum was founded
-          "Osby": confirmed
-        </k1>
-        <k2>the engineer who was born in the town of k1
-          "Henrik Dahl": almost certain
-          unverified: "Nils Berg"
-        </k2>
-        <k3>the lighthouse that was designed by the engineer of k2</k3>
-      </criteria>
-    </belief_state>
-
-The tag is descriptive only, and carries no source labels: the reasons of
-the updates are saved, never shown.  Nothing gold-based (qrels, recall)
-reaches the agent.  With no criteria there is no tag.
+The agent's claims are never shown to the update.
 """
 
-import re
-from html import escape
 from typing import Any, Dict, List, Optional
 
-from ..core.types import AGGREGATE, ASPECT, CRITERION_REF_RE, DOC, Candidate, Support, is_computed
-
-# A tag the model wrote itself; removed before its text enters the context.
-BELIEF_STATE_RE = re.compile(r"<belief_state\b[^>]*>.*?</belief_state>\s*", re.DOTALL)
+from ..core.types import AGGREGATE, ASPECT, DOC, Candidate, Support, is_computed
 
 # The line of a criterion without candidates.
 NO_CANDIDATE = "(no candidate)"
@@ -65,11 +39,6 @@ MAX_SUPPORT_CHARS = 300
 # Passage lines shown on a computed aggregate's inputs (one per passage,
 # the latest ones; the others are counted).
 MAX_INPUT_LINES = 40
-
-
-def strip_belief_state(text: str) -> str:
-    """Remove every ``<belief_state>`` tag from *text*."""
-    return BELIEF_STATE_RE.sub("", text) if text and "<belief_state" in text else text
 
 
 def criterion_type(kind: str) -> str:
@@ -179,30 +148,4 @@ def format_belief(state: Any, removed: bool = False) -> str:
         if ruled_out:
             lines.append("  removed: " + ", ".join(f'"{n}"' for n in ruled_out))
         lines.extend(f"  {line}" for line in input_lines(state, k))
-    return "\n".join(lines)
-
-
-def render_belief_state(record: Dict[str, Any], state: Any) -> Optional[str]:
-    """The ``<belief_state>`` tag of one step *record* (``BeliefModel.observe``)
-    with the belief *state* after the step; None without a state or
-    criteria."""
-    if state is None or not state.criteria:
-        return None
-    lines: List[str] = [f'<belief_state step="{record["iteration"]}">', "  <criteria>"]
-    for i, c in enumerate(state.criteria, 1):
-        text = escape(CRITERION_REF_RE.sub(r"k\1", c.text), quote=False)
-        aspect = aspect_line(state, i - 1)
-        body = ([escape(aspect, quote=False)] if aspect else []) + \
-               [escape(candidate_line(x, fact=c.kind == ASPECT), quote=False) for x in state.ordered(i - 1)]
-        proposed = proposals_line(state, i - 1, "unverified")
-        if proposed:
-            body.append(escape(proposed, quote=False))
-        if not body:
-            lines.append(f"    <k{i}>{text}</k{i}>")
-            continue
-        lines.append(f"    <k{i}>{text}")
-        lines.extend(f"      {line}" for line in body)
-        lines.append(f"    </k{i}>")
-    lines.append("  </criteria>")
-    lines.append("</belief_state>")
     return "\n".join(lines)

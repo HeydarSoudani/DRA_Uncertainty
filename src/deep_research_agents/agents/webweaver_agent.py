@@ -27,7 +27,6 @@ from utils.config import InferenceConfig
 from utils.text_utils import (
     doc_text,
     extract_tag_content as _extract_tag,
-    format_react_history,
     number_citations,
     parse_tool_call_xml,
 )
@@ -177,8 +176,7 @@ class WebWeaver_Agent(BasicAgent):
         self._begin_trajectory_log(trajectory_logger)
         _error: Optional[BaseException] = None
         _result: Optional[Dict[str, Any]] = None
-        # Reset the belief model (creates the query's criteria, loads its qrels)
-        self._reset_belief_model(query_id, query_text)
+        self._search_steps    = 0
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
         if _meter is not None:
@@ -196,9 +194,6 @@ class WebWeaver_Agent(BasicAgent):
                 "trajectory": reasoning_path,
                 "citation_to_doc_id": citation_to_doc_id,
             }
-            # Attach belief-model signals when available
-            self._attach_belief_stats(result)
-
             # Attach per-query token usage when a meter is available.
             token_usage = self._token_usage_delta(_tok_start)
             if token_usage is not None:
@@ -218,36 +213,6 @@ class WebWeaver_Agent(BasicAgent):
             self._status_callback = None
             self._search_iter     = 0
 
-    # ── Intermediate answer (planner-consistent) ─────────────────────────────
-
-    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
-        """Same context the planner sees: the memory bank and recent steps.
-        *trajectory* is unused; the planner state is kept by the search loop."""
-        memory_bank = getattr(self, "_answer_memory_bank", None)
-        planner_history = getattr(self, "_answer_planner_history", None)
-        if memory_bank is None or planner_history is None:
-            raise RuntimeError("no planner state available")
-        user_content = (
-            f"## Open-ended research question\n{original_query}\n\n"
-            f"## Memory bank (evidence so far)\n{memory_bank_format_for_context(memory_bank)}\n\n"
-            f"## Previous steps (thought, action, observation)\n"
-            f"{format_react_history(planner_history, window=10)}\n\n"
-            f"{instruction}"
-        )
-        messages = [
-            {"role": "system", "content": PLANNER_SYSTEM},
-            {"role": "user",   "content": user_content},
-        ]
-        llm = self.get_intermediate_answer_llm()
-        if llm is None:
-            raise RuntimeError("no LLM client available")
-        return llm.complete(
-            messages,
-            strip_think=False,
-            return_reasoning_fallback=True,
-            max_tokens=self.inference_config.max_output_tokens or 1024,
-        ) or ""
-
     # ── Planner step ─────────────────────────────────────────────────────────
 
     def _run_planner_step(self, state: _PlannerState, search_fn, temperature: float) -> _PlannerState:
@@ -266,8 +231,6 @@ class WebWeaver_Agent(BasicAgent):
             {"role": "user",   "content": user_content},
         ]
         raw_response = self.generator.complete(messages, temperature=temperature, strip_think=False)
-        # The model's own <belief_state> tags never enter the history.
-        raw_response = self._strip_belief_state(raw_response)
 
         step_num = len(state.history)
 
@@ -322,12 +285,10 @@ class WebWeaver_Agent(BasicAgent):
                 self._vprint(step_num, "plan-error", "Empty query list")
             else:
                 try:
-                    new_entries, tag = search_fn(queries, goal, thought=thought)
+                    new_entries = search_fn(queries, goal, thought=thought)
                     for eid, entry in new_entries.items():
                         new_state.memory_bank[eid] = entry
                     obs = f"Added {len(new_entries)} evidence entries to memory bank."
-                    if tag:
-                        obs += f"\n{tag}"
                     self._vprint(step_num, "plan-ret", f"{len(new_entries)} entries, memory bank: {len(new_state.memory_bank)}")
                 except Exception as e:
                     obs = f"Search error: {e}"
@@ -393,8 +354,6 @@ class WebWeaver_Agent(BasicAgent):
             {"role": "user",   "content": user_content},
         ]
         raw_response = self.generator.complete(messages, temperature=temperature, strip_think=False)
-        # The model's own <belief_state> tags never enter the history.
-        raw_response = self._strip_belief_state(raw_response)
 
         step_num = len(state.history)
 
@@ -514,9 +473,8 @@ class WebWeaver_Agent(BasicAgent):
         self._print(f"Query: {question}")
 
         # ── search_fn: bridges planner's tool calls → pipeline retriever ─────
-        def search_fn(queries: List[str], goal: str, thought: str = "") -> Tuple[Dict[str, Dict], Optional[str]]:
-            """Run one planner search action; returns its memory-bank entries
-            and, in inform mode, the <belief_state> tag for the observation."""
+        def search_fn(queries: List[str], goal: str, thought: str = "") -> Dict[str, Dict]:
+            """Run one planner search action; returns its memory-bank entries."""
             nonlocal search_iter
             search_iter += 1
             new_entries: Dict[str, Dict] = {}
@@ -541,7 +499,7 @@ class WebWeaver_Agent(BasicAgent):
                 for doc in docs[:self.seen_top_k]:
                     entry_id = f"id_{self._entry_counter}"
                     self._entry_counter += 1
-                    # The shared cut: the text every agent and the belief model read.
+                    # The shared cut: the text every agent and the belief stage read.
                     text = doc_text(doc, self.max_passage_tokens)
                     title = doc.get("title") or (doc.get("metadata", {}).get("title") if isinstance(doc.get("metadata"), dict) else None) or ""
                     new_entries[entry_id] = {
@@ -566,15 +524,8 @@ class WebWeaver_Agent(BasicAgent):
                 iter_subqueries.append(query)
                 iter_seen_docs.extend(docs[:self.seen_top_k])
 
-            # The intermediate answer reads the memory bank including this search.
-            self._answer_memory_bank = dict(self._answer_memory_bank_base)
-            self._answer_memory_bank.update(new_entries)
-            tag = self._observe_and_record(
-                reasoning_path, iter_steps,
-                iter_subqueries, iter_seen_docs, search_iter, question,
-                trajectory=[],
-            )
-            return new_entries, tag
+            self._record_iteration(reasoning_path, iter_steps, iter_subqueries, iter_seen_docs, search_iter)
+            return new_entries
 
         # ── Planner loop ──────────────────────────────────────────────────────
         self._current_phase = "plan"
@@ -582,8 +533,6 @@ class WebWeaver_Agent(BasicAgent):
         planner_state = _PlannerState(question=question)
         for _ in range(self.planner_max_steps):
             self._notify_progress()
-            self._answer_planner_history = list(planner_state.history)
-            self._answer_memory_bank_base = dict(planner_state.memory_bank)
             prev_outline = planner_state.outline
             planner_state = self._run_planner_step(planner_state, search_fn, generation_temp)
             # Record write_outline step (search steps are already recorded inside search_fn)
@@ -597,10 +546,6 @@ class WebWeaver_Agent(BasicAgent):
                 })
             if planner_state.terminated:
                 break
-
-        self._answer_planner_history = None
-        self._answer_memory_bank = None
-        self._answer_memory_bank_base = None
 
         outline     = planner_state.outline or ""
         memory_bank = planner_state.memory_bank

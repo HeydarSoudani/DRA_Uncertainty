@@ -13,7 +13,7 @@ tokenizer file with ``tokenizers`` on first use:
 import json
 import re
 import threading
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import json5 as _json5
@@ -153,21 +153,6 @@ def parse_tool_calls_xml_list(text: str) -> List[Dict[str, Any]]:
     return calls
 
 
-def format_react_history(
-    history: Sequence[Dict[str, str]],
-    window: Optional[int] = None,
-    empty: str = "(No previous steps yet.)",
-) -> str:
-    """Render the last *window* (thought, action, observation) steps for a prompt."""
-    recent = list(history)[-window:] if window else list(history)
-    return "\n\n".join(
-        f"Thought: {h.get('thought', '')}\n"
-        f"Action: {h.get('action', '')}\n"
-        f"Observation: {h.get('observation', '')}"
-        for h in recent
-    ) or empty
-
-
 def extract_think_and_clean(text: str) -> tuple:
     """Extract ``<think>`` or ``<thought>`` content and return (reasoning, cleaned_text)."""
     for tag in ("think", "thought"):
@@ -256,7 +241,7 @@ def verbose_print_belief(
 ) -> None:
     """Print the belief model's record for one search iteration: the belief
     row (certainty, new doc ids), the gold row (new-item precision, recall
-    so far, intermediate answer), per criterion its statement row (status,
+    so far), per criterion its statement row (status,
     selected candidate(s), the labels it rests on; ``*`` rewritten this
     iteration), the labels of the iteration's
     documents, then the reply's issues and any errors.  With *final*, the

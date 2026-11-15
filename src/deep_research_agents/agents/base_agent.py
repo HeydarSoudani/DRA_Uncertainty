@@ -1,8 +1,6 @@
 """Base class for retrieval agents."""
 
-import copy
 import logging
-import time
 import traceback
 from typing import Callable, Dict, List, Any, Optional, Union
 
@@ -18,15 +16,14 @@ from deep_research_agents.prompts.answer_prompts import (
 from utils.text_utils import MAX_PASSAGE_TOKENS, passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
 from utils.text_utils import reduce_reasoning_path, build_evidence_summary
 from utils.config import InferenceConfig
-from utils.text_utils import verbose_print, verbose_print_search_results, verbose_print_belief  # noqa: F401
-from utils.text_utils import verbose_print_criteria
+from utils.text_utils import verbose_print, verbose_print_search_results
 from utils.text_utils import get_think as _get_think, get_query as _get_query, get_answer as _get_answer  # noqa: E501
 
 logger = logging.getLogger(__name__)
 
 
 class AgentVerboseMixin:
-    """Mixin providing verbose logging and belief-model helpers."""
+    """Mixin providing verbose logging and trajectory recording helpers."""
 
     @property
     def _display_name(self) -> str:
@@ -47,27 +44,6 @@ class AgentVerboseMixin:
     def _vprint_docs(self, iter_num: int, docs: list, *, sub_iter: int = None) -> None:
         if self._is_verbose:
             verbose_print_search_results(iter_num, docs, agent_name=self._display_name, sub_iter=sub_iter)
-
-    def _vprint_belief(self, iter_num: int, record: dict, *, final: bool = False) -> None:
-        if not self._is_verbose:
-            return
-        try:
-            verbose_print_belief(iter_num, record, getattr(self, "_belief_criteria", None) or [],
-                                 agent_name=self._display_name, final=final)
-        except Exception:
-            logger.warning("Belief log line failed at iteration %s", iter_num, exc_info=True)
-
-    def _log_belief_md(self, record: dict, *, final: bool = False) -> None:
-        """Write the readable belief of one iteration (or the final belief)
-        to the trajectory md only (``belief_model_component.views.log_view``);
-        the belief file keeps the data."""
-        if getattr(self, "_traj_logger", None) is None or record is None:
-            return
-        try:
-            from belief_model_component import belief_md
-            self._log_block(belief_md(record, getattr(self, "_belief_criteria", None) or [], final=final))
-        except Exception:
-            logger.warning("Belief md block failed", exc_info=True)
 
     # -- Online trajectory logging --
 
@@ -122,243 +98,44 @@ class AgentVerboseMixin:
             logger_.close(error=error)
             self._traj_logger = None
 
-    def _observe_step(
-        self,
-        subqueries: Union[str, List[str]],
-        docs: List[Dict[str, Any]],
-        iter_num: int,
-        original_query: Optional[str] = None,
-        *,
-        seen_docs: Optional[List[Dict[str, Any]]] = None,
-        trajectory: Any = None,
-        agent_turn: Optional[str] = None,
-    ) -> Optional[str]:
-        """Pass one finished search iteration to the belief model.
-
-        Called once per iteration, after all its searches, with the
-        iteration's queries, the documents the agent was shown, its
-        conversation so far (*trajectory*, for the intermediate answer) and
-        its turn (*agent_turn*: its reasoning, from which the belief model
-        reads what the agent says about each criterion).
-        *seen_docs*, when given, are printed in verbose mode.
-
-        Returns the iteration's ``<belief_state>`` tag in ``inform`` mode, which
-        the agent appends to its context right after the iteration's search
-        results; None otherwise, and whenever the belief model failed, so the
-        agent then goes on without a tag.  Agents call it through
-        ``_observe_and_record``, which also stamps and records the
-        iteration's trajectory steps.
-
-        The belief model is isolated from the agent run: its errors are logged,
-        never raised; the tokens its intermediate answer spends on the
-        agent's client are removed from the agent's token meter; its wall
-        time is added to ``self._belief_seconds`` so time limits can
-        exclude it.
-        """
-        if seen_docs is not None:
-            self._vprint_docs(iter_num, seen_docs)
-        belief_model = getattr(self, "belief_model", None)
-        self._last_belief_record = None
-        if belief_model is None:
-            return None
-        # Same turn number as the stage the agent last reported.
-        self._notify_belief_stage("belief", getattr(self, "_progress_iter", 0) or iter_num)
-        tag = None
-        started = time.monotonic()
-        meter = self._token_meter() if hasattr(self, "_token_meter") else None
-        saved = (meter.input_tokens, meter.output_tokens, meter.num_calls) if meter is not None else None
-        try:
-            record = belief_model.observe(
-                subqueries=[subqueries] if isinstance(subqueries, str) else list(subqueries),
-                docs=docs,
-                iter_num=iter_num,
-                original_query=original_query or "",
-                trajectory=trajectory,
-                agent_turn=agent_turn,
-            )
-            self._last_belief_record = record
-            self._vprint_belief(iter_num, record)
-            tag = record.get("belief_state_tag")
-        except Exception:
-            logger.warning("Belief model failed at iteration %s; the agent run continues",
-                           iter_num, exc_info=True)
-        finally:
-            if saved is not None:
-                meter.input_tokens, meter.output_tokens, meter.num_calls = saved
-            self._belief_seconds = getattr(self, "_belief_seconds", 0.0) + time.monotonic() - started
-        return tag
-
-    def _observe_and_record(
+    def _record_iteration(
         self,
         reasoning_path: list,
         steps: Union[Dict[str, Any], List[Dict[str, Any]]],
         subqueries: Union[str, List[str]],
         docs: List[Dict[str, Any]],
         iter_num: int,
-        original_query: Optional[str] = None,
         *,
         seen_docs: Optional[List[Dict[str, Any]]] = None,
-        trajectory: Any = None,
-        messages: Optional[List[Any]] = None,
-    ) -> Optional[str]:
-        """Close one search iteration: observe it, then stamp and record its steps.
+    ) -> None:
+        """Close one search iteration: stamp and record its steps.
 
-        1. passes the iteration to the belief model (``_observe_step``);
+        1. prints *seen_docs* (verbose mode);
         2. sets ``iteration`` to *iter_num* on each of *steps* (the
            iteration's search steps, not yet in *reasoning_path*; their
-           ``sub_iter`` is kept), so the trajectory label and the belief
-           record's ``agent_iteration`` are the same number;
-        3. in ``inform`` mode appends the tag to the last of *messages* (when
-           given, see ``_append_belief_state``) and stores it on the
-           iteration's last step;
-        4. appends the steps to *reasoning_path* through ``_record_step``,
-           after the tag, so the trajectory log has it, and with each
-           document's belief label (``belief_labels``, md only).
-
-        Without *subqueries* and *docs* (the iteration searched nothing) the
-        belief model is not called and the steps are only stamped and
-        recorded.
-
-        Returns the tag (None outside ``inform`` mode or when the belief
-        model failed), for agents that add it to a prompt string themselves.
+           ``sub_iter`` is kept);
+        3. when the iteration searched (*subqueries*, or *docs*: the
+           documents it was shown), numbers it: ``search_step`` (from 1,
+           per query) on each of its steps, which the belief stage groups
+           the iteration's trajectory lines by (``orchestration.belief_stage``);
+        4. appends the steps to *reasoning_path* through ``_record_step``.
         """
+        if seen_docs is not None:
+            self._vprint_docs(iter_num, seen_docs)
         steps = [steps] if isinstance(steps, dict) else list(steps)
+        search_step = self._next_search_step() if (subqueries or docs) else None
         for step in steps:
             step["iteration"] = iter_num
-        tag = None
-        if subqueries or docs:
-            from belief_model_component import agent_turn_text, belief_doc_labels
-            tag = self._observe_step(
-                subqueries, docs, iter_num, original_query,
-                seen_docs=seen_docs, trajectory=trajectory,
-                agent_turn=agent_turn_text([s.get("think") for s in steps]),
-            )
-            labels = belief_doc_labels(getattr(self, "_last_belief_record", None))
-            if labels:
-                for step in steps:
-                    step["belief_labels"] = labels
-        if tag:
-            if messages is not None:
-                self._append_belief_state(messages, tag)
-            if steps:
-                steps[-1]["belief_state"] = tag
+            if search_step is not None:
+                step["search_step"] = search_step
         for step in steps:
             self._record_step(reasoning_path, step)
-        # The iteration's belief, after its steps in the trajectory md.
-        if subqueries or docs:
-            self._log_belief_md(getattr(self, "_last_belief_record", None))
-        return tag
 
-    # -- inform mode: the <belief_state> tag --
-
-    @property
-    def _informs(self) -> bool:
-        belief_model = getattr(self, "belief_model", None)
-        return bool(getattr(belief_model, "inform", False))
-
-    def _strip_belief_state(self, text: str) -> str:
-        """Drop <belief_state> tags the model wrote itself (inform mode only)."""
-        if not self._informs:
-            return text
-        from belief_model_component import strip_belief_state
-        return strip_belief_state(text)
-
-    @staticmethod
-    def _append_belief_state(messages: List[Any], tag: Optional[str],
-                             step: Optional[Dict[str, Any]] = None) -> None:
-        """Append *tag* to the last message (the iteration's last tool or
-        search-result message) and record it on *step*.
-
-        Handles chat messages (``content``) and Responses API tool outputs
-        (``output``).  No-op without a tag.
-        """
-        if not tag or not messages:
-            return
-        msg = messages[-1]
-        key = "output" if "output" in msg else "content"
-        msg[key] = f"{msg.get(key) or ''}\n{tag}"
-        if step is not None:
-            step["belief_state"] = tag
-
-    @staticmethod
-    def _belief_state_suffix(step: Dict[str, Any]) -> str:
-        """The step's tag as prompt text, for rebuilding a prompt from steps."""
-        tag = step.get("belief_state")
-        return f"{tag}\n" if tag else ""
-
-    def _reset_belief_model(self, query_id: Optional[str], query_text: str) -> None:
-        self._belief_seconds = 0.0
-        self._progress_iter = 0
-        belief_model = getattr(self, "belief_model", None)
-        if belief_model is None:
-            return
-        self._belief_criteria = []
-        self._notify_belief_stage("criteria", 0)
-        try:
-            belief_model.reset(query_id=query_id, query=query_text)
-        except Exception:
-            logger.warning("Belief model reset failed for %s", query_id, exc_info=True)
-            return
-        # The criteria, once before the first iteration: console and trajectory md.
-        try:
-            summary = belief_model.criteria_summary()
-            self._belief_criteria = summary["criteria"]
-            if self._is_verbose:
-                verbose_print_criteria(summary, agent_name=self._display_name)
-            if getattr(self, "_traj_logger", None) is not None:
-                from belief_model_component import criteria_md
-                self._log_block(criteria_md(summary))
-        except Exception:
-            logger.warning("Belief criteria log failed for %s", query_id, exc_info=True)
-
-    def _attach_belief_stats(self, result: dict) -> None:
-        belief_model = getattr(self, "belief_model", None)
-        if belief_model is None:
-            return
-        from belief_model_component import answer_turn
-        try:
-            # The final belief update reads the answer turn (its reasoning and final answer).
-            belief_model.finish(answer_turn(result.get("trajectory") or [], result.get("generation") or ""))
-        except Exception:
-            logger.warning("Belief model final update failed", exc_info=True)
-        try:
-            result["belief_meta"] = belief_model.meta()
-            result["belief_steps"] = list(belief_model.steps)
-            result["belief_final"] = belief_model.final
-        except Exception:
-            logger.warning("Belief model meta failed", exc_info=True)
-            return
-        # The final belief (after the answer turn): console and trajectory md.
-        if belief_model.final is not None:
-            self._vprint_belief(None, belief_model.final, final=True)
-            self._log_belief_md(belief_model.final, final=True)
-
-
-def _strip_tool_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Remove tool-related content from a message list.
-
-    Providers like Bedrock reject messages that contain tool_calls or
-    role="tool" entries when no ``tools=`` parameter is supplied. This
-    helper converts such messages into plain text so the conversation
-    can be sent as a regular completion call (e.g. the intermediate answer
-    generation).
-    """
-    sanitized: List[Dict[str, Any]] = []
-    for msg in messages:
-        if msg.get("role") == "tool":
-            sanitized.append({
-                "role": "user",
-                "content": f"[Search Result]\n{msg.get('content', '')}",
-            })
-        elif msg.get("tool_calls"):
-            new_msg = {k: v for k, v in msg.items() if k != "tool_calls"}
-            if not new_msg.get("content"):
-                new_msg["content"] = "(searching...)"
-            sanitized.append(new_msg)
-        else:
-            sanitized.append(msg)
-    return sanitized
-
+    def _next_search_step(self) -> int:
+        """The number of the query's next search iteration (``search_step``);
+        ``run_single`` resets the count."""
+        self._search_steps = getattr(self, "_search_steps", 0) + 1
+        return self._search_steps
 
 class BasicAgent(AgentVerboseMixin):
     """Base class for retrieval agents."""
@@ -373,7 +150,7 @@ class BasicAgent(AgentVerboseMixin):
         task, else the most likely answer."""
         return REPORT_FINAL_INSTRUCTION if self.task == "report" else FINAL_ANSWER_INSTRUCTION
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None, belief_model=None):
+    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None):
         """Initialize BasicAgent.
 
         Args:
@@ -386,18 +163,14 @@ class BasicAgent(AgentVerboseMixin):
             search_tool: Optional RetrievalSearchTool instance. When provided,
                 retrieve_documents() delegates to it (supporting fusion and
                 reranking). Falls back to raw retriever if not set.
-            belief_model: Optional BeliefModel. When
-                provided, _observe_step() records the belief-model signals of
-                each search iteration; the trajectory is never changed.
         """
         self.generator = llm_client
         self.retriever = retriever
         self.search_tool = search_tool
-        self.belief_model = belief_model
         self.max_iteration = max_iteration
         self.seen_top_k = seen_top_k
         # Tokens of one document the agent reads (the run's shared
-        # ``max_passage_tokens``, set by ``build_agent``; the belief model
+        # ``max_passage_tokens``, set by ``build_agent``; the belief stage
         # reads the same text).
         self.max_passage_tokens = MAX_PASSAGE_TOKENS
         # Set per query by run_single(); see _record_step().
@@ -443,32 +216,6 @@ class BasicAgent(AgentVerboseMixin):
         """Tokens consumed since the previous trajectory step (or None)."""
         meter = self._token_meter()
         return meter.since_last_step() if meter is not None else None
-
-    def get_intermediate_answer_llm(self) -> Optional[LiteLLMClient]:
-        """Return a LiteLLM client for the intermediate answer.
-
-        Self-managed agents (those with model_name / model_url attributes)
-        automatically get a hosted_vllm/ LiteLLM wrapper pointing at the
-        same vLLM server so the intermediate answer uses the same
-        backbone model; it is built on first use and reused.  API-backed
-        agents fall back to self.generator.  Subclasses with non-standard
-        routing (e.g. Bedrock) can still override this method.
-        """
-        model_name = getattr(self, "model_name", None)
-        model_url = getattr(self, "model_url", None)
-        if model_name and model_url:
-            api_key = getattr(self, "_api_key", "EMPTY")
-            key = (model_name, model_url, api_key)
-            cached = getattr(self, "_intermediate_answer_llm", None)
-            if cached is None or cached[0] != key:
-                cached = (key, LiteLLMClient(
-                    model=f"hosted_vllm/{model_name}",
-                    api_base=model_url,
-                    api_key=api_key,
-                ))
-                self._intermediate_answer_llm = cached
-            return cached[1]
-        return self.generator
 
     def _openai_client(self):
         """An ``openai.OpenAI`` client for ``inference_config``'s endpoint,
@@ -752,60 +499,8 @@ class BasicAgent(AgentVerboseMixin):
             logger.warning("Force answer (chat, compressed) failed: %s", e)
             return None
 
-    # ------------------------------------------------------------------
-    # Intermediate answer (asked by the belief model every turn)
-    # ------------------------------------------------------------------
-
-    def answer_from_trajectory(
-        self,
-        original_query: str,
-        trajectory: Any,
-        instruction: str,
-    ) -> str:
-        """Raw model output for *instruction* asked after *trajectory*.
-
-        Used by ``IntermediateAnswerSignal``, which owns the instruction and
-        the parsing.  The default appends the instruction to a copy of the
-        conversation and calls the agent's own model; Responses API agents
-        continue the live conversation.  Agents with another context or
-        client override this.  Raises on failure; a reasoning-only reply is
-        returned with the ``[reasoning_fallback]`` prefix.
-        """
-        messages = self._intermediate_answer_messages(trajectory, instruction)
-        if self.inference_config.api_type == "responses_api":
-            return self._make_responses_api_call(messages, return_reasoning_fallback=True) or ""
-        llm = self.get_intermediate_answer_llm()
-        if llm is None:
-            raise RuntimeError("no LLM client available")
-        return llm.complete(
-            _strip_tool_messages(messages),
-            strip_think=False,
-            return_reasoning_fallback=True,
-            max_tokens=self.inference_config.max_output_tokens,
-        ) or ""
-
-    @staticmethod
-    def _intermediate_answer_messages(trajectory: Any, instruction: str) -> List[Dict[str, Any]]:
-        """A copy of the conversation with *instruction* as the last user turn."""
-        if not isinstance(trajectory, list):
-            raise ValueError(f"trajectory is not a message list ({type(trajectory).__name__})")
-        messages = copy.deepcopy(trajectory)
-        messages.append({"role": "user", "content": instruction})
-        return messages
-
     def _notify_progress(self, stage: str, iteration: int) -> None:
         """Report current iteration and stage to the progress bar callback."""
-        self._progress_iter = iteration
-        cb = getattr(self, "_status_callback", None)
-        if cb is not None:
-            cb(stage, iteration)
-
-    def _notify_belief_stage(self, stage: str, iteration: int) -> None:
-        """Report a belief model stage to the progress bar.
-
-        Calls the callback directly: agents override ``_notify_progress`` to
-        count their own steps (WebWeaver), and belief model stages are not steps.
-        """
         cb = getattr(self, "_status_callback", None)
         if cb is not None:
             cb(stage, iteration)
@@ -870,8 +565,7 @@ class BasicAgent(AgentVerboseMixin):
         self._begin_trajectory_log(trajectory_logger)
         _error: Optional[BaseException] = None
         _result: Optional[Dict[str, Any]] = None
-        # Reset the belief model (creates the query's criteria, loads its qrels)
-        self._reset_belief_model(query_id, query_text)
+        self._search_steps    = 0
         # Snapshot token usage so we can report per-query totals.
         _meter = self._token_meter()
         _tok_start = _meter.snapshot() if _meter is not None else None
@@ -899,8 +593,6 @@ class BasicAgent(AgentVerboseMixin):
             if num_iterations is not None:
                 result["num_iterations"] = num_iterations
 
-            # Attach belief-model signals when available
-            self._attach_belief_stats(result)
             result.update(self._result_extras())
 
             # Attach per-query token usage when a meter is available.
@@ -994,7 +686,7 @@ class BasicAgent(AgentVerboseMixin):
         else:
             search_results = passages2string(docs[:seen_top_k], self.max_passage_tokens)
 
-        return f"\n\n{output_text}<information>{search_results}</information>\n\n{self._belief_state_suffix(step)}"
+        return f"\n\n{output_text}<information>{search_results}</information>\n\n"
 
     def _rebuild_windowed_prompt(
         self,
@@ -1215,7 +907,6 @@ class TagReasoningAgent(BasicAgent):
                 })
                 break
 
-            output_text = self._strip_belief_state(output_text)
             tmp_query = self.get_query(output_text)
             think_text = self.get_think(output_text)
             self._vprint(iter_num, "think", think_text or "(no think)")
@@ -1247,14 +938,7 @@ class TagReasoningAgent(BasicAgent):
             messages = self._build_messages(input_prompt)
 
             seen_docs = search_docs[:self.seen_top_k]
-            tag = self._observe_and_record(
-                reasoning_path, step, tmp_query, seen_docs, iter_num, question,
-                seen_docs=seen_docs,
-                trajectory=messages,
-            )
-            if tag:
-                input_prompt += f"{tag}\n"
-                messages = self._build_messages(input_prompt)
+            self._record_iteration(reasoning_path, step, tmp_query, seen_docs, iter_num, seen_docs=seen_docs)
 
         prediction = reasoning_path[-1].get('prediction') if reasoning_path else None
 

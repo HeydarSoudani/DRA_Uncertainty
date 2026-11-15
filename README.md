@@ -13,7 +13,7 @@ The project has two parts:
 
 | Part | What it does | README |
 |---|---|---|
-| Inference | runs an agent on a dataset with the belief model (`off` / `monitor` / `inform`), evaluates retrieval, answers or reports and the trajectory, and saves the belief state and signals of every step | [experiments/inference/README.md](experiments/inference/README.md) |
+| Inference | runs an agent on a dataset and saves its trajectories (`--stage generate`), runs the belief model over them (`--stage belief`), and evaluates retrieval, answers or reports, the belief and the trajectory | [experiments/inference/README.md](experiments/inference/README.md) |
 | Training | trains the belief model with the agent frozen: training datasets, teacher runs, SFT, then RL | [experiments/training/README.md](experiments/training/README.md) |
 
 ## Supported agents, datasets and retrievers

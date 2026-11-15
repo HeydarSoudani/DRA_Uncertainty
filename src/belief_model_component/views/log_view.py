@@ -2,8 +2,8 @@
 the final belief.
 
 One renderer feeds the console (``utils.text_utils.verbose_print_*``) and
-the trajectory markdown (the md-only blocks the agent mixin writes), so the
-two never drift apart.  It reads the saved shapes only: the step and final
+the belief markdown (``belief/{qid}.md``, written by the belief stage), so
+the two never drift apart.  It reads the saved shapes only: the step and final
 records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
 
 Per criterion, one row with its status, its selected candidate(s) and
@@ -19,9 +19,8 @@ Both give the reply's issues, one line per effect (``core.issues``:
 dropped, corrected, flagged), then its notes; a record of a run before
 schema 51 shows its codes under their current names.  The console lists
 every document of the iteration with its label ("(again)" when an earlier
-iteration showed it), so a label can be traced to its document; in the md
-the step's Docs list gives each document its label
-(``belief_doc_labels``, ``utils.trajectory_logger``).
+iteration showed it), so a label can be traced to its document; so does the
+md, under the iteration's heading.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -140,8 +139,8 @@ def issue_lines(record: Dict[str, Any]) -> List[Tuple[str, str]]:
 
 
 def gold_summary(record: Dict[str, Any]) -> str:
-    """New-item precision, recall so far (+new this step -> seen / all
-    relevant) and the intermediate answer."""
+    """New-item precision and recall so far (+new this step -> seen / all
+    relevant)."""
     gold = (
         f"new_prec={_num(record.get('new_item_precision'))} "
         f"({_num(record.get('num_new_relevant'), 'd')}/{record.get('num_docs', 0)}) | "
@@ -149,11 +148,7 @@ def gold_summary(record: Dict[str, Any]) -> str:
         f"({_num(record.get('num_new_relevant'), '+d')} → "
         f"{_num(record.get('num_relevant_seen'), 'd')}/{_num(record.get('num_relevant'), 'd')})"
     )
-    answers = record.get("intermediate_answers")
-    if answers is None:
-        return gold + f" | answer=null ({record.get('intermediate_answer_status') or 'disabled'})"
-    answers = [" ".join(str(a).split()) for a in answers]
-    return gold + f" | answer={answers if answers else 'none'}"
+    return gold
 
 
 def _summary(record: Dict[str, Any], final: bool) -> str:
@@ -188,13 +183,6 @@ def _step_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The documents of the step with a label: every one the call showed,
     new or shown before."""
     return [d for d in record.get("docs") or [] if d.get("label")]
-
-
-def belief_doc_labels(record: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """``{doc_id: {label, new}}`` of a step record's labelled documents (the
-    trajectory md's Docs list shows them); empty without a record."""
-    return {d["doc_id"]: {"label": d["label"], "new": bool(d.get("new"))}
-            for d in _step_labels(record or {}) if d.get("doc_id")}
 
 
 def _labels(record: Dict[str, Any]) -> str:
@@ -288,6 +276,8 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
     lines = [heading, "", _summary(record, final).replace(" | ", " · ")]
     if not final:
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
+        if _step_labels(record):
+            lines += ["", f"docs: {_labels(record)}"]
     table = belief_rows(record, criteria, MD_VALUE_CHARS)
     if table:
         lines += [""] + _md_table(("criterion", "status", "selected", "candidates"),

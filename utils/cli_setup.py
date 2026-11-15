@@ -64,12 +64,12 @@ FILE_BACKED_DEFAULTS = {
     "max_extend_steps": 5,
     "hard_mode": True,
     "max_passage_tokens": MAX_PASSAGE_TOKENS,
-    # Belief model (the rest; --belief-mode is CLI)
+    # Belief model (the belief stage)
     "llm_criteria": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
     "belief_judge_model": "",
     "criteria_source": "gold",
-    "add_intermediate_answer": False,
+    "belief_workers": 8,
     # Evaluation
     "judge_model": "openrouter/qwen/qwen3-32b",
     # Execution & output
@@ -150,7 +150,7 @@ def parse_cli_overrides(extras) -> dict:
     """Turn argparse ``parse_known_args`` leftovers into an overrides dict.
 
     Handles ``--key value``, ``--key=value``, repeated/space-separated list
-    values (``--gpu-ids 1 2 3``), and bare boolean flags (``--eval-only``).
+    values (``--gpu-ids 1 2 3``), and bare boolean flags (``--quiet``).
     Dashes in flag names are normalised to underscores to match attr names.
     """
     overrides: dict = {}
@@ -216,7 +216,7 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
             flat = [tok for v in raw_vals for tok in v.split()]
             elem_ref = ref[0] if ref else ""
             coerced = [_coerce_scalar(tok, elem_ref) for tok in flat]
-        elif not raw_vals:  # bare flag, e.g. --eval-only
+        elif not raw_vals:  # bare flag, e.g. --quiet
             coerced = True
         elif ref is None and key in _FILE_BACKED_TYPES:
             coerced = _FILE_BACKED_TYPES[key](raw_vals[0])
@@ -293,12 +293,11 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_tokens"] = args.max_passage_tokens
 
-    pipeline_kwargs["belief_mode"] = args.belief_mode
     pipeline_kwargs["llm_criteria"] = args.llm_criteria
     pipeline_kwargs["max_criteria"] = args.max_criteria
     pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
     pipeline_kwargs["criteria_source"] = args.criteria_source
-    pipeline_kwargs["add_intermediate_answer"] = args.add_intermediate_answer
+    pipeline_kwargs["belief_workers"] = args.belief_workers
 
     # Keys named as the CLI args: a worker rebuilds its LLM client and
     # retriever with setup_llm / setup_retriever_from_args on this dict.
@@ -330,11 +329,6 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "post_fusion_reranker_input":   args.post_fusion_reranker_input,
         "max_output_tokens_total":       args.max_output_tokens_total,
         "use_plan":                      args.use_plan,
-        "belief_mode":                   args.belief_mode,
-        "llm_criteria":                  args.llm_criteria,
-        "max_criteria":                  args.max_criteria,
-        "belief_judge_model":            args.belief_judge_model,
-        "add_intermediate_answer":       args.add_intermediate_answer,
         "quiet":                         args.quiet,
     }
 

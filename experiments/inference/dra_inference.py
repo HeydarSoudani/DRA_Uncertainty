@@ -29,10 +29,21 @@ Agentic workflows:
         Query → Search → Init Plan → [Search → Write]* → [Extend Plan → [Search → Write]*]* → Report → Evaluate
 
 
+Stages (--stage):
+    generate   Run the agent on the queries without a finished trajectory, save
+               its files, then evaluate the run.
+    belief     Run the belief model over the finished trajectories without a
+               belief file (orchestration.belief_stage: no agent, no retrieval;
+               document text from the corpus by id), then evaluate the run.
+               Other belief settings than the run's replace its beliefs.
+    eval       Evaluate the run from its saved files (judge verdicts reused).
+    all        generate, then belief, then evaluate.
+
 Output structure: see OUTPUT STRUCTURE at the end of this file.
 """
 
 import argparse
+import shutil
 import warnings
 import logging
 import time
@@ -58,7 +69,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import CRITERIA_SOURCES, DATASETS, DATASET_SPECS, OUTPUT_ROOT, criteria_run_tag
+from indexing_corpus_dataset.layout import CRITERIA_SOURCES, DATASETS, DATASET_SPECS, OUTPUT_ROOT
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
@@ -79,20 +90,27 @@ from utils.cli_setup import (
     _sm_bool,
 )
 from utils.io_utils import (
-    get_processed_queries,
+    believed_queries,
     scan_queries,
     setup_output_dirs,
     build_dataset_dir_name,
     build_run_name_for_pipeline,
-    build_belief_config_name,
+    build_belief_config,
     build_run_config,
     check_run_config,
+    set_belief_config,
     update_run_config_evaluation,
 )
+from evaluation.belief import read_run_config
 from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inference.yaml")
+
+#: The stages of a run (see the module docstring).
+STAGES = ("generate", "belief", "eval", "all")
+GENERATES = ("generate", "all")
+BELIEVES = ("belief", "all")
 
 
 # ============================================================================
@@ -105,20 +123,22 @@ class RunPlan:
     dataset: str
     split: str                      # file-level split id, e.g. "wiki2_test"
     query_key: str
-    queries: Dict[str, str]         # the queries still to run (resume and --limit applied)
+    queries: Dict[str, str]         # the queries still to generate (resume and --limit applied)
     all_questions: Dict[str, str]   # every query of the split, for accuracy evaluation
     qrels: Dict[str, Dict[str, int]]         # at min_relevance_score
     answers: Dict[str, str]
     run_dir: str
+    limit: Optional[int]            # --limit: the cap of each stage's queries
 
 
 def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Optional[str] = None,
                 dataset_year: Optional[str] = None, query_key: Optional[str] = None,
                 limit: Optional[int] = None, **kwargs) -> RunPlan:
-    """Load the split, name the run directory and find the queries left to run.
+    """Load the split, name the run directory and find the queries left to
+    generate (the generate stage).
 
     Done before any model, retriever or vLLM server is set up, so a run with
-    nothing left to do only evaluates.
+    nothing left to generate sets up none.
 
     Args:
         data_path:     Path to dataset directory.
@@ -133,7 +153,7 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
                        e.g. "request" for neuclir.  Records without the key
                        are not run.
         limit:         Cap the number of queries (for quick tests), applied
-                       to the queries left to run.
+                       to the queries left to generate.
         **kwargs:      The pipeline kwargs (``assemble_pipeline_kwargs``).
     """
     if policy_model not in ALL_AGENTS:
@@ -178,19 +198,18 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     # Keep the full set of questions for accuracy evaluation (before resume filtering)
     all_questions = dict(queries)
 
-    belief_mode = kwargs["belief_mode"]
-    if belief_mode != "off" and not kwargs["eval_only"]:
+    stage = kwargs["stage"]
+    if stage in BELIEVES:
         from belief_model_component import check_criteria_inputs
         check_criteria_inputs(dataset, kwargs["criteria_source"], kwargs["llm_criteria"], kwargs["max_criteria"])
 
-    # ==================== Resume: skip already-processed queries ====================
+    # ==================== Resume: skip already-generated queries ====================
     # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
     llm_model = kwargs.pop("llm_model")
     policy_model_cli = kwargs.pop("policy_model_cli")
     run_name = build_run_name_for_pipeline(policy_model=policy_model_cli, llm_model=llm_model, **kwargs)
     dataset_dir = build_dataset_dir_name(dataset, file_data_set, query_key, kwargs["retriever_name"])
-    run_dir = str(Path(output_path) / dataset_dir / run_name
-                  / build_belief_config_name(belief_mode, criteria_run_tag(kwargs["criteria_source"], dataset)))
+    run_dir = str(Path(output_path) / dataset_dir / run_name)
 
     print(f"\n{'=' * 80}")
     print(f"[OUTPUT] Loading/saving results from: {run_dir}")
@@ -199,39 +218,43 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     run_config = build_run_config(
         policy_model_cli, llm_model, dataset=dataset, split=file_data_set, query_key=query_key, **kwargs,
     )
-    if kwargs["eval_only"]:
-        # Only the evaluation settings (e.g. the judge) may change.
-        update_run_config_evaluation(run_dir, run_config)
-    else:
-        # Every query of the run directory runs with the same settings: a
-        # resume with other ones stops here, before any query is run.
+    if stage in GENERATES:
+        # Every trajectory of the run directory is generated with the same
+        # settings: a resume with other ones stops here, before any query runs.
         check_run_config(run_dir, run_config)
+    else:
+        # The belief and eval stages read the saved run; only the evaluation
+        # settings (e.g. the judge) may change.
+        if not (Path(run_dir) / "run_config.json").exists():
+            raise SystemExit(f"No run in {run_dir} (no run_config.json): run --stage generate first.")
+        update_run_config_evaluation(run_dir, run_config)
 
-    processed = get_processed_queries(run_dir, require_belief=belief_mode != "off")
-    if processed:
-        print(f"Found {len(processed)} already processed queries — skipping them")
-        original_count = len(queries)
-        queries = {qid: q for qid, q in queries.items() if qid not in processed}
-        print(f"Remaining: {len(queries)} queries (skipped {original_count - len(queries)})")
-
-    # ==================== Limit ====================
-    if limit is not None and limit > 0:
-        queries = dict(list(queries.items())[:limit])
-        print(f"Limited to {len(queries)} queries for testing")
-
-    if not queries and not kwargs["eval_only"]:
-        print("All queries already processed — loading results from disk for evaluation")
+    if stage not in GENERATES:
+        queries = {}
+    else:
+        generated = scan_queries(run_dir)[0]
+        if generated:
+            print(f"Found {len(generated)} already generated queries — skipping them")
+            original_count = len(queries)
+            queries = {qid: q for qid, q in queries.items() if qid not in generated}
+            print(f"Remaining: {len(queries)} queries (skipped {original_count - len(queries)})")
+        if limit is not None and limit > 0:
+            queries = dict(list(queries.items())[:limit])
+            print(f"Limited to {len(queries)} queries for testing")
+        if not queries:
+            print("All queries already generated")
 
     return RunPlan(
         dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
         all_questions=all_questions, qrels=qrels, answers=answers,
-        run_dir=run_dir,
+        run_dir=run_dir, limit=limit,
     )
 
 
 def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report", verbose: bool = True,
                  num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
-    """Run the agent on the plan's queries, then evaluate the whole run.
+    """Run the stages of ``kwargs["stage"]`` (see the module docstring), then
+    evaluate the whole run.
 
     Args:
         plan:          From :func:`prepare_run`.
@@ -244,35 +267,33 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
                        queries' files straight to the run directory.
         worker_config: Serialisable config dict passed to each GPU worker so it
                        can rebuild the agent stack.  Required when num_gpus > 1.
-        **kwargs:      Agent-specific and evaluation parameters.
+        **kwargs:      Agent-specific, belief and evaluation parameters.
     """
     dataset, run_dir, answers = plan.dataset, plan.run_dir, plan.answers
-    belief_mode = kwargs["belief_mode"]
-    llm_model = kwargs["llm_model"]
-    eval_only = kwargs["eval_only"]
+    stage = kwargs["stage"]
 
     evaluators = build_evaluators(plan.qrels, kwargs, answers=answers, questions=plan.all_questions,
                                   dataset=dataset,
                                   data_path=data_path, split=plan.split)
 
-    if not eval_only and plan.queries:
-        _run_queries(plan, policy_model, llm_model, verbose, num_gpus, worker_config, kwargs)
+    if stage in GENERATES and plan.queries:
+        _run_queries(plan, policy_model, kwargs["llm_model"], verbose, num_gpus, worker_config, kwargs)
+    if stage in BELIEVES:
+        _run_belief(plan, verbose, kwargs)
 
     # ==================== Read the run back from disk ====================
-    # Every query of the run (this batch and earlier ones) is evaluated from
-    # its saved files, at the end of a run as with --eval-only, so both write
-    # the same metrics.md and per_query.csv.
-    finished, unfinished = scan_queries(run_dir, require_belief=belief_mode != "off")
+    # Every query of the run is evaluated from its saved files, whatever the
+    # stage, so every stage writes the same metrics.md and per_query.csv.
+    finished, unfinished = scan_queries(run_dir)
     if unfinished:
-        print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl"
-              f"{' or no belief file' if belief_mode != 'off' else ''}); they are run again on resume: "
+        print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl); "
+              f"they are generated again on resume: "
               f"{', '.join(sorted(unfinished)[:20])}{' ...' if len(unfinished) > 20 else ''}")
-    if eval_only and not finished:
-        print(f"No finished query in {run_dir.rstrip('/')}/trajectory. "
-              "Run the full pipeline first (without --eval-only).")
+    if not finished:
+        print(f"No finished query in {run_dir.rstrip('/')}/trajectory. Run --stage generate first.")
         return
     results = load_run_results(run_dir, finished)
-    if eval_only and not results:
+    if not results:
         print(f"Could not load any results from {run_dir}.")
         return
 
@@ -287,29 +308,72 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
     print(f"{'=' * 80}")
 
 
+def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
+    """The belief stage: the belief model over the run's finished
+    trajectories without a belief file (``orchestration.belief_stage``).
+
+    Its settings are the ``belief_model`` section of ``run_config.json``
+    (``build_belief_config``; the passage cut, retriever and agent are the
+    generate stage's, read from the file); when they differ from the saved
+    ones, the run's beliefs (``belief/``, ``belief_eval/``) are removed and
+    every query is run again."""
+    from belief_model_component import build_criteria_source, prepare_criteria
+    from orchestration import build_belief_model
+    from orchestration.belief_stage import run_belief_stage
+
+    run_dir = Path(plan.run_dir)
+    saved = read_run_config(run_dir)
+    max_passage_tokens = saved["agent"]["max_passage_tokens"]
+    section = build_belief_config(
+        plan.dataset, max_passage_tokens=max_passage_tokens,
+        **{k: kwargs[k] for k in ("llm_criteria", "max_criteria", "belief_judge_model", "criteria_source")},
+    )
+    diffs = set_belief_config(run_dir, section)
+    if diffs:
+        print(f"\n[Belief] Other belief settings than the run's ({'; '.join(diffs)}): "
+              "removing its beliefs (belief/, belief_eval/) and running every query again")
+        for name in ("belief", "belief_eval"):
+            shutil.rmtree(run_dir / name, ignore_errors=True)
+
+    finished = scan_queries(run_dir)[0]
+    done = believed_queries(run_dir)
+    todo = [qid for qid in plan.all_questions if qid in finished and qid not in done]
+    if done:
+        print(f"[Belief] Found {len(done & finished)} queries with a belief file — skipping them")
+    if plan.limit is not None and plan.limit > 0:
+        todo = todo[:plan.limit]
+    if not todo:
+        print("[Belief] No finished trajectory without a belief file")
+        return
+
+    # Criteria, made and banked before the workers start; each worker's
+    # belief model then reads every query's criteria from the bank.
+    common = dict(llm_criteria=kwargs["llm_criteria"], max_criteria=kwargs["max_criteria"],
+                  criteria_source=kwargs["criteria_source"])
+    source = build_criteria_source(plan.dataset, plan.split, **common)
+    if source is not None:
+        prepare_criteria(source, {qid: plan.all_questions[qid] for qid in todo})
+
+    def build_model():
+        return build_belief_model(
+            dataset=plan.dataset, split=plan.split, qrels=plan.qrels,
+            belief_judge_model=kwargs["belief_judge_model"], max_passage_tokens=max_passage_tokens, **common,
+        )
+
+    print(f"\n[Belief] Running the belief model on {len(todo)} queries, saving to {run_dir}/belief/...")
+    n_done = run_belief_stage(
+        run_dir, todo, build_model=build_model, corpus_path=kwargs["corpus_path"],
+        retriever_name=saved["searcher"]["retriever_name"], policy_model=saved["agent"]["policy_model"],
+        workers=kwargs["belief_workers"], verbose=verbose,
+    )
+    print(f"[Belief] Completed {n_done}/{len(todo)} queries")
+
+
 def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool, num_gpus: int,
                  worker_config: Optional[dict], kwargs: dict) -> None:
     """Run the agent on ``plan.queries`` and save each query's files under
     ``plan.run_dir``, then release every GPU the run held."""
-    run_dir, answers, qrels = plan.run_dir, plan.answers, plan.qrels
-    belief_mode = kwargs["belief_mode"]
-
-    # ==================== Inject qrels into worker_config for the multi-GPU belief model ======
-    if worker_config is not None and belief_mode != "off":
-        worker_config["qrels"] = qrels
-        worker_config["split"] = plan.split
-        worker_config["criteria_source"] = kwargs["criteria_source"]
-
-    # ==================== Criteria, made and banked before the workers start ====================
-    # The belief model's criteria source (criteria.factory); its workers then
-    # read every query's criteria from the bank.  After the vLLM servers are
-    # up: a vllm/ belief model may be served next to the agent.
-    if belief_mode != "off":
-        from belief_model_component import build_criteria_source, prepare_criteria
-        source = build_criteria_source(plan.dataset, plan.split, llm_criteria=kwargs["llm_criteria"],
-                                       max_criteria=kwargs["max_criteria"], criteria_source=kwargs["criteria_source"])
-        if source is not None:
-            prepare_criteria(source, plan.queries)
+    run_dir, answers = plan.run_dir, plan.answers
 
     # The gold answers, for the header of each query's trajectory .md.
     if worker_config is not None:
@@ -330,15 +394,14 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
             post_fusion_reranker_input=kwargs["post_fusion_reranker_input"],
         )
 
-    # ==================== Instantiate Agent + Belief model ====================
-    # In multi-GPU mode neither the agent nor the belief model is built in the main
-    # process; each worker spawns its own instances on its assigned GPU (see
-    # orchestration._init_worker).  Building them here would create unused LLM
+    # ==================== Instantiate Agent ====================
+    # In multi-GPU mode the agent is not built in the main process; each
+    # worker spawns its own instance on its assigned GPU (see
+    # orchestration._init_worker).  Building it here would create unused LLM
     # clients that are immediately torn down.
-    from orchestration import build_agent, build_belief_model, run_query
+    from orchestration import build_agent, run_query
 
     agent = None
-    belief_model = None
     if num_gpus <= 1:
         agent = build_agent(
             policy_model=policy_model,
@@ -359,25 +422,6 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
             hard_mode=kwargs["hard_mode"],
             max_passage_tokens=kwargs["max_passage_tokens"],
         )
-
-        # Build the belief model AFTER the agent so it can take the agent's
-        # intermediate-answer hook.
-        belief_model = build_belief_model(
-            mode=belief_mode,
-            qrels=qrels,
-            llm_criteria=kwargs["llm_criteria"],
-            max_criteria=kwargs["max_criteria"],
-            belief_judge_model=kwargs["belief_judge_model"],
-            add_intermediate_answer=kwargs["add_intermediate_answer"],
-            agent=agent if hasattr(agent, "belief_model") else None,
-            policy_model=policy_model,
-            dataset=plan.dataset,
-            split=plan.split,
-            criteria_source=kwargs["criteria_source"],
-            max_passage_tokens=kwargs["max_passage_tokens"],
-        )
-        if belief_model is not None and hasattr(agent, "belief_model"):
-            agent.belief_model = belief_model
 
     setup_output_dirs(run_dir, QUERY_OUTPUT_DIRS)
     print(f"\nProcessing {len(plan.queries)} queries, saving results to {run_dir}/...")
@@ -442,10 +486,6 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
                     if done_count >= num_workers:
                         break
                     continue
-                if item[0] == "log":
-                    # A worker's init line, held back so it does not break the bars.
-                    tqdm.write(item[1])
-                    continue
                 w_id, qid, idx, total, stage, iter_info = item
                 bar = bars[w_id]
                 if not live_bars:
@@ -462,12 +502,9 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
                     bar.set_postfix_str(f"({qid}, starting)", refresh=True)
                 elif stage == "update":
                     stage_name, iteration, max_iter_val = iter_info
-                    if stage_name == "criteria":
-                        bar.set_postfix_str(f"({qid}, criteria)", refresh=True)
-                    else:
-                        bar.set_postfix_str(
-                            f"({qid}, turn {iteration}/{max_iter_val}, {stage_name})", refresh=True
-                        )
+                    bar.set_postfix_str(
+                        f"({qid}, turn {iteration}/{max_iter_val}, {stage_name})", refresh=True
+                    )
                 else:
                     bar.n = idx
                     iter_str = f"turns {iter_info}" if iter_info else "turns —"
@@ -534,17 +571,11 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     # collect them before we reclaim the GPUs.
     #
     # Reference chains that keep the encoder model alive:
-    #   1. the belief model: its answer hook (bound method → agent → retriever.encoder)
-    #      and the belief updater
-    #   2. agent.search_tool.retriever → retriever.encoder
-    #   3. agent.retriever → retriever.encoder
-    #   4. kwargs["retriever"] → retriever.encoder
+    #   1. agent.search_tool.retriever → retriever.encoder
+    #   2. agent.retriever → retriever.encoder
+    #   3. kwargs["retriever"] → retriever.encoder
 
-    # 1) Sever closure/bound-method/model refs inside the belief model
-    if belief_model is not None:
-        belief_model.close()
-
-    # 2) Move the encoder model off GPU *before* dropping references.
+    # 1) Move the encoder model off GPU *before* dropping references.
     #    Accelerate's device_map hooks can prevent gc from freeing GPU
     #    tensors even after all Python refs are gone; .cpu() forces the
     #    move and remove_hook_from_submodules detaches dispatch hooks.
@@ -559,19 +590,19 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
         del _enc.model
     del _enc
 
-    # 3) Drop all local + kwargs references
-    del agent, search_tool, _retriever, belief_model
+    # 2) Drop all local + kwargs references
+    del agent, search_tool, _retriever
     kwargs.pop("retriever", None)
     kwargs.pop("post_retrieval_reranker", None)
     kwargs.pop("post_fusion_reranker", None)
 
-    # 4) Force garbage collection and return GPU memory to CUDA
+    # 3) Force garbage collection and return GPU memory to CUDA
     import gc, torch
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # 5) Kill vLLM servers, orphan processes, and verify GPUs are free
+    # 4) Kill vLLM servers, orphan processes, and verify GPUs are free
     if _vllm_mgr is not None:
         _vllm_mgr.shutdown_and_release_gpus(_total_gpus)
 
@@ -650,7 +681,7 @@ def main():
         kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus, verbose, gpu_ids=gpu_ids)
         # ── Deep-research-pipeline-specific kwargs ────────────────────────
         kwargs.update({
-            "eval_only": args.eval_only,
+            "stage": args.stage,
             "vllm_manager": vllm_manager,
             "total_gpus_on_machine": total_gpus_on_machine,
             "judge_model": args.judge_model,
@@ -677,11 +708,12 @@ def main():
             **pipeline_kwargs,
         )
 
-        # With nothing to run (--eval-only, or every query finished) no vLLM
-        # server, LLM client, retriever or reranker is set up: the run is
-        # only evaluated.  The LLM-as-judge evaluators use the
-        # OpenRouter-hosted judge, so no GPU is needed for them.
-        if plan.queries and not args.eval_only:
+        # With nothing to generate (the belief or eval stage, or every query
+        # generated) no vLLM server, LLM client, retriever or reranker is set
+        # up.  The belief stage reads the documents from the corpus and calls
+        # its own model; the LLM-as-judge evaluators use the OpenRouter-hosted
+        # judge, so no GPU is needed for them.
+        if plan.queries:
             # ── GPU plan: retriever first (fixed footprint), then agent ──────────
             from utils.config import resolve_agent_backend, RETRIEVER_VRAM_GB
             _agent_backend, _agent_slug = resolve_agent_backend(args.policy_model_cli)
@@ -773,7 +805,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run deep research agents pipeline (unified)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        allow_abbrev=False,  # only full flag names, e.g. --belief-mode
+        allow_abbrev=False,  # only full flag names, e.g. --criteria-source
     )
 
     # ── File-backed config ─────────────────────────────────────────────────
@@ -784,13 +816,12 @@ def parse_args():
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
-    parser.add_argument("--criteria-source", type=str, default=None, choices=list(CRITERIA_SOURCES), help="Criteria of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by llm_criteria). A choice only on TRQA and trqa_validation (run folder belief-{mode}-{source}); elsewhere the dataset's own source is used. Unset = criteria_source in --config.")
-    parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its passage support, and the names the agent proposed) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses, and the agent's proposals as unverified; never anything gold-based) to the trajectory after each iteration's search results.")
+    parser.add_argument("--criteria-source", type=str, default=None, choices=list(CRITERIA_SOURCES), help="Criteria of the belief model (belief stage): gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by llm_criteria). A choice only on TRQA and trqa_validation; elsewhere the dataset's own source is used. Another source than the run's replaces its beliefs. Unset = criteria_source in --config.")
 
     # ── Run-control flags ───────────────────────────────────────────────────
-    parser.add_argument("--limit", type=int, default=None, help="Cap number of queries (for quick tests)")
+    parser.add_argument("--limit", type=int, default=None, help="Cap the queries each stage runs (for quick tests): the generate stage's queries left to generate, the belief stage's trajectories left without a belief file")
     parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
-    parser.add_argument("--eval-only", type=_sm_bool, nargs="?", const=True, default=False, help="Skip agent execution and evaluate the run from its saved files (the run must have been completed at least once). Runs every evaluator of the dataset (seen-doc retrieval; answer accuracy where the dataset has answers: LLM judge via --judge-model for BrowseComp-Plus, infoseek and webshaper_frames, numeric match for TRQA; Auto-ARGUE report scores for NeuCLIR and RAGTIME; with belief files, the uncertainty and belief update evaluations; trajectory) and writes the same metrics.md and per_query.csv as the run itself. Judge verdicts are reused from accuracy.jsonl, report_eval/ and belief_eval/, so an unchanged run makes no LLM call.")
+    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model over the finished trajectories without a belief file (belief/{qid}.jsonl and .md; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; belief settings (criteria source, models) other than the run's replace its beliefs. 'eval': the evaluation only, from the saved files (every evaluator of the dataset; judge verdicts reused from accuracy.jsonl, report_eval/ and belief_eval/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same metrics.md and per_query.csv.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -804,27 +835,30 @@ if __name__ == "__main__":
 # ============================================================================
 # OUTPUT STRUCTURE
 # ============================================================================
-#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/belief-{mode}[-{source}]/
-#   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default;
-#   -gold / -silver: the criteria source, on a dataset where it is a choice (TRQA, trqa_validation))
-#   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_20b_vllm_gpt-oss-20b/belief-monitor/
+#   {output}/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/
+#   ({output} = DRA_OUTPUT_ROOT; _{query_key} only when not the dataset's default)
+#   e.g. run_outputs/neuclir_2024_news_qwen3_emb_4b/oss_20b_vllm_gpt-oss-20b/
 #   ({agent} = the --policy-model name)
 #
 #   One home per fact: each file below holds its facts only.
-#     ├── run_config.json       every resolved setting (dataset, agent, searcher, belief model,
-#     │                         evaluation); a resume with other settings is refused
+#     ├── run_config.json       every resolved setting: dataset, agent, searcher (generate
+#     │                         stage; a resume with other settings is refused), belief_model
+#     │                         (belief stage; other settings replace the beliefs), evaluation
 #     ├── retrieval/
 #     │   ├── surfaced/{qid}.trec   surfaced-doc TREC (raw retriever output, col 6 = iter_N)
 #     │   ├── seen/{qid}.trec       seen-doc TREC (docs shown to the LLM)
 #     │   └── cited/{qid}.trec      cited-doc TREC (docs cited by the LLM)
 #     ├── generation/{qid}.md   the final generation (with its References section)
-#     ├── belief/{qid}.jsonl    belief-model signals (belief on only): meta line + one line
-#     │                         per search iteration (evaluation.belief.writer)
 #     ├── trajectory/
-#     │   ├── {qid}.jsonl       one line per step (queries, seen doc ids, <belief_state> tags,
-#     │   │                     per-turn diagnostics), then the meta line (counts, agent data);
-#     │   │                     written last: the meta line marks the query as finished
+#     │   ├── {qid}.jsonl       one line per step (queries, seen doc ids, search_step of a
+#     │   │                     search iteration), then the meta line (counts, agent data,
+#     │   │                     agent_generation); written last: the meta line marks the
+#     │   │                     query as generated
 #     │   └── {qid}.md          the same trajectory, human-readable, written live
+#     ├── belief/               belief stage (orchestration.belief_stage)
+#     │   ├── {qid}.jsonl       meta line + one line per search iteration + final line
+#     │   │                     (evaluation.belief.writer); written last: marks the query as done
+#     │   └── {qid}.md          the same belief, human-readable
 #     ├── accuracy.jsonl        per-query answer correctness (datasets with answers)
 #     ├── report_eval/          Auto-ARGUE inputs, cached judgments and per-query scores.tsv
 #     ├── belief_eval/          belief update evaluation: events.csv, judge_cache.jsonl
@@ -835,11 +869,9 @@ if __name__ == "__main__":
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
-#   CUDA_VISIBLE_DEVICES=5,6 python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 1
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 3 --num-gpus 1 --stage generate
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage belief
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage belief --criteria-source silver
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage eval
+#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 2 --num-gpus 1   (all stages)
 #   python experiments/inference/dra_inference.py --dataset neuclir --num-gpus 6 --quiet --limit 6
-#   python experiments/inference/dra_inference.py --num-gpus 4 --quiet --limit 9
-#   python experiments/inference/dra_inference.py --limit 1
-#   
-#   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 2 --num-gpus 1
-#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 3 --num-gpus 1
-#   python experiments/inference/dra_inference.py --dataset neuclir --limit 1

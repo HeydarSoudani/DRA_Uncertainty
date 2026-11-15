@@ -13,17 +13,17 @@ The groups, in the order of the files and the log:
     retrieval    Recall@N, Precision@N of the seen docs (N = docs seen)
     generation   accuracy (QA) or Auto-ARGUE nugget coverage and F1 (reports)
     uncertainty  s_T, its formula ablations and the agent's verbal confidence
-                 against correctness (QA, belief model on); a report's s_T
-                 against its nugget coverage (reports, belief model on)
+                 against correctness (QA, belief files); a report's s_T
+                 against its nugget coverage (reports, belief files)
     belief       the belief's change at gold and control events, and per
                  criterion its recall, answer reached and status calibration
-                 (datasets with gold per criterion, belief model on); the
+                 (datasets with gold per criterion, belief files); the
                  share of update calls with issues, and every issue code
-                 that occurs (belief model on, ``belief.issues``)
+                 that occurs (belief files, ``belief.issues``)
     trajectory   searches, agent and belief model tokens, forced answers
 
-A run with an output directory is always evaluated from its saved files, at
-the end of the run as with ``--eval-only``, so both write the same files.
+A run with an output directory is always evaluated from its saved files,
+whatever its stage (``--stage``), so every stage writes the same files.
 The LLM-judged evaluators keep their verdicts in the run directory
 (``accuracy.jsonl``, ``report_eval/``, ``belief_eval/judge_cache.jsonl``)
 and judge only what changed.
@@ -44,7 +44,7 @@ from indexing_corpus_dataset.layout import DATASET_SPECS
 from utils.io_utils import load_result_from_saved_files
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config, save_belief
+from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config
 from .belief.evaluator import BELIEF_EVAL_DIR, CALIBRATION_COLUMNS
 from .common import RULE
 from .metrics import mean
@@ -57,8 +57,8 @@ from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
 
 logger = logging.getLogger(__name__)
 
-#: Per-query output directories under the run directory (``belief/`` is
-#: created by its writer, only when the belief model is on).
+#: Per-query output directories of the generate stage (``belief/`` is
+#: the belief stage's, created by its writer).
 QUERY_OUTPUT_DIRS = (
     "retrieval/surfaced", "retrieval/seen", "retrieval/cited",
     "generation", "trajectory",
@@ -69,8 +69,7 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
     """Write every per-query file of *result* under *run_dir*.
 
     ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
-    ``belief/{qid}.jsonl`` (only when the belief model ran), then
-    ``trajectory/{qid}.jsonl``: its meta line marks the query as finished
+    then ``trajectory/{qid}.jsonl``: its meta line marks the query as finished
     (``utils.io_utils.get_processed_queries``), so it is written last.
     """
     run_dir = Path(run_dir)
@@ -78,7 +77,6 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
     SeenDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "seen")
     CitedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "cited")
     GenerationEvaluator.save_item(query_id, result, run_dir / "generation")
-    save_belief(query_id, question, result, run_dir / "belief")
     save_trajectory(query_id, question, result, run_dir / "trajectory")
 
 
@@ -179,13 +177,12 @@ def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int,
     ones, ``unfinished`` those of the split not finished yet."""
     config = read_run_config(run_dir) if run_dir is not None else {}
     data, agent, belief = config.get("dataset") or {}, config.get("agent") or {}, config.get("belief_model") or {}
-    mode = belief.get("mode") or "?"
-    source = belief.get("criteria_source_effective")
     return {
         "run": str(run_dir) if run_dir else "-",
         "dataset": f"{data.get('dataset') or dataset} / {data.get('split') or '-'}",
         "agent": agent.get("policy_model") or "-",
-        "belief": f"{mode}{f' ({source} criteria)' if source and mode != 'off' else ''}",
+        "belief": (f"{belief.get('belief_judge_model') or '-'} ({belief.get('criteria_source_effective')} criteria)"
+                   if belief else "-"),
         "queries": num_queries,
         **({"unfinished": num_unfinished} if num_unfinished is not None else {}),
         "evaluated": datetime.now().strftime("%Y-%m-%d %H:%M"),

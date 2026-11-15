@@ -25,7 +25,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from reasoner_component import REASONING_FALLBACK_PREFIX
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import (
@@ -266,35 +265,6 @@ class CPMExplore(BasicAgent):
     # _force_answer_chat_in_conversation() and _force_answer_chat_compressed()
     # inherited from BasicAgent
 
-    # ── Intermediate answer (Chat Completions, same client as main loop) ────
-
-    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
-        """Same client as the main loop, with the no-tools system prompt."""
-        cfg = self.inference_config
-        messages = self._intermediate_answer_messages(trajectory, instruction)
-        if messages[0].get("role") == "system":
-            tools_section = (
-                "No tools are available. Based on all information gathered so far, "
-                "provide your final answer inside <answer></answer> tags.\n"
-                "If the evidence is insufficient to answer, respond with 'no candidate'."
-            )
-            messages[0]["content"] = self._system_prompt_template.format(
-                tools_section=tools_section,
-                current_date=datetime.now().strftime("%Y-%m-%d"),
-            )
-        remaining_tokens = max(cfg.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
-        response = self._openai_client().chat.completions.create(
-            model=cfg.model_name,
-            messages=messages,
-            max_tokens=min(remaining_tokens, 4096),
-        )
-        message = response.choices[0].message
-        raw = message.content or ""
-        reasoning = getattr(message, "reasoning_content", None)
-        if not raw.strip() and reasoning:
-            return REASONING_FALLBACK_PREFIX + reasoning
-        return raw
-
     # ── History compression ──────────────────────────────────────────────────
 
     def _compress_history(
@@ -482,8 +452,6 @@ class CPMExplore(BasicAgent):
             }
             if "content" not in assistant_msg:
                 assistant_msg["content"] = ""
-            # The model's own <belief_state> tags never enter the history.
-            assistant_msg["content"] = self._strip_belief_state(assistant_msg["content"] or "")
             content = assistant_msg.get("content") or ""
             raw_content = content  # preserve for tool-call parsing
 
@@ -679,11 +647,7 @@ class CPMExplore(BasicAgent):
                         ),
                     })
 
-            self._observe_and_record(
-                reasoning_path, _iter_steps,
-                _iter_subqueries, _iter_seen_docs, iteration, query,
-                trajectory=messages, messages=messages,
-            )
+            self._record_iteration(reasoning_path, _iter_steps, _iter_subqueries, _iter_seen_docs, iteration)
 
             iteration += 1
 

@@ -217,14 +217,6 @@ class OSS_Agent(BasicAgent):
                 continue
             self._reasoning_only_retries = 0
 
-            # The model's own <belief_state> tags never enter the history.
-            if self._informs:
-                for item in response_dict["output"]:
-                    if item.get("type") == "message":
-                        for part in item.get("content") or []:
-                            if isinstance(part, dict) and part.get("text"):
-                                part["text"] = self._strip_belief_state(part["text"])
-
             # vLLM bug: convert mcp_call to function_call format
             for i in range(len(response_dict["output"])):
                 if response_dict["output"][i]["type"] == "mcp_call":
@@ -367,11 +359,7 @@ class OSS_Agent(BasicAgent):
                         tool_call.get("call_id", ""), error_msg,
                     ))
 
-            self._observe_and_record(
-                reasoning_path, _iter_steps,
-                _iter_subqueries, _iter_seen_docs, iteration, query,
-                trajectory=new_messages, messages=new_messages,
-            )
+            self._record_iteration(reasoning_path, _iter_steps, _iter_subqueries, _iter_seen_docs, iteration)
 
             messages = new_messages
             _last_completed_iter = iteration

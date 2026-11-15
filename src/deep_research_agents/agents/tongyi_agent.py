@@ -4,7 +4,6 @@ LLM calls  : VLLMClient (OpenAI-compatible Chat Completions API -> vLLM server)
 Retrieval  : pipeline local retriever (self.retrieve_documents)
 """
 
-import copy
 import json
 import logging
 import os
@@ -125,20 +124,6 @@ class TongyiDR_Agent(BasicAgent):
         """Rough token count estimate (~4 chars per token)."""
         return sum(len(m.get("content", "")) for m in messages) // 4
 
-    # ── Intermediate answer (Chat Completions, same VLLMClient as main loop) ─
-
-    def answer_from_trajectory(self, original_query: str, trajectory: Any, instruction: str) -> str:
-        """Same VLLMClient as the main loop.  The instruction is appended to
-        the last message (the step's ``<tool_response>``), so the answer sees
-        the step's documents."""
-        if not isinstance(trajectory, list):
-            raise ValueError(f"trajectory is not a message list ({type(trajectory).__name__})")
-        messages = copy.deepcopy(trajectory)
-        last = messages[-1]
-        messages[-1] = {**last, "content": f"{last.get('content', '')}\n\n{instruction}"}
-        remaining_tokens = max(self.max_output_tokens - getattr(self, "_cumulative_output_tokens", 0), 1024)
-        return self._call_server(messages, max_tokens=min(remaining_tokens, self.max_tokens_per_step)) or ""
-
     # ── Force answer helpers (Chat Completions, same VLLMClient) ─────────────
 
     def _force_answer_chat_in_conversation(
@@ -194,9 +179,8 @@ class TongyiDR_Agent(BasicAgent):
 
             iteration = 1
             while iteration <= self.max_iteration:
-                # Wall-clock timeout (AgentIR: 150 min); the
-                # belief model's time is excluded so it never shortens a run.
-                if time.time() - start_time - getattr(self, "_belief_seconds", 0.0) > 150 * 60:
+                # Wall-clock timeout (AgentIR: 150 min).
+                if time.time() - start_time > 150 * 60:
                     self._print("Time limit reached (150 min)")
                     self._record_step(reasoning_path, {
                         "action_type": "answer",
@@ -258,8 +242,6 @@ class TongyiDR_Agent(BasicAgent):
                 # Strip leaked <tool_response> (AgentIR behaviour)
                 if "<tool_response>" in content:
                     content = content[: content.find("<tool_response>")]
-                # The model's own <belief_state> tags never enter the history.
-                content = self._strip_belief_state(content)
 
                 messages = [*messages, {"role": "assistant", "content": content.strip()}]
 
@@ -399,11 +381,7 @@ class TongyiDR_Agent(BasicAgent):
                         {"role": "user", "content": f"<tool_response>\n{result_text}\n</tool_response>"},
                     ]
 
-                    self._observe_and_record(
-                        reasoning_path, iter_steps,
-                        all_subqueries, all_seen_docs, iteration, query,
-                        trajectory=messages, messages=messages,
-                    )
+                    self._record_iteration(reasoning_path, iter_steps, all_subqueries, all_seen_docs, iteration)
 
                     iteration += 1
 

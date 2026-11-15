@@ -83,7 +83,7 @@ class _CallContext:
 class BeliefState:
     """Belief state b_t, kept at two levels.
 
-    Shown (``views.tag.format_belief``): per criterion its candidates,
+    Shown (``views.belief_text.format_belief``): per criterion its candidates,
     each with its status and its support (the passage observations that
     support it or speak against it, with their spans and passage titles),
     and its proposals (names the agent's reasoning proposed that no passage
