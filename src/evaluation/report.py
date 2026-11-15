@@ -1,5 +1,7 @@
 """The evaluation files of a run and its terminal log.
 
+Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`):
+
 - ``metrics.md``: a header (run, dataset, agent, belief mode, queries),
   one aligned markdown table, one row per measure: ``group | metric |
   value | ci_low | ci_high | n`` (groups in order: retrieval, generation,
@@ -9,6 +11,10 @@
   ``read_metrics`` (the cross-run collector, ``analysis/collect_results.py``).
 - ``per_query.csv``: one row per query, every per-query value of every
   group (the aggregates of ``metrics.md`` are computed from them).
+- ``generation/``: the generation evaluators' verdicts, ``accuracy.jsonl``
+  (datasets with answers) or the Auto-ARGUE cache and ``scores.tsv``
+  (report datasets).
+- ``belief/``: the belief evaluation's ``events.csv`` and ``judge_cache.jsonl``.
 - the log: one line per group with the headline measures (``log_lines``).
 """
 
@@ -20,8 +26,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 #: Group order of the files and the log.
 GROUPS = ("retrieval", "generation", "uncertainty", "belief", "trajectory")
-METRICS_FILE = "metrics.md"
-PER_QUERY_FILE = "per_query.csv"
+#: Folder of every evaluation file in the run directory; the paths below are relative to the run directory.
+EVAL_DIR = "eval"
+METRICS_FILE = f"{EVAL_DIR}/metrics.md"
+PER_QUERY_FILE = f"{EVAL_DIR}/per_query.csv"
+#: The generation evaluators' files (``accuracy.jsonl`` or the Auto-ARGUE cache).
+GENERATION_EVAL_DIR = f"{EVAL_DIR}/generation"
+ACCURACY_FILE = f"{GENERATION_EVAL_DIR}/accuracy.jsonl"
+#: The belief evaluation's files (``events.csv``, ``judge_cache.jsonl``).
+BELIEF_EVAL_DIR = f"{EVAL_DIR}/belief"
 COLUMNS = ("group", "metric", "value", "ci_low", "ci_high", "n")
 
 

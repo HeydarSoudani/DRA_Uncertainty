@@ -37,9 +37,10 @@ def agent_turn_text(thinks: Iterable[Optional[str]], answer: Optional[str] = Non
 
 def answer_turn(steps: List[Dict[str, Any]], answer: str) -> Optional[str]:
     """The answer turn: the reasoning of the *steps* after the last search
-    step (one with a ``search_query``; trajectory steps or their saved
-    lines) and the final *answer*; None without an answer."""
+    iteration (the last step with a ``search_step``, the number the agent
+    gives every step of an iteration that searched; trajectory steps or
+    their saved lines) and the final *answer*; None without an answer."""
     if not answer or not answer.strip():
         return None
-    last = max((i for i, s in enumerate(steps) if s.get("search_query")), default=-1)
+    last = max((i for i, s in enumerate(steps) if s.get("search_step") is not None), default=-1)
     return agent_turn_text([s.get("think") for s in steps[last + 1:]], answer=answer)

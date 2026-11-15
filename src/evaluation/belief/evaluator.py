@@ -32,7 +32,7 @@ candidate is already "confirmed" cannot rise and has no change.
 
 A candidate is a gold answer when it matches one (``gold.states``), else
 when the judge says so (``gold.AnswerJudge``, the run's ``judge_model``,
-cached in ``belief_eval/judge_cache.jsonl``; no judge model: the match
+cached in ``eval/belief/judge_cache.jsonl``; no judge model: the match
 only).  Only belief files of the current ``SCHEMA_VERSION`` are scored
 (``load_belief_files``; an older file counts as no belief file).
 
@@ -59,7 +59,7 @@ how many, how many reached (``calibration``).
 In the files, for diagnosis: every gold and control event, with a gold
 event's funnel stage (``call_failed``, ``not_assigned``,
 ``no_gold_candidate``, ``not_selected``, ``correct_lost``, ``correct_kept``),
-in ``belief_eval/events.csv``; per query in ``per_query.csv`` the means of
+in ``eval/belief/events.csv``; per query in ``eval/per_query.csv`` the means of
 its criteria and ``belief_correct`` (every scored closed criterion
 reached).
 """
@@ -80,13 +80,12 @@ from utils.text_utils import cut_chars, cut_passage
 from ..common import read_jsonl
 from ..gold.criteria import load_gold_rows, match_row
 from ..metrics import bootstrap_ci, mean
+from ..report import BELIEF_EVAL_DIR
 from .gold import CANDIDATE, SPANS, AnswerJudge, states
 from .writer import SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
-#: Folder of the belief evaluation's files in the run directory.
-BELIEF_EVAL_DIR = "belief_eval"
 #: The per-criterion values, in row order: (row name, key).
 MEASURES = (("gold event: gold candidate change", "gold_change"),
             ("control event: gold candidate change", "control_change"),

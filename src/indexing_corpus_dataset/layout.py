@@ -381,7 +381,7 @@ QUESTION_GOLD, ANNOTATION_GOLD = "question", "annotation"
 
 
 def extraction_kind(dataset: str) -> str:
-    """The kind of the criteria the extractor (``llm_criteria``) lists for
+    """The kind of the criteria the extractor (the run's ``belief_model``) lists for
     *dataset*: gold where the gold criteria are the question's own
     (``QUESTION_GOLD``), else silver."""
     return GOLD_CRITERIA if DATASET_SPECS[dataset].gold_criteria == QUESTION_GOLD else SILVER_CRITERIA

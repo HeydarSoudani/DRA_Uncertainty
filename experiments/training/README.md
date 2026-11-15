@@ -82,6 +82,12 @@ gold documents.
 
 ## Phases
 
+> **Status (2026-11-15).** Only phase 0 has code (`build_training_dataset.py`). The code of phases 1 to 3
+> (`src/belief_model_training/`, `belief_model_training.py`, its YAML and launcher) was removed; it is in the git
+> history (commit 2d04d65 and earlier). The sections on phases 1 to 3, scores and rewards are the design it
+> implemented, kept for a re-implementation; their commands and module names do not run as they are. Phase 1 is now
+> a dra_inference `--stage generate` run, then a `--stage belief` run with the teacher belief model.
+
 | Phase | Script | Does | Output |
 |---|---|---|---|
 | 0 | `build_training_dataset.py --dataset D` | builds a training dataset, infoseek (InfoSeek-Hard over the original wiki-25-512 corpus), webshaper_frames (fetched gold pages and hard negatives, val only) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_datasets/{dataset}/` |
@@ -323,7 +329,7 @@ finished in-domain query (`level` full, `texts_ok`, at least one criterion; the 
 | step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `nugget_gold.py` | assign (expected claims) |
 | step | `teacher_output`, `teacher_records`: the teacher's reply and its saved observations, candidate updates, changed criteria, issues and beliefs (monitor runs) | `belief/{qid}.jsonl` | SFT, replay check |
 | episode | `answer_turn`: reasoning after the last search and the final answer; the teacher's final call on it (monitor runs, the `final` line) | `trajectory/{qid}.jsonl`, `generation/{qid}.md`, `belief/{qid}.jsonl` | final call |
-| episode | `correct` ($y$; null when the judge failed) | `accuracy.jsonl` | $r_{\mathrm{final}}$ |
+| episode | `correct` ($y$; null when the judge failed) | `eval/generation/accuracy.jsonl` | $r_{\mathrm{final}}$ |
 | episode | `gold_criteria`: criteria with `answers` and `doc_ids` | `queries/queries_all.jsonl` of the dataset | the criteria of the chains, all rewards |
 
 **Gold of a candidate or spans.** A selected candidate is correct ($g = 1$), and an observation's spans state the
@@ -343,7 +349,7 @@ settings from the same inference config (`shared.inference_config`), so keep it 
 runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
 that the run's criteria are the dataset's), that the belief file (schema 45, `SCHEMA_VERSION`) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
-`recall_so_far` matches the qrels. Episodes without a verdict in `accuracy.jsonl` (a run that stopped before its
+`recall_so_far` matches the qrels. Episodes without a verdict in `eval/generation/accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
 
 ## Scores and rewards
@@ -504,29 +510,28 @@ whether a precision term is needed.
 
 ## Evaluation (dra_inference)
 
-The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent with no,
-teacher or student belief model in `inform` mode (in monitor mode the scores would not depend on the belief).
-Scores are the run's `metrics.md` (the inference evaluation, `experiments/inference/README.md#evaluation`; phase 1
-runs get it too, being dra_inference runs): Recall@N, answer accuracy, the uncertainty group (s_T against the
-correctness, with the formula and verbal-confidence baselines) and, on the training datasets and TRQA, the belief update group
-(what the belief does with each gold document). Phases 2 and 3 score with `scoring.py`, which shares its measures
-and gold match with the evaluation (`evaluation.metrics`, `evaluation.belief.gold`). The student is trained on the `multi_hop` (infoseek) or `multi_member` (trqa_validation) prompts; a
-dataset of another query shape (browsecomp_plus: `multi_clue`) gives it prompts it was not trained on.
+The trained belief model is evaluated with `experiments/inference/dra_inference.py`: the frozen agent's
+trajectories are generated once (`--stage generate`), then the teacher and the student belief models each run over
+them (`--stage belief`). Scores are the run's `eval/metrics.md` (the inference evaluation,
+`experiments/inference/README.md#evaluation`): Recall@N, answer accuracy, the uncertainty group (s_T against the
+correctness, with the formula and verbal-confidence baselines) and, on the training datasets and TRQA, the belief
+update group (what the belief does with each gold document). The student is trained on the `multi_hop` (infoseek) or
+`multi_member` (trqa_validation) prompts; a dataset of another query shape (browsecomp_plus: `multi_clue`) gives it
+prompts it was not trained on.
 
 ```bash
-# serve the student on a GPU the inference workers do not use
+# serve the student on a GPU and a port the generate stage does not use
 CUDA_VISIBLE_DEVICES=0 vllm serve $RUN/phase3_rl/final --served-model-name belief-student --port 6020 --language-model-only &
 export BELIEF_VLLM_API_BASE=http://127.0.0.1:6020/v1
 
-COMMON="--dataset browsecomp_plus --policy-model glm --gpu-ids 1,2,3"
-python experiments/inference/dra_inference.py $COMMON --belief-mode off
-python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
-    --llm-criteria openrouter/qwen/qwen3.6-27b --belief-judge-model openrouter/qwen/qwen3.6-27b
-python experiments/inference/dra_inference.py $COMMON --belief-mode inform \
-    --llm-criteria openrouter/qwen/qwen3.6-27b --belief-judge-model vllm/belief-student --output <student output dir>
+COMMON="--dataset browsecomp_plus --policy-model glm"
+python experiments/inference/dra_inference.py $COMMON --stage generate --gpu-ids 1,2,3
+python experiments/inference/dra_inference.py $COMMON --stage belief --belief-model openrouter/qwen/qwen3.6-27b
+cp -r <run dir>/belief <run dir>/belief_teacher          # a belief stage with another model replaces belief/
+python experiments/inference/dra_inference.py $COMMON --stage belief --belief-model vllm/belief-student
 ```
 
-- The student is trained on the belief update and the final scorer, not the criteria init, so its runs take the
-  teacher's criteria (`--llm-criteria`, read from the criteria bank) and only the updates and the final score
-  come from the student.
-- Give the student run its own `--output`: teacher and student runs share the agent, dataset and belief mode.
+- One backbone (`--belief-model`) makes the criteria init, the belief updates and the final score, so the student
+  run also makes its own criteria (banked under its checkpoint, `{model}@{path}`).
+- A belief stage with other belief settings than the run's removes the run's `belief/` and `eval/belief/`; copy them
+  first to keep the teacher's.

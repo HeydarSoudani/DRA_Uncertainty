@@ -17,7 +17,7 @@ The JSONL of a finished query is rewritten by
 :func:`evaluation.trajectory.save_trajectory`, the last file
 :func:`evaluation.runner.save_query_outputs` writes, with the meta line at
 the end.  The meta line is the query's completion marker
-(:func:`utils.io_utils.get_processed_queries`): a streamed file without it is
+(:func:`utils.io_utils.scan_queries`): a streamed file without it is
 an unfinished query.
 
 The step-shaping helpers below are shared with

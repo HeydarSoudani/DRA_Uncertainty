@@ -10,7 +10,7 @@ The grading prompt is kept verbatim (its ``confidence`` field included, so
 saved verdicts stay valid), but that field is not used: the agent's own
 confidence is read from the generation (``answer.confidence``).
 
-A verdict is saved in ``accuracy.jsonl`` with a ``key`` hashing what was
+A verdict is saved in ``eval/generation/accuracy.jsonl`` with a ``key`` hashing what was
 judged (question, cleaned response, gold answer, judge model, grader prompt);
 evaluating the run again reuses it.  A reply without a ``correct:`` field is
 asked again twice; a query whose judging still fails is counted incorrect, in
@@ -28,6 +28,7 @@ from utils.io_utils import write_jsonl
 from utils.llm_client import LiteLLMClient
 
 from ..common import read_jsonl
+from ..report import ACCURACY_FILE
 from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client, strip_references
 from .confidence import verbal_confidence
 
@@ -233,13 +234,13 @@ class AccuracyEvaluator:
         were judged without error, by query id."""
         if not run_dir:
             return {}
-        path = Path(run_dir) / "accuracy.jsonl"
+        path = Path(run_dir) / ACCURACY_FILE
         return {r["query_id"]: r for r in read_jsonl(path)
                 if r.get("key") and not r.get("judge_error")}
 
     def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge every query with a ground-truth answer, reusing the verdicts
-        saved in ``{run_dir}/accuracy.jsonl`` for unchanged queries.
+        saved in ``{run_dir}/eval/generation/accuracy.jsonl`` for unchanged queries.
 
         Returns ``accuracy``, ``num_correct``, ``num_evaluated``,
         ``num_judge_errors``, ``num_judged`` (judge calls made now) and
@@ -295,7 +296,7 @@ class AccuracyEvaluator:
         """Write ``accuracy.jsonl``: one line per query, its verdict and the
         cache ``key`` (without the raw judge response or the judged text,
         which is ``generation/{qid}.md``).  The aggregates are in
-        ``metrics.md``, the judge model in ``run_config.json``."""
+        ``eval/metrics.md``, the judge model in ``run_config.json``."""
         if not metrics:
             return
         fields = ("query_id", "key", "correct", "judge_error", "extracted_final_answer",

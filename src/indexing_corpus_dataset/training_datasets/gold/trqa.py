@@ -12,7 +12,7 @@ trqa_validation dataset builds its own: one criterion per member of the set
 member is named by the page title of its first document, looked up in the
 corpus by id (``CorpusLookup``; wiki1 and wiki2: ``wiki_partial``); without
 a corpus (ecommerce), by TRQA's label.  The writer (the run's
-``llm_criteria``, native reasoning off) writes the property phrase and the
+``belief_model``, native reasoning off) writes the property phrase and the
 aggregation (``criterion_texts.multi_member_texts``, the prompts of the training datasets), from
 which the criterion texts are built.
 
@@ -91,7 +91,7 @@ def corpus_of(split: str) -> Optional[Path]:
 class TRQAGoldCriteria(CriteriaSource):
     """Makes the gold criteria of a query of TRQA split *split* (e.g.
     ``wiki2_test``) from its intermediate info, with the texts of *writer*
-    (an LLM name, the run's ``llm_criteria``); the producer of the gold
+    (an LLM name, the run's ``belief_model``); the producer of the gold
     bank.  The split's files are read once; the writer is created at its
     first call.
 

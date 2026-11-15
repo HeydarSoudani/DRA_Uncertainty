@@ -23,7 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, GOLD_CRITERIA, query_max_length
+from indexing_corpus_dataset.layout import DATASET_SPECS, query_max_length
 from utils.config import (
     OPENROUTER_BASE_URL,
     _RetrieverConfig,
@@ -72,64 +72,41 @@ def setup_retriever_from_args(args):
 def build_belief_model(
     *,
     dataset: str,
-    split: str,
-    max_criteria: Optional[int],
+    belief_model: str,
+    criteria,
     qrels=None,
-    llm_criteria: Optional[str] = None,
-    belief_judge_model: str = "",
-    criteria_source: str = GOLD_CRITERIA,
     max_passage_tokens: int = MAX_PASSAGE_TOKENS,
 ):
     """Build the belief model of the belief stage (``orchestration.belief_stage``).
 
     Args:
-        dataset: Dataset name (its query shape and criteria source).
-        split: Split id of the run's queries (the criteria banks).
-        max_criteria: Cap on the number of criteria the extractor lists per
-            query, None for uncapped (gold); resolved from the dataset by
-            ``resolve_dataset_defaults``.
+        dataset: Dataset name (its query shape).
+        belief_model: The belief model's backbone LLM, for the belief update
+            and the final score (its criteria init is *criteria*'s).  A
+            ``vllm/`` model is served locally (``criteria.factory.belief_llm``),
+            e.g. a trained belief model.
+        criteria: The criteria source of the run's split
+            (``belief_model_component.build_criteria_source``, on the same
+            *belief_model*); built once and shared by the stage's workers.
         qrels: Thresholded relevance judgements, for the new-item precision
             and the recall so far.
-        llm_criteria: Model that extracts each query's criteria from the
-            question, and writes TRQA's gold criterion texts
-            (``belief_model_component.criteria.factory``).  Without it there is
-            no belief.
-        belief_judge_model: LLM behind the belief state (the belief
-            update call); "" = *llm_criteria*.  A ``vllm/`` model is
-            served locally (``criteria.factory.belief_llm``), e.g. a trained belief model.
-        criteria_source: ``gold`` or ``silver``, a choice on TRQA and
-            trqa_validation only (``criteria.factory``); a query without gold
-            criteria gets silver ones, so the belief model always runs.
-            The criteria are read from the banks, made and added only when
-            missing.  The belief update is still the
-            *belief_judge_model* / *llm_criteria* LLM.
         max_passage_tokens: Tokens of one document the belief update
             reads (its first ones), the agents' own (the run's shared setting).
     """
-    from belief_model_component import (
-        BeliefModel, belief_llm, build_belief_updater, build_criteria_source, build_final_scorer,
-    )
+    from belief_model_component import BeliefModel, belief_llm, build_belief_updater, build_final_scorer
 
     query_shape = DATASET_SPECS[dataset].query_shape
-    criteria_source = build_criteria_source(
-        dataset, split, llm_criteria=llm_criteria, max_criteria=max_criteria,
-        criteria_source=criteria_source,
-    )
-
-    belief_updater = final_scorer = judge_llm = None
-    if criteria_source is not None:
-        judge_model = belief_judge_model or llm_criteria
-        judge_llm = belief_llm(judge_model)
-        belief_updater = build_belief_updater(judge_llm, model=judge_model, query_shape=query_shape,
-                                              max_passage_tokens=max_passage_tokens)
-        print(f"Belief model: belief updater {belief_updater.name}")
-        # s_T: the final scorer on the same model (a short-answer query;
-        # a report keeps the certainty of its final belief).
-        final_scorer = build_final_scorer(judge_llm, model=judge_model, query_shape=query_shape)
-        print(f"Belief model: final scorer {final_scorer.name if final_scorer else 'none (report: s_T from the belief)'}")
+    judge_llm = belief_llm(belief_model)
+    belief_updater = build_belief_updater(judge_llm, model=belief_model, query_shape=query_shape,
+                                          max_passage_tokens=max_passage_tokens)
+    print(f"Belief model: belief updater {belief_updater.name}")
+    # s_T: the final scorer on the same model (a short-answer query;
+    # a report keeps the certainty of its final belief).
+    final_scorer = build_final_scorer(judge_llm, model=belief_model, query_shape=query_shape)
+    print(f"Belief model: final scorer {final_scorer.name if final_scorer else 'none (report: s_T from the belief)'}")
 
     return BeliefModel(
-        criteria_source=criteria_source,
+        criteria_source=criteria,
         belief_updater=belief_updater,
         qrels=qrels or {},
         final_scorer=final_scorer,

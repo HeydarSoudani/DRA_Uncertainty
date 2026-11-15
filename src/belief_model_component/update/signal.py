@@ -76,9 +76,8 @@ class BeliefUpdateSignal:
     when not called or the call raised).
 
     The call is made in two halves, ``plan`` (label the documents, gather
-    the turns) and ``apply`` (the parsed reply), so belief model training
-    can make the LLM calls itself
-    (``belief_model_training.episodes.BeliefTracker``).  ``certainty`` is
+    the turns) and ``apply`` (the parsed reply), so a caller can make the
+    LLM call itself.  ``certainty`` is
     the certainty score s_t of the belief (``core.certainty.certainty``).
     """
 

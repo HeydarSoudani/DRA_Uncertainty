@@ -65,9 +65,8 @@ FILE_BACKED_DEFAULTS = {
     "hard_mode": True,
     "max_passage_tokens": MAX_PASSAGE_TOKENS,
     # Belief model (the belief stage)
-    "llm_criteria": "openrouter/qwen/qwen3.6-27b",
+    "belief_model": "openrouter/qwen/qwen3.6-27b",
     "max_criteria": None,
-    "belief_judge_model": "",
     "criteria_source": "gold",
     "belief_workers": 8,
     # Evaluation
@@ -293,9 +292,8 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
     pipeline_kwargs["hard_mode"] = args.hard_mode
     pipeline_kwargs["max_passage_tokens"] = args.max_passage_tokens
 
-    pipeline_kwargs["llm_criteria"] = args.llm_criteria
+    pipeline_kwargs["belief_model"] = args.belief_model
     pipeline_kwargs["max_criteria"] = args.max_criteria
-    pipeline_kwargs["belief_judge_model"] = args.belief_judge_model
     pipeline_kwargs["criteria_source"] = args.criteria_source
     pipeline_kwargs["belief_workers"] = args.belief_workers
 

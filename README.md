@@ -42,11 +42,10 @@ src/
 ├── orchestration/            wiring of agent, searcher and belief model; multi-GPU workers
 ├── belief_model_component/   criteria, belief state, signals, judges
 ├── evaluation/               answer, retrieval, trajectory and generation evaluators
-├── indexing_corpus_dataset/  dataset download and index building
-└── belief_model_training/    training phases of the belief model
+└── indexing_corpus_dataset/  dataset download and index building
 experiments/
 ├── inference/                dra_inference.py
-├── training/                 build_training_dataset.py, belief_model_training.py
+├── training/                 build_training_dataset.py
 └── configs/                  YAML defaults of every script
 analysis/                     criteria reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)

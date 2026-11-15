@@ -41,11 +41,12 @@ python experiments/inference/dra_inference.py \
 | `--retriever` | must have an index built for the dataset |
 | `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
+| `--belief-model` | the belief model's LLM (criteria init, belief update, final score); unset = `belief_model` in the YAML |
 | `--criteria-source` | `gold` or `silver` criteria of the belief model (TRQA, trqa_validation) |
 | `--num-gpus` | query-level workers of the generate stage, one per GPU; `0` = auto-detect |
 | `--limit N` | each stage runs at most N queries |
 
-Every other setting (top_k, rerankers, criteria LLM, judges, eval k-values, ...) is in
+Every other setting (top_k, rerankers, judges, eval k-values, ...) is in
 `experiments/configs/dra_inference.yaml` and can be overridden with the matching `--flag`.
 
 The stages:
@@ -60,8 +61,9 @@ The stages:
 The agent runs once; any number of belief model versions can then run over the same trajectories. The belief stage
 needs no agent, retriever or GPU: it reads each search iteration's queries, the ids of the documents the agent was
 shown and the agent's turn from `trajectory/{qid}.jsonl`, reads the documents' text from the corpus by id
-(`CorpusLookup`, shaped as the run's retriever returns a document), and the answer from `generation/{qid}.md`
-(`src/orchestration/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
+(this call's corpus of the run's dataset and split; `CorpusLookup`, shaped as the run's retriever returns a
+document), and the answer as the agent returned it (`agent_generation` in the trajectory's meta
+line; `src/orchestration/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
 
 ```bash
 python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage generate --limit 3
@@ -70,10 +72,19 @@ python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --st
 ```
 
 Every stage resumes: the generate stage skips the queries with a finished trajectory, the belief stage those with a
-belief file. A generate stage whose `dataset`, `agent` or `searcher` settings differ from the run's `run_config.json`
-is refused, so every trajectory of a directory ran with the same settings. A belief stage whose belief settings
-(criteria source and cap, criteria and belief update models) differ from the run's `belief_model` section replaces
-the run's beliefs (`belief/`, `belief_eval/`) and runs every query again; copy them first to keep them.
+belief file of the current schema (an older one is made again). A query whose criteria or a belief call failed before
+any reply (the API or the server, not a reply that did not parse) stops there and is not saved, so the next belief
+stage runs it again; the stage lists these queries at its end, and `metrics.md` gives the finished queries with a
+belief file (`queries with a belief file`, the belief group). With `--stage all --limit N`, the belief stage takes the
+queries this call generated first. A generate stage whose `dataset`, `agent` or `searcher` settings differ from the run's `run_config.json` is
+refused, so every trajectory of a directory ran with the same settings; the belief and eval stages are refused when
+the `dataset` settings (split, query key, relevance threshold) differ. The corpus path is recorded but not
+compared (a data root may move); a change is printed. A belief stage whose belief settings
+(belief model, criteria source and cap) differ from the run's `belief_model` section removes the run's beliefs
+(`belief/`, `eval/belief/`), then saves the new settings, and runs every query again; copy them first to keep them.
+The belief stage needs a belief model (`belief_model` empty stops it).
+`--stage all` with a `vllm/` belief model on a port the GPU release clears after generating (6008, 8000) is refused:
+run `--stage generate`, then `--stage belief`, or serve it elsewhere (`$BELIEF_VLLM_API_BASE`).
 
 ## Belief model
 
@@ -83,9 +94,8 @@ the observation of a search iteration is its documents and the agent's turn, and
 criterion of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
 how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
 passage supports yet. All criteria and belief
-calls are LLM calls: the criteria extractor
-uses `llm_criteria`, the belief update (`src/belief_model_component/update/updater.py`) `belief_judge_model` (default
-`llm_criteria`).
+calls are LLM calls on one backbone, `belief_model` (`--belief-model`): the criteria init, the belief update
+(`src/belief_model_component/update/updater.py`) and the final score.
 
 ### Criteria
 
@@ -142,28 +152,28 @@ records `criteria_source` and the source used, `criteria_source_effective`.
 
 **Criteria init** (`belief_model_component/criteria/factory.py`). The criteria are part of the belief model: it makes
 each query's list once, at the start of the query (`BeliefModel.reset`). The run only passes the dataset,
-`criteria_source` and `llm_criteria`:
+`criteria_source` and `belief_model`:
 
 1. The kind: the requested `criteria_source` on TRQA and trqa_validation, gold elsewhere; a query without gold
    criteria gets silver ones.
 2. The criteria of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
-   made the first time a query needs it, in inference, in training (phase 1 is a dra_inference run) and in
-   `analysis/criteria_reachability.py`; no build step.
+   made the first time a query needs it, in the belief stage and in `analysis/criteria_reachability.py`; no build
+   step.
 
 Before the workers start (after the vLLM servers are up), the run makes and banks the missing criteria of its
-queries in parallel (`prepare_criteria`, with counts per kind and origin); the workers then read them from the bank,
-and a query still missing is made by its worker. The settings are checked before any model is loaded
+queries in parallel (`prepare_criteria`, with counts per kind and origin); the workers share that criteria source
+and read them from the bank, and a query still missing is made by its worker. The settings are checked before any model is loaded
 (`check_criteria_inputs`: e.g. a missing training dataset gold file stops the run).
 
 The banks:
 
-- The extractor's criteria (`llm_criteria`): `CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl`
+- The extractor's criteria (`belief_model`): `CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl`
   (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
   `CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
 - TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
   (`annotations.multi_member_row`: one criterion per member, then the aggregate; members named by the page title of
-  their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `llm_criteria` writes
+  their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `belief_model` writes
   the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
@@ -174,7 +184,7 @@ The banks:
 
 Rules of a bank line:
 
-- It is used only when the query id and text, `llm_criteria`, the query shape, `max_criteria` and a hash of the
+- It is used only when the query id and text, `belief_model`, the query shape, `max_criteria` and a hash of the
   init prompt all match, so a changed prompt or cap extracts again. A `vllm/` model is keyed with the checkpoint
   its server loaded (`{model}@{path}`), so two checkpoints served under one name do not share criteria.
 - A truncated reply is asked once more and fails when truncated again. A failed extraction is never added, so every
@@ -424,7 +434,7 @@ answer and documents) and an aggregate (gold answer only).
 Each row comes twice: per query (each query's mean over its criteria, then the mean over queries, CI over queries)
 and `(c)`, the mean over every criterion. Below the table, the status calibration: per final status, how many
 criteria had it and how many reached the answer. A candidate is a gold answer when it matches one, else when the
-judge (`judge_model`) says so, cached in `belief_eval/judge_cache.jsonl`. For diagnosis, `belief_eval/events.csv`
+judge (`judge_model`) says so, cached in `eval/belief/judge_cache.jsonl`. For diagnosis, `eval/belief/events.csv`
 has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
 `not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`
 (every member or hop reached).
@@ -450,13 +460,12 @@ headline measures as columns; `--all` for every measure, `--group` to keep some 
 src/evaluation/
 ├── runner.py        save_query_outputs, build_evaluators, load_run_results, evaluate_and_save
 ├── report.py        metrics.md, per_query.csv and the log block
-├── metrics.py       AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with belief model training)
+├── metrics.py       AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with the analyses)
 ├── retrieval/       surfaced / seen / cited doc levels and their TREC files; seen-doc Recall@N, Precision@N
 ├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
 ├── uncertainty/     UncertaintyEvaluator, ReportUncertaintyEvaluator
 ├── belief/          save_belief (belief/{qid}.jsonl schema), BeliefUpdateEvaluator, gold match and judge
-│                    (shared with belief model training)
 ├── trajectory/      TrajectoryEvaluator (per query), save_trajectory
 ├── generation/      the generation/{qid}.md writer
 ├── gold/            per-criterion gold (TRQA gold bank, training datasets); TRQA gold entities and their matcher
@@ -484,7 +493,7 @@ Llama-3.3-70B.
 - Scores (mean over requests, an empty report scores 0): `nugget_coverage` (`_weighted`), `sentence_support`,
   `citation_support`, `citation_relevance`, `f1` (`_weighted`). A nugget only counts when its sentence cites one of
   its supporting documents.
-- Cache: `report_eval/` keeps the nugget banks, the cited documents and each report's judgments keyed by a hash of
+- Cache: `eval/generation/` keeps the nugget banks, the cited documents and each report's judgments keyed by a hash of
   what was judged; an unchanged run is rescored without LLM calls. Cited document texts come from the corpus through a
   byte-offset index built once next to it (`{corpus}.jsonl.offsets.npz`).
 
@@ -512,18 +521,19 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 │   └── {qid}.md                    the same trajectory, human-readable, written live
 ├── belief/{qid}.jsonl              belief stage: meta line (criteria) + one line per search iteration + final line
 │   └── {qid}.md                    the same belief, human-readable
-├── accuracy.jsonl                  per-query verdicts (datasets with answers)
-├── report_eval/                    Auto-ARGUE inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv
-├── belief_eval/                    belief update evaluation: events.csv (one row per gold or control event),
-│                                   judge_cache.jsonl
-├── metrics.md                      every measure: group | metric | value | ci_low | ci_high | n
-└── per_query.csv                   every per-query value of every group
+└── eval/                           the evaluation, written by every stage
+    ├── metrics.md                  every measure: group | metric | value | ci_low | ci_high | n
+    ├── per_query.csv               every per-query value of every group
+    ├── generation/                 accuracy.jsonl: per-query verdicts (datasets with answers); or Auto-ARGUE
+    │                               inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv (reports)
+    └── belief/                     belief update evaluation: events.csv (one row per gold or control event),
+                                    judge_cache.jsonl
 ```
 
 `{agent}` is the `--policy-model` name (`oss_20b`, not the internal agent `oss`), as is `agent.policy_model` in
 `run_config.json`. `_{query_key}` is in the name only when it is not the dataset's default. Each fact has one file: the run settings are
-in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `metrics.md` only.
-`per_query.csv` repeats per-query values of the other files (correctness, s_T, verbal confidence, tokens): it is
+in `run_config.json` only, the final generation in `generation/{qid}.md` only, the aggregates in `eval/metrics.md` only.
+`eval/per_query.csv` repeats per-query values of the other files (correctness, s_T, verbal confidence, tokens): it is
 evaluation output, rebuilt by every evaluation and never read by inference or training. An evaluation removes the
 `summary.json` of earlier code.
 

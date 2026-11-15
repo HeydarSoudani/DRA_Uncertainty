@@ -5,7 +5,7 @@ under ``belief/``: a ``meta`` line, then one ``step`` line per search
 iteration, then one ``final`` line (the final scorer on the agent's
 answer turn, or on a report one more update, when it has one).  The files are the input of the offline analysis
 and of belief model training.  Every line carries ``query_id``;
-correctness labels stay in the accuracy output (``accuracy.jsonl``, same
+correctness labels stay in the accuracy output (``eval/generation/accuracy.jsonl``, same
 ``query_id`` key).  The run settings (agent, criteria and belief update
 models, criteria cap, retriever) are in the run's ``run_config.json``; the
 per-iteration seen doc ids and queries in the trajectory file

@@ -45,6 +45,7 @@ from .core.types import (
 )
 from .criteria.factory import (
     belief_llm,
+    belief_vllm_api_base,
     build_criteria_source,
     check_criteria_inputs,
     check_max_criteria,
@@ -87,7 +88,7 @@ __all__ = [
     "BANK_ONLY", "FINAL", "GOLD_CRITERIA_LEVEL", "GOLD_CRITERIA_MODEL",
     "CriteriaSource", "LLMCriteriaSource", "BankedCriteriaSource", "FallbackCriteriaSource",
     "criterion_kinds",
-    "belief_llm", "build_criteria_source", "check_criteria_inputs", "check_max_criteria", "prepare_criteria",
+    "belief_llm", "belief_vllm_api_base", "build_criteria_source", "check_criteria_inputs", "check_max_criteria", "prepare_criteria",
     # update
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "check_issues", "parse_final_score",

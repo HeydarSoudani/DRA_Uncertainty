@@ -20,7 +20,10 @@ what the agent's turns showed:
 
 Each query's belief goes to ``belief/{qid}.jsonl`` (``evaluation.belief.save_belief``)
 and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log_view``).
-A query whose belief file exists is done: the stage resumes.  Queries run in
+A query whose belief file exists is done: the stage resumes.  A query
+whose criteria or a belief call failed before any reply (the API, not the
+model) stops there and is not saved, so the next call runs it again; the
+stage lists these queries at its end.  Queries run in
 parallel threads, each with its own belief model (its own client and token
 meter, so each query's tokens are its own).
 """
@@ -135,22 +138,54 @@ def _belief_md(summary: Dict[str, Any], steps: List[Dict[str, Any]], final: Opti
     return "\n\n".join(parts) + "\n"
 
 
+#: Criteria errors of a call that raised before any reply (nothing banked,
+#: so the next call makes them again): the criteria source itself, the
+#: extractor's call, TRQA's gold criterion writer (whose failure would
+#: otherwise leave the query on its silver criteria).
+CRITERIA_CALL_ERRORS = ("criteria_source:", "llm_call:", "gold criteria: writer:")
+
+
+def _criteria_failed(info: Dict[str, Any]) -> bool:
+    """The query's criteria (``criteria_info``) failed for the API or the
+    server, not for the model's reply: an error of ``CRITERIA_CALL_ERRORS``,
+    also behind a silver fallback (``gold_missing``, the gold errors joined
+    by "; ")."""
+    texts = [str(e) for e in info.get("errors") or []] + [str(info.get("gold_missing") or "")]
+    return any(part.startswith(CRITERIA_CALL_ERRORS) for text in texts for part in text.split("; "))
+
+
+def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
+    """A record whose LLM call raised before any reply (the API or the
+    server, not the model: a reply that did not parse is the model's)."""
+    return bool(record) and bool(record.get("called")) and record.get("reply") is None
+
+
 def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[str]], List[Dict[str, Any]]],
                      verbose: bool) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
-    iteration, finish on the answer turn.  As in the agent loop, a failed
-    call is logged and the query goes on."""
+    iteration, finish on the answer turn.  ``failed`` names what failed for
+    a reason other than the model's reply (the criteria, a call that raised
+    before any reply, an exception); the query then stops there, is not
+    saved, and the next belief stage runs it again."""
     from utils.text_utils import verbose_print_belief, verbose_print_criteria
 
     qid = saved.qid
     summary: Dict[str, Any] = {"criteria": []}
+
+    def out(failed: Optional[str] = None) -> Dict[str, Any]:
+        return {"meta": belief_model.meta(), "steps": list(belief_model.steps), "final": belief_model.final,
+                "summary": summary, "failed": failed}
+
     try:
         belief_model.reset(query_id=qid, query=saved.question)
         summary = belief_model.criteria_summary()
-        if verbose:
-            verbose_print_criteria(summary, agent_name=f"Belief {qid}")
     except Exception:
         logger.warning("Belief model reset failed for %s", qid, exc_info=True)
+        return out("reset")
+    if _criteria_failed(summary.get("criteria_info") or {}):
+        return out("criteria")
+    if verbose:
+        verbose_print_criteria(summary, agent_name=f"Belief {qid}")
     criteria = summary.get("criteria") or []
     for it in saved.iterations:
         try:
@@ -158,18 +193,23 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
                 subqueries=it.subqueries, docs=docs_of(it.doc_ids),
                 iter_num=it.agent_iteration, agent_turn=it.agent_turn,
             )
-            if verbose:
-                verbose_print_belief(it.agent_iteration, record, criteria, agent_name=f"Belief {qid}")
         except Exception:
             logger.warning("Belief model failed at iteration %s of %s", it.agent_iteration, qid, exc_info=True)
+            return out(f"iteration {it.agent_iteration}")
+        if _call_failed(record):
+            return out(f"belief update call at iteration {it.agent_iteration}")
+        if verbose:
+            verbose_print_belief(it.agent_iteration, record, criteria, agent_name=f"Belief {qid}")
     try:
         belief_model.finish(saved.answer_turn)
     except Exception:
         logger.warning("Belief model final update failed for %s", qid, exc_info=True)
+        return out("final")
+    if _call_failed(belief_model.final):
+        return out("final call")
     if verbose and belief_model.final is not None:
         verbose_print_belief(None, belief_model.final, criteria, agent_name=f"Belief {qid}", final=True)
-    return {"meta": belief_model.meta(), "steps": list(belief_model.steps), "final": belief_model.final,
-            "summary": summary}
+    return out()
 
 
 def run_belief_stage(
@@ -189,9 +229,9 @@ def run_belief_stage(
     Args:
         run_dir: The run directory (its ``trajectory/`` and ``generation/``).
         qids: The finished queries without a belief file.
-        build_model: Builds one belief model (``orchestration.build_belief_model``);
-            one per worker, built here before the workers start (only the
-            first prints its settings).
+        build_model: Builds one belief model (``orchestration.build_belief_model``,
+            on the run's shared criteria source); one per worker, built here
+            before the workers start (only the first prints its settings).
         corpus_path: The run's corpus JSONL (the documents' text).
         retriever_name: The run's retriever (``corpus_doc``).
         policy_model: The run's agent (``NO_TURN_AGENTS``).
@@ -218,26 +258,38 @@ def run_belief_stage(
         contents = lookup.contents(doc_ids)
         return [corpus_doc(i, contents.get(i, ""), retriever_name) for i in doc_ids]
 
-    def run_one(qid: str) -> bool:
+    def run_one(qid: str) -> Optional[str]:
+        """None when the query's belief is saved, else what failed."""
         saved = read_saved_query(run_dir, qid, policy_model)
         if saved is None:
-            return False
+            return "no finished trajectory"
         if getattr(local, "model", None) is None:
             local.model = models.get()
         out = _belief_of_query(local.model, saved, docs_of, verbose)
+        if out["failed"]:
+            logger.warning("Belief of %s not saved (%s failed); the next belief stage runs it again",
+                           qid, out["failed"])
+            return out["failed"]
         # The .jsonl last: it marks the query as done.
         atomic_write_text(belief_dir / f"{qid}.md",
                           _belief_md(out["summary"], out["steps"], out["final"], qid, saved.question))
         save_belief(qid, saved.question, out["meta"], out["steps"], out["final"], belief_dir)
-        return True
+        return None
 
-    done = 0
+    not_saved: Dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run_one, qid): qid for qid in qids}
         for future in tqdm(as_completed(futures), total=len(futures), desc="Belief", unit="query"):
             qid = futures[future]
             try:
-                done += bool(future.result())
+                failed = future.result()
             except Exception as exc:
                 logger.error("Belief stage failed for %s: %s", qid, exc, exc_info=True)
-    return done
+                failed = f"{type(exc).__name__}: {exc}"
+            if failed:
+                not_saved[qid] = failed
+    if not_saved:
+        shown = sorted(not_saved)[:20]
+        print(f"[Belief] {len(not_saved)} queries not saved (run again by the next belief stage): "
+              + "; ".join(f"{q} ({not_saved[q]})" for q in shown) + (" ..." if len(not_saved) > 20 else ""))
+    return len(qids) - len(not_saved)

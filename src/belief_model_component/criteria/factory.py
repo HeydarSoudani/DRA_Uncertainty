@@ -3,7 +3,7 @@
 The belief model makes its criteria list once per sample
 (``BeliefModel.reset`` calls ``CriteriaSource.get``).  This module decides
 which source that is, from the dataset and the run's ``criteria_source``;
-the pipelines (dra_inference, belief model training through it,
+the callers (the belief stage of dra_inference,
 ``analysis/criteria_reachability.py``) only pass these settings.
 
 Per query:
@@ -30,8 +30,8 @@ Functions:
 
 - ``check_max_criteria``: the cap is for silver criteria only.
 - ``check_criteria_inputs``: before any model is loaded (no LLM call).
-- ``build_criteria_source``: the source of a split, as each worker builds
-  it.
+- ``build_criteria_source``: the source of a split, built once and shared
+  by the belief stage's workers.
 - ``prepare_criteria``: makes the missing criteria of the run's queries
   before the workers start, so they read them from the bank.
 - ``belief_llm``: the client of a belief model LLM.
@@ -70,8 +70,16 @@ def belief_llm(model: str):
     ``$BELIEF_VLLM_API_BASE`` (default ``$VLLM_API_BASE``, so it can sit
     next to a locally served agent); any other model goes through the API."""
     if model.startswith("vllm/"):
-        return disable_native_thinking(create_generator(model, api_base=os.getenv("BELIEF_VLLM_API_BASE")))
+        return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base()))
     return disable_native_thinking(create_generator(model, backend="api"))
+
+
+def belief_vllm_api_base() -> str:
+    """The endpoint of a ``vllm/`` belief model: ``$BELIEF_VLLM_API_BASE``,
+    else ``$VLLM_API_BASE``, else the default local server."""
+    from reasoner_component.vllm import DEFAULT_VLLM_API_BASE
+
+    return (os.getenv("BELIEF_VLLM_API_BASE") or os.getenv("VLLM_API_BASE") or DEFAULT_VLLM_API_BASE).rstrip("/")
 
 
 def bank_model_id(model: str) -> str:
@@ -81,9 +89,7 @@ def bank_model_id(model: str) -> str:
     served under the same name, and must not read another's criteria."""
     if not model.startswith("vllm/"):
         return model
-    from reasoner_component.vllm import DEFAULT_VLLM_API_BASE
-
-    base = (os.getenv("BELIEF_VLLM_API_BASE") or os.getenv("VLLM_API_BASE") or DEFAULT_VLLM_API_BASE).rstrip("/")
+    base = belief_vllm_api_base()
     bare = model.removeprefix("vllm/")
     try:
         with urllib.request.urlopen(f"{base}/models", timeout=30) as reply:
@@ -108,32 +114,32 @@ def check_max_criteria(dataset: str, max_criteria: Optional[int]) -> None:
                          "Set max_criteria to null")
 
 
-def check_criteria_inputs(dataset: str, criteria_source: str, llm_criteria: Optional[str],
+def check_criteria_inputs(dataset: str, criteria_source: str, belief_model: Optional[str],
                           max_criteria: Optional[int] = None) -> None:
     """Check the criteria settings of a run of *dataset* before any model is
-    loaded, and say where its criteria come from.  Stops when *max_criteria*
-    is set on a dataset without silver criteria (``check_max_criteria``) or
-    a training dataset's gold criteria file is missing."""
+    loaded, and say where its criteria come from.  Stops when there is no
+    *belief_model* (it makes the criteria), when *max_criteria* is set on a
+    dataset without silver criteria (``check_max_criteria``) or when a
+    training dataset's gold criteria file is missing."""
+    if not belief_model:
+        raise SystemExit("The belief stage needs a belief model: set belief_model in --config or pass --belief-model")
     check_max_criteria(dataset, max_criteria)
     spec = DATASET_SPECS[dataset]
     source = effective_criteria_source(criteria_source, dataset)
     if not spec.criteria_choice and criteria_source != source:
         print(f"[INFO] criteria_source {criteria_source} has no effect on {dataset}: its queries use their gold "
               f"criteria" + (", silver for a query without them" if spec.gold_criteria == ANNOTATION_GOLD else ""))
-    if not llm_criteria:
-        print("[INFO] criteria: none (no llm_criteria); the criteria-based signals are null")
-        return
     if source != GOLD_CRITERIA or spec.gold_criteria != ANNOTATION_GOLD:
-        print(f"[INFO] criteria: {extraction_kind(dataset)}, extracted from each query by {llm_criteria}")
+        print(f"[INFO] criteria: {extraction_kind(dataset)}, extracted from each query by {belief_model}")
     elif dataset in BUILT_DATASETS:
         path = gold_criteria_path(dataset)
         if not path.exists():
             raise SystemExit(f"criteria_source gold: {path} not found; build the dataset with "
                              f"experiments/training/build_training_dataset.py --dataset {dataset}"
                              + (", or run with --criteria-source silver" if spec.criteria_choice else ""))
-        print(f"[INFO] criteria: gold from {path}, silver for a query without them (extracted by {llm_criteria})")
+        print(f"[INFO] criteria: gold from {path}, silver for a query without them (extracted by {belief_model})")
     else:
-        print(f"[INFO] criteria: gold, made from the intermediate info (texts by {llm_criteria}), silver for a "
+        print(f"[INFO] criteria: gold, made from the intermediate info (texts by {belief_model}), silver for a "
               f"query without them")
 
 
@@ -141,25 +147,24 @@ def build_criteria_source(
     dataset: str,
     split: str,
     *,
-    llm_criteria: Optional[str],
+    belief_model: str,
     max_criteria: Optional[int],
     criteria_source: str = GOLD_CRITERIA,
     fallback: bool = True,
-) -> Optional[CriteriaSource]:
+) -> CriteriaSource:
     """The criteria source of the queries of *split* of *dataset* (see the
-    module docstring); None without *llm_criteria*.
+    module docstring).
 
-    *llm_criteria* extracts the criteria from the question and writes
+    *belief_model* extracts the criteria from the question and writes
     TRQA's gold criterion texts; *max_criteria* caps the extraction (None:
     uncapped).  *fallback* false: a query without gold criteria gets none
     (``analysis/criteria_reachability.py``)."""
-    if not llm_criteria:
-        logger.warning("No --llm-criteria model; criteria-based signals disabled")
-        return None
+    if not belief_model:
+        raise ValueError("the criteria source needs a belief model")
     spec = DATASET_SPECS[dataset]
     kind = extraction_kind(dataset)
-    llm = belief_llm(llm_criteria)
-    model_id = bank_model_id(llm_criteria)
+    llm = belief_llm(belief_model)
+    model_id = bank_model_id(belief_model)
     bank = criteria_bank_path(dataset, split, kind)
     source: CriteriaSource = BankedCriteriaSource(
         LLMCriteriaSource(llm_client=llm, max_criteria=max_criteria, model_name=model_id,

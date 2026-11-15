@@ -1,8 +1,7 @@
-"""Shared measures of the evaluation and of belief model training.
+"""Shared measures of the evaluation.
 
 One copy of each measure, used by the run evaluation (``evaluation.runner``:
-uncertainty and belief update), by belief model training
-(``belief_model_training.scoring``) and by the offline analyses.
+uncertainty and belief update) and by the offline analyses.
 
     auroc         AUROC of a score for a binary label (Mann-Whitney U, ties
                   as halves); NaN when one class is missing

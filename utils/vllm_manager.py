@@ -366,6 +366,13 @@ class VLLMServerManager:
         self._processes.clear()
         print("[vLLM Manager] All servers stopped.")
 
+    @staticmethod
+    def cleanup_ports() -> set:
+        """The ports of every known agent and reranker server: after the
+        generate stage, ``shutdown_and_release_gpus`` kills any process bound
+        to one of them, also a server this manager did not start."""
+        return {spec.port for spec_dict in (_LLM_SERVER_SPECS, _RERANKER_SERVER_SPECS) for spec in spec_dict.values()}
+
     def shutdown_and_release_gpus(self, total_gpus: int, *, timeout: int = 120) -> None:
         """Shut down all servers, kill orphan port processes, and free GPUs.
 
@@ -373,10 +380,7 @@ class VLLMServerManager:
         the correctness judge (or any subsequent workload).
         """
         # Collect ports before shutdown clears self._processes
-        ports_to_clean = {s.port for s, _ in self._processes}
-        for spec_dict in (_LLM_SERVER_SPECS, _RERANKER_SERVER_SPECS):
-            for spec in spec_dict.values():
-                ports_to_clean.add(spec.port)
+        ports_to_clean = {s.port for s, _ in self._processes} | self.cleanup_ports()
 
         # 1) Kill all managed server processes
         self.shutdown()

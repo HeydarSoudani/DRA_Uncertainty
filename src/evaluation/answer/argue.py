@@ -41,7 +41,7 @@ The package runs unmodified; this module supplies its inputs and its judge.
   the check's default answer for one that still has none
   (``judge_malformed``).
 
-Everything is cached under ``{run_dir}/report_eval/``: the cited documents and
+Everything is cached under ``{run_dir}/eval/generation/`` (``GENERATION_EVAL_DIR``): the cited documents and
 each report's judgments, keyed by a hash of what was judged, so evaluating an
 unchanged run again makes no LLM call.  Scores are always recomputed from the
 judgments by the package's ``score``.  A request whose report has no sentence
@@ -70,6 +70,7 @@ from tqdm import tqdm
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 
 from ..metrics import mean_or_none
+from ..report import GENERATION_EVAL_DIR
 from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
 from .report_sentences import report_sentences
 
@@ -330,7 +331,7 @@ class ArgueReportEvaluator:
         ``per_query``; ``{}`` when no request has nuggets.
         """
         judge, score_module, utils = _import_auto_argue()
-        out_dir = Path(run_dir) / "report_eval" if run_dir else Path(tempfile.mkdtemp(prefix="report_eval_"))
+        out_dir = Path(run_dir) / GENERATION_EVAL_DIR if run_dir else Path(tempfile.mkdtemp(prefix="generation_eval_"))
         banks_dir, cache_dir = out_dir / "nuggets", out_dir / "judgments"
         banks_dir.mkdir(parents=True, exist_ok=True)
         cache_dir.mkdir(parents=True, exist_ok=True)

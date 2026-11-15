@@ -1,6 +1,6 @@
 """Collect the evaluation of many runs into one table.
 
-Reads every run under ``--root`` that has a ``metrics.md``
+Reads every run under ``--root`` that has an ``eval/metrics.md``
 (``evaluation.report``, written by ``dra_inference.py`` and its
 ``--eval-only``) with its ``run_config.json``, and writes one table: a row
 per run (dataset, split, agent, belief mode, criteria source, finished and
@@ -72,7 +72,7 @@ def collect(root: Path, groups: List[str], all_metrics: bool,
     digits, with the CI when *with_ci*) and the CSV cells (4 digits, no CI)."""
     md_rows, csv_rows, seen_metrics = [], [], []
     for path in sorted(root.rglob(METRICS_FILE)):
-        run_dir = path.parent
+        run_dir = path.parent.parent   # {run_dir}/eval/metrics.md
         header = read_header(path)
         ident = {**run_identity(run_dir), "run": str(run_dir.relative_to(root)),
                  "queries": header.get("queries", ""), "unfinished": header.get("unfinished", "")}
@@ -99,7 +99,7 @@ def collect(root: Path, groups: List[str], all_metrics: bool,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--root", type=Path, required=True, help="Folder searched for runs (metrics.md).")
+    parser.add_argument("--root", type=Path, required=True, help="Folder searched for runs (eval/metrics.md).")
     parser.add_argument("--out", type=Path, default=Path("results"), help="Output path without extension.")
     parser.add_argument("--group", nargs="+", default=list(GROUPS), choices=list(GROUPS), help="Groups kept.")
     parser.add_argument("--all", action="store_true", help="Every measure of the kept groups, not the headline.")

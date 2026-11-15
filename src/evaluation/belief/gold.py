@@ -1,7 +1,6 @@
 """Whether a text has the gold answer of a criterion.
 
-Shared by the belief update evaluation (``evaluation.belief.evaluator``)
-and belief model training (``belief_model_training.nugget_gold``).  A
+Used by the belief update evaluation (``evaluation.belief.evaluator``).  A
 criterion is a plain dict with at least ``text`` and ``answers``.
 
 - ``states``: a text states one of the gold answers: an answer occurs in it

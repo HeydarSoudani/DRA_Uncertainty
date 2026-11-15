@@ -24,7 +24,7 @@ def save_trajectory(query_id: str, question: str, result: Dict[str, Any], output
     ``action_type`` / ``generation``.
 
     The meta line marks the query as finished
-    (``utils.io_utils.get_processed_queries``), so this is the last file of
+    (``utils.io_utils.scan_queries``), so this is the last file of
     the query to be written, and it is written atomically.
 
     Not stored here, since it lives in its own file: the final generation

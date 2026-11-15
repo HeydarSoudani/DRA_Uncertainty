@@ -146,11 +146,28 @@ def scan_queries(run_dir: Union[str, Path]) -> Tuple[set, set]:
     return finished, unfinished
 
 
-def believed_queries(run_dir: Union[str, Path]) -> set:
-    """The query ids the belief stage has done: ``belief/{qid}.jsonl``
-    exists (written last and atomically, ``evaluation.belief.save_belief``)."""
+def believed_queries(run_dir: Union[str, Path]) -> Tuple[set, set]:
+    """``(done, stale)`` query ids of the run's belief stage.
+
+    A query is done when ``belief/{qid}.jsonl`` (written last and
+    atomically, ``evaluation.belief.save_belief``) has a meta line of the
+    current ``SCHEMA_VERSION``; a file of another schema is stale: the
+    evaluation leaves it out, so the belief stage runs the query again.
+    """
+    from evaluation.belief.writer import SCHEMA_VERSION
+
     belief_dir = Path(run_dir) / "belief"
-    return {p.stem for p in belief_dir.glob("*.jsonl")} if belief_dir.is_dir() else set()
+    if not belief_dir.is_dir():
+        return set(), set()
+    done, stale = set(), set()
+    for path in belief_dir.glob("*.jsonl"):
+        try:
+            with open(path) as f:
+                meta = _json.loads(f.readline() or "{}")
+        except (OSError, ValueError):
+            meta = {}
+        (done if meta.get("schema_version") == SCHEMA_VERSION else stale).add(path.stem)
+    return done, stale
 
 
 def load_result_from_trec(trec_file: Union[str, Path], query_id: str) -> dict:
@@ -329,11 +346,18 @@ def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> 
 
 #: Sections of ``run_config.json`` that the trajectories of one run
 #: directory share: a generate stage with other values is refused
-#: (``check_run_config``).  ``belief_model`` is the belief stage's: other
-#: values replace the run's beliefs (``set_belief_config``).  ``evaluation``
-#: may change between calls (it only re-judges).
+#: (``check_run_config``), a belief or eval stage with another ``dataset``
+#: section too (``check_run_dataset``).  ``belief_model`` is the belief
+#: stage's: other values replace the run's beliefs (``belief_config_diffs``).
+#: ``evaluation`` may change between calls (it only re-judges).
 LOCKED_RUN_CONFIG_SECTIONS = ("dataset", "agent", "searcher")
 BELIEF_CONFIG_SECTION = "belief_model"
+#: Keys of the locked sections recorded for information only: a path that
+#: moves with the data root (another machine, ``$DRA_DATA_ROOT``) while the
+#: dataset and split, which name the documents, stay the same.  A change is
+#: printed (:func:`print_moved_paths`), not refused; a run saved before the
+#: key is accepted.
+UNLOCKED_RUN_CONFIG_KEYS = {"dataset": ("corpus_path",)}
 
 
 def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: str,
@@ -358,6 +382,9 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
             "split": split,
             "query_key": query_key,
             "min_relevance_score": kwargs.get("min_relevance_score"),
+            # The documents the agent searched (information, not locked:
+            # UNLOCKED_RUN_CONFIG_KEYS).
+            "corpus_path": kwargs.get("corpus_path"),
         },
         "agent": {
             "policy_model": policy_model,
@@ -397,18 +424,14 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
 
 def build_belief_config(dataset: str, *, max_passage_tokens: Optional[int], **kwargs) -> Dict[str, Any]:
     """The ``belief_model`` section of ``run_config.json``: the belief
-    stage's settings, with defaults resolved (the criteria cap, the belief
-    judge model).  *max_passage_tokens* is the run's (its agent section):
-    the belief update reads the text the agent was shown."""
-    from indexing_corpus_dataset.layout import DATASET_SPECS, effective_criteria_source
+    stage's settings (the criteria cap as ``resolve_dataset_defaults`` set
+    it from the dataset).  *max_passage_tokens* is the run's (its agent
+    section): the belief update reads the text the agent was shown."""
+    from indexing_corpus_dataset.layout import effective_criteria_source
 
-    llm_criteria = kwargs.get("llm_criteria") or None
-    judge = (kwargs.get("belief_judge_model") or llm_criteria) if llm_criteria else None
-    max_criteria = kwargs.get("max_criteria")
     return {
-        "llm_criteria": llm_criteria,
-        "max_criteria": DATASET_SPECS[dataset].max_criteria if max_criteria is None else max_criteria,
-        "belief_judge_model": judge,
+        "belief_model": kwargs.get("belief_model") or None,
+        "max_criteria": kwargs.get("max_criteria"),
         "criteria_source": kwargs["criteria_source"],
         "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
         "max_passage_tokens": max_passage_tokens,
@@ -427,13 +450,26 @@ def _openrouter_provider(policy_model: str, backend: str) -> Optional[Dict[str, 
 
 def run_config_diffs(old: Dict[str, Any], new: Dict[str, Any],
                      sections=LOCKED_RUN_CONFIG_SECTIONS) -> List[str]:
-    """``section.key: old -> new`` for every key of *sections* that differs."""
+    """``section.key: old -> new`` for every key of *sections* that differs
+    (the keys of ``UNLOCKED_RUN_CONFIG_KEYS`` left out)."""
     diffs = []
     for section in sections:
         a, b = old.get(section) or {}, new.get(section) or {}
+        skip = UNLOCKED_RUN_CONFIG_KEYS.get(section, ())
         diffs += [f"{section}.{k}: {a.get(k)!r} -> {b.get(k)!r}"
-                  for k in sorted(set(a) | set(b)) if a.get(k) != b.get(k)]
+                  for k in sorted(set(a) | set(b)) if k not in skip and a.get(k) != b.get(k)]
     return diffs
+
+
+def print_moved_paths(old: Dict[str, Any], new: Dict[str, Any]) -> None:
+    """Print each key of ``UNLOCKED_RUN_CONFIG_KEYS`` whose saved value
+    (*old*, when it has one) differs from this call's (*new*)."""
+    for section, keys in UNLOCKED_RUN_CONFIG_KEYS.items():
+        a, b = old.get(section) or {}, new.get(section) or {}
+        for k in keys:
+            if a.get(k) is not None and a.get(k) != b.get(k):
+                print(f"[WARN] {section}.{k} of the run: {a.get(k)!r}; this call reads {b.get(k)!r}. "
+                      "It must hold the same documents.")
 
 
 def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
@@ -447,6 +483,7 @@ def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
     saved: Dict[str, Any] = {}
     if path.exists():
         saved = _json.loads(path.read_text())
+        print_moved_paths(saved, config)
         diffs = run_config_diffs(saved, config)
         if diffs:
             raise SystemExit(
@@ -458,21 +495,72 @@ def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
     atomic_write_text(path, _json.dumps(config, indent=2))
 
 
-def set_belief_config(run_dir: Union[str, Path], section: Dict[str, Any]) -> List[str]:
+def _legacy_belief_section(section: Dict[str, Any]) -> Dict[str, Any]:
+    """A belief section saved before the one ``belief_model`` key, in the
+    current form: ``llm_criteria`` (criteria) and ``belief_judge_model``
+    (update, final score) become ``belief_model`` when they name the same
+    model; two different models stay as they are (another belief model
+    than one backbone, so the beliefs are made again).  ``mode: monitor``
+    and ``add_intermediate_answer: false`` (keys of the removed belief-aware
+    agent, at the only behaviour left) are dropped."""
+    section = {k: v for k, v in section.items()
+               if not (k == "mode" and v == "monitor") and not (k == "add_intermediate_answer" and v is False)}
+    if "belief_model" in section or "llm_criteria" not in section:
+        return section
+    criteria, judge = section.get("llm_criteria"), section.get("belief_judge_model")
+    if judge and judge != criteria:
+        return section
+    rest = {k: v for k, v in section.items() if k not in ("llm_criteria", "belief_judge_model")}
+    return {"belief_model": criteria, **rest}
+
+
+def belief_model_of(section: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The belief model of a saved belief section, also of one saved before
+    the ``belief_model`` key (its update model, ``belief_judge_model``)."""
+    section = section or {}
+    return section.get("belief_model") or section.get("belief_judge_model") or section.get("llm_criteria")
+
+
+def belief_config_diffs(run_dir: Union[str, Path], section: Dict[str, Any]) -> List[str]:
+    """How *section* (:func:`build_belief_config`) differs from the belief
+    section of the run's ``run_config.json`` (``section.key: old -> new``),
+    empty when it is the same or the run has none.  A section saved before
+    the ``belief_model`` key is compared in the current form
+    (:func:`_legacy_belief_section`).  Reads only."""
+    saved = _json.loads((Path(run_dir) / "run_config.json").read_text())
+    old = saved.get(BELIEF_CONFIG_SECTION)
+    if old is None:
+        return []
+    return run_config_diffs({BELIEF_CONFIG_SECTION: _legacy_belief_section(old)}, {BELIEF_CONFIG_SECTION: section},
+                            sections=(BELIEF_CONFIG_SECTION,))
+
+
+def set_belief_config(run_dir: Union[str, Path], section: Dict[str, Any]) -> None:
     """Set the belief section of the run's ``run_config.json`` to *section*
-    (:func:`build_belief_config`); returns how it differs from the saved
-    one (``section.key: old -> new``), empty when it is the same or the run
-    had none.  The run must have a ``run_config.json`` (the generate
-    stage's)."""
+    (:func:`build_belief_config`).  The run must have a ``run_config.json``
+    (the generate stage's).  The belief stage calls it after removing the
+    beliefs of other settings (:func:`belief_config_diffs`), so the file
+    never names settings its beliefs were not made with."""
     path = Path(run_dir) / "run_config.json"
     saved = _json.loads(path.read_text())
-    old = saved.get(BELIEF_CONFIG_SECTION)
-    diffs = run_config_diffs(saved, {BELIEF_CONFIG_SECTION: section}, sections=(BELIEF_CONFIG_SECTION,)) \
-        if old is not None else []
-    if old != section:
+    if saved.get(BELIEF_CONFIG_SECTION) != section:
         saved[BELIEF_CONFIG_SECTION] = section
         atomic_write_text(path, _json.dumps(saved, indent=2))
-    return diffs
+
+
+def check_run_dataset(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
+    """The belief and eval stages: stop when the ``dataset`` section of
+    *config* (:func:`build_run_config`, from this call's settings) differs
+    from the run's.  These stages read the saved run with this call's
+    qrels and corpus, which must be the generate stage's (a moved corpus
+    path is printed, :func:`print_moved_paths`)."""
+    path = Path(run_dir) / "run_config.json"
+    saved = _json.loads(path.read_text())
+    print_moved_paths(saved, config)
+    diffs = run_config_diffs(saved, config, sections=("dataset",))
+    if diffs:
+        raise SystemExit(f"{path} was generated with other dataset settings than this call's: {'; '.join(diffs)}. "
+                         "Use the generate stage's settings.")
 
 
 def update_run_config_evaluation(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:

@@ -1,11 +1,10 @@
-"""Evaluation of an inference run, used by ``experiments/inference/dra_inference.py``
-(and so by belief model training's phase 1, a dra_inference run).
+"""Evaluation of an inference run, used by ``experiments/inference/dra_inference.py``.
 
     save_query_outputs      Write one query's files under the run directory.
     build_evaluators        Instantiate the evaluators of a dataset.
     load_run_results        Read the run's queries back from their saved files.
     evaluate_and_save       Run every evaluator, print the log block and write
-                            ``metrics.md`` and ``per_query.csv``
+                            ``eval/metrics.md`` and ``eval/per_query.csv``
                             (``evaluation.report``).
 
 The groups, in the order of the files and the log:
@@ -15,7 +14,9 @@ The groups, in the order of the files and the log:
     uncertainty  s_T, its formula ablations and the agent's verbal confidence
                  against correctness (QA, belief files); a report's s_T
                  against its nugget coverage (reports, belief files)
-    belief       the belief's change at gold and control events, and per
+    belief       the finished queries with a belief file of the current
+                 schema (belief files); the belief's change at gold and
+                 control events, and per
                  criterion its recall, answer reached and status calibration
                  (datasets with gold per criterion, belief files); the
                  share of update calls with issues, and every issue code
@@ -25,8 +26,8 @@ The groups, in the order of the files and the log:
 A run with an output directory is always evaluated from its saved files,
 whatever its stage (``--stage``), so every stage writes the same files.
 The LLM-judged evaluators keep their verdicts in the run directory
-(``accuracy.jsonl``, ``report_eval/``, ``belief_eval/judge_cache.jsonl``)
-and judge only what changed.
+under ``eval/`` (``eval/generation/``: ``accuracy.jsonl`` or the Auto-ARGUE
+cache; ``eval/belief/judge_cache.jsonl``) and judge only what changed.
 """
 
 import logging
@@ -41,16 +42,16 @@ from tqdm import tqdm
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.io_utils import load_result_from_saved_files
+from utils.io_utils import belief_model_of, load_result_from_saved_files
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
 from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config
-from .belief.evaluator import BELIEF_EVAL_DIR, CALIBRATION_COLUMNS
+from .belief.evaluator import CALIBRATION_COLUMNS
 from .common import RULE
 from .metrics import mean
 from .generation import GenerationEvaluator
 from .gold.criteria import GOLD_DATASETS
-from .report import METRICS_FILE, PER_QUERY_FILE, Row, fmt, log_lines, write_metrics, write_per_query
+from .report import ACCURACY_FILE, EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, Row, fmt, log_lines, write_metrics, write_per_query
 from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
 from .trajectory import TrajectoryEvaluator, save_trajectory
 from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
@@ -70,7 +71,7 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
 
     ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
     then ``trajectory/{qid}.jsonl``: its meta line marks the query as finished
-    (``utils.io_utils.get_processed_queries``), so it is written last.
+    (``utils.io_utils.scan_queries``), so it is written last.
     """
     run_dir = Path(run_dir)
     SurfacedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "surfaced")
@@ -181,7 +182,7 @@ def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int,
         "run": str(run_dir) if run_dir else "-",
         "dataset": f"{data.get('dataset') or dataset} / {data.get('split') or '-'}",
         "agent": agent.get("policy_model") or "-",
-        "belief": (f"{belief.get('belief_judge_model') or '-'} ({belief.get('criteria_source_effective')} criteria)"
+        "belief": (f"{belief_model_of(belief) or '-'} ({belief.get('criteria_source_effective')} criteria)"
                    if belief else "-"),
         "queries": num_queries,
         **({"unfinished": num_unfinished} if num_unfinished is not None else {}),
@@ -202,7 +203,7 @@ def evaluate_and_save(
 ) -> None:
     """Run every evaluator, print the log block and write ``metrics.md``,
     ``per_query.csv`` (``evaluation.report``) and the evaluators' own files
-    (``accuracy.jsonl``, ``report_eval/``, ``belief_eval/``).
+    (``eval/generation/``, ``eval/belief/``), all under ``eval/``.
 
     Args:
         results:    Unified results dict keyed by query_id.
@@ -244,7 +245,7 @@ def evaluate_and_save(
     accuracy = timed("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else {}
     if accuracy and run_dir is not None:
         # Saved at once: the verdicts are paid for, and a later evaluator may fail.
-        ev.accuracy.save_results(accuracy, run_dir / "accuracy.jsonl")
+        ev.accuracy.save_results(accuracy, run_dir / ACCURACY_FILE)
     if accuracy:
         merge({r["query_id"]: {"correct": None if r.get("judge_error") else bool(r["correct"]),
                                "verbal_confidence": r.get("verbal_confidence")} for r in accuracy["per_query"]})
@@ -286,6 +287,10 @@ def evaluate_and_save(
             merge(unc["per_query"])
             for metric, value, lo, hi, n in unc["rows"]:
                 add("uncertainty", metric, value, lo, hi, n)
+    if has_belief:
+        # The belief stage saves no query whose call failed: the rest of the
+        # group is over these queries only.
+        add("belief", "queries with a belief file", len(belief_files), n=len(results))
     bel: Dict[str, Any] = {}
     if belief_files and ev.belief is not None:
         bel = timed("belief", ev.belief.evaluate, run_dir, belief_files, list(results))
@@ -329,9 +334,10 @@ def evaluate_and_save(
                           for status, p, n, hits, share in bel["calibration"]]))
     if issues.get("table"):
         sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), issues["table"]))
+    (run_dir / EVAL_DIR).mkdir(parents=True, exist_ok=True)
     write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
     # The grouped JSON summary of earlier evaluations is replaced by these files.
     (run_dir / "summary.json").unlink(missing_ok=True)
-    print(f"  Saved {run_dir / METRICS_FILE} and {PER_QUERY_FILE}"
-          f"{f' and {BELIEF_EVAL_DIR}/events.csv' if bel else ''}")
+    print(f"  Saved {run_dir / EVAL_DIR}/: metrics.md, per_query.csv"
+          f"{' and belief/events.csv' if bel else ''}")

@@ -1,8 +1,8 @@
 """Final score ablation: the final scorer against the fixed functions of
 the belief, in judging the agent's answer.
 
-Rescores saved monitor runs of a short-answer dataset without rerunning
-the agent.  Per query, the belief before the answer turn (b_{T-1}) is
+Rescores the saved belief files of a short-answer run without rerunning
+the agent or the belief stage's updates.  Per query, the belief before the answer turn (b_{T-1}) is
 rebuilt by replaying the run's saved belief update replies
 (``BeliefUpdateSignal`` with a client that returns them; every replayed
 belief must equal the saved one, else the query is left out), then s_T is
@@ -17,8 +17,7 @@ computed three ways against the correctness y of the agent's answer
   (``core.certainty.answer_certainty``).
 
 Measures per variant (the queries every variant scored): AUROC, Kendall's
-tau-b, Brier score and ECE (10 bins), as in the belief model training
-scores.  Runs of schema 37 (a final update instead of the scorer) are
+tau-b, Brier score and ECE (10 bins) (``evaluation.metrics``).  Runs of schema 37 (a final update instead of the scorer) are
 replayed up to their last step; the scorer is always called anew.
 
 Usage::
@@ -26,10 +25,10 @@ Usage::
     python analysis/final_score_ablation.py --run-dir RUN [--run-dir RUN2 ...]
         [--model openrouter/qwen/qwen3.6-27b] [--subset SUBSET] [--limit N] [--out-dir DIR]
 
-``--model`` defaults to the run's ``belief_judge_model``; ``--subset``
-(the corpus subset the run read, not recorded in its ``run_config``) to
-the dataset's default subset, e.g. ``--subset ecommerce`` for a TRQA
-ecommerce run.  Outputs in
+``--model`` defaults to the run's belief model; the corpus is the run's
+(``corpus_path`` in its ``run_config``), for a run saved without it the
+dataset's corpus of ``--subset`` (default the dataset's subset, e.g.
+``--subset ecommerce`` for a TRQA ecommerce run).  Outputs in
 ``--out-dir`` (default ``RUN/final_score_ablation`` for one run):
 ``scores.jsonl`` (per query: y, each variant's s_T and label, the replies)
 and ``summary.json`` (the measures).
@@ -52,12 +51,11 @@ from belief_model_component import (  # noqa: E402
     BeliefState, BeliefUpdateSignal, Criterion, answer_certainty, belief_llm, build_belief_updater,
     build_final_scorer, certainty, is_computed,
 )
-from belief_model_training.runs import read_correctness  # noqa: E402
-from belief_model_training.scoring import _final_measures  # noqa: E402
 from evaluation.belief import clean_record, passage_tokens  # noqa: E402
+from evaluation.metrics import auroc, brier, ece, tau_b  # noqa: E402
 from indexing_corpus_dataset.doc_lookup import CorpusLookup  # noqa: E402
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path  # noqa: E402
-from utils.io_utils import read_jsonl  # noqa: E402
+from utils.io_utils import belief_model_of, read_jsonl  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +74,28 @@ class _SavedReplies:
         if reply is None:
             raise RuntimeError("the saved call failed")
         return reply
+
+
+def read_correctness(run_dir: Path) -> Dict[str, Optional[bool]]:
+    """Per query of the run, its answer is correct (``accuracy.jsonl``:
+    ``correct`` of the LLM judge, or ``exact_match``); None when the judge
+    failed."""
+    path = run_dir / "eval" / "generation" / "accuracy.jsonl"
+    if not path.exists():
+        logger.warning("%s not found: no correctness", path)
+        return {}
+    out: Dict[str, Optional[bool]] = {}
+    for row in read_jsonl(path):
+        if "query_id" not in row:
+            continue
+        label = row.get("correct", row.get("exact_match"))
+        out[str(row["query_id"])] = None if row.get("judge_error") or label is None else bool(label)
+    return out
+
+
+def _final_measures(prefix: str, s: np.ndarray, y: np.ndarray) -> Dict[str, float]:
+    return {f"{prefix}_auroc": auroc(y, s), f"{prefix}_tau_b": tau_b(s, y),
+            f"{prefix}_brier": brier(y, s), f"{prefix}_ece": ece(y, s)}
 
 
 def _canonical(value: Any) -> str:
@@ -121,9 +141,14 @@ def ablate_run(run_dir: Path, model: Optional[str], limit: Optional[int],
         max_tokens = passage_tokens(config)
     except ValueError as exc:
         raise SystemExit(f"{run_dir}: {exc}") from None
-    model = model or config["belief_model"].get("belief_judge_model")
+    model = model or belief_model_of(config.get("belief_model"))
+    if not model:
+        raise SystemExit(f"{run_dir}: no belief model in its run_config; pass --model")
     scorer = build_final_scorer(belief_llm(model), model=model, query_shape=shape)
-    corpus = CorpusLookup(default_corpus_path(dataset, subset or spec.subset))
+    corpus_path = config["dataset"].get("corpus_path")
+    if not corpus_path or not Path(corpus_path).exists():
+        corpus_path = default_corpus_path(dataset, subset or spec.subset)
+    corpus = CorpusLookup(corpus_path)
     correct = read_correctness(run_dir)
     rows = []
     paths = sorted((run_dir / "belief").glob("*.jsonl"))
@@ -175,8 +200,8 @@ def summary(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--run-dir", type=Path, action="append", required=True)
-    parser.add_argument("--model", default=None, help="final scorer model (default: the run's belief judge)")
-    parser.add_argument("--subset", default=None, help="corpus subset of the runs (default: the dataset's)")
+    parser.add_argument("--model", default=None, help="final scorer model (default: the run's belief model)")
+    parser.add_argument("--subset", default=None, help="corpus subset of a run saved without its corpus_path (default: the dataset's)")
     parser.add_argument("--limit", type=int, default=None, help="queries per run")
     parser.add_argument("--out-dir", type=Path, default=None)
     args = parser.parse_args()

@@ -53,7 +53,7 @@ Per request:
    TRQA with gold reads its gold bank, made on demand from the
    intermediate info (:mod:`indexing_corpus_dataset.training_datasets.gold.trqa`);
    its criteria name every member, so its entity reachability is near 1 by
-   construction, a check of the gold.  ``llm_criteria``, ``max_criteria`` and
+   construction, a check of the gold.  ``belief_model``, ``max_criteria`` and
    ``criteria_source`` default to the run config
    (``--config``, ``dra_inference.yaml``), so the analysis reads the
    criteria the runs use.  A request whose extraction failed (a reply
@@ -174,7 +174,7 @@ def criteria_source(args, split: str) -> CriteriaSource:
     from the intermediate info); a request without gold criteria gets none
     and is left out.  Each has ``path``, ``lookup`` (stored criteria only) and ``get``."""
     from belief_model_component import build_criteria_source
-    return build_criteria_source(args.dataset, split, llm_criteria=args.llm_criteria, max_criteria=args.max_criteria,
+    return build_criteria_source(args.dataset, split, belief_model=args.belief_model, max_criteria=args.max_criteria,
                                  criteria_source=args.criteria_source, fallback=False)
 
 
@@ -446,7 +446,7 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
     summary = {
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "grades": grades,
-            "config": args.config, "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria,
+            "config": args.config, "belief_model": args.belief_model, "max_criteria": args.max_criteria,
             "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
             "criteria_bank": str(source.path), "judge_model": args.judge_model, "judge_prompt": PROMPT_HASH,
             "topic_key": spec.title_key, "passage": "full document",
@@ -627,7 +627,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
     summary = {
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "config": args.config,
-            "llm_criteria": args.llm_criteria, "max_criteria": args.max_criteria,
+            "belief_model": args.belief_model, "max_criteria": args.max_criteria,
             "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
             "criteria_bank": str(source.path),
             "judge_model": args.judge_model, "judge_prompt": ENTITY_MATCH_PROMPT_HASH,
@@ -700,10 +700,10 @@ def run(args: argparse.Namespace) -> None:
     if args.grades and spec.reachability != "documents":
         raise SystemExit(f"--grades is for document reachability; {args.dataset} has reachability {spec.reachability}")
     config = load_run_config(args.config)
-    for field in ("llm_criteria", "max_criteria", "criteria_source"):
+    for field in ("belief_model", "max_criteria", "criteria_source"):
         if getattr(args, field) is None:
             setattr(args, field, config[field])
-    args.judge_model = args.judge_model or args.llm_criteria
+    args.judge_model = args.judge_model or args.belief_model
     apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_criteria"))
     check_max_criteria(args.dataset, args.max_criteria)
     split = resolve_split_id(args.dataset, args.dataset_year, args.subset)
@@ -718,7 +718,7 @@ def parse_args() -> argparse.Namespace:
     """Build and parse the CLI arguments.
 
     A default of None is resolved at run time: the dataset fields from
-    ``layout.DATASET_SPECS``, ``llm_criteria`` and ``max_criteria`` from the
+    ``layout.DATASET_SPECS``, ``belief_model`` and ``max_criteria`` from the
     run config (``--config``), so the analysis reads the criteria the runs
     use.
     """
@@ -738,9 +738,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus, layout.default_corpus_path).")
 
     # ── Criteria and judge ──────────────────────────────────────────────────
-    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that llm_criteria, max_criteria and criteria_source are read from.")
+    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that belief_model, max_criteria and criteria_source are read from.")
     parser.add_argument("--criteria-source", type=str, default=None, choices=CRITERIA_SOURCES, help="gold | silver (None = the config's criteria_source); a choice on TRQA only (output folder {dataset}_{split}-{source}), elsewhere the dataset's criteria.")
-    parser.add_argument("--llm-criteria", type=str, default=None, help="Criteria-extraction LLM (None = the config's llm_criteria).")
+    parser.add_argument("--belief-model", type=str, default=None, help="Belief model LLM, which extracts the criteria (None = the config's belief_model).")
     parser.add_argument("--max-criteria", type=int, default=None, help="Cap on silver criteria only: TRQA with --criteria-source silver (None = the config's max_criteria, else the dataset's; refused on a dataset whose criteria are gold).")
     parser.add_argument("--judge-model", type=str, default=None, help="Reachability judge LLM (None = the criteria-extraction LLM).")
 

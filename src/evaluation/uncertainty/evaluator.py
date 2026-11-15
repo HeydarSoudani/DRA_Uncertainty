@@ -2,7 +2,7 @@
 answers above its wrong ones, and is it calibrated?
 
 Per query of a short-answer dataset (``task == "qa"``), y is the
-correctness of the agent's final answer (``accuracy.jsonl``: the judge's
+correctness of the agent's final answer (``eval/generation/accuracy.jsonl``: the judge's
 ``correct``, TRQA's exact match; a judge error leaves the query out), and
 the scores are:
 
