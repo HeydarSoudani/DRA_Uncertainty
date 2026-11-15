@@ -62,20 +62,6 @@ TAG_FORMAT = (
     "<answer>your answer</answer>"
 )
 
-# The belief-aware agent's reasoning tag is <reasoning>, not <think> (see
-# agents.belief_aware_agent).
-REASONING_TAG_FORMAT = (
-    "Provide your answer in the following format:\n"
-    "<reasoning>your final reasoning</reasoning>\n"
-    "<answer>your answer</answer>"
-)
-
-REPORT_REASONING_TAG_FORMAT = (
-    "Provide your report in the following format:\n"
-    "<reasoning>your final reasoning</reasoning>\n"
-    "<answer>your report</answer>"
-)
-
 OSS_FORMAT = (
     "Your response should be in the following format:\n"
     "Explanation: {your explanation, citing evidence in [docid] brackets}\n"
@@ -126,7 +112,6 @@ AGENT_ANSWER_FORMATS = {
     "cpm_explore": CPM_EXPLORE_FORMAT,
     "tongyi":      TAG_FORMAT,
     "webweaver":   WEBWEAVER_FORMAT,
-    "belief_aware": REASONING_TAG_FORMAT,
 }
 
 
@@ -179,7 +164,6 @@ _AGENT_TO_PATTERNS = {
     "cpm_explore": ["answer_tag"],
     "tongyi":      ["answer_tag"],
     "webweaver":   ["answer_tag"],
-    "belief_aware": ["answer_tag"],
 }
 
 _ALL_PATTERN_NAMES = ["answer_tag", "finish_action", "exact_answer", "boxed", "so_final"]

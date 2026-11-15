@@ -115,9 +115,6 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
     (``sub_iter`` is ``None`` or ``0``), mirroring how ``think`` appears only on
     the first subquery — the later subqueries (``1.2``, ``1.3``, …) share the
     same action and are left unannotated.
-
-    Any line also carries the agent's per-turn diagnostics
-    (:data:`STEP_DIAGNOSTIC_KEYS`) when the step has them.
     """
     search_query = step.get("search_query")
     if search_query:
@@ -135,7 +132,7 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
             line["tokens"] = step["tokens"]
         if step.get("belief_state"):
             line["belief_state"] = step["belief_state"]
-        return _add_diagnostics(line, step)
+        return line
 
     # Terminal / non-search step (answer, context_limit, max_iter_force, …).
     # An answer step without an action (base_agent, selfask, searcho1: only
@@ -153,21 +150,9 @@ def step_to_line(step: Dict[str, Any], label: str) -> Dict[str, Any]:
         line["generation"] = step["generation"]
     if step.get("tokens") is not None:
         line["tokens"] = step["tokens"]
-    return _add_diagnostics(line, step)
-
-
-#: Per-turn diagnostics an agent may set on a step (BeliefAware): the
-#: passage labels shown, format retries and warnings of the turn, its
-#: errors, the length of the backbone's native reasoning, and whether a
-#: forced answer saw a windowed transcript.
-STEP_DIAGNOSTIC_KEYS = ("labels", "format_retries", "warnings", "errors", "native_reasoning_chars", "windowed")
-
-
-def _add_diagnostics(line: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
-    for key in STEP_DIAGNOSTIC_KEYS:
-        if step.get(key):
-            line[key] = step[key]
     return line
+
+
 
 
 def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,7 +344,7 @@ class TrajectoryLogger:
 
     Typical use, from ``run_single``::
 
-        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="BeliefAware")
+        logger = TrajectoryLogger(traj_dir, qid, question, agent_name="OSS")
         logger.start()
         try:
             ...                      # agent calls log_step()/log_block()

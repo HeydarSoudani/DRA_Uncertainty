@@ -7,8 +7,8 @@
 #SBATCH --time=03:00:00
 #SBATCH --mem=480GB
 #SBATCH --output=script_logging/%x_%j.out
-# GPU plan for THIS config: `belief_aware` is listed in experiments/configs/openrouter_registry.yaml
-# (qwen/qwen3.6-27b) and OPENROUTER_API_KEY is set in .env, so resolve_agent_backend()
+# GPU plan for THIS config: `oss_20b` is listed in experiments/configs/openrouter_registry.yaml
+# (openai/gpt-oss-20b) and OPENROUTER_API_KEY is set in .env, so resolve_agent_backend()
 # returns "api": NO local vLLM server is started and no GPU is reserved for the LLM.
 # All 4 GPUs therefore become pipeline workers — one process per GPU, each holding its
 # own Qwen3-Embedding-4B encoder (~14 GB) and mmap'ing the shared 57 GB FAISS index.
@@ -31,7 +31,7 @@ export OMP_NUM_THREADS=16
 DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
 SUBSET=                            # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
-POLICY_MODEL=belief_aware          # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
+POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 BELIEF_MODE=off                    # off | monitor | inform (belief_aware shows the <belief_state> tag only in inform)
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
 NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
@@ -51,7 +51,7 @@ python experiments/inference/dra_inference.py \
 # file — that alone was ~1 MB of the 2.3 MB GLM log).  What remains is the GPU plan, the
 # worker split, one "[Worker i] n/m done" line per finished query, and the eval summary.
 #
-# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/belief_aware_api_qwen3.6-27b/belief-off/
+# Output: run_outputs/trqa_wiki2_test_qwen3_emb_4b/oss_20b_api_gpt-oss-20b/belief-off/
 # Resume is automatic: queries whose trajectory/{qid}.jsonl ends with its meta line (and,
 # with the belief model on, that have belief/{qid}.jsonl) are skipped, and --limit is
 # applied to what REMAINS, so a re-submit continues rather than restarts.
@@ -63,5 +63,5 @@ python experiments/inference/dra_inference.py \
 # Its 4 queries are real results and are kept: resume skips them, so the follow-up
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.
 #
-# Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model belief_aware --limit 1 --num-gpus 1
-# Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model belief_aware --eval-only --num-gpus 0
+# Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --limit 1 --num-gpus 1
+# Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --eval-only --num-gpus 0

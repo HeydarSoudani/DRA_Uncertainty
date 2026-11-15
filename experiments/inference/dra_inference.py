@@ -15,7 +15,6 @@ Supported agents via --policy-model (the LLM is selected automatically per agent
     oss_120b        GPT-OSS-120B reasoning agent                   → gpt-oss-120b (vLLM)
     tongyi          Tongyi-DeepResearch ReAct agent                → Alibaba-NLP/Tongyi-DeepResearch-30B-A3B (vLLM)
     cpm_explore     AgentCPM-Explore deep search agent             → openbmb/AgentCPM-Explore (vLLM)
-    belief_aware  Belief-aware search agent (reads <belief_state> in inform mode) → qwen/qwen3.6-27b (OpenRouter API)
 
 Agentic workflows:
     ReAct-style (react, selfask, searcho1, research, searchr1, stepsearch, drtulu, glm, oss_20b, oss_120b, tongyi, cpm_explore):
@@ -783,7 +782,7 @@ def parse_args():
     # ── Frequently-varied knobs (everything else lives in --config) ─────────
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
-    parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. belief_aware = SearchR1-style agent that reads the <belief_state> tag in inform mode, where its system prompt explains it (monitor/off: no tag and no explanation); cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--criteria-source", type=str, default=None, choices=list(CRITERIA_SOURCES), help="Criteria of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by llm_criteria). A choice only on TRQA and trqa_validation (run folder belief-{mode}-{source}); elsewhere the dataset's own source is used. Unset = criteria_source in --config.")
     parser.add_argument("--belief-mode", type=str, default="monitor", choices=["off", "monitor", "inform"], help="Belief model mode. 'off': disabled. 'monitor': at the end of each search iteration compute and save the belief state (per criterion its candidates, each with a belief status for how likely it is an answer and its passage support, and the names the agent proposed) and, for evaluation, the new-item precision, recall so far and intermediate answers to belief/{qid}.jsonl; the trajectory is never changed. 'inform': as monitor, and also append a <belief_state> tag (per criterion its candidates with their statuses, and the agent's proposals as unverified; never anything gold-based) to the trajectory after each iteration's search results.")
@@ -842,5 +841,5 @@ if __name__ == "__main__":
 #   python experiments/inference/dra_inference.py --limit 1
 #   
 #   python experiments/inference/dra_inference.py --dataset browsecomp_plus --limit 2 --num-gpus 1
-#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 1 --num-gpus 1
+#   python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --limit 3 --num-gpus 1
 #   python experiments/inference/dra_inference.py --dataset neuclir --limit 1

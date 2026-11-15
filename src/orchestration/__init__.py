@@ -261,11 +261,9 @@ def build_agent(
         _reasoning_extra["max_retries"] = max_retries
         _reasoning_extra["hard_mode"] = hard_mode
         _reasoning_extra["model_name"] = llm_model
-    elif policy_model == "belief_aware":
-        _reasoning_extra["max_retries"] = max_retries
     # Report datasets get the report prompts (task from the dataset); a
     # report has no length limit.
-    if policy_model in ("belief_aware", "oss", "glm") and dataset is not None:
+    if policy_model in ("oss", "glm") and dataset is not None:
         _reasoning_extra["task"] = DATASET_SPECS[dataset].task
 
     agent = model_class(

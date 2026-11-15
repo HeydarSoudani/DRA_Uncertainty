@@ -14,7 +14,6 @@ from .drtulu_agent import DrTulu_Agent
 from .glm_agent import GLM_Agent
 from .oss_agent import OSS_Agent
 from .tongyi_agent import TongyiDR_Agent
-from .belief_aware_agent import BeliefAwareAgent
 # Registry constants
 REASONING_AGENTS = frozenset({
     "react",
@@ -30,7 +29,6 @@ REASONING_AGENTS = frozenset({
     "tongyi",
     "cpm_explore",
     "cpm_report",
-    "belief_aware",
 })
 ALL_AGENTS         = sorted(REASONING_AGENTS)
 
@@ -48,7 +46,6 @@ AGENT_MAP = {
     "tongyi": TongyiDR_Agent,
     "cpm_explore": CPMExplore,
     "cpm_report": CPMReport,
-    "belief_aware": BeliefAwareAgent,
 }
 
 __all__ = [
@@ -66,7 +63,6 @@ __all__ = [
     "GLM_Agent",
     "OSS_Agent",
     "TongyiDR_Agent",
-    "BeliefAwareAgent",
     "REASONING_AGENTS",
     "CPMExplore",
     "ALL_AGENTS",

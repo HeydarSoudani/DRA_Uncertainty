@@ -60,11 +60,6 @@ POLICY_MODEL_TO_LLM: Dict[str, str] = {
     # line is pointed back at the HF slug, which is all it takes to return the
     # agent to local vLLM.
     "webweaver":   "openrouter/qwen/qwen3.6-35b-a3b",
-    # The belief-aware agent runs on an open-weight backbone served by OpenRouter,
-    # with the model's own reasoning mode switched off.  The ``openrouter/``
-    # prefix selects the API generator; the bare slug is ALSO listed in
-    # openrouter_registry.yaml, and the two must agree.
-    "belief_aware": "openrouter/qwen/qwen3.6-27b",
 }
 
 # Result keys carried in the trajectory meta line: they are persisted nowhere
@@ -102,9 +97,6 @@ AGENT_TEMPERATURE: Dict[str, float] = {
     "cpm_report":  0.7,
     "cpm_explore": 1.0,
     "tongyi":      0.6,
-    # Same backbone; its reasoning mode is off, but sampling keeps the policy
-    # from repeating one turn verbatim.  Criteria extraction uses 0.0.
-    "belief_aware": 0.6,
 }
 
 

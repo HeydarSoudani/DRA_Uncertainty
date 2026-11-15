@@ -658,9 +658,8 @@ def build_references_section(result: dict) -> str:
     if result.get("records_citations") is False:
         return ""
 
-    # An agent that numbers its own citations (WebWeaver, the belief-aware
-    # agent's reports) gets its own mapping, so every [N] in the text resolves
-    # to the document it names.
+    # An agent that numbers its own citations (WebWeaver) gets its own
+    # mapping, so every [N] in the text resolves to the document it names.
     citation_to_doc_id = result.get("citation_to_doc_id")
     if citation_to_doc_id:
         numbered = sorted((int(n), did) for n, did in citation_to_doc_id.items() if did and str(n).isdigit())

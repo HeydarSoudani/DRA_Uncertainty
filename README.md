@@ -22,7 +22,7 @@ The project has two parts:
 
 | Family | Agents |
 |---|---|
-| Instruction-tuned (API) | `react`, `selfask`, `searcho1` (claude-sonnet-4-6); `belief_aware` (qwen3.6-27b, reads the belief tag in `inform` mode); `webweaver` (qwen3.6-35b-a3b) |
+| Instruction-tuned (API) | `react`, `selfask`, `searcho1` (claude-sonnet-4-6); `webweaver` (qwen3.6-35b-a3b) |
 | RL-trained (vLLM) | `searchr1`, `research`, `stepsearch`, `drtulu`, `glm`, `oss_20b`, `oss_120b`, `tongyi`, `cpm_explore` |
 | Report (vLLM) | `cpm_report` |
 
