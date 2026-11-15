@@ -8,10 +8,10 @@
 * cited: the docs cited by the final report, ``retrieval/cited/{qid}.trec``.
 
 Each level gives one ranked doc list per retrieval step of a result
-(``*_iterations``).  A result read back from the saved files
-(``run_files.load_result_from_saved_files``) keeps only the seen doc ids in
-its trajectory; its surfaced lists come from the surfaced TREC
-(``surfaced_docs_iterations``).
+(``*_iterations``), written by :func:`save_retrieval` at the end of a
+query.  The TREC files are never read back: a result read from the saved
+files (``utils.run_files.load_result_from_saved_files``) has its seen doc
+ids in the trajectory steps, the only level the evaluation needs.
 
 TREC columns: ``qid Q0 doc_id rank score run_tag``, with the step number as
 run tag (``iter_1``, ``iter_2``, ...).
@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Set, Union
 
 from utils.text_utils import doc_id as _doc_id
+
+from .trajectory_logger import seen_doc_ids
 
 #: The per-level TREC directories under the run directory.
 SURFACED_DIR = "retrieval/surfaced"
@@ -48,8 +50,8 @@ def _rank_score(doc: Dict[str, Any], fallback_rank: int) -> float:
 
 def surfaced_iterations(result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
     """One surfaced doc list per retrieval step of *result*: a step's
-    ``all_docs`` (flat list of dicts, or list-of-lists) or ``docs``, else the
-    reloaded ``surfaced_docs_iterations``."""
+    ``all_docs`` (flat list of dicts, or list-of-lists) or ``docs`` (a live
+    result: the trajectory file keeps no surfaced docs)."""
     iterations = []
     for step in result.get("trajectory", []):
         all_docs = step.get("all_docs")
@@ -62,34 +64,29 @@ def surfaced_iterations(result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
                 iterations.append(turn_docs)
         elif step.get("docs"):
             iterations.append(step["docs"])
-    return iterations or result.get("surfaced_docs_iterations", [])
+    return iterations
 
 
 # ── Seen ─────────────────────────────────────────────────────────────────
 
 def seen_iterations(result: Dict[str, Any]) -> List[List[Dict[str, Any]]]:
     """One ``[{"doc_id"}]`` list per search step of *result*, the *seen*
-    documents only, else the reloaded ``seen_docs_iterations``.
+    documents only (a live result, or one read back from the trajectory).
 
-    They are recorded in each search step as ``step["output"]["doc_ids"]``
-    (AgentCPM) or ``step["component_doc_ids"]`` (reasoning agents such as
-    WebWeaver, GLM, OSS, Tongyi; ``seen_docs`` once reloaded from the
-    JSONL).  Write, plan and other non-search steps are skipped even when
-    they carry ``component_doc_ids`` (CPM-Report write steps store cited
-    doc ids).
+    A step's seen ids are read by ``trajectory_logger.seen_doc_ids``, the
+    reader the trajectory file is written with.  Write, plan and other
+    non-search steps are skipped even when they carry ``component_doc_ids``
+    (CPM-Report write steps store cited doc ids).
     """
     iterations: List[List[Dict[str, Any]]] = []
     for step in result.get("trajectory", []):
         action = step.get("action_type") or step.get("action") or step.get("_cpm_state") or ""
         if action in _NON_SEARCH_ACTIONS:
             continue
-        output = step.get("output", {})
-        doc_ids = output.get("doc_ids") if isinstance(output, dict) else None
-        if not doc_ids:
-            doc_ids = step.get("component_doc_ids") or step.get("seen_docs")
+        doc_ids = seen_doc_ids(step)
         if doc_ids:
-            iterations.append([{"doc_id": did} for did in doc_ids if did])
-    return iterations or result.get("seen_docs_iterations", [])
+            iterations.append([{"doc_id": did} for did in doc_ids])
+    return iterations
 
 
 # ── Cited ────────────────────────────────────────────────────────────────
@@ -170,33 +167,3 @@ def save_retrieval(run_dir: Union[str, Path], query_id: str, result: Dict[str, A
     _write_iterations(run_dir / SURFACED_DIR / f"{query_id}.trec", query_id, surfaced_iterations(result), True)
     _write_iterations(run_dir / SEEN_DIR / f"{query_id}.trec", query_id, seen_iterations(result), False)
     _write_cited(run_dir / CITED_DIR / f"{query_id}.trec", query_id, cited_docs(result))
-
-
-def read_trec_iterations(trec_file: Union[str, Path]) -> List[List[Dict[str, Any]]]:
-    """The per-step ``[{"doc_id", "rank_score"}]`` lists of a saved TREC
-    file, in step order; none when the file is missing or unreadable."""
-    iterations: Dict[int, list] = {}
-    try:
-        with open(trec_file, "r", encoding="utf-8") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) < 6:
-                    continue
-                try:
-                    iter_idx = int(parts[5].split("_")[1])
-                except (IndexError, ValueError):
-                    iter_idx = 1
-                iterations.setdefault(iter_idx, []).append({"doc_id": parts[2], "rank_score": float(parts[4])})
-    except Exception as e:
-        print(f"Warning: could not load {trec_file}: {e}")
-        return []
-    return [iterations[i] for i in sorted(iterations)]
-
-
-def read_cited_ids(trec_file: Union[str, Path]) -> List[Dict[str, str]]:
-    """The ``[{"doc_id"}]`` of a cited TREC file in rank order; none when missing."""
-    try:
-        content = Path(trec_file).read_text(encoding="utf-8")
-    except OSError:
-        return []
-    return [{"doc_id": parts[2]} for parts in (line.split() for line in content.splitlines()) if len(parts) >= 3]

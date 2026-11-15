@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from indexing_corpus_dataset.training_datasets.gold.annotations import mentions
 
-from ..judge import YesNoJudge, has_yes_no, judge_all, run_sync
+from ..judge import YesNoJudge, judge_all, run_sync, yes_no
 
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
@@ -109,11 +109,6 @@ class AnswerJudge:
         blob = json.dumps([self.model, kind, criterion["text"], criterion["answers"], text], ensure_ascii=False)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
-    def uncached(self, items: List[Tuple[str, Dict[str, Any], str]]) -> int:
-        """How many distinct pairs of *items* are not cached yet (the ones
-        ``resolve`` sends to the judge)."""
-        return len({self.key(*item) for item in items} - self._cache.keys())
-
     def resolve(self, items: List[Tuple[str, Dict[str, Any], str]]) -> Dict[str, bool]:
         """The verdict of each ``(kind, criterion, text)``, by its ``key``;
         uncached ones are asked (a reply without YES counts as no; one
@@ -126,10 +121,10 @@ class AnswerJudge:
                 prompt = JUDGE_PROMPTS[kind].format(
                     criterion=criterion["text"], answers=" | ".join(criterion["answers"][:MAX_JUDGE_ANSWERS]),
                     text=text)
-                reply = run_sync(self._judge.ask([{"role": "user", "content": prompt}]))
+                answer = yes_no(run_sync(self._judge.ask([{"role": "user", "content": prompt}])))
                 # A reply without YES/NO (malformed, or a timeout) is no
                 # verdict: it counts as no here and is asked again next time.
-                return {"key": key, "stated": ("YES" in reply.upper()) if has_yes_no(reply) else None}
+                return {"key": key, "stated": None if answer is None else answer == "YES"}
 
             rows = judge_all(todo, one, lambda pair, e: {"key": pair[0], "stated": None}, self.workers,
                              "[answer gold]")

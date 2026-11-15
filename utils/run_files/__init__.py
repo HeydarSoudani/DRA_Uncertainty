@@ -21,8 +21,8 @@ from utils.config import AGENT_META_KEYS
 from .belief import (BELIEF_DIR, SCHEMA_VERSION, BeliefFile, believed_queries, clean_record, load_belief_files,
                      read_belief_file, save_belief)
 from .generation import GENERATION_DIR, read_generation, save_generation
-from .retrieval import (CITED_DIR, SEEN_DIR, SURFACED_DIR, cited_docs, doc_ids, read_cited_ids, read_trec_iterations,
-                        save_retrieval, seen_iterations, surfaced_iterations)
+from .retrieval import (CITED_DIR, SEEN_DIR, SURFACED_DIR, cited_docs, doc_ids, save_retrieval, seen_iterations,
+                        surfaced_iterations)
 from .run_config import read_run_config
 from .trajectory import TRAJECTORY_DIR, is_finished, read_trajectory, save_trajectory, scan_queries
 
@@ -41,18 +41,19 @@ def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, 
 
 
 def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> Dict[str, Any]:
-    """Rebuild a result dict from the saved per-query files.
+    """Rebuild a result dict from the saved per-query files: what the
+    evaluation scores.
 
     The evaluation reads every run back this way, whatever the stage
     (``--stage``), so every stage scores the same result.  Sources:
 
-    * ``trajectory/{qid}.jsonl``: the steps (seen doc ids, no doc text) and the
+    * ``trajectory/{qid}.jsonl``: the steps (with their seen doc ids) and the
       meta line (counts, :data:`utils.config.AGENT_META_KEYS`);
-    * ``generation/{qid}.md``: the final generation;
-    * the cited, seen and surfaced TRECs: the cited list and the per-step
-      seen and surfaced lists (the trajectory keeps only the seen doc ids).
+    * ``generation/{qid}.md``: the final generation.
 
-    ``{}`` when the query is not finished (no meta line, :func:`is_finished`).
+    The TREC files are not read: the surfaced and cited levels are saved
+    only, and the seen level is in the trajectory.  ``{}`` when the query is
+    not finished (no meta line, :func:`is_finished`).
     """
     meta, trajectory = read_trajectory(run_dir, query_id)
     if not meta:
@@ -67,20 +68,6 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> Di
         if meta.get(key):
             result[key] = meta[key]
     result["generation"] = read_generation(run_dir, query_id)
-
-    run_dir = Path(run_dir)
-    cited = read_cited_ids(run_dir / CITED_DIR / f"{query_id}.trec")
-    if cited:
-        result["cited_docs_ranked_list"] = cited
-    # Seen lists from the seen TREC only when the trajectory has none.
-    if not any(step.get("seen_docs") for step in trajectory):
-        seen = [[{"doc_id": d["doc_id"]} for d in docs if d.get("doc_id")]
-                for docs in read_trec_iterations(run_dir / SEEN_DIR / f"{query_id}.trec")]
-        if seen:
-            result["seen_docs_iterations"] = seen
-    surfaced = [docs for docs in read_trec_iterations(run_dir / SURFACED_DIR / f"{query_id}.trec") if docs]
-    if surfaced:
-        result["surfaced_docs_iterations"] = surfaced
     return result
 
 
@@ -89,8 +76,8 @@ __all__ = [
     "BELIEF_DIR", "SCHEMA_VERSION", "BeliefFile", "believed_queries", "clean_record", "load_belief_files",
     "read_belief_file", "save_belief",
     "GENERATION_DIR", "read_generation", "save_generation",
-    "CITED_DIR", "SEEN_DIR", "SURFACED_DIR", "cited_docs", "doc_ids", "read_cited_ids", "read_trec_iterations",
-    "save_retrieval", "seen_iterations", "surfaced_iterations",
+    "CITED_DIR", "SEEN_DIR", "SURFACED_DIR", "cited_docs", "doc_ids", "save_retrieval", "seen_iterations",
+    "surfaced_iterations",
     "read_run_config",
     "TRAJECTORY_DIR", "is_finished", "read_trajectory", "save_trajectory", "scan_queries",
 ]

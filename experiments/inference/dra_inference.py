@@ -89,8 +89,8 @@ from utils.cli_setup import (
     _sm_bool,
 )
 from utils.io_utils import setup_output_dirs
-from run_files import QUERY_OUTPUT_DIRS, believed_queries, scan_queries
-from run_files.run_config import (
+from utils.run_files import BELIEF_DIR, QUERY_OUTPUT_DIRS, believed_queries, scan_queries
+from utils.run_files.run_config import (
     belief_config_diffs,
     build_belief_config,
     build_dataset_dir_name,
@@ -366,7 +366,7 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
               f"removing its beliefs (belief/, {BELIEF_EVAL_DIR}/) and running every query again")
         # Removed before the new settings are saved: an interrupted call
         # never leaves old beliefs under the new settings.
-        for name in ("belief", BELIEF_EVAL_DIR):
+        for name in (BELIEF_DIR, BELIEF_EVAL_DIR):
             shutil.rmtree(run_dir / name, ignore_errors=True)
     set_belief_config(run_dir, section)
 
@@ -890,7 +890,7 @@ if __name__ == "__main__":
 #     │   └── {qid}.md          the same trajectory, human-readable, written live
 #     ├── belief/               belief stage (orchestration.belief_stage)
 #     │   ├── {qid}.jsonl       meta line + one line per search iteration + final line
-#     │   │                     (run_files.belief); written last: marks the query as done
+#     │   │                     (utils.run_files.belief); written last: marks the query as done
 #     │   └── {qid}.md          the same belief, human-readable
 #     └── eval/                 the evaluation (every stage, evaluation.runner)
 #         ├── metrics.md        one table: group | metric | value | ci_low | ci_high | n
@@ -909,7 +909,7 @@ if __name__ == "__main__":
 #   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1
 #   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1
 
-#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 2 --workers 2
-#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --workers 1
-#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 2 --workers 2
-#   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1
+#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 2 --workers 2 --quiet
+#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 2 --workers 2 --quiet
+#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 2 --workers 2 --quiet
+#   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1 --quiet

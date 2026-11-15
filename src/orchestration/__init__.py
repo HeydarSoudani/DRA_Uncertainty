@@ -33,7 +33,7 @@ from utils.config import (
 )
 from reasoner_component.setup import setup_llm
 from utils.text_utils import MAX_PASSAGE_TOKENS, _build_cited_docs_ranked_list, build_references_section
-from utils.trajectory_logger import TrajectoryLogger
+from utils.run_files.trajectory_logger import TrajectoryLogger
 
 logger = logging.getLogger(__name__)
 
@@ -386,11 +386,11 @@ def run_query(agent, run_dir, query_id: str, query_text: str, *, policy_model: s
     The trajectory is streamed to ``trajectory/{qid}.jsonl`` and ``.md`` as
     it happens, so an interrupted query still leaves its work on disk; the
     result gets its cited-doc list and a References section, then
-    ``run_files.save_query_outputs`` writes every file.  A query
+    ``utils.run_files.save_query_outputs`` writes every file.  A query
     that fails before the trajectory meta line is written stays unfinished
     and is run again on resume.
     """
-    from run_files import save_query_outputs
+    from utils.run_files import save_query_outputs
 
     try:
         traj_logger = TrajectoryLogger(
@@ -450,7 +450,7 @@ def gpu_worker(worker_id: int, query_items: list, run_dir: str, worker_config: d
             progress_queue.put(None)
         return []
 
-    from run_files import QUERY_OUTPUT_DIRS
+    from utils.run_files import QUERY_OUTPUT_DIRS
 
     run_path = Path(run_dir)
     for _d in QUERY_OUTPUT_DIRS:

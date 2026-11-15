@@ -158,8 +158,9 @@ def parse_cli_overrides(extras) -> dict:
     while i < len(extras):
         tok = extras[i]
         if not tok.startswith("--"):
-            i += 1
-            continue
+            # A stray token (e.g. the single-dash typo "-quiet") would
+            # otherwise be dropped and the run would go on with the default.
+            raise SystemExit(f"error: unrecognized argument: {tok} (flags take two dashes, e.g. --quiet)")
         if "=" in tok:
             key, val = tok[2:].split("=", 1)
             overrides[key.replace("-", "_")] = [val]

@@ -1,6 +1,6 @@
 """Evaluation of deep-research agent runs: scoring only.
 
-The run's files are written and read by ``run_files``; the evaluation reads
+The run's files are written and read by ``utils.run_files``; the evaluation reads
 them back and writes its own under ``eval/`` (``metrics_file``).  One
 module or subpackage per group of the run's ``metrics.md``, in order:
 

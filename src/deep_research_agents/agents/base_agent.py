@@ -548,7 +548,7 @@ class BasicAgent(AgentVerboseMixin):
             status_callback: Optional callable(stage: str, iteration: int) invoked at
                              each retrieval step.  Used to stream live progress to the
                              parent process's tqdm bars in multi-GPU runs.
-            trajectory_logger: Optional :class:`utils.trajectory_logger.TrajectoryLogger`
+            trajectory_logger: Optional :class:`utils.run_files.trajectory_logger.TrajectoryLogger`
                              that streams each step to disk as it happens, so an
                              interrupted run still leaves a readable trajectory.
 

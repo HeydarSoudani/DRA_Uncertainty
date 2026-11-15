@@ -1,9 +1,9 @@
 """Per-query trajectory file ``trajectory/{query_id}.jsonl``.
 
-:class:`utils.trajectory_logger.TrajectoryLogger` streams the step lines
+:class:`utils.run_files.trajectory_logger.TrajectoryLogger` streams the step lines
 during the run; :func:`save_trajectory` rewrites the file from the final
 result at the end of the query, with the meta line last.  Both build the
-lines with the step-shaping helpers of ``utils.trajectory_logger``, which
+lines with the step-shaping helpers of ``utils.run_files.trajectory_logger``, which
 keeps the two identical in schema.
 """
 
@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
-from utils.trajectory_logger import build_meta_line, dump_line, iter_label, step_to_line
+from .trajectory_logger import build_meta_line, dump_line, iter_label, step_to_line
 
 try:
     from orjson import loads as _json_loads

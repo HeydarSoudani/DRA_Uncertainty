@@ -54,8 +54,8 @@ from belief_model_component import (  # noqa: E402
 from evaluation.measures import auroc, brier, ece, tau_b  # noqa: E402
 from indexing_corpus_dataset.doc_lookup import CorpusLookup  # noqa: E402
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path  # noqa: E402
-from run_files import clean_record  # noqa: E402
-from run_files.run_config import belief_model_of, passage_tokens  # noqa: E402
+from utils.run_files import clean_record  # noqa: E402
+from utils.run_files.run_config import belief_model_of, passage_tokens  # noqa: E402
 from utils.io_utils import read_jsonl  # noqa: E402
 
 logger = logging.getLogger(__name__)

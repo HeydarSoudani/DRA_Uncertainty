@@ -18,7 +18,7 @@ what the agent's turns showed:
   ``agent_generation``; ``generation/{qid}.md`` has the References section
   the pipeline appends, and its docid citations renumbered).
 
-Each query's belief goes to ``belief/{qid}.jsonl`` (``run_files.save_belief``)
+Each query's belief goes to ``belief/{qid}.jsonl`` (``utils.run_files.save_belief``)
 and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log_view``).
 A query whose belief file exists is done: the stage resumes.  A query
 whose criteria or a belief call failed before any reply (the API, not the
@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from utils.io_utils import atomic_write_text, read_jsonl
+from utils.io_utils import atomic_write_text
 from utils.progress import WorkerBars
 
 logger = logging.getLogger(__name__)
@@ -96,14 +96,14 @@ def read_saved_query(run_dir: Path, qid: str, policy_model: str) -> Optional[Sav
     raises ValueError: its search iterations are not marked."""
     from belief_model_component import agent_turn_text, answer_turn
 
-    lines = read_jsonl(run_dir / "trajectory" / f"{qid}.jsonl")
-    meta = next((r for r in lines if r.get("record") == "meta"), None)
-    if meta is None:
+    from utils.run_files import read_trajectory
+
+    meta, steps = read_trajectory(run_dir, qid)
+    if not meta:
         return None
     if "agent_generation" not in meta:
         raise ValueError(f"trajectory/{qid}.jsonl was written before the generate stage "
                          "(no agent_generation in its meta line); generate it again")
-    steps = [r for r in lines if r.get("record") is None]
     groups: Dict[int, List[Dict[str, Any]]] = {}
     for line in steps:
         if line.get("search_step") is not None:
@@ -246,11 +246,11 @@ def run_belief_stage(
         workers: Belief threads (queries run at once), one bar each.
         verbose: Print each query's belief.
     """
-    from run_files import save_belief
+    from utils.run_files import BELIEF_DIR, save_belief
     from indexing_corpus_dataset.doc_lookup import CorpusLookup
 
     run_dir = Path(run_dir)
-    belief_dir = run_dir / "belief"
+    belief_dir = run_dir / BELIEF_DIR
     belief_dir.mkdir(parents=True, exist_ok=True)
     lookup = CorpusLookup(corpus_path)
     lookup.ensure_index()

@@ -9,7 +9,7 @@ the scores are:
 - ``s_T``: the belief model's final scorer (the ``final`` line of
   ``belief/{qid}.jsonl``, ``certainty``), the headline;
 - ``verbal``: the agent's own confidence in its answer
-  (``answer.confidence``, glm and oss), the baseline;
+  (``generation.confidence``, glm and oss), the baseline;
 - ``formula`` and ``answer formula``: the fixed function of the final
   beliefs' statuses (``certainty_formula``) and its form on the scorer's
   answer candidates (``certainty_answer_formula``), ablations.

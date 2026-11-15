@@ -1,6 +1,6 @@
 """Generic file helpers: JSONL reading and writing, atomic writes.
 
-The files of a run directory are written and read by ``run_files``.
+The files of a run directory are written and read by ``utils.run_files``.
 """
 
 import json as _json

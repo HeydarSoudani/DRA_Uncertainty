@@ -1,36 +1,18 @@
-"""Per-query trajectory statistics for deep-research agents.
+"""Per-query trajectory statistics (the ``trajectory`` group of the run's
+``metrics.md``).
 
-Accepts the **unified** result format produced by all agents:
-
-    {
-        query_id: {
-            "trajectory": List[Dict]  – per-step trace
-            "num_steps":  int
-            "num_searches": int
-        }
-    }
-
-Each trajectory step is a dict whose schema varies by agent type:
-
-    ReAct / ReAct-WoPlan (action_type field):
-        {"action_type": "search", "search_query": str, "docs": List[Dict], "think": str}
-        {"action_type": "finish", "conclusion": str, "think": str}
-
-    SearchR1 / ReSearch / StepSearch / SelfAsk (inferred from keys):
-        {"think": str, "search_query": str, "docs": List[Dict]}
-        {"think": str, "prediction": str}
-
-    AgentCPM (action field):
-        {"step": int, "state": str, "action": str,
-         "input": {...}, "output": {...}}
-
-The evaluator normalises all these formats into a common ``action_type``
-string and then computes aggregate statistics.
+Reads the results the runner loads back from the saved files
+(``utils.run_files.load_result_from_saved_files``): ``trajectory`` (the
+lines of ``trajectory/{qid}.jsonl``), ``num_searches`` and the agent's
+``token_usage``.  A line's action type is the one it saved, else inferred
+from its keys (``trajectory_logger.infer_action_type``: a ``search_query``
+is a search, a ``prediction`` an answer, ...), so every agent's lines are
+counted the same way.
 """
 
 from typing import Any, Dict, Optional
 
-from utils.trajectory_logger import infer_action_type as _infer_action_type
+from utils.run_files.trajectory_logger import infer_action_type as _infer_action_type
 
 from .measures import mean
 from .metrics_file import GroupResult

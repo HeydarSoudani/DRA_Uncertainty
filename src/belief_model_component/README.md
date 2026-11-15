@@ -104,7 +104,7 @@ waits for the next call.
 ### Step record
 
 One per iteration, saved as one `step` line of `belief/{query_id}.jsonl` by
-`run_files.save_belief`; flat scalars first, nested detail last:
+`utils.run_files.save_belief`; flat scalars first, nested detail last:
 
 ```
 iteration, agent_iteration,

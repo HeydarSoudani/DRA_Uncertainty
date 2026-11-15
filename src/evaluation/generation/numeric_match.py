@@ -127,7 +127,7 @@ class NumericMatchEvaluator:
     Usage::
 
         evaluator = NumericMatchEvaluator(answers={"q1": "8269", ...})
-        metrics = evaluator.score(results)   # {query_id: {"generation": str, ...}}
+        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -143,9 +143,9 @@ class NumericMatchEvaluator:
         records saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
         return accuracy_result(self.score(results), run_dir, self.save_results)
 
-    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
-        """Exact match over the queries with a ground-truth answer (*run_dir*
-        is unused: the match needs no judge to cache).
+    def score(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """Exact match over the queries with a ground-truth answer (no judge,
+        so nothing to cache).
 
         Returns ``accuracy`` (the exact match), ``num_correct``,
         ``num_evaluated``, ``num_judge_errors`` (0) and ``per_query``

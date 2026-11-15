@@ -9,9 +9,10 @@ and y is the report's nugget coverage from Auto-ARGUE
 (``evaluation.generation.argue``), weighted too when the dataset has nugget
 importance.  Measures: Kendall's tau-b of s_T and y over the queries, with a
 bootstrap CI over queries (the ranking), and the Brier score of s_T against
-y (the level: s_T as the expected coverage).  Queries without s_T or
-without a scored report (an empty report, a judge failure) are left out and
-logged.  No LLM call.
+y (the level: s_T as the expected coverage).  Queries without s_T or with an
+empty report are left out and logged; a report whose judging failed has no
+ARGUE record, so it is not counted here (the generation group's ``judge
+failures``).  No LLM call.
 """
 
 import logging

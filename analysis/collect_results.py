@@ -28,7 +28,7 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from evaluation.metrics_file import GROUPS, METRICS_FILE, fmt, read_header, read_metrics, table  # noqa: E402
-from run_files.run_config import read_run_config  # noqa: E402
+from utils.run_files.run_config import read_run_config  # noqa: E402
 
 #: The headline measures, (group, metric), in column order.
 HEADLINE: Tuple[Tuple[str, str], ...] = (

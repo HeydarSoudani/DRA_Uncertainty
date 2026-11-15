@@ -39,8 +39,8 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from run_files import BELIEF_DIR, load_belief_files, load_result_from_saved_files
-from run_files.run_config import belief_model_of, read_run_config
+from utils.run_files import BELIEF_DIR, load_belief_files, load_result_from_saved_files
+from utils.run_files.run_config import belief_model_of, read_run_config
 from utils.progress import step_iter
 
 from .belief import GOLD_DATASETS, BeliefUpdateEvaluator, issue_summary
@@ -128,7 +128,7 @@ def build_evaluators(
 
 def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     """``{query_id: result}`` read back from the run's saved files
-    (``run_files.load_result_from_saved_files``); a query without files
+    (``utils.run_files.load_result_from_saved_files``); a query without files
     is left out."""
     run_dir = Path(run_dir)
     query_ids = sorted(query_ids)
@@ -239,7 +239,5 @@ def evaluate_and_save(
     (run_dir / EVAL_DIR).mkdir(parents=True, exist_ok=True)
     write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
-    # The grouped JSON summary of earlier evaluations is replaced by these files.
-    (run_dir / "summary.json").unlink(missing_ok=True)
     print(f"  Saved {run_dir / EVAL_DIR}/: metrics.md, per_query.csv"
           f"{' and belief/events.csv' if belief else ''}")

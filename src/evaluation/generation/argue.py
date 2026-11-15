@@ -38,8 +38,8 @@ The package runs unmodified; this module supplies its inputs and its judge.
   temperature 0 with the model's reasoning off (the package reads YES/NO
   from at most 10 tokens, and a reasoning model spends them before
   answering), a reply without YES/NO asked again twice.  The package takes
-  the check's default answer for one that still has none
-  (``judge_malformed``).
+  the check's default answer for one that still has none; each report's
+  count of them is kept with its judgments (``judge_malformed``).
 
 Everything is cached under ``{run_dir}/eval/generation/`` (``GENERATION_EVAL_DIR``): the cited documents and
 each report's judgments, keyed by a hash of what was judged, so evaluating an
@@ -50,6 +50,7 @@ scores 0 on every metric; a report whose judging fails is left out, counted in
 """
 
 import asyncio
+import contextvars
 import csv
 import functools
 import hashlib
@@ -71,7 +72,7 @@ from utils.progress import step_iter
 
 from ..measures import mean_or_none
 from ..metrics_file import GENERATION_EVAL_DIR, GroupResult
-from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
+from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge, has_yes_no
 from .report_sentences import report_sentences
 
 logger = logging.getLogger(__name__)
@@ -120,15 +121,25 @@ class _QuietGather:
         return await asyncio.gather(*coros)
 
 
+#: The malformed-reply counter of the report being judged (one list per
+#: report task; the package's sub-tasks copy the context, so they share it).
+_MALFORMED: contextvars.ContextVar = contextvars.ContextVar("argue_malformed", default=None)
+
+
 class _JudgeChat(YesNoJudge):
     """The chat model the package calls (``ainvoke`` of a LangChain chat model),
-    answered by our YES/NO judge."""
+    answered by our YES/NO judge; a reply still without YES/NO after the
+    retries is counted for the report being judged (:data:`_MALFORMED`)."""
 
     _ROLES = {"system": "system", "human": "user", "ai": "assistant"}
 
     async def ainvoke(self, messages, **_):
         chat = [{"role": self._ROLES.get(m.type, "user"), "content": m.content} for m in messages]
-        return SimpleNamespace(content=await self.ask(chat))
+        text = await self.ask(chat)
+        counter = _MALFORMED.get()
+        if counter is not None and not has_yes_no(text):
+            counter[0] += 1
+        return SimpleNamespace(content=text)
 
 
 @contextmanager
@@ -271,11 +282,18 @@ class ArgueReportEvaluator:
 
     # -- judging --------------------------------------------------------
 
-    async def _judge(self, judge, utils, todo: List[Tuple[str, Any, Path]], doc_dir: Path) -> Dict[str, Any]:
-        """``{query_id: JudgedReport or Exception}`` for the reports of *todo*."""
+    async def _judge(self, judge, utils, todo: List[Tuple[str, Any, Path]],
+                     doc_dir: Path) -> Dict[str, Tuple[Any, int]]:
+        """``{query_id: (JudgedReport or Exception, malformed replies)}`` for
+        the reports of *todo*."""
         utils._singleton_semaphore = asyncio.Semaphore(self.max_concurrent_judges)
 
         async def one(qid, report, bank_path):
+            counter = [0]
+            _MALFORMED.set(counter)
+            return (*await judged_one(qid, report, bank_path), counter[0])
+
+        async def judged_one(qid, report, bank_path):
             try:
                 judged = await judge.evaluate_report(
                     report, bank_path, [_DOC_COLLECTION], collection_dir=doc_dir,
@@ -290,8 +308,8 @@ class ArgueReportEvaluator:
         out: Dict[str, Any] = {}
         tasks = [asyncio.ensure_future(one(*item)) for item in todo]
         for fut in step_iter(asyncio.as_completed(tasks), total=len(tasks), desc="[ARGUE]"):
-            qid, judged = await fut
-            out[qid] = judged
+            qid, judged, malformed = await fut
+            out[qid] = (judged, malformed)
         return out
 
     # -- scoring --------------------------------------------------------
@@ -345,6 +363,10 @@ class ArgueReportEvaluator:
                             ("reports with unmapped citations", "num_unmapped_reports"),
                             ("judge failures", "num_judge_failures")):
             res.add("generation", metric, report[key])
+        # The package's default answer stood in for these replies (n: the
+        # reports judged since the count is kept).
+        res.add("generation", "judge malformed replies", report["judge_malformed"],
+                n=report["num_malformed_counted"])
         return res
 
     def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
@@ -354,8 +376,9 @@ class ArgueReportEvaluator:
         Returns ``num_evaluated`` (requests with nuggets), ``num_without_nuggets``,
         ``num_empty_reports``, ``num_judge_failures``, ``metrics`` (mean of each
         of :data:`METRICS` over the evaluated requests but the failures),
-        ``judge_calls`` / ``judge_malformed`` (this evaluation's calls) and
-        ``per_query``; ``{}`` when no request has nuggets.
+        ``judge_malformed`` (replies left without YES/NO, summed over the
+        reports with a count) with ``num_malformed_counted`` (those reports)
+        and ``per_query``; ``{}`` when no request has nuggets.
         """
         judge, score_module, utils = _import_auto_argue()
         out_dir = Path(run_dir) / GENERATION_EVAL_DIR if run_dir else Path(tempfile.mkdtemp(prefix="generation_eval_"))
@@ -383,6 +406,7 @@ class ArgueReportEvaluator:
         self._cited_docs(to_score, out_dir)
 
         judged: Dict[str, Dict] = {}
+        malformed: Dict[str, int] = {}   # reports judged before the count was kept have none
         todo = []
         for qid, report in to_score.items():
             key = _report_key(report, bank_json[qid], self._docs, self.judge_model)
@@ -391,6 +415,8 @@ class ArgueReportEvaluator:
                 cached = json.loads(cache.read_text(encoding="utf-8"))
                 if cached.get("key") == key:
                     judged[qid] = cached["judged"]
+                    if cached.get("malformed") is not None:
+                        malformed[qid] = cached["malformed"]
                     continue
             todo.append((qid, report, banks_dir / f"nuggets_{qid}.v3.json", key))
 
@@ -402,14 +428,16 @@ class ArgueReportEvaluator:
             keys = {qid: key for qid, _, _, key in todo}
             with _patched(utils, judge, chat):
                 fresh = asyncio.run(self._judge(judge, utils, [t[:3] for t in todo], out_dir))
-            for qid, outcome in fresh.items():
+            for qid, (outcome, n_malformed) in fresh.items():
                 if isinstance(outcome, Exception):
                     failures[qid] = str(outcome)
                     logger.error(f"Auto-ARGUE failed for {qid}: {outcome}")
                     continue
                 judged[qid] = outcome.model_dump(mode="json")
+                malformed[qid] = n_malformed
                 (cache_dir / f"{qid}.json").write_text(
-                    json.dumps({"key": keys[qid], "judged": judged[qid]}, ensure_ascii=False), encoding="utf-8")
+                    json.dumps({"key": keys[qid], "judged": judged[qid], "malformed": n_malformed},
+                               ensure_ascii=False), encoding="utf-8")
 
         per_topic = self._score(score_module, judged, banks_dir, out_dir) if judged else {}
 
@@ -419,6 +447,7 @@ class ArgueReportEvaluator:
                 continue
             record: Dict[str, Any] = {"query_id": qid, "empty_report": qid in empty,
                                       "unmapped_markers": unmapped[qid],
+                                      "judge_malformed": malformed.get(qid, 0 if qid in empty else None),
                                       "uncited_report": qid not in empty and not reports[qid].references}
             scores = per_topic.get(qid, {})
             for m in METRICS + COUNTS:
@@ -437,7 +466,7 @@ class ArgueReportEvaluator:
             "num_unmapped_reports": sum(1 for r in per_query if r["unmapped_markers"]),
             "num_judge_failures": len(failures),
             "metrics": {m: mean_or_none([r[m] for r in per_query], 5) for m in METRICS},
-            "judge_calls": chat.calls,
-            "judge_malformed": chat.malformed,
+            "judge_malformed": sum(r["judge_malformed"] for r in per_query if r["judge_malformed"] is not None),
+            "num_malformed_counted": sum(1 for r in per_query if r["judge_malformed"] is not None),
             "per_query": per_query,
         }

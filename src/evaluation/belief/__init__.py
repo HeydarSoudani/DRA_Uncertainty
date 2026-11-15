@@ -1,6 +1,6 @@
 """Belief evaluation (the ``belief`` group of the run's ``metrics.md``).
 
-The belief files are written and read by ``run_files.belief``.
+The belief files are written and read by ``utils.run_files.belief``.
 
 * :class:`BeliefUpdateEvaluator`: what the belief update does with a gold
   document, and whether the final belief is correct and calibrated

@@ -8,7 +8,7 @@ simple-evals.  The judge model is :data:`evaluation.judge.DEFAULT_JUDGE_MODEL`.
 Scoring: binary (correct / incorrect).  Accuracy = #correct / #evaluated.
 The grading prompt is kept verbatim (its ``confidence`` field included, so
 saved verdicts stay valid), but that field is not used: the agent's own
-confidence is read from the generation (``answer.confidence``).
+confidence is read from the generation (``generation.confidence``).
 
 A verdict is saved in ``eval/generation/accuracy.jsonl`` with a ``key`` hashing what was
 judged (question, cleaned response, gold answer, judge model, grader prompt);

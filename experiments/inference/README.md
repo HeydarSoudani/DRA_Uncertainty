@@ -370,7 +370,7 @@ passage ruled out, for a proposal or an unlisted name "unknown" when the criteri
 "unlikely"; an unlisted answer on a computed aggregate at the lowest score of its inputs). On a report, s_T is the fixed function of the belief after the final update.
 `analysis/final_score_ablation.py` rescores saved runs: the scorer and both formulas.
 
-Saved in `belief/{qid}.jsonl` (schema in `src/run_files/belief.py`): a meta line, one line per iteration and
+Saved in `belief/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the candidate `updates` of the
@@ -455,15 +455,16 @@ Every run can be compared in one table with `analysis/collect_results.py --root 
 headline measures as columns; `--all` for every measure, `--group` to keep some groups, `--ci` for the CIs):
 `results.md` and `results.csv`.
 
-`src/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one module or
+`utils/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one module or
 subpackage per group:
 
 ```
-src/run_files/
+utils/run_files/
 ├── __init__.py      QUERY_OUTPUT_DIRS, save_query_outputs, load_result_from_saved_files
 ├── retrieval.py     surfaced / seen / cited doc levels and their TREC files
 ├── generation.py    generation/{qid}.md
 ├── trajectory.py    trajectory/{qid}.jsonl, scan_queries (finished queries)
+├── trajectory_logger.py  streamed trajectory lines and the step shaping both writers share
 ├── belief.py        belief/{qid}.jsonl (schema, SCHEMA_VERSION), save/read/load, believed_queries
 └── run_config.py    run directory name, run_config.json, passage cut of a run
 

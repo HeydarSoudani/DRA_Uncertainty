@@ -1,12 +1,12 @@
 """Retrieval evaluation (the ``retrieval`` group of the run's ``metrics.md``).
 
-Only the *seen* documents are scored (``run_files.retrieval``: the docs
+Only the *seen* documents are scored (``utils.run_files.retrieval``: the docs
 passed to the agent/LLM); the surfaced and cited levels are saved only.
 """
 
 from typing import Any, Dict
 
-from run_files.retrieval import doc_ids, seen_iterations
+from utils.run_files.retrieval import doc_ids, seen_iterations
 
 from .measures import mean
 from .metrics_file import GroupResult

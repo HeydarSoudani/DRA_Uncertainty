@@ -15,7 +15,7 @@ documents, new to the belief at step t (not in an earlier step whose update
 call parsed: the update shows every document of a step, also one shown
 before, but only its first showing is an event), and its text as the
 update read it (the run's ``max_passage_tokens`` cut) states k's gold
-answer (string match, ``gold.states``, else the judge when the run has a
+answer (string match, ``gold_match.states``, else the judge when the run has a
 judge model).  When the update call of step t failed, the event is the
 document's first occurrence with a parsed call, else a ``call_failed``
 event at its first occurrence.
@@ -30,8 +30,8 @@ highest), "unknown" when the gold answer is not a candidate.  An event's
 change is that probability after the step minus before; an event whose gold
 candidate is already "confirmed" cannot rise and has no change.
 
-A candidate is a gold answer when it matches one (``gold.states``), else
-when the judge says so (``gold.AnswerJudge``, the run's ``judge_model``,
+A candidate is a gold answer when it matches one (``gold_match.states``), else
+when the judge says so (``gold_match.AnswerJudge``, the run's ``judge_model``,
 cached in ``eval/belief/judge_cache.jsonl``; no judge model: the match
 only).  Only belief files of the current ``SCHEMA_VERSION`` are scored
 (``load_belief_files``; an older file counts as no belief file).
@@ -74,8 +74,8 @@ from belief_model_component import (AGGREGATE, STATUS_LEVEL, UNKNOWN, exclusive,
                                     parse_status, status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from run_files.belief import BeliefFile
-from run_files.run_config import passage_cut, read_run_config
+from utils.run_files.belief import BeliefFile
+from utils.run_files.run_config import passage_cut, read_run_config
 
 from ..measures import bootstrap_ci, mean
 from ..metrics_file import BELIEF_EVAL_DIR, GroupResult, fmt
@@ -258,7 +258,6 @@ class BeliefUpdateEvaluator:
             return is_gold.get((q.qid, cid, name or ""), False)
 
         def gold_status(belief: Optional[Dict], cid: str) -> str:
-            # parse_status: "certain" of runs before schema 50 is "confirmed".
             statuses = [parse_status(c.get("status")) for c in (belief or {}).get("candidates") or []
                         if gold_name(cid, c.get("name")) and parse_status(c.get("status"))]
             return max(statuses, key=STATUS_LEVEL.get) if statuses else UNKNOWN
@@ -376,9 +375,9 @@ class BeliefUpdateEvaluator:
         """The ``belief`` group over the run's queries with scored gold
         criteria, from their belief *files* (``load_belief_files``; a query of
         *query_ids* without one counts as ``no belief file``): the rows, the
-        per-query means and the calibration table (``CALIBRATION_COLUMNS``);
-        *raw* is ``{"events": n}`` (the rows of ``events.csv``).  Empty when
-        no query has one."""
+        per-query means and the calibration table (``CALIBRATION_COLUMNS``),
+        its events written to ``eval/belief/events.csv``.  Empty when no
+        query has one."""
         run_dir = Path(run_dir)
         counts: Counter = Counter()
         queries = self._load(files, query_ids, counts)
@@ -407,7 +406,7 @@ class BeliefUpdateEvaluator:
             per_query[q.qid] = rec
 
         self._write_events(run_dir, events)
-        res = GroupResult(per_query=per_query, raw={"events": len(events)})
+        res = GroupResult(per_query=per_query)
         for row in self._rows(groups):
             res.add("belief", *row)
         calibration = self._calibration(groups)

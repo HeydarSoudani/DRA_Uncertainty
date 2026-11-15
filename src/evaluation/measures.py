@@ -12,9 +12,6 @@ uncertainty and belief update) and by the offline analyses.
     mean_or_none  the mean of the defined values (None and NaN left out),
                   None when there is none
     bootstrap_ci  percentile CI of a statistic over resampled queries
-    paired_diff_ci
-                  CI of the difference of one statistic on two scores of the
-                  same queries, from the same resamples
 
 The CIs resample queries (the unit that is independent), never the items
 within a query: the caller passes one group of items per query.
@@ -106,24 +103,3 @@ def bootstrap_ci(groups: List, stat: Callable[[List], float], level: float = 0.9
         return math.nan, math.nan
     alpha = (1 - level) / 2
     return float(np.quantile(values, alpha)), float(np.quantile(values, 1 - alpha))
-
-
-def paired_diff_ci(groups: List, stat_a: Callable[[List], float], stat_b: Callable[[List], float],
-                   level: float = 0.95, resamples: int = BOOTSTRAP_RESAMPLES,
-                   seed: int = BOOTSTRAP_SEED) -> Tuple[float, float, float]:
-    """``(diff, low, high)``: ``stat_a - stat_b`` on *groups* and its
-    percentile CI, both statistics computed on the same resamples (a paired
-    bootstrap)."""
-    diff = stat_a(groups) - stat_b(groups)
-    if len(groups) < 2:
-        return diff, math.nan, math.nan
-    values = []
-    for idx in _resamples(len(groups), resamples, seed):
-        sample = [groups[i] for i in idx]
-        v = stat_a(sample) - stat_b(sample)
-        if not math.isnan(v):
-            values.append(v)
-    if not values:
-        return diff, math.nan, math.nan
-    alpha = (1 - level) / 2
-    return diff, float(np.quantile(values, alpha)), float(np.quantile(values, 1 - alpha))

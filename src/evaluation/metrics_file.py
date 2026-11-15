@@ -2,7 +2,7 @@
 
 Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`):
 
-- ``metrics.md``: a header (run, dataset, agent, belief mode, queries),
+- ``metrics.md``: a header (run, dataset, agent, belief model, queries),
   one aligned markdown table, one row per measure: ``group | metric |
   value | ci_low | ci_high | n`` (groups in order: retrieval, generation,
   uncertainty, belief, trajectory), then any extra section (a titled
@@ -189,8 +189,9 @@ def _ci(rows: List[Row], group: str, metric: str) -> str:
 
 
 def log_lines(title: str, rows: List[Row]) -> List[str]:
-    """The terminal block: one line per group present in *rows*."""
-    groups = {r.group for r in rows}
+    """The terminal block: one line per group present in *rows* (the belief
+    group: its files and update calls, then its gold measures when the
+    dataset has gold per criterion)."""
     out = [title]
     out.append(f"retrieval    Recall@N {_val(rows, 'retrieval', 'Recall@N')}"
                f" | Precision@N {_val(rows, 'retrieval', 'Precision@N')}"
@@ -213,8 +214,14 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
         out.append(f"uncertainty  s_T tau-b vs coverage {_ci(rows, 'uncertainty', 's_T tau-b vs nugget coverage')}"
                    f" Brier {_val(rows, 'uncertainty', 's_T Brier vs nugget coverage')}"
                    f" (n {_val(rows, 'uncertainty', 'queries scored')})")
-    if "belief" in groups:
-        out.append(f"belief       gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
+    if _get(rows, "belief", "queries with a belief file"):
+        line = f"belief       files {_val(rows, 'belief', 'queries with a belief file')}"
+        if _get(rows, "belief", "update calls"):
+            line += (f" | update calls {_val(rows, 'belief', 'update calls')}"
+                     f" | format gate failed {_val(rows, 'belief', 'update calls: format gate failed')}")
+        out.append(line)
+    if _get(rows, "belief", "reached answer"):
+        out.append(f"belief gold  gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
                    f" | control change {_val(rows, 'belief', 'control event: gold candidate change')}"
                    f" | recall {_val(rows, 'belief', 'criterion recall')}"
                    f" | reached {_val(rows, 'belief', 'reached answer')}"

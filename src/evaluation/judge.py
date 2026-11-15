@@ -13,6 +13,7 @@ on local GPUs.  Requires ``OPENROUTER_API_KEY`` in the environment.
 import asyncio
 import concurrent.futures
 import logging
+import re
 from typing import Any, Callable, Dict, List, Sequence
 
 from reasoner_component.api import get_litellm_client
@@ -110,10 +111,19 @@ YES_NO_RETRIES = 2
 YES_NO_TIMEOUT = 60
 
 
+_YES_NO = re.compile(r"\b(YES|NO)\b")
+
+
+def yes_no(text: str):
+    """The first YES or NO word of a reply (case ignored), None without one.
+    Whole words only: "UNKNOWN" or "CANNOT" is no answer."""
+    m = _YES_NO.search((text or "").upper())
+    return m.group(1) if m else None
+
+
 def has_yes_no(text: str) -> bool:
-    """Whether a reply says YES or NO."""
-    text = (text or "").upper()
-    return "YES" in text or "NO" in text
+    """Whether a reply says YES or NO (:func:`yes_no`)."""
+    return yes_no(text) is not None
 
 
 class YesNoJudge:
@@ -122,9 +132,6 @@ class YesNoJudge:
     ``reasoning.enabled=false`` for some Qwen3 providers only), a reply
     without YES/NO asked again :data:`YES_NO_RETRIES` times, a request past
     :data:`YES_NO_TIMEOUT` seconds counted as a reply without YES/NO.
-
-    ``calls`` counts the requests made and ``malformed`` the questions left
-    without YES/NO.
     """
 
     def __init__(self, judge_model: str) -> None:
@@ -132,8 +139,6 @@ class YesNoJudge:
             get_litellm_client(model_name=judge_model, temperature=0.0, max_tokens=YES_NO_TOKENS,
                                timeout=YES_NO_TIMEOUT))
         self._no_think = " /no_think" if "qwen3" in judge_model.lower() else ""
-        self.calls = 0
-        self.malformed = 0
 
     async def ask(self, chat: List[Dict[str, str]]) -> str:
         """The judge's reply to *chat* (``[{role, content}]``), asked again
@@ -145,9 +150,6 @@ class YesNoJudge:
                 text = (await asyncio.wait_for(self._client.acomplete(chat), YES_NO_TIMEOUT) or "").strip()
             except asyncio.TimeoutError:
                 text = ""
-            self.calls += 1
             if has_yes_no(text):
                 break
-        else:
-            self.malformed += 1
         return text
