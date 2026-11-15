@@ -370,7 +370,7 @@ passage ruled out, for a proposal or an unlisted name "unknown" when the criteri
 "unlikely"; an unlisted answer on a computed aggregate at the lowest score of its inputs). On a report, s_T is the fixed function of the belief after the final update.
 `analysis/final_score_ablation.py` rescores saved runs: the scorer and both formulas.
 
-Saved in `belief/{qid}.jsonl` (schema in `src/evaluation/belief/writer.py`): a meta line, one line per iteration and
+Saved in `belief/{qid}.jsonl` (schema in `src/run_files/belief.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the candidate `updates` of the
@@ -401,13 +401,13 @@ The measures, by group, in the order of the files and the log:
 | belief | gold and control event change, criterion recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
-CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.metrics`). Nothing else is
+CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.measures`). Nothing else is
 computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, soft match or length statistics (the
 raw outputs stay in the run, for `analysis/`).
 
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
 query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
-oss; read from `generation/{qid}.md` by a regex, `answer/confidence.py`, "~85 %" and a fraction such as "0.85"
+oss; read from `generation/{qid}.md` by a regex, `evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85"
 accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
 the mean of the status probabilities of the criteria the updater judges, aggregates left out) and `answer formula`
 (the same on the candidates the scorer says the answer uses, a computed aggregate kept). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
@@ -455,30 +455,37 @@ Every run can be compared in one table with `analysis/collect_results.py --root 
 headline measures as columns; `--all` for every measure, `--group` to keep some groups, `--ci` for the CIs):
 `results.md` and `results.csv`.
 
-`src/evaluation/` follows the groups; each group also writes its per-query files:
+`src/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one module or
+subpackage per group:
 
 ```
+src/run_files/
+├── __init__.py      QUERY_OUTPUT_DIRS, save_query_outputs, load_result_from_saved_files
+├── retrieval.py     surfaced / seen / cited doc levels and their TREC files
+├── generation.py    generation/{qid}.md
+├── trajectory.py    trajectory/{qid}.jsonl, scan_queries (finished queries)
+├── belief.py        belief/{qid}.jsonl (schema, SCHEMA_VERSION), save/read/load, believed_queries
+└── run_config.py    run directory name, run_config.json, passage cut of a run
+
 src/evaluation/
-├── runner.py        save_query_outputs, build_evaluators, load_run_results, evaluate_and_save
-├── report.py        metrics.md, per_query.csv and the log block
-├── metrics.py       AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with the analyses)
-├── retrieval/       surfaced / seen / cited doc levels and their TREC files; seen-doc Recall@N, Precision@N
-├── answer/          AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
-│                    verbal_confidence
-├── uncertainty/     UncertaintyEvaluator, ReportUncertaintyEvaluator
-├── belief/          save_belief (belief/{qid}.jsonl schema), BeliefUpdateEvaluator, gold match and judge
-├── trajectory/      TrajectoryEvaluator (per query), save_trajectory
-├── generation/      the generation/{qid}.md writer
-├── gold/            per-criterion gold (TRQA gold bank, training datasets); TRQA gold entities and their matcher
+├── runner.py        build_evaluators, load_run_results, evaluate_and_save
+├── metrics_file.py  metrics.md, per_query.csv and the log block
+├── measures.py      AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with the analyses)
 ├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
-└── common.py        file and statistics helpers
+├── retrieval.py     seen-doc Recall@N, Precision@N
+├── generation/      AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
+│                    verbal_confidence
+├── uncertainty/     UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
+├── belief/          BeliefUpdateEvaluator, per-criterion gold (gold_rows.py), gold match and judge
+│                    (gold_match.py), issue_summary
+└── trajectory.py    TrajectoryEvaluator (per query)
 ```
 
 ### Report evaluation (Auto-ARGUE)
 
 On the report datasets (`report_eval: "argue"` in `layout.DATASET_SPECS`: NeuCLIR, RAGTIME), every evaluation
 scores the reports against the nuggets with the official
-[Auto-ARGUE](https://github.com/hltcoe/auto-argue) package (`src/evaluation/answer/argue.py`). There is no flag. The
+[Auto-ARGUE](https://github.com/hltcoe/auto-argue) package (`src/evaluation/generation/argue.py`). There is no flag. The
 package runs unmodified with our judge (`judge_model`, Qwen3-32B, temperature 0, reasoning off) instead of its
 Llama-3.3-70B.
 

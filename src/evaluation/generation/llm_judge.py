@@ -24,13 +24,13 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from utils.io_utils import write_jsonl
+from utils.io_utils import read_jsonl, write_jsonl
 from utils.llm_client import LiteLLMClient
 
-from ..common import read_jsonl
-from ..report import ACCURACY_FILE
-from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client, strip_references
+from ..metrics_file import ACCURACY_FILE
+from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client
 from .confidence import verbal_confidence
+from .report_sentences import strip_references
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +235,8 @@ class AccuracyEvaluator:
         if not run_dir:
             return {}
         path = Path(run_dir) / ACCURACY_FILE
+        if not path.exists():
+            return {}
         return {r["query_id"]: r for r in read_jsonl(path)
                 if r.get("key") and not r.get("judge_error")}
 

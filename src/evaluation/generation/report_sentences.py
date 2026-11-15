@@ -1,4 +1,13 @@
-"""Split a saved report into sentences, each with the documents it cites.
+"""The References block of a generation, and a report split into sentences,
+each with the documents it cites.
+
+Two cuts of the References block, kept apart because the answer judges'
+cached verdicts are keyed on their input text:
+
+* :func:`strip_references`: the text before the first appended
+  ``## References`` block (the answer judges, verbal confidence);
+* :func:`split_references`: the report before its last References heading
+  of any level, and that block's ``[N] doc_id`` lines (Auto-ARGUE).
 
 Auto-ARGUE judges a report sentence by sentence, every sentence carrying the
 ids of the documents it cites (the NeuCLIR / RAGTIME run format).  Our reports
@@ -37,6 +46,18 @@ _HEADING_RE = re.compile(r"^\s*#{1,6}\s")
 _RULE_RE = re.compile(r"^\s*(?:[-*_]\s*){3,}$|^\s*\|?\s*:?-{3,}")
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _EMPHASIS_RE = re.compile(r"\*\*|__|`")
+
+
+#: Header of the references block appended to every generation.
+REFERENCES_MARKER = "\n\n## References\n"
+
+
+def strip_references(text: str) -> str:
+    """*text* without the appended ``## References`` block."""
+    idx = text.find(REFERENCES_MARKER)
+    if idx != -1:
+        text = text[:idx].rstrip()
+    return text.strip()
 
 
 def split_references(generation: str) -> Tuple[str, Dict[int, str]]:

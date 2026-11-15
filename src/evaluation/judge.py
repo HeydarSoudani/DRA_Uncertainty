@@ -6,7 +6,8 @@ on local GPUs.  Requires ``OPENROUTER_API_KEY`` in the environment.
 
 * :func:`make_judge_client` / :func:`complete_within` / :func:`judge_all`:
   the free-text grader of the answer evaluation.
-* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``answer.argue``).
+* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``generation.argue``)
+  and of the belief evaluation's gold match (``belief.gold_match``).
 """
 
 import asyncio
@@ -30,18 +31,6 @@ DEFAULT_JUDGE_MODEL = "openrouter/qwen/qwen3-32b"
 JUDGE_TIMEOUT = 180
 #: Requests made before a judge call that keeps timing out fails.
 JUDGE_ATTEMPTS = 3
-
-#: Header of the references block appended to every generation.
-REFERENCES_MARKER = "\n\n## References\n"
-
-
-def strip_references(text: str) -> str:
-    """*text* without the appended ``## References`` block."""
-    idx = text.find(REFERENCES_MARKER)
-    if idx != -1:
-        text = text[:idx].rstrip()
-    return text.strip()
-
 
 def run_sync(coro):
     """Run *coro* to completion from synchronous code, also when called from

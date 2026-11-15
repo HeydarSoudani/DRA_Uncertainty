@@ -407,15 +407,22 @@ is written atomically.
 """
 
 import json
+import logging
 import math
 import os
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 
+from utils.io_utils import read_jsonl
+
+logger = logging.getLogger(__name__)
+
 
 SCHEMA_VERSION = 52
+BELIEF_DIR = "belief"
 
 
 def clean_record(obj: Any) -> Any:
@@ -441,15 +448,15 @@ def _dump(obj: Dict[str, Any]) -> str:
     return json.dumps(clean_record(obj), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
-def save_belief(query_id: str, question: str, meta: Dict[str, Any], steps: List[Dict[str, Any]],
-                final: Optional[Dict[str, Any]], output_dir) -> None:
-    """Write ``{output_dir}/{query_id}.jsonl``: the *meta* line
+def save_belief(run_dir: Union[str, Path], query_id: str, question: str, meta: Dict[str, Any],
+                steps: List[Dict[str, Any]], final: Optional[Dict[str, Any]]) -> None:
+    """Write ``{run_dir}/belief/{query_id}.jsonl``: the *meta* line
     (``BeliefModel.meta``), one line per step record (``BeliefModel.steps``)
     and the *final* record (``BeliefModel.final``, none when None).  Writes
     to a temporary file first, so an interrupted write never leaves a
     truncated file.
     """
-    out_dir = Path(output_dir)
+    out_dir = Path(run_dir) / BELIEF_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
     header = {
@@ -465,3 +472,65 @@ def save_belief(query_id: str, question: str, meta: Dict[str, Any], steps: List[
         if final is not None:
             f.write(_dump({"record": "final", "query_id": query_id, **final}) + "\n")
     os.replace(tmp_path, path)
+
+
+#: Text fields no evaluation reads (dropped by ``load_belief_files``, which
+#: keeps every query of a run in memory).
+_TEXT_KEYS = ("agent_turn", "reply", "references")
+
+BeliefFile = Tuple[Optional[Dict], List[Dict], Optional[Dict]]
+
+
+def read_belief_file(path: Union[str, Path], light: bool = False) -> BeliefFile:
+    """``(meta, steps, final)`` of a belief file (``(None, [], None)`` when
+    missing); *light* drops the text fields no evaluation reads."""
+    path = Path(path)
+    lines = read_jsonl(path) if path.exists() else []
+    if light:
+        lines = [{k: v for k, v in r.items() if k not in _TEXT_KEYS} for r in lines]
+    meta = next((r for r in lines if r.get("record") == "meta"), None)
+    final = next((r for r in lines if r.get("record") == "final"), None)
+    return meta, [r for r in lines if r.get("record") == "step"], final
+
+
+def load_belief_files(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dict[str, BeliefFile]:
+    """``{qid: (meta, steps, final)}`` of the run's belief files of the
+    current ``SCHEMA_VERSION`` (light, see ``read_belief_file``), read once
+    for every evaluation; a query without one, or with an older one, is
+    left out (a warning counts the older ones by schema)."""
+    out: Dict[str, BeliefFile] = {}
+    old: Counter = Counter()
+    for qid in query_ids:
+        meta, steps, final = read_belief_file(Path(run_dir) / BELIEF_DIR / f"{qid}.jsonl", light=True)
+        if meta is None:
+            continue
+        if meta.get("schema_version") != SCHEMA_VERSION:
+            old[meta.get("schema_version")] += 1
+            continue
+        out[qid] = (meta, steps, final)
+    if old:
+        logger.warning("%d belief file(s) of another schema (%s), not %d: not evaluated",
+                       sum(old.values()), dict(old), SCHEMA_VERSION)
+    return out
+
+
+def believed_queries(run_dir: Union[str, Path]) -> Tuple[set, set]:
+    """``(done, stale)`` query ids of the run's belief stage.
+
+    A query is done when ``belief/{qid}.jsonl`` (written last and
+    atomically, :func:`save_belief`) has a meta line of the current
+    ``SCHEMA_VERSION``; a file of another schema is stale: the evaluation
+    leaves it out, so the belief stage runs the query again.
+    """
+    belief_dir = Path(run_dir) / BELIEF_DIR
+    if not belief_dir.is_dir():
+        return set(), set()
+    done, stale = set(), set()
+    for path in belief_dir.glob("*.jsonl"):
+        try:
+            with open(path) as f:
+                meta = json.loads(f.readline() or "{}")
+        except (OSError, ValueError):
+            meta = {}
+        (done if meta.get("schema_version") == SCHEMA_VERSION else stale).add(path.stem)
+    return done, stale

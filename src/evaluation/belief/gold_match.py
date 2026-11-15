@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from indexing_corpus_dataset.training_datasets.gold.annotations import mentions
 
+from ..judge import YesNoJudge, has_yes_no, judge_all, run_sync
+
 _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 
 # The judge's question per kind of text: an agent turn or spans (does it
@@ -92,8 +94,6 @@ class AnswerJudge:
     (JSONL, one ``{key, stated}`` per asked pair)."""
 
     def __init__(self, model: str, cache: Path, workers: int = 16) -> None:
-        from evaluation.judge import YesNoJudge
-
         self._judge = YesNoJudge(model)
         self.model = model
         self.cache_path = Path(cache)
@@ -118,8 +118,6 @@ class AnswerJudge:
         """The verdict of each ``(kind, criterion, text)``, by its ``key``;
         uncached ones are asked (a reply without YES counts as no; one
         without YES/NO is not cached)."""
-        from evaluation.judge import has_yes_no, judge_all, run_sync
-
         keyed = {self.key(*item): item for item in items}
         todo = [(k, item) for k, item in keyed.items() if k not in self._cache]
         if todo:

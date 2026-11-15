@@ -1,6 +1,13 @@
-"""Match gold entity names against texts that name entities (criteria).
+"""TRQA's gold entities and their matcher, for the entity reachability of
+the criteria (``criteria_reachability.py``), with the summary helpers of its
+files.
 
-Two passes:
+:func:`load_gold_entities`: the entities of each query's set, from the
+intermediate information (``queries_{split}_intermediate_info.jsonl``; a
+training dataset: its query rows, ``load_query_intermediate_info``).
+
+Gold entity names are matched against texts that name entities (criteria)
+in two passes:
 
 1. :func:`match_entities`: string match on normalized names (accents,
    case, punctuation and a parenthetical qualifier such as "(2017 film)"
@@ -15,11 +22,16 @@ Two passes:
 """
 
 import hashlib
+import json
 import logging
 import re
 import unicodedata
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
+from indexing_corpus_dataset.dataset_loaders import load_query_intermediate_info
 from utils.text_utils import parse_json_object
 
 logger = logging.getLogger(__name__)
@@ -126,3 +138,38 @@ class LLMEntityMatcher:
                 matches[i] = j
                 used.add(j)
         return matches, None
+
+
+def load_gold_entities(data_path: Path | str, split: str) -> Dict[str, List[str]]:
+    """``{query_id: [entity name, ...]}``, each name once, in file order;
+    empty for a dataset without intermediate information."""
+    entities = {}
+    for qid, rec in load_query_intermediate_info(data_path, split).items():
+        names = []
+        for ev in rec.get("entity_values") or []:
+            name = str(ev.get("entity", "")).strip()
+            if name and name not in names:
+                names.append(name)
+        entities[qid] = names
+    return entities
+
+
+def write_json(path, obj: Any) -> None:
+    """Write *obj* as indented JSON, creating the parent directory."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2, default=str)
+
+
+def summary_stats(values: List[float]) -> Dict[str, float]:
+    """Mean, std, min and max of *values* (all 0 when empty)."""
+    if not values:
+        return {"mean": 0.0, "std": 0.0, "min": 0, "max": 0}
+    arr = np.array(values, dtype=float)
+    return {
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "min": int(np.min(arr)),
+        "max": int(np.max(arr)),
+    }

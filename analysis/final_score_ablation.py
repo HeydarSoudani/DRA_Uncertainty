@@ -17,7 +17,7 @@ computed three ways against the correctness y of the agent's answer
   (``core.certainty.answer_certainty``).
 
 Measures per variant (the queries every variant scored): AUROC, Kendall's
-tau-b, Brier score and ECE (10 bins) (``evaluation.metrics``).  Runs of schema 37 (a final update instead of the scorer) are
+tau-b, Brier score and ECE (10 bins) (``evaluation.measures``).  Runs of schema 37 (a final update instead of the scorer) are
 replayed up to their last step; the scorer is always called anew.
 
 Usage::
@@ -51,11 +51,12 @@ from belief_model_component import (  # noqa: E402
     BeliefState, BeliefUpdateSignal, Criterion, answer_certainty, belief_llm, build_belief_updater,
     build_final_scorer, certainty, is_computed,
 )
-from evaluation.belief import clean_record, passage_tokens  # noqa: E402
-from evaluation.metrics import auroc, brier, ece, tau_b  # noqa: E402
+from evaluation.measures import auroc, brier, ece, tau_b  # noqa: E402
 from indexing_corpus_dataset.doc_lookup import CorpusLookup  # noqa: E402
 from indexing_corpus_dataset.layout import DATASET_SPECS, default_corpus_path  # noqa: E402
-from utils.io_utils import belief_model_of, read_jsonl  # noqa: E402
+from run_files import clean_record  # noqa: E402
+from run_files.run_config import belief_model_of, passage_tokens  # noqa: E402
+from utils.io_utils import read_jsonl  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

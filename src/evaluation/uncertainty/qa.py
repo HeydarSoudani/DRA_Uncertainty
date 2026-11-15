@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..metrics import auroc, bootstrap_ci, brier
+from ..measures import auroc, bootstrap_ci, brier
 
 logger = logging.getLogger(__name__)
 

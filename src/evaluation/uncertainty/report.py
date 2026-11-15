@@ -6,7 +6,7 @@ of the final belief (the ``final`` line of ``belief/{qid}.jsonl``,
 ``certainty``: the mean of the aspects' status probabilities,
 ``belief_model_component.core.certainty``; a report has no final scorer),
 and y is the report's nugget coverage from Auto-ARGUE
-(``evaluation.answer.argue``), weighted too when the dataset has nugget
+(``evaluation.generation.argue``), weighted too when the dataset has nugget
 importance.  Measures: Kendall's tau-b of s_T and y over the queries, with a
 bootstrap CI over queries (the ranking), and the Brier score of s_T against
 y (the level: s_T as the expected coverage).  Queries without s_T or
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..metrics import bootstrap_ci, brier, tau_b
+from ..measures import bootstrap_ci, brier, tau_b
 
 logger = logging.getLogger(__name__)
 

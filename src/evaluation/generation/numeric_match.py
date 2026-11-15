@@ -13,7 +13,7 @@ reported).
 
 The agent's final short answer is extracted from the generation by
 :func:`extract_prediction`.  The interface matches
-:class:`evaluation.answer.llm_judge.AccuracyEvaluator`, so the runner uses
+:class:`evaluation.generation.llm_judge.AccuracyEvaluator`, so the runner uses
 either one in the accuracy slot.
 """
 
@@ -23,7 +23,7 @@ import re
 from typing import Any, Dict, List
 
 from utils.io_utils import write_jsonl
-from ..judge import strip_references
+from .report_sentences import strip_references
 from .confidence import verbal_confidence
 
 logger = logging.getLogger(__name__)

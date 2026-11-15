@@ -14,14 +14,14 @@ Both are opened in truncate mode, so re-running a query after a crash replaces
 its partial log rather than appending to it.
 
 The JSONL of a finished query is rewritten by
-:func:`evaluation.trajectory.save_trajectory`, the last file
+:func:`run_files.save_trajectory`, the last file
 :func:`evaluation.runner.save_query_outputs` writes, with the meta line at
 the end.  The meta line is the query's completion marker
-(:func:`utils.io_utils.scan_queries`): a streamed file without it is
+(:func:`run_files.scan_queries`): a streamed file without it is
 an unfinished query.
 
 The step-shaping helpers below are shared with
-:func:`evaluation.trajectory.save_trajectory`.  Keeping one implementation is
+:func:`run_files.save_trajectory`.  Keeping one implementation is
 what stops the online and end-of-run files from drifting apart.
 """
 
@@ -42,7 +42,7 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 # ---------------------------------------------------------------------------
-# Step shaping (shared with evaluation.trajectory.writer)
+# Step shaping (shared with run_files.trajectory)
 # ---------------------------------------------------------------------------
 
 def infer_action_type(step: Dict[str, Any]) -> str:

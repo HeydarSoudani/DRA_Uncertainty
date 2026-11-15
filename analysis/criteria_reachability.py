@@ -28,9 +28,9 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
 * ``entities`` (TRQA): the members of the query's set, the entities of
   ``queries_{split}_intermediate_info.jsonl``.  A gold entity is reachable
   when a member criterion names it: a string match on normalized names
-  (:func:`evaluation.gold.match_entities`), then one LLM call per request
+  (:func:`gold_entities.match_entities`), then one LLM call per request
   for the entities and member criteria left unmatched, for aliases, other
-  spellings and transliterations (:class:`evaluation.gold.LLMEntityMatcher`).
+  spellings and transliterations (:class:`gold_entities.LLMEntityMatcher`).
   The aggregate is left out: it covers every member by construction.  Reachability is the
   share of reachable gold entities; the share of member criteria that name
   a gold entity (``member_precision``) is a secondary diagnostic.
@@ -130,10 +130,10 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "src"):
 
 from tqdm import tqdm
 
-from evaluation.common import read_jsonl, summary_stats, write_json
-from evaluation.metrics import mean_or_none
-from utils.io_utils import write_jsonl
-from evaluation.gold import ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gold_entities, match_entities
+from evaluation.measures import mean_or_none
+from utils.io_utils import read_jsonl, write_jsonl
+from gold_entities import (ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gold_entities, match_entities,
+                           summary_stats, write_json)
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import (

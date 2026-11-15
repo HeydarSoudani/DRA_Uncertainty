@@ -88,23 +88,22 @@ from utils.cli_setup import (
     apply_config_to_args,
     _sm_bool,
 )
-from utils.io_utils import (
-    believed_queries,
-    scan_queries,
-    setup_output_dirs,
-    build_dataset_dir_name,
-    build_run_name_for_pipeline,
+from utils.io_utils import setup_output_dirs
+from run_files import QUERY_OUTPUT_DIRS, believed_queries, scan_queries
+from run_files.run_config import (
     belief_config_diffs,
     build_belief_config,
+    build_dataset_dir_name,
     build_run_config,
+    build_run_name_for_pipeline,
     check_run_config,
     check_run_dataset,
+    read_run_config,
     set_belief_config,
     update_run_config_evaluation,
 )
-from evaluation.belief import read_run_config
-from evaluation.report import BELIEF_EVAL_DIR
-from evaluation.runner import QUERY_OUTPUT_DIRS, build_evaluators, evaluate_and_save, load_run_results
+from evaluation.metrics_file import BELIEF_EVAL_DIR
+from evaluation.runner import build_evaluators, evaluate_and_save, load_run_results
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inference.yaml")
@@ -891,7 +890,7 @@ if __name__ == "__main__":
 #     │   └── {qid}.md          the same trajectory, human-readable, written live
 #     ├── belief/               belief stage (orchestration.belief_stage)
 #     │   ├── {qid}.jsonl       meta line + one line per search iteration + final line
-#     │   │                     (evaluation.belief.writer); written last: marks the query as done
+#     │   │                     (run_files.belief); written last: marks the query as done
 #     │   └── {qid}.md          the same belief, human-readable
 #     └── eval/                 the evaluation (every stage, evaluation.runner)
 #         ├── metrics.md        one table: group | metric | value | ci_low | ci_high | n

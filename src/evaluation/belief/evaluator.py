@@ -2,7 +2,7 @@
 whether its final belief is correct and calibrated.
 
 Run on the queries whose criteria are gold criteria
-(``evaluation.gold.criteria``: TRQA's members, InfoSeek's hops).  Read from
+(``gold_rows``: TRQA's members, InfoSeek's hops).  Read from
 the saved belief files (``belief/{qid}.jsonl``, the belief stage), without
 calling the belief model.
 
@@ -65,24 +65,22 @@ reached).
 """
 
 import csv
-import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from belief_model_component import (AGGREGATE, MULTI_ASPECT, STATUS_LEVEL, UNKNOWN, exclusive,
+from belief_model_component import (AGGREGATE, STATUS_LEVEL, UNKNOWN, exclusive,
                                     parse_status, status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.text_utils import cut_chars, cut_passage
+from run_files.belief import BeliefFile
+from run_files.run_config import passage_cut, read_run_config
 
-from ..common import read_jsonl
-from ..gold.criteria import load_gold_rows, match_row
-from ..metrics import bootstrap_ci, mean
-from ..report import BELIEF_EVAL_DIR
-from .gold import CANDIDATE, SPANS, AnswerJudge, states
-from .writer import SCHEMA_VERSION
+from ..measures import bootstrap_ci, mean
+from ..metrics_file import BELIEF_EVAL_DIR
+from .gold_match import CANDIDATE, SPANS, AnswerJudge, states
+from .gold_rows import load_gold_rows, match_row
 
 logger = logging.getLogger(__name__)
 
@@ -98,96 +96,6 @@ CALIBRATION_COLUMNS = ("status", "p", "criteria", "reached", "share reached")
 _CONFIRMED = "confirmed"
 EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_id", "assigned", "p_before",
                 "p_after", "change", "correct_after", "correct_end", "stage")
-
-
-#: Text fields no evaluation reads (dropped by ``load_belief_files``, which
-#: keeps every query of a run in memory).
-_TEXT_KEYS = ("agent_turn", "reply", "references")
-
-BeliefFile = Tuple[Optional[Dict], List[Dict], Optional[Dict]]
-
-
-def read_belief_file(path: Path, light: bool = False) -> BeliefFile:
-    """``(meta, steps, final)`` of a belief file (``(None, [], None)`` when
-    missing); *light* drops the text fields no evaluation reads."""
-    lines = read_jsonl(path)
-    if light:
-        lines = [{k: v for k, v in r.items() if k not in _TEXT_KEYS} for r in lines]
-    meta = next((r for r in lines if r.get("record") == "meta"), None)
-    final = next((r for r in lines if r.get("record") == "final"), None)
-    return meta, [r for r in lines if r.get("record") == "step"], final
-
-
-# Before the shared cut (schema 38) the belief update cut a short-answer
-# document at 3000 characters and read a report document whole; from
-# schema 38 to the token cut the shared cut was ``max_passage_chars``
-# characters, ending in "...".
-LEGACY_PASSAGE_CHARS = 3000
-
-
-def read_run_config(run_dir: Path) -> Dict[str, Any]:
-    """The run's ``run_config.json`` (``{}`` when missing)."""
-    path = Path(run_dir) / "run_config.json"
-    return json.loads(path.read_text()) if path.exists() else {}
-
-
-def _recorded(config: Dict[str, Any], key: str) -> Tuple[bool, Optional[int]]:
-    """``(recorded, value)`` of *key* in the belief section of a
-    ``run_config.json`` *config*, else in its agent section (the shared cut,
-    the same value)."""
-    for section in ("belief_model", "agent"):
-        values = config.get(section) or {}
-        if key in values:
-            return True, values[key]
-    return False, None
-
-
-def passage_tokens(config: Dict[str, Any]) -> Optional[int]:
-    """Tokens of one document the belief update of a run read (or, a run
-    without the belief model, will read in training): its
-    ``max_passage_tokens``; None: whole documents.  A run made before the
-    token cut (it recorded characters, or nothing) cannot be replayed with
-    the same text: ValueError."""
-    recorded, value = _recorded(config, "max_passage_tokens")
-    if not recorded:
-        raise ValueError("the run was made before the shared token cut (no max_passage_tokens in its "
-                         "run_config.json); rerun it")
-    return value
-
-
-def passage_cut(config: Dict[str, Any], query_shape: str) -> Callable[[str], str]:
-    """The cut of one document as the belief update of a run read it, from
-    its ``run_config.json`` *config*: ``max_passage_tokens`` (tokens), else
-    an older run's ``max_passage_chars`` (characters), else the cut before
-    either was recorded."""
-    recorded, tokens = _recorded(config, "max_passage_tokens")
-    if recorded:
-        return lambda text: cut_passage(text, tokens)
-    recorded, chars = _recorded(config, "max_passage_chars")
-    if not recorded:
-        chars = None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS
-    return lambda text: cut_chars(text, chars)
-
-
-def load_belief_files(run_dir: Path, query_ids: Iterable[str]) -> Dict[str, BeliefFile]:
-    """``{qid: (meta, steps, final)}`` of the run's belief files of the
-    current ``SCHEMA_VERSION`` (light, see ``read_belief_file``), read once
-    for every evaluation; a query without one, or with an older one, is
-    left out (``skipped`` counts these by reason)."""
-    out: Dict[str, BeliefFile] = {}
-    old: Counter = Counter()
-    for qid in query_ids:
-        meta, steps, final = read_belief_file(Path(run_dir) / "belief" / f"{qid}.jsonl", light=True)
-        if meta is None:
-            continue
-        if meta.get("schema_version") != SCHEMA_VERSION:
-            old[meta.get("schema_version")] += 1
-            continue
-        out[qid] = (meta, steps, final)
-    if old:
-        logger.warning("%d belief file(s) of another schema (%s), not %d: not evaluated",
-                       sum(old.values()), dict(old), SCHEMA_VERSION)
-    return out
 
 
 def _by_id(beliefs: Optional[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
@@ -233,7 +141,7 @@ class BeliefUpdateEvaluator:
 
     Args:
         dataset: Dataset name; only datasets with per-criterion gold are
-            scored (``evaluation.gold.criteria``).
+            scored (``gold_rows``).
         split: File-level split id (TRQA's gold bank).
         corpus_path: The corpus the run retrieved from (document texts).
         judge_model: Model of the candidate and document judge; None or "":

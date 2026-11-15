@@ -18,7 +18,7 @@ what the agent's turns showed:
   ``agent_generation``; ``generation/{qid}.md`` has the References section
   the pipeline appends, and its docid citations renumbered).
 
-Each query's belief goes to ``belief/{qid}.jsonl`` (``evaluation.belief.save_belief``)
+Each query's belief goes to ``belief/{qid}.jsonl`` (``run_files.save_belief``)
 and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log_view``).
 A query whose belief file exists is done: the stage resumes.  A query
 whose criteria or a belief call failed before any reply (the API, not the
@@ -246,7 +246,7 @@ def run_belief_stage(
         workers: Belief threads (queries run at once), one bar each.
         verbose: Print each query's belief.
     """
-    from evaluation.belief import save_belief
+    from run_files import save_belief
     from indexing_corpus_dataset.doc_lookup import CorpusLookup
 
     run_dir = Path(run_dir)
@@ -278,7 +278,7 @@ def run_belief_stage(
         # The .jsonl last: it marks the query as done.
         atomic_write_text(belief_dir / f"{qid}.md",
                           _belief_md(out["summary"], out["steps"], out["final"], qid, saved.question))
-        save_belief(qid, saved.question, out["meta"], out["steps"], out["final"], belief_dir)
+        save_belief(run_dir, qid, saved.question, out["meta"], out["steps"], out["final"])
         return None
 
     # Verbose prints each query's belief, which live bars would scramble:

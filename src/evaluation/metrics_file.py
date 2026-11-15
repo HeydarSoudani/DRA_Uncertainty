@@ -36,6 +36,8 @@ ACCURACY_FILE = f"{GENERATION_EVAL_DIR}/accuracy.jsonl"
 #: The belief evaluation's files (``events.csv``, ``judge_cache.jsonl``).
 BELIEF_EVAL_DIR = f"{EVAL_DIR}/belief"
 COLUMNS = ("group", "metric", "value", "ci_low", "ci_high", "n")
+#: The rule around the log block.
+RULE = "=" * 80
 
 
 @dataclass

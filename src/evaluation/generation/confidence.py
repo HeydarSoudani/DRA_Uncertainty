@@ -14,7 +14,7 @@ generation without the line has none (None), never a default value.
 import re
 from typing import Optional
 
-from ..judge import strip_references
+from .report_sentences import strip_references
 
 _CONFIDENCE = re.compile(
     r"\bConfidence[*_]*[^\S\n]*:[^\S\n]*[*_]*[^\S\n]*"

@@ -170,7 +170,7 @@ class DatasetSpec:
         query_max_length:    Max tokens per query at retrieval, for long-context
                              encoders.
         report_eval:         Report evaluator: ``"argue"`` (Auto-ARGUE against
-                             the dataset's nuggets, ``evaluation.answer.argue``)
+                             the dataset's nuggets, ``evaluation.generation.argue``)
                              or None (reports are not graded).
         title_key:           Queries-file field with the topic title, shown as
                              the topic of the criteria (``analysis/

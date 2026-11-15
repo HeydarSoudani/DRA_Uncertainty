@@ -1,7 +1,7 @@
 """Collect the evaluation of many runs into one table.
 
 Reads every run under ``--root`` that has an ``eval/metrics.md``
-(``evaluation.report``, written by ``dra_inference.py`` and its
+(``evaluation.metrics_file``, written by ``dra_inference.py`` and its
 ``--eval-only``) with its ``run_config.json``, and writes one table: a row
 per run (dataset, split, agent, belief mode, criteria source, finished and
 unfinished queries), a column
@@ -27,8 +27,8 @@ from typing import Dict, List, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from evaluation.belief import read_run_config  # noqa: E402
-from evaluation.report import GROUPS, METRICS_FILE, fmt, read_header, read_metrics, table  # noqa: E402
+from evaluation.metrics_file import GROUPS, METRICS_FILE, fmt, read_header, read_metrics, table  # noqa: E402
+from run_files.run_config import read_run_config  # noqa: E402
 
 #: The headline measures, (group, metric), in column order.
 HEADLINE: Tuple[Tuple[str, str], ...] = (

@@ -1,45 +1,26 @@
-"""Evaluation of deep-research agent runs.
+"""Evaluation of deep-research agent runs: scoring only.
 
-The subpackages follow the groups of a run's ``metrics.md`` (``report``):
+The run's files are written and read by ``run_files``; the evaluation reads
+them back and writes its own under ``eval/`` (``metrics_file``).  One
+module or subpackage per group of the run's ``metrics.md``, in order:
 
 retrieval
-    The surfaced / seen / cited document levels and their per-query TREC
-    files; the seen docs are scored (Recall@N, Precision@N).
-answer
+    Recall@N, Precision@N of the seen docs (``SeenDocEvaluator``).
+generation
     Answer correctness (``AccuracyEvaluator`` by LLM judge,
     ``NumericMatchEvaluator`` by numeric match), the report evaluation
     against nuggets (``ArgueReportEvaluator``, Auto-ARGUE) and the agent's
-    verbal confidence: the ``generation`` group.
+    verbal confidence.
 uncertainty
-    s_T and its baselines against correctness (``UncertaintyEvaluator``).
+    s_T and its baselines against correctness (``UncertaintyEvaluator``)
+    or against nugget coverage (``ReportUncertaintyEvaluator``).
 belief
-    The per-query belief file, the belief update evaluation
-    (``BeliefUpdateEvaluator``) and the gold match shared with training.
+    The belief update evaluation (``BeliefUpdateEvaluator``) with its
+    per-criterion gold, and the update's issues (``issue_summary``).
 trajectory
-    Per-query trajectory statistics and the per-query trajectory file.
-generation
-    The per-query generation file.
-gold
-    Per-criterion gold (TRQA's gold bank, the training datasets) and TRQA's
-    gold entities with their matcher (``analysis/criteria_reachability.py``).
+    Per-query searches, tokens and forced answers (``TrajectoryEvaluator``).
 
-Beside them: ``runner`` (evaluation of an inference run), ``report`` (its
-files and log), ``metrics`` (the shared measures), ``judge`` (the
-LLM-judge client) and ``common`` (file and statistics helpers).
+Beside them: ``runner`` (evaluation of a run), ``metrics_file`` (its files
+and log), ``measures`` (AUROC, Brier, ECE, tau-b, bootstrap CIs) and
+``judge`` (the LLM-judge client).
 """
-
-from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .generation import GenerationEvaluator
-from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
-from .trajectory import TrajectoryEvaluator
-
-__all__ = [
-    "AccuracyEvaluator",
-    "NumericMatchEvaluator",
-    "ArgueReportEvaluator",
-    "GenerationEvaluator",
-    "SurfacedDocEvaluator",
-    "SeenDocEvaluator",
-    "CitedDocEvaluator",
-    "TrajectoryEvaluator",
-]

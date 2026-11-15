@@ -1,11 +1,10 @@
 """Evaluation of an inference run, used by ``experiments/inference/dra_inference.py``.
 
-    save_query_outputs      Write one query's files under the run directory.
     build_evaluators        Instantiate the evaluators of a dataset.
     load_run_results        Read the run's queries back from their saved files.
     evaluate_and_save       Run every evaluator, print the log block and write
                             ``eval/metrics.md`` and ``eval/per_query.csv``
-                            (``evaluation.report``).
+                            (``evaluation.metrics_file``).
 
 The groups, in the order of the files and the log:
 
@@ -40,45 +39,20 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.io_utils import belief_model_of, load_result_from_saved_files
+from run_files import load_belief_files, load_result_from_saved_files
+from run_files.run_config import belief_model_of, read_run_config
 from utils.progress import step_iter
 
-from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config
-from .belief.evaluator import CALIBRATION_COLUMNS
-from .common import RULE
-from .metrics import mean
-from .generation import GenerationEvaluator
-from .gold.criteria import GOLD_DATASETS
-from .report import ACCURACY_FILE, EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, Row, fmt, log_lines, write_metrics, write_per_query
-from .retrieval import CitedDocEvaluator, SeenDocEvaluator, SurfacedDocEvaluator
-from .trajectory import TrajectoryEvaluator, save_trajectory
+from .belief import CALIBRATION_COLUMNS, GOLD_DATASETS, ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary
+from .generation import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
+from .measures import mean
+from .metrics_file import (ACCURACY_FILE, EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, RULE, Row, fmt, log_lines,
+                           write_metrics, write_per_query)
+from .retrieval import SeenDocEvaluator
+from .trajectory import TrajectoryEvaluator
 from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
 
 logger = logging.getLogger(__name__)
-
-#: Per-query output directories of the generate stage (``belief/`` is
-#: the belief stage's, created by its writer).
-QUERY_OUTPUT_DIRS = (
-    "retrieval/surfaced", "retrieval/seen", "retrieval/cited",
-    "generation", "trajectory",
-)
-
-
-def save_query_outputs(run_dir: Union[str, Path], query_id: str, question: str, result: Dict[str, Any]) -> None:
-    """Write every per-query file of *result* under *run_dir*.
-
-    ``retrieval/{surfaced,seen,cited}/{qid}.trec``, ``generation/{qid}.md``,
-    then ``trajectory/{qid}.jsonl``: its meta line marks the query as finished
-    (``utils.io_utils.scan_queries``), so it is written last.
-    """
-    run_dir = Path(run_dir)
-    SurfacedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "surfaced")
-    SeenDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "seen")
-    CitedDocEvaluator.save_item(query_id, result, run_dir / "retrieval" / "cited")
-    GenerationEvaluator.save_item(query_id, result, run_dir / "generation")
-    save_trajectory(query_id, question, result, run_dir / "trajectory")
-
 
 @dataclass
 class Evaluators:
@@ -88,7 +62,7 @@ class Evaluators:
     without ``answer_eval``; ``report`` is None for a dataset without
     ``report_eval`` (``layout.DATASET_SPECS``); ``uncertainty`` is None for
     a report dataset, ``report_uncertainty`` for any other; ``belief`` is None for a dataset without
-    per-criterion gold (``evaluation.gold.criteria``).  The last two score
+    per-criterion gold (``evaluation.belief.gold_rows``).  The last two score
     a run only when its belief files exist.
     """
     seen: SeenDocEvaluator
@@ -155,7 +129,7 @@ def build_evaluators(
 
 def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dict[str, Dict[str, Any]]:
     """``{query_id: result}`` read back from the run's saved files
-    (``utils.io_utils.load_result_from_saved_files``); a query without files
+    (``run_files.load_result_from_saved_files``); a query without files
     is left out."""
     run_dir = Path(run_dir)
     query_ids = sorted(query_ids)
@@ -201,7 +175,7 @@ def evaluate_and_save(
     num_unfinished: Optional[int] = None,
 ) -> None:
     """Run every evaluator, print the log block and write ``metrics.md``,
-    ``per_query.csv`` (``evaluation.report``) and the evaluators' own files
+    ``per_query.csv`` (``evaluation.metrics_file``) and the evaluators' own files
     (``eval/generation/``, ``eval/belief/``), all under ``eval/``.
 
     Args:

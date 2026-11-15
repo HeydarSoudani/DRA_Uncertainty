@@ -62,15 +62,15 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from utils.progress import step_iter
 
-from ..metrics import mean_or_none
-from ..report import GENERATION_EVAL_DIR
+from ..measures import mean_or_none
+from ..metrics_file import GENERATION_EVAL_DIR
 from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
 from .report_sentences import report_sentences
 
