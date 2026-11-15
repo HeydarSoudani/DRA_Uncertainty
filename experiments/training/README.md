@@ -16,14 +16,14 @@ one-answer criterion, from the other candidates' support (per criterion type in
 `no_support`; no new support: the status kept, `no_new_support`). The candidates with their support (quoted spans
 and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
 candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call
-only when it has a new passage; otherwise the belief is carried forward. A
+when its search returned a passage (new or shown before, with the same label); otherwise the belief is carried forward. A
 criterion's status is the highest of its candidates. Each criterion is its own sequence of beliefs over the steps, and is scored on its own.
 
 The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/core/certainty.py`),
 a fixed function of the statuses:
 
 1. each status becomes a probability $p$ (`core.types.STATUS_PROBABILITY`: unlikely 0.10, unknown 0.25, possible
-   0.50, probable 0.70, almost certain 0.90, certain 0.97); $q_k$ is the criterion status's $p$ (a one-answer status
+   0.50, probable 0.70, almost certain 0.90, confirmed 0.97); $q_k$ is the criterion status's $p$ (a one-answer status
    already counts the competing candidates);
 2. $s_t$ is the mean of the $q_k$ over the criteria the updater judges, $\mathcal{C}'$ (every criterion but an
    aggregate, whose status is derived from its inputs), on every query shape.
@@ -52,13 +52,13 @@ Only the belief model is trained; the agent stays frozen.
 
 ## Model
 
-One call per step with a new passage, then the final call, the same prompts for
+One call per step with a passage, then the final call, the same prompts for
 the prompted teacher and the trained student (`belief_model_component/prompts/belief_update/system.txt`,
 `prompts/final_score/system.txt`):
 
 | Call | Input | Output |
 |---|---|---|
-| update (a search step $t$ with a new passage) | $q$, the criteria with $b_{t-1}$ (their candidates, each with status and support, and their proposals), the agent's turns since the last call (its reasoning), the new passages of step $t$ | `reasoning_observations` (claims: `{id, turn, candidate, span, claim}`), `passage_observations` (spans of each passage per criterion), `candidates` (`{id, candidate, support, against, reason, status}`, every candidate whose support or status changes) |
+| update (a search step $t$ with a passage) | $q$, the criteria with $b_{t-1}$ (their candidates, each with status and support, and their proposals), the agent's turns since the last call (its reasoning), the passages of step $t$ (new or shown before, with the same label) | `reasoning_observations` (claims: `{id, turn, candidate, span, claim}`), `passage_observations` (spans of each passage per criterion), `candidates` (`{id, candidate, support, against, reason, status}`, every candidate whose support or status changes) |
 | final scorer (answer turn, short-answer query) | $q$, the criteria with $b_{T-1}$ (as above, plus the names a passage ruled out), the answer turn (last 2000 characters of reasoning, final answer) | `candidates` (`{id, candidate}` per criterion, the answer's candidate), `reason`, `status` (one of the five statuses) |
 | final update (answer turn, report) | the update's input, with the answer turn and no passage | the update's output |
 
@@ -70,7 +70,7 @@ gold criteria; the criteria init call is not trained.
 
 Each status has a signed level $\ell$:
 
-| Status | unlikely | unknown | possible | probable | almost certain | certain |
+| Status | unlikely | unknown | possible | probable | almost certain | confirmed |
 |---|---|---|---|---|---|---|
 | $\ell$ | −1 | 0 | 1 | 2 | 3 | 4 |
 
@@ -363,7 +363,7 @@ over the chain's calls, documents and turns together:
 
 | Case | TP | FN | FP |
 |---|---|---|---|
-| passage $d$ new in the call (a judged passage is never shown again), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_tokens`; training needs runs made with the token cut, the evaluation also reads older runs' `max_passage_chars`, and 3000 characters, reports whole, before either was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
+| passage $d$ in the call (a passage retrieved again is shown again, and scored in each call that shows it), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_tokens`; training needs runs made with the token cut, the evaluation also reads older runs' `max_passage_chars`, and 3000 characters, reports whole, before either was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
 | a turn of the call states the gold answer of $k$ (a call reads the turns of the steps before it that made none) | a claim whose span states it | none | |
 | an observation that did not enter the belief (no verified span of its passage or turn, a claim without a candidate or valid claim, a document observation on a computed criterion) | | | yes |
 | any other observation | neutral | | |
@@ -400,14 +400,14 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 
 A sample is one belief update call of the `sft` monitor run: its prompt $x$ (masked from the loss) and the
 teacher's reply $z$ (trained). A trajectory with K search steps gives at most K + 1 samples: one per step that made
-a call (a new passage) and the final call on the answer turn (task `score` on a short-answer query: kept when it
+a call (a passage) and the final call on the answer turn (task `score` on a short-answer query: kept when it
 parses, its answer's candidates have no issue, and its probability is within 0.5 of $y$, inclusive so "possible" is kept for both $y$; rejection sampling so the student does
 not copy the teacher's miscalibration; the counts per $y$ are printed). Each teacher reply is replayed through the inference
 belief update to rebuild its exact prompt and check it against the saved records; a call is kept when it passes
 the gate and, with `sft.require_verified_spans`, when it is clean (`criteria.UNCLEAN_REPLY`: all its observations
 entered the trace, no status corrected by code (`no_support`, `no_new_support`), no `no_reason_opening`,
 `wrong_previous`, `not_listed`, `bad_ref`, `remove_unlisted`, `bad_removal`, `unexpected_candidate`, `against_only`,
-`certain_with_rival` or `unequal_tie`). The main process
+`confirmed_with_rival` or `unequal_tie`). The main process
 writes the samples to `phase2_sft/samples.jsonl` (`train`: sft split, `val`: val split). The student learns the
 output format and the teacher's transitions, errors included; RL then corrects the transitions.
 
@@ -430,7 +430,7 @@ $$
 ## Phase 3: RL (GRPO)
 
 **Chains.** A chain is the student's belief update run over a whole `rl` episode from its gold criteria: one call
-per step with a document not judged yet or an agent turn, then the final call on the answer turn, each prompt built
+per step with a document, then the final call on the answer turn, each prompt built
 from the chain's own $b_{t-1}$, as at inference. On a short-answer query the final call is the scorer's: it gets
 $G$ replies on the chain's own $b_{T-1}$, the first one the chain's $s_T$; each reply takes its own advantage from
 its $r_{\mathrm{final}}$, normalized within those $G$ replies, and the update calls take the chain's advantage

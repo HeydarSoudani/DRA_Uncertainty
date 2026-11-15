@@ -27,7 +27,7 @@ field the retrievers return).
 
 ``BeliefTracker`` runs the inference belief update (``BeliefUpdateSignal``
 with the ``LLMBeliefUpdater`` of the query shape, the same call triggers:
-a step without a new passage makes no call and its turn is
+a step whose search returned no document with text makes no call and its turn is
 read by the next one) over an episode with the LLM calls made by the
 caller: the student's chains in phase 3, the
 teacher's saved replies in ``replay_teacher``, which gives the exact prompt
@@ -399,8 +399,8 @@ class BeliefTracker:
     *criteria*, with the LLM calls made by the caller.
 
     ``open_step(t)`` starts step *t* and returns its call, or None when it
-    makes none (no unjudged document with text: its turn waits for the
-    next call, as at inference);
+    makes none (no document with text: its turn waits for the next call,
+    as at inference);
     ``open_final()`` returns the final call on the answer turn, or None (no
     answer turn): a ``ScorerCall`` on a short-answer query (the belief
     stays b_{T-1}), else one more update; ``submit`` applies the reply to
@@ -484,7 +484,7 @@ class BeliefTracker:
         out: Dict[str, Any] = {"iteration": call.iteration, "parsed": parsed is not None,
                                "observations": None, "updates": [], "changed": [], "issues": []}
         if parsed is not None:
-            out.update(self.signal.apply(parsed, call.plan, call.iteration))
+            out.update(self.signal.apply(parsed, call.iteration))
         out["beliefs"] = self.signal.beliefs()
         return out
 

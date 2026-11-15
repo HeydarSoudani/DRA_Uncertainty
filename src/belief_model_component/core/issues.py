@@ -23,7 +23,7 @@ ISSUE_BAD_REMOVAL = "bad_removal"                  # "removed" without a passage
 ISSUE_AGAINST_ONLY = "against_only"                # a status for a name only passages against: not added (a proposal stays one)
 ISSUE_SUBJECT_CANDIDATE = "subject_candidate"      # the member a member criterion is about as a candidate or proposal: not added
 ISSUE_BAD_ASPECT_STATUS = "bad_aspect_status"      # an aspect's status item without a status of the scale, or a second one
-ISSUE_ASPECT_NO_PASSAGE = "aspect_no_passage"      # an aspect's status change without a passage observation on the aspect in the call (a claim alone): kept
+ISSUE_ASPECT_NO_PASSAGE = "aspect_no_passage"      # an aspect's status change while its support did not move in the call (a claim or a passage shown again alone): kept
 # A candidate update that is taken, with a flaw in its reason, its labels or its name:
 ISSUE_NO_REASON = "no_reason_opening"              # the reason opens with none of "Was <status>:", "Was proposed:", "New:"
 ISSUE_WRONG_PREVIOUS = "wrong_previous"            # "Was <X>:" with X not the candidate's current status (or not proposed)
@@ -40,10 +40,11 @@ ISSUE_READDED = "readded"                          # a name the belief dropped b
 ISSUE_NO_SUPPORT = "no_support"                    # a new name no passage of the call supports, written above "unknown": kept as proposed
 ISSUE_NO_NEW_SUPPORT = "no_new_support"            # a status change without new support (nor, one answer, another candidate's support changed): kept
 ISSUE_ASPECT_NO_FACT = "aspect_no_fact"            # an aspect with no fact kept: "unlikely" when a passage removed a fact, else "unknown"
-ISSUE_ASPECT_ONE_SOURCE = "aspect_one_source"      # an aspect "certain" with a fact supported by one document only: set to "almost certain"
+ISSUE_ASPECT_ONE_SOURCE = "aspect_one_source"      # an aspect "confirmed" with a fact supported by one source only: set to "almost certain"
+ISSUE_ONE_SOURCE = "one_source"                    # a one-answer candidate "confirmed" with support from one source only: set to "almost certain"
 ISSUE_AGGREGATE_STATUS = "aggregate_status"        # an aggregate's status written other than code derives from its inputs: the derived one kept
 # The belief after the reply (flags; the statuses are kept):
-ISSUE_CERTAIN_WITH_RIVAL = "certain_with_rival"    # a one-answer candidate "certain" while another candidate has support
+ISSUE_CONFIRMED_WITH_RIVAL = "confirmed_with_rival"  # a one-answer candidate "confirmed" while another candidate has support
 ISSUE_UNEQUAL_TIE = "unequal_tie"                  # one-answer candidates with the same support but different statuses
 
 # Observations that did not enter for a reason of their own (the reply
@@ -52,7 +53,7 @@ REJECTED_OBSERVATION = (ISSUE_DERIVED, ISSUE_NO_SPAN, ISSUE_NOT_IN_TURN, ISSUE_B
 # A candidate update whose status code corrected (the reply's status is
 # not the one kept).
 CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT, ISSUE_ASPECT_NO_FACT, ISSUE_ASPECT_ONE_SOURCE,
-                    ISSUE_AGGREGATE_STATUS)
+                    ISSUE_ONE_SOURCE, ISSUE_AGGREGATE_STATUS)
 # A reply with one of these is not used as an SFT sample (with
 # ``require_verified_spans``): an observation left out for a reason of its
 # own, a status code corrected, a reason or label that misreads the belief
@@ -61,7 +62,7 @@ CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT, ISSUE_ASPECT_NO_FACT
 # criterion in the call, only passages against a name not listed, or a
 # target criterion, which code derives), or
 # a one-answer criterion whose statuses do not follow its support
-# (``certain_with_rival``, ``unequal_tie``), a criterion's subject written
+# (``confirmed_with_rival``, ``unequal_tie``), a criterion's subject written
 # as its candidate, an aspect's status code did not take, a fact written
 # with a status (taken as kept) or a name added to a computed aggregate
 # that no claim computes.
@@ -73,7 +74,7 @@ CORRECTED_STATUS = (ISSUE_NO_SUPPORT, ISSUE_NO_NEW_SUPPORT, ISSUE_ASPECT_NO_FACT
 UNCLEAN_REPLY = (*REJECTED_OBSERVATION, *CORRECTED_STATUS, ISSUE_NO_REASON, ISSUE_WRONG_PREVIOUS,
                  ISSUE_NOT_LISTED, ISSUE_BAD_REF, ISSUE_REMOVE_UNLISTED, ISSUE_BAD_REMOVAL,
                  ISSUE_UNEXPECTED_CANDIDATE, ISSUE_DERIVED_UPDATE, ISSUE_AGAINST_ONLY,
-                 ISSUE_CERTAIN_WITH_RIVAL, ISSUE_UNEQUAL_TIE, ISSUE_SUBJECT_CANDIDATE, ISSUE_BAD_ASPECT_STATUS,
+                 ISSUE_CONFIRMED_WITH_RIVAL, ISSUE_UNEQUAL_TIE, ISSUE_SUBJECT_CANDIDATE, ISSUE_BAD_ASPECT_STATUS,
                  ISSUE_ASPECT_NO_PASSAGE, ISSUE_BAD_FACT_STATUS, ISSUE_NOT_COMPUTED)
 # A reply with one of these fails the format gate of training: it names
 # what the call did not show, or writes an update code cannot take.

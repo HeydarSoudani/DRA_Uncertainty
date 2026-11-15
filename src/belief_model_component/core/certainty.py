@@ -12,7 +12,7 @@ A fixed function, nothing learned, the same for every query shape:
 1. per criterion a score q_k: the status of the criterion (its highest
    candidate) as a probability (``core.types.STATUS_PROBABILITY``: unlikely
    0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90,
-   certain 0.97).  The status of a candidate of a one-answer criterion
+   confirmed 0.97).  The status of a candidate of a one-answer criterion
    already counts its rivals (two tied candidates are each at most
    "possible"), so the score needs no share between them;
 2. s_t = the mean q_k (``CERTAINTY_AGGREGATOR``) over the criteria the

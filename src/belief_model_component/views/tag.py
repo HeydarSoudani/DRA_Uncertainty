@@ -6,15 +6,15 @@ and its proposals (``core.types.Proposal``).  The belief update prompt lists
 every criterion with its candidates, highest status first
 (``BeliefState.ordered``), each with its support: one line per passage
 observation that supports it (``+``) or speaks against it (``-``), its
-spans and the passage's title in brackets (labels such as "d2" are local to
-one call, so they are never shown again); then the names the agent
+spans and the passage's title in brackets (a passage keeps its label "d<n>"
+across calls, but the support lines show its title only); then the names the agent
 proposed that no passage supports yet; an aspect criterion (a report) shows
 its status first and its facts without a status, and a computed aggregate
 then the passage texts on its inputs, such as whether a member meets the
 set's condition (``format_belief``)::
 
     c1 (one answer): the American theoretical physicist who shared his Nobel Prize with a Nobel Laureate from Pakistan
-      "Sheldon Glashow": certain
+      "Sheldon Glashow": almost certain
         + "Sheldon Lee Glashow ... is an American theoretical physicist" [Sheldon Glashow]
       "Steven Weinberg": probable
         + "He shared the 1979 Nobel Prize in Physics with Abdus Salam and Sheldon Glashow" [Abdus Salam]
@@ -30,10 +30,10 @@ own id "k<n>" in place of the criterion id::
     <belief_state step="3">
       <criteria>
         <k1>the town where the Varn Folk Museum was founded
-          "Osby": certain
+          "Osby": confirmed
         </k1>
         <k2>the engineer who was born in the town of k1
-          "Henrik Dahl": certain
+          "Henrik Dahl": almost certain
           unverified: "Nils Berg"
         </k2>
         <k3>the lighthouse that was designed by the engineer of k2</k3>
@@ -99,8 +99,9 @@ def _spans_text(spans: List[str]) -> str:
 def support_lines(c: Candidate) -> List[str]:
     """The support of candidate *c*: per side (supports, then against) one
     line per passage observation, ``+ "<spans>" [<title>]``, the same spans
-    of another passage counted on the line ("; +1 source"), at most
-    ``MAX_SUPPORT_LINES`` lines per side ("+N more sources" after)."""
+    of another source counted on the line ("; +1 source"; ``Support.source``:
+    the passages of one page are one source), at most ``MAX_SUPPORT_LINES``
+    lines per side ("+N more sources" after)."""
     lines: List[str] = []
     for against, sign in ((False, "+"), (True, "-")):
         groups: Dict[str, List[Support]] = {}
@@ -108,9 +109,10 @@ def support_lines(c: Candidate) -> List[str]:
             groups.setdefault(_spans_text(x.spans), []).append(x)
         items = list(groups.items())
         for text, same in items[:MAX_SUPPORT_LINES]:
-            more = f"; +{len(same) - 1} source" + ("s" if len(same) > 2 else "") if len(same) > 1 else ""
+            others = len({x.source() for x in same}) - 1
+            more = f"; +{others} source" + ("s" if others > 1 else "") if others else ""
             lines.append(f'{sign} "{text}" [{same[0].title}]{more}')
-        rest = sum(len(same) for _, same in items[MAX_SUPPORT_LINES:])
+        rest = len({x.source() for _, same in items[MAX_SUPPORT_LINES:] for x in same})
         if rest:
             lines.append(f"{sign} {rest} more source" + ("s" if rest > 1 else ""))
     return lines

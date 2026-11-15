@@ -6,7 +6,7 @@ documents of each search step and the agent's turn of each step and its
 answer turn (the belief never changes what the agent does).  A chain is the
 student's belief updater run over the whole episode from the episode's gold
 criteria (the init call is not trained here): one call per step that has a
-document not judged yet or an agent turn to read, then the final call on the
+document with text (new or shown before), then the final call on the
 answer turn, each call's prompt built from the chain's own b_{t-1}
 (``episodes.BeliefTracker``), as at inference.  ``run_chains`` draws
 ``group_size`` chains per episode (temperature 1 in training, greedy for
@@ -14,8 +14,8 @@ validation); the calls of all chains are generated together, one round per
 call.  On a short-answer query the final call is the final scorer's (the
 second task): it gets ``group_size`` replies on the chain's own b_{T-1}
 (``Chain.scorer``, its own GRPO group), the first of them the chain's
-s_T.  A reply that does not parse (or a prompt too long) leaves the call's
-documents unjudged and the belief unchanged, as at inference.
+s_T.  A reply that does not parse (or a prompt too long) leaves the belief
+unchanged, as at inference.
 
 ``EpisodeSampler`` draws the episodes of a batch, balanced on the
 correctness of the agent's final answer.

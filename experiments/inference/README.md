@@ -184,8 +184,9 @@ The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 
 (`system.txt` in `src/belief_model_component/prompts/belief_update/`, the status definitions of the shape's criterion
 types in `statuses.txt`, and the shape's own `<shape>.txt`: its terms, its rules, its output notes and its example) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
-**When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when it has a document not
-judged before (labelled `d<n>` when first shown); a judged passage is never shown again. Otherwise no call
+**When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when its search returned a
+document with text; the call shows every document of the iteration, also one shown before (labelled `d<n>` when first
+shown, the same label after; a passage shown again raises no status on its own, `no_new_support`). Otherwise no call
 is made (`called: false`): the belief is carried forward and the turn waits; the next call reads every turn since the
 last call (the last 6), each labelled `t<iteration>`. After the last iteration, the answer turn (its reasoning and
 final answer) makes the final call: on a short-answer dataset the final scorer's (below), on a report one more
@@ -210,7 +211,7 @@ passages. The reply has three lists:
 
 The belief is kept at two levels. **Shown** to the next update: per criterion its candidates, highest status first,
 each with its support, one line per passage observation (`+` supports, `-` against: the spans and the passage's title
-in brackets; labels are local to one call, so they are never shown again), then `proposed:` and the names the agent
+in brackets; a passage keeps its label `d<n>` across calls, but the support lines show its title only), then `proposed:` and the names the agent
 proposed that no passage supports yet. **Saved**: every observation that entered (verified spans), per criterion every
 source ever assigned to it (the `references` of the `final` line), the agent's latest claim on each candidate, and
 the candidate updates with their reasons (`updates`); the claims and reasons are never shown.
@@ -248,30 +249,34 @@ Code applies the reply (`BeliefState.apply`):
   status (`wrong_previous`), `Was` on an unlisted candidate (`not_listed`), `New:` on a listed one (`listed_as_new`),
   a reason citing a source with no observation on the criterion (`bad_ref`), a new candidate in none of its
   criterion's passage spans and titles (`unknown_candidate`), no new support with the current status written again
-  (`unchanged`); in a one-answer criterion, a "certain" candidate while another has support (`certain_with_rival`)
+  (`unchanged`); in a one-answer criterion, a "confirmed" candidate while another has support (`confirmed_with_rival`)
   and two candidates with the same support but different statuses (`unequal_tie`).
 
 Derived per criterion: its status, the highest of its candidates ("unknown" without one; an aspect's its own), and
 its selected candidate(s): for a one-answer criterion the first one listed at "possible" or above, for an aspect every
 fact; a proposal is never selected. `changed` lists the criteria whose candidates or proposals changed. When the call
-fails the belief stays as it was, its new documents are shown again when retrieved again and its turns' claims are
-lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
+fails the belief stays as it was and its turns' claims are lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
 
-The statuses, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3), `certain` (4);
+The statuses, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3), `confirmed` (4);
 "unknown" (level 0) is the status of a criterion without candidates. Each query type has one status set
 (`prompts/belief_update/statuses.txt`), and each dataset's prompt holds only its own: "one answer" for
 multi_clue, multi_hop and multi_member (plus the aggregate: a target for multi_clue, a computation for multi_member), "aspect" for
 multi_aspect. A one-answer candidate's status combines its rivals and its own support (support is stronger when it
-states more parts, or states them more directly). A candidate a passage casts doubt on is "unlikely" (one a passage
-states fails a part is removed); otherwise:
+states more parts, or states them more directly; a source is the document a passage comes from). A candidate a passage
+casts doubt on is "unlikely" (one a passage states fails a part is removed); otherwise:
 
 | status | one answer (candidates compete) |
 |---|---|
 | unlikely | another candidate has stronger support |
 | possible | another candidate has support as strong |
 | probable | its support is the strongest, but leaves a part unstated |
-| almost certain | its support is the strongest and states every part, but some only by inference, or another candidate has weaker support |
-| certain | its support states every part directly, and no other candidate has support |
+| almost certain | its support is the strongest and states every part, but some only by inference, or only one source states it, or another candidate has weaker support |
+| confirmed | passages from several sources each state every part directly, and no other candidate has support |
+
+The labels are Agent-BRACE's (Kent's words of estimative probability); the definitions follow the Admiralty Code
+(NATO AJP-2.1) information credibility scale ("confirmed by other independent sources", "probably true", "possibly
+true", "improbable", "cannot be judged") with Heuer's Analysis of Competing Hypotheses for rivals. Code sets a
+"confirmed" candidate with support from one source to "almost certain" (`one_source`).
 
 The definitions do not overlap, so the prompt has no tie-break rule. A candidate is what its criterion asks for, never the member a member
 criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
@@ -284,27 +289,29 @@ later (`aggregate_status` when the reply wrote another status). A computed aggre
 reasoning's claims only; an update never adds one (`not_computed`).
 
 A report's aspect (multi_aspect) has one status of its own, written by the reply's item on it without a candidate:
-how well its facts back what it asks, by the sides they cover and whether every fact rests on several passages:
+how well its facts back what it asks, by the sides they cover and whether every fact rests on several sources:
 unlikely, its facts all removed; unknown, no fact yet; possible, one side; probable, several sides (not every one) with
-some fact on one passage only; almost certain, several sides with every fact on several passages, or every side with
-some fact on one passage only; certain, every side with every fact on several passages. Its facts are only kept or removed. The status is the aspect's q_k; it
-moves only with a passage on the aspect in the call, never with a claim alone (`aspect_no_passage`), is "unknown"
+some fact on one source only; almost certain, several sides with every fact on several sources, or every side with
+some fact on one source only; confirmed, every side with every fact on several sources (the ODNI analytic confidence
+levels: multiple sources vs fragmented or poorly corroborated). Its facts are only kept or removed. The status is the aspect's q_k; it
+moves only when its support moved in the call (a fact added or removed, or a passage added to a fact's support),
+never with a claim or a passage shown again alone (`aspect_no_passage`), is "unknown"
 with no fact and "unlikely" when a passage removed its last facts (a proposal the agent rejected does not count,
-`aspect_no_fact`), and "certain" needs every fact supported by two
-documents (`aspect_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
+`aspect_no_fact`), and "confirmed" needs every fact supported by two
+sources (`aspect_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
 "removed" is kept (`bad_fact_status`). A new fact whose words contain a listed one, or the
 reverse, joins it (`merged_duplicate`); a supporting span that shares no content word with its fact is flagged
 (`span_off_candidate`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
-neutral level 0; its "doubtful" is a removal here. "certain" is the paper's "confirmed / certain".
+neutral level 0; its "doubtful" is a removal here. "confirmed" is the paper's top label ("certain" before schema 50).
 
 The update prompt reads each criterion with its candidates (`views.tag.format_belief`):
 
 ```
 c1 (one answer): the town where the Varn Folk Museum was founded
-  "Osby": certain
+  "Osby": almost certain
     + "The Varn Folk Museum was founded in Osby in 1921" [Osby]
 c2 (one answer): the engineer who was born in c1
-  "Henrik Dahl": certain
+  "Henrik Dahl": almost certain
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
 c3 (one answer): the lighthouse that was designed by c2
   (no candidate)
@@ -314,7 +321,7 @@ c3 (one answer): the lighthouse that was designed by c2
 The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed function of the statuses:
 
 1. Each criterion's status (the highest of its candidates) becomes a probability, `core.types.STATUS_PROBABILITY`
-   (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97): q_k. The same table
+   (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, confirmed 0.97): q_k. The same table
    turns every status into a number, the final scorer's included. The status of a one-answer candidate already counts
    its rivals (two tied ones are at most "possible", 0.5), so the candidates share nothing.
 2. s_t is the mean q_k over the criteria the updater judges, on every query shape: the expected share of criteria
@@ -327,7 +334,7 @@ scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/fin
 the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
 and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
 and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
-status is (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, certain 0.97). The prompt shares
+status is (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, confirmed 0.97). The prompt shares
 the belief update's definitions and status definitions: the final status is the lowest belief status of the answer's
 candidates, a name only proposed or absent counting as one no passage supports ("unknown", or "unlikely" when another
 candidate has support) and a removed one as "unlikely"; an answer the query computes is judged as a candidate of the
@@ -366,10 +373,10 @@ results, one `<belief_state>` tag is appended to the trajectory (`src/belief_mod
 <belief_state step="2">
   <criteria>
     <k1>the town where the Varn Folk Museum was founded
-      "Osby": certain
+      "Osby": confirmed
     </k1>
     <k2>the engineer who was born in the town of k1
-      "Henrik Dahl": certain
+      "Henrik Dahl": almost certain
     </k2>
     <k3>the lighthouse that was designed by the engineer of k2
       unverified: "Kalvik Lighthouse"
@@ -436,9 +443,9 @@ answer and documents) and an aggregate (gold answer only).
   `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new
   document observed on k that is not one of its gold documents and does not state its answer.
 - `gold event: gold candidate change`: the change of the gold candidate's status probability at the criterion's
-  first gold event (unknown -> certain = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
+  first gold event (unknown -> confirmed = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
   `control event: ...`: the same at its control events, which should be about 0. An event whose gold candidate is
-  already "certain" is left out.
+  already "confirmed" is left out.
 - `criterion recall`: the share of the criterion's gold documents the agent saw.
 - `reached answer`: at the end, the criterion's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
   share).

@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 49::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 50::
 
-    line 1  {"record": "meta", "schema_version": 49, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 50, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -28,8 +28,8 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 49::
              "certainty": 0.4807, "called": true,
              "intermediate_answers": null, "intermediate_answer_status": "disabled",
              "docs": [{"doc_id": "doc17", "new": true, "label": "d1"}, ...],
-             "beliefs": [{"id": "c1", "status": "certain", "selected": ["Osby"],
-                          "candidates": [{"name": "Osby", "status": "certain", "basis": "passage",
+             "beliefs": [{"id": "c1", "status": "confirmed", "selected": ["Osby"],
+                          "candidates": [{"name": "Osby", "status": "confirmed", "basis": "passage",
                                           "added_step": 1,
                                           "support": [{"label": "d1", "doc_id": "doc17", "title": "Osby",
                                                        "step": 1, "spans": ["..."], "against": false}],
@@ -38,7 +38,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 49::
                                          "added_step": 1}]}, ...],
              "updates": [{"id": "c1", "candidate": "Osby", "reason": "New: d1 states ...",
                           "support": ["d1"], "against": [],
-                          "written": "certain", "previous": null, "status": "certain"}, ...],
+                          "written": "confirmed", "previous": null, "status": "confirmed"}, ...],
              "changed": ["c1"],
              "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
@@ -80,6 +80,23 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 50 (was 49): same record fields; the top status is renamed
+"certain" -> "confirmed" (Agent-BRACE's label; ``parse_status`` reads
+"certain" of older files as "confirmed").  Its meaning changes:
+"confirmed" needs passages from several sources (documents), each
+stating every part directly, with no rival support (Admiralty Code,
+"confirmed by other independent sources"); one source is at most "almost
+certain", enforced by code for one-answer candidates (issue
+``one_source``) as for aspects (``aspect_one_source``).  A source is a
+page: passages with the same title are one source (``Support.source``;
+the chunks of one InfoSeek or TRQA page have their own doc ids).  The flag
+``certain_with_rival`` is ``confirmed_with_rival``.  Every step with a
+document makes a call, and the call shows every document of the step,
+also one shown in an earlier step, with the label it got then (before: only
+documents not judged yet); a passage shown again moves no status on its
+own: a one-answer change needs new support (``no_new_support``), an
+aspect's status needs its support to move (``aspect_no_passage``).
 
 schema_version 49 (was 48): same record fields, prompt changes only.
 The status definitions have their own section ("== Belief Statuses ==")
@@ -379,7 +396,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

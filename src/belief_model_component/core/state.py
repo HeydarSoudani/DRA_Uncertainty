@@ -8,8 +8,9 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..text.matching import alnum, contains_words, content_words, squash
 from .issues import (
     ISSUE_AGAINST_ONLY, ISSUE_AGGREGATE_STATUS, ISSUE_ASPECT_NO_FACT, ISSUE_ASPECT_NO_PASSAGE, ISSUE_ASPECT_ONE_SOURCE,
+    ISSUE_ONE_SOURCE,
     ISSUE_BAD_ASPECT_STATUS, ISSUE_BAD_CLAIM, ISSUE_BAD_REF, ISSUE_BAD_REMOVAL, ISSUE_BAD_STATUS,
-    ISSUE_CERTAIN_WITH_RIVAL, ISSUE_DERIVED, ISSUE_DERIVED_UPDATE, ISSUE_DUPLICATE_CANDIDATE, ISSUE_EMPTY_CANDIDATE,
+    ISSUE_CONFIRMED_WITH_RIVAL, ISSUE_DERIVED, ISSUE_DERIVED_UPDATE, ISSUE_DUPLICATE_CANDIDATE, ISSUE_EMPTY_CANDIDATE,
     ISSUE_BAD_FACT_STATUS, ISSUE_LISTED_AS_NEW, ISSUE_MERGED_DUPLICATE, ISSUE_NEAR_DUPLICATE, ISSUE_NO_NEW_SUPPORT,
     ISSUE_NO_REASON, ISSUE_NOT_COMPUTED,
     ISSUE_NO_SPAN, ISSUE_NO_SUPPORT, ISSUE_NOT_IN_TURN, ISSUE_NOT_LISTED, ISSUE_NOT_NEW_PASSAGE, ISSUE_READDED,
@@ -18,7 +19,7 @@ from .issues import (
 )
 from .reason_text import parse_reason, reason_labels
 from .types import (
-    AGGREGATE, ASPECT, CLOSED, DOC, KEPT, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED,
+    AGGREGATE, ALMOST_CERTAIN, ASPECT, CLOSED, CONFIRMED, DOC, KEPT, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, REMOVED,
     STATUS_LEVEL, THINK, UNKNOWN, UNLIKELY, Candidate, CandidateUpdate, Criterion, Observation, Proposal,
     RemovedCandidate, Support, exclusive, is_computed, is_kept, is_removed, is_target, member_subject, parse_status,
     subject_names,
@@ -26,8 +27,10 @@ from .types import (
 
 # Proposals kept per criterion (beyond it the least recently claimed is dropped).
 MAX_PROPOSALS = 8
-# Documents that must support every fact of an aspect at "certain".
-CERTAIN_FACT_SOURCES = 2
+# Sources (``Support.source``: documents, the chunks of one page one
+# source) that must support a one-answer candidate at "confirmed", and
+# every fact of an aspect at "confirmed".
+CONFIRMED_SOURCES = 2
 
 
 def _issue(cid: str, code: str, detail: str, o: Optional[Observation] = None) -> Dict[str, Any]:
@@ -39,6 +42,12 @@ def _issue(cid: str, code: str, detail: str, o: Optional[Observation] = None) ->
 
 def _level(status: str) -> int:
     return STATUS_LEVEL[status]
+
+
+def _sources(x: Candidate) -> int:
+    """The sources that support candidate *x* (``Support.source``: the
+    passages of one page are one source)."""
+    return len({s.source() for s in x.supports()})
 
 
 def _cap(status: str) -> str:
@@ -141,14 +150,18 @@ class BeliefState:
       or the reverse, joins it (``merged_duplicate``): its support is added
       to the listed fact;
     - the status of an aspect (``aspect_status``, the reply's item on it
-      without a candidate) changes only with a passage observation on the
-      aspect in the call (``aspect_no_passage`` otherwise: a claim alone
-      never moves it); with no fact kept it is "unlikely" when a passage
-      removed a fact, else "unknown" (``aspect_no_fact``); "certain" needs every
-      fact supported by ``CERTAIN_FACT_SOURCES`` documents
+      without a candidate) changes only when the aspect's support moved in
+      the call: a fact added or removed, or a passage added to a fact's
+      support (``aspect_no_passage`` otherwise: a claim or a passage shown
+      again alone never moves it); with no fact kept it is "unlikely" when a passage
+      removed a fact, else "unknown" (``aspect_no_fact``); "confirmed" needs every
+      fact supported by ``CONFIRMED_SOURCES`` sources
       (``aspect_one_source``: "almost certain" otherwise);
-    - flags of a one-answer criterion, statuses kept: a "certain" candidate
-      while another has support (``certain_with_rival``); two candidates
+    - a one-answer candidate "confirmed" needs support from
+      ``CONFIRMED_SOURCES`` sources (``one_source``: "almost certain"
+      otherwise);
+    - flags of a one-answer criterion, statuses kept: a "confirmed" candidate
+      while another has support (``confirmed_with_rival``); two candidates
       with the same support and different statuses (``unequal_tie``).
     - an aggregate's statuses are code's (``_derive_aggregates``): a
       target (``is_target``) takes no observation (``derived_criterion``)
@@ -280,16 +293,20 @@ class BeliefState:
 
         Phases, in order: admit the observations, apply the claims, apply
         the candidate updates, resolve the status changes deferred on
-        one-answer criteria, apply the aspects' statuses, derive the
+        one-answer criteria, cap "confirmed" one-answer candidates at their
+        sources, apply the aspects' statuses, derive the
         aggregates from their inputs, flag one-answer criteria whose
         statuses do not follow their support."""
         # The proposals a claim of this call rejected.
         call = _CallContext(step=step, call_docs=[{} for _ in self.criteria], claimed=[False] * len(self.criteria))
         self._admit_observations([*claims, *docs], call)
         self._apply_claims(call)
-        # The support of the one-answer criteria before the updates (only
-        # they defer a status change, ``_resolve_deferred``).
-        before = {k: self._support_key(k) for k, c in enumerate(self.criteria) if exclusive(c.kind)}
+        # The support of the one-answer criteria and the aspects before the
+        # updates: a one-answer status change is deferred to it
+        # (``_resolve_deferred``), an aspect's status needs it to move
+        # (``_apply_aspects``).
+        before = {k: self._support_key(k) for k, c in enumerate(self.criteria)
+                  if exclusive(c.kind) or c.kind == ASPECT}
         done: set = set()
         aspect_items: List[CandidateUpdate] = []
         for u in updates:
@@ -299,7 +316,8 @@ class BeliefState:
             else:
                 self._apply_update(u, call, done)
         self._resolve_deferred(before, call)
-        self._apply_aspects(aspect_items, call)
+        self._cap_confirmed(call)
+        self._apply_aspects(aspect_items, before, call)
         self._derive_aggregates(call)
         for k in sorted(call.changed):
             if self.criteria[k].kind == CLOSED:
@@ -793,14 +811,35 @@ class BeliefState:
                 issues.append(_issue(self.criteria[k].id, ISSUE_SPAN_OFF_CANDIDATE,
                                      f"{name!r}: the spans of {x.label} share no content word with it"))
 
-    def _apply_aspects(self, items: List[CandidateUpdate], call: "_CallContext") -> None:
+    def _cap_confirmed(self, call: "_CallContext") -> None:
+        """Phase 4b: a one-answer candidate "confirmed" whose support comes
+        from fewer than ``CONFIRMED_SOURCES`` sources is "almost certain"
+        (``one_source``)."""
+        for k, c in enumerate(self.criteria):
+            if c.kind != CLOSED:
+                continue
+            for x in self.candidates[k]:
+                if x.status != CONFIRMED or _sources(x) >= CONFIRMED_SOURCES:
+                    continue
+                call.issues.append(_issue(c.id, ISSUE_ONE_SOURCE, f"{x.name!r}: '{CONFIRMED}' with support from "
+                                          f"fewer than {CONFIRMED_SOURCES} sources; set to '{ALMOST_CERTAIN}'"))
+                x.status = ALMOST_CERTAIN
+                call.changed.add(k)
+                for rec in call.records:
+                    if rec.get("id") == c.id and rec.get("candidate") == x.name and rec.get("status") == CONFIRMED:
+                        rec["status"] = ALMOST_CERTAIN
+
+    def _apply_aspects(self, items: List[CandidateUpdate], before: Dict[int, frozenset],
+                       call: "_CallContext") -> None:
         """Phase 5: the aspects' statuses (*items*: the reply's items on an
-        aspect without a candidate), once per aspect, each taken only with
-        a passage observation on the aspect in the call (a fact removed
-        has one); then the limits on every aspect: with no fact kept it is
+        aspect without a candidate), once per aspect, each taken only when
+        the aspect's support moved in the call (*before*: its support
+        before the updates; a fact added or removed, or a passage added to
+        a fact's support): a passage shown again, or a claim, alone never
+        moves it; then the limits on every aspect: with no fact kept it is
         "unlikely" when a passage removed a fact (a proposal the agent
-        rejected does not count), else "unknown"; "certain" needs every
-        fact supported by ``CERTAIN_FACT_SOURCES`` documents."""
+        rejected does not count), else "unknown"; "confirmed" needs every
+        fact supported by ``CONFIRMED_SOURCES`` sources."""
         records: Dict[int, Dict[str, Any]] = {}
         for u in items:
             k = self._index[u.id]
@@ -822,10 +861,11 @@ class BeliefState:
             elif opening.previous != current:
                 call.issues.append(_issue(u.id, ISSUE_WRONG_PREVIOUS, f"aspect: the reason says it was "
                                                                       f"{opening.previous!r}, it is {current!r}"))
-            if not call.call_docs[k]:
+            if self._support_key(k) == before.get(k):
                 if status != current:
                     call.issues.append(_issue(u.id, ISSUE_ASPECT_NO_PASSAGE, f"{status!r} from {current!r} with no "
-                                                                             "passage on the aspect in the call; kept"))
+                                                                             "new support on the aspect in the call; "
+                                                                             "kept"))
                 rec["status"] = current
                 continue
             if status != current:
@@ -842,13 +882,12 @@ class BeliefState:
                     call.issues.append(_issue(c.id, ISSUE_ASPECT_NO_FACT, f"{status!r} with no fact kept; set to "
                                                                           f"{floor!r}"))
                     status = floor
-            elif status == "certain":
-                thin = [x.name for x in self.candidates[k]
-                        if len({s.doc_id or s.label for s in x.supports()}) < CERTAIN_FACT_SOURCES]
+            elif status == CONFIRMED:
+                thin = [x.name for x in self.candidates[k] if _sources(x) < CONFIRMED_SOURCES]
                 if thin:
-                    call.issues.append(_issue(c.id, ISSUE_ASPECT_ONE_SOURCE, f"'certain' while {thin} have fewer "
-                                              f"than {CERTAIN_FACT_SOURCES} sources; set to 'almost certain'"))
-                    status = "almost certain"
+                    call.issues.append(_issue(c.id, ISSUE_ASPECT_ONE_SOURCE, f"'{CONFIRMED}' while {thin} have fewer "
+                                              f"than {CONFIRMED_SOURCES} sources; set to '{ALMOST_CERTAIN}'"))
+                    status = ALMOST_CERTAIN
             if status != self.aspect_status[k]:
                 self.aspect_status[k] = status
                 call.changed.add(k)
@@ -860,11 +899,11 @@ class BeliefState:
         c = self.criteria[k]
         cands = self.candidates[k]
         for x in cands:
-            if x.status == "certain":
+            if x.status == CONFIRMED:
                 rivals = [y.name for y in cands if y is not x and y.supports()]
                 if rivals:
-                    issues.append(_issue(c.id, ISSUE_CERTAIN_WITH_RIVAL,
-                                         f"{x.name!r} is certain while {rivals} have support"))
+                    issues.append(_issue(c.id, ISSUE_CONFIRMED_WITH_RIVAL,
+                                         f"{x.name!r} is {CONFIRMED} while {rivals} have support"))
         groups: Dict[Tuple, List[Candidate]] = {}
         for x in cands:
             if x.supports():

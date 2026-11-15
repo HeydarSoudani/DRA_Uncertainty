@@ -23,7 +23,7 @@ BELIEF_STATUSES = (
     "possible",
     "probable",
     "almost certain",
-    "certain",
+    "confirmed",
 )
 # The neutral status: no observation gives a candidate (b_0).
 UNKNOWN = "unknown"
@@ -33,13 +33,19 @@ UNLIKELY = "unlikely"
 STATUS_LEVEL: Dict[str, int] = {
     status: k - BELIEF_STATUSES.index(UNKNOWN) for k, status in enumerate(BELIEF_STATUSES)
 }
-# The paper's "confirmed or certain": "confirmed" read as "certain".
-_STATUS_SYNONYMS = {"confirmed": "certain"}
+# The highest status: passages from several sources state every part
+# (Agent-BRACE's top label; the Admiralty Code's "confirmed by other
+# independent sources").
+CONFIRMED = "confirmed"
+ALMOST_CERTAIN = "almost certain"
+# The name of the highest status before schema 50: "certain" read as
+# "confirmed" (old runs, stray replies).
+_STATUS_SYNONYMS = {"certain": CONFIRMED}
 
 
 def parse_status(text: Any) -> Optional[str]:
     """The belief status *text* names (case, underscores, hyphens and extra
-    spaces ignored; "confirmed" accepted for "certain"), or None."""
+    spaces ignored; "certain" accepted for "confirmed"), or None."""
     key = " ".join(str(text or "").lower().replace("_", " ").replace("-", " ").split())
     return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
 
@@ -92,7 +98,7 @@ def parse_claim(text: Any) -> Optional[str]:
 # status (the certainty formula, the final scorer's s_T, the status
 # calibration and the training rewards).  "unlikely" (a passage speaks
 # against it) is near 0; "unknown" (no evidence) is below "possible";
-# "possible" is even odds; "certain" stays below 1, so a log or squared
+# "possible" is even odds; "confirmed" stays below 1, so a log or squared
 # error term never saturates.  Only the order of the statuses matters to a
 # ranking (AUROC); the values matter to calibration (Brier, ECE).
 STATUS_PROBABILITY: Dict[str, float] = {
@@ -101,13 +107,14 @@ STATUS_PROBABILITY: Dict[str, float] = {
     "possible": 0.50,
     "probable": 0.70,
     "almost certain": 0.90,
-    "certain": 0.97,
+    "confirmed": 0.97,
 }
 
 
 def status_probability(status: str) -> float:
-    """A status as a probability (``STATUS_PROBABILITY``)."""
-    return STATUS_PROBABILITY[status]
+    """A status as a probability (``STATUS_PROBABILITY``; a synonym, such
+    as "certain" of runs before schema 50, read as its status)."""
+    return STATUS_PROBABILITY[parse_status(status) or status]
 
 
 # Criterion kinds: a closed criterion has one answer (a clue or the asked
@@ -278,6 +285,13 @@ class Support:
     step: int
     spans: List[str]
     against: bool = False
+
+    def source(self) -> str:
+        """The source of the passage: the document it comes from, known by
+        its title (case and punctuation ignored), so the chunks of one page
+        (InfoSeek, TRQA) are one source; its document id, else its label,
+        when it has no title."""
+        return " ".join(re.sub(r"\W+", " ", self.title.lower()).split()) or self.doc_id or self.label
 
     def to_dict(self) -> Dict[str, Any]:
         return {"label": self.label, "doc_id": self.doc_id, "title": self.title, "step": self.step,

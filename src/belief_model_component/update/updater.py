@@ -3,8 +3,9 @@
 One call implements b_t = f(query, b_{t-1}, o_t) (Agent-BRACE style), the
 observation o_t being the agent's turns since the last call (its
 reasoning; at the end, its reasoning and final answer) and the passages
-of the call: those its search returned for the first time
-(``BeliefUpdateSignal`` decides when a call is made).  The call reads every criterion with its
+of the call: those its last search returned, new or shown before (a
+passage keeps its label; ``BeliefUpdateSignal`` decides when a call is
+made).  The call reads every criterion with its
 current candidates (name, status, support) and proposals, and replies
 with three lists:
 

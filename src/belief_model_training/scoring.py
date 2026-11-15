@@ -22,7 +22,8 @@ aggregate), so y is whether its selected candidate is a gold answer
     assign   assignment of the sources to the criterion, from the
              observations (the trace), as an F1 = 2 TP / (2 TP + FP + FN)
              over the chain's calls, documents and turns together:
-               document  a passage of the call (new to the belief)
+               document  a passage of the call (new or shown before:
+                         scored in each call that shows it)
                          among the criterion's gold documents
                          whose text as the call showed it (cut for a
                          short-answer query) has a gold answer should give
@@ -141,8 +142,9 @@ def value_gold(episode: Episode, cid: str, belief: Dict[str, Any], gold: NuggetG
 
 
 def _expected_docs(episode: Episode, call: UpdaterCall, cid: str) -> set:
-    """The gold documents of *cid* new in the call whose shown text has a
-    gold answer: each should give an observation with it."""
+    """The gold documents of *cid* shown in the call (new or shown before)
+    whose shown text has a gold answer: each should give an observation
+    with it."""
     c = gold_criterion(episode, cid)
     if c is None or is_computed(c["kind"], c["text"]):
         return set()
@@ -238,8 +240,7 @@ def chain_score(episode: Episode, calls: List[UpdaterCall], outcomes: List[Dict[
         if i is not None:
             call, outcome = calls[i], outcomes[i]
             # A reply that did not parse is charged in ``format`` only: its
-            # passages stay unjudged and are counted in the call that shows
-            # them again.
+            # passages are counted in a later call that shows them again.
             if outcome.get("parsed") and not call.is_scorer:
                 for cid in scored:
                     counts = _call_counts(episode, call, outcome, cid, gold)

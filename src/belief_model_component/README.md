@@ -59,7 +59,7 @@ aggregate (a multi-clue query's target, a multi-member query's
 computation) has no status set: code sets its statuses, the lowest of its
 inputs', "unlikely" when a passage speaks against a candidate.
 
-A step with a new passage makes one call (b_t = f(query, b_{t-1}, o_t)). It
+A step with a passage (new or shown before) makes one call (b_t = f(query, b_{t-1}, o_t)). It
 records the claims of the agent's turns since the last call (reasoning
 observations: they only propose or reject names) and the spans of the
 passages that state a part of each criterion (passage observations, kept as
@@ -98,7 +98,7 @@ With `inform=False` (`monitor`) the model never changes the trajectory; with
 Order inside `observe` (the step's documents and the agent's turn move the
 belief from b_{t-1} to b_t): b_t, then the retrieval gain, then the
 intermediate answer (both for evaluation only). When the step has a document
-not judged in earlier steps, one belief update call reads the agent's turns
+(new or shown before, with the same label), one belief update call reads the agent's turns
 since the last call and those passages, records the claims of the turns and
 the observations of the passages, and gives the support and status of every
 candidate they change, with its reason. Otherwise b_t = b_{t-1} and the turn

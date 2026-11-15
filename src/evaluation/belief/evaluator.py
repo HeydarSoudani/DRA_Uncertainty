@@ -12,12 +12,13 @@ only: no document states a computed value; scored at the end only).
 
 **Gold event** (criterion k, document d, step t): d is one of k's gold
 documents, new to the belief at step t (not in an earlier step whose update
-call parsed: the update shows only such documents), and its text as the
+call parsed: the update shows every document of a step, also one shown
+before, but only its first showing is an event), and its text as the
 update read it (the run's ``max_passage_tokens`` cut) states k's gold
 answer (string match, ``gold.states``, else the judge when the run has a
-judge model).  When the update call of step t failed, the document is shown
-again when retrieved again: the event is its first occurrence with a parsed
-call, else a ``call_failed`` event at its first occurrence.
+judge model).  When the update call of step t failed, the event is the
+document's first occurrence with a parsed call, else a ``call_failed``
+event at its first occurrence.
 
 **Control event** (criterion k, step t): no gold event of k at t, and the
 update observed on k a new document that is not one of k's gold documents
@@ -27,7 +28,7 @@ The **gold candidate's probability** at a step: the status probability
 (``core.types.status_probability``) of k's gold candidate (several: the
 highest), "unknown" when the gold answer is not a candidate.  An event's
 change is that probability after the step minus before; an event whose gold
-candidate is already "certain" cannot rise and has no change.
+candidate is already "confirmed" cannot rise and has no change.
 
 A candidate is a gold answer when it matches one (``gold.states``), else
 when the judge says so (``gold.AnswerJudge``, the run's ``judge_model``,
@@ -71,7 +72,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from belief_model_component import (AGGREGATE, MULTI_ASPECT, STATUS_LEVEL, UNKNOWN, exclusive,
-                                    status_probability)
+                                    parse_status, status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
 from utils.text_utils import cut_chars, cut_passage
@@ -95,7 +96,7 @@ MEASURES = (("gold event: gold candidate change", "gold_change"),
             ("status Brier", "brier"))
 #: Columns of the calibration table below the main table.
 CALIBRATION_COLUMNS = ("status", "p", "criteria", "reached", "share reached")
-_CERTAIN = "certain"
+_CONFIRMED = "confirmed"
 EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_id", "assigned", "p_before",
                 "p_after", "change", "correct_after", "correct_end", "stage")
 
@@ -350,8 +351,9 @@ class BeliefUpdateEvaluator:
             return is_gold.get((q.qid, cid, name or ""), False)
 
         def gold_status(belief: Optional[Dict], cid: str) -> str:
-            statuses = [c.get("status") for c in (belief or {}).get("candidates") or []
-                        if gold_name(cid, c.get("name")) and c.get("status") in STATUS_LEVEL]
+            # parse_status: "certain" of runs before schema 50 is "confirmed".
+            statuses = [parse_status(c.get("status")) for c in (belief or {}).get("candidates") or []
+                        if gold_name(cid, c.get("name")) and parse_status(c.get("status"))]
             return max(statuses, key=STATUS_LEVEL.get) if statuses else UNKNOWN
 
         def has_gold_candidate(belief: Optional[Dict], cid: str) -> bool:
@@ -367,7 +369,7 @@ class BeliefUpdateEvaluator:
             s_before, s_after = gold_status(before, cid), gold_status(after, cid)
             p_before, p_after = status_probability(s_before), status_probability(s_after)
             return {"p_before": p_before, "p_after": p_after,
-                    "change": None if s_before == _CERTAIN else p_after - p_before}
+                    "change": None if s_before == _CONFIRMED else p_after - p_before}
 
         final = q.final_beliefs()
         prev: Dict[str, Dict] = {}

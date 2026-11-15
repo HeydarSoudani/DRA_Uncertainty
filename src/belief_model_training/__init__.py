@@ -1,7 +1,7 @@
 """Belief model training with the agent frozen (Agent-BRACE, arXiv 2605.11436,
 adapted to retrieval): the trained model is the belief update of
 ``belief_model_component``, one call per step,
-b_t = f(query, b_{t-1}, agent turn t, new passages), on the dataset's gold
+b_t = f(query, b_{t-1}, agent turn t, passages of step t), on the dataset's gold
 criteria (the criteria init call is not trained).  It is rewarded over
 whole trajectories, per criterion: the assignment of the sources to it
 (its gold documents, the turns that state its gold answer) and the

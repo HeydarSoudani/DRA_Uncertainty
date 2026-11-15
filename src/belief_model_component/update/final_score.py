@@ -50,7 +50,7 @@ from .repair import complete_with_repair
 
 # The status of the final answer, lowest first: the belief statuses
 # (``core.types.STATUS_PROBABILITY``: unlikely 0.10, unknown 0.25, possible
-# 0.50, probable 0.70, almost certain 0.90, certain 0.97).
+# 0.50, probable 0.70, almost certain 0.90, confirmed 0.97).
 FINAL_STATUSES = BELIEF_STATUSES
 
 # Output tokens of one call (a multi-member query has up to ~50 criteria).

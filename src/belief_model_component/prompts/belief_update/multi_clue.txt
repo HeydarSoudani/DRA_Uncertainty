@@ -44,7 +44,7 @@ Output:
   ],
   "candidates": [
     {"id": "c1", "candidate": "Lars Ek", "support": [], "against": [], "reason": "Was proposed: the reasoning rejects him, as he was born inland, and no passage supports him.", "belief_status": "removed"},
-    {"id": "c1", "candidate": "Anna Holm", "support": ["d3"], "against": [], "reason": "New: d3 states that she was a painter born in the coastal town of Vik, so its support states every part directly, and no other candidate has support.", "belief_status": "certain"},
+    {"id": "c1", "candidate": "Anna Holm", "support": ["d3"], "against": [], "reason": "New: d3 states that she was a painter born in the coastal town of Vik, so its support states every part directly, and no other candidate has support, but only one source states it.", "belief_status": "almost certain"},
     {"id": "c2", "candidate": "Anna Holm", "support": [], "against": ["d3"], "reason": "Was proposed: d3 states that she won the Ostra Prize in 1934, not in the 1920s, so a passage states that she fails a part.", "belief_status": "removed"},
     {"id": "c2", "candidate": "Erik Lind", "support": [], "against": [], "reason": "Was probable: Maja Strand now has stronger support, since d2 states the decade for her, while his support does not state the decade.", "belief_status": "unlikely"},
     {"id": "c2", "candidate": "Maja Strand", "support": ["d2"], "against": [], "reason": "New: d2 states that she won the Ostra Prize for painting in 1927, which implies she is a painter, so her support is the strongest and states every part, one only by inference.", "belief_status": "almost certain"}

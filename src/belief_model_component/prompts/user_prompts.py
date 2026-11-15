@@ -34,7 +34,8 @@ def criteria_init_user(shape: str, query: str, max_criteria: Optional[int]) -> s
 # example: every criterion as "c1 (one answer): <text>" with its current
 # candidates, their support and its proposals (``views.tag.format_belief``),
 # the agent's turns since the last update, each "[t<step>]" on its own line
-# before its text, then the passages new to the belief, each "[d<n>]" before
+# before its text, then the passages its last search returned (new or shown
+# before, a passage keeping its label), each "[d<n>]" before
 # its text (whose first line is the title); no turn or no
 # passage reads ``NO_TEXT``.  The answer turn is read as any other turn.
 BELIEF_UPDATE_USER_TEMPLATE = """\

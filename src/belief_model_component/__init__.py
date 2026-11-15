@@ -38,6 +38,7 @@ from .core.types import (
     exclusive,
     is_computed,
     is_target,
+    parse_status,
     status_probability,
 )
 from .criteria.factory import (
@@ -77,7 +78,7 @@ __all__ = [
     "AGGREGATE", "ASPECT", "BELIEF_STATUSES", "CLOSED", "KEPT", "MULTI_ASPECT",
     "REMOVED", "STATUS_LEVEL", "UNKNOWN",
     "Candidate", "Criterion", "Observation", "Support",
-    "exclusive", "is_computed", "is_target", "status_probability",
+    "exclusive", "is_computed", "is_target", "parse_status", "status_probability",
     "GATE_ISSUES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",
     "BeliefState",
     "AGGREGATORS", "CERTAINTY_AGGREGATOR", "answer_certainty", "certainty", "counted", "criterion_scores",

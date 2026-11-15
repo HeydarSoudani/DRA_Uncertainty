@@ -278,7 +278,7 @@ class BeliefModel:
         self._seen_ids.update(d["doc_id"] for d in per_doc if d["doc_id"])
         new_ids = [d["doc_id"] for d in per_doc if d["new"]]
 
-        # --- b_t (the documents not judged in earlier steps, the turn) ----------
+        # --- b_t (the documents of the step, the turn) ---------------------------
         update: Dict[str, Any] = {}
         if tracks_state:
             try:

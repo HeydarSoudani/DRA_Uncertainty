@@ -3,7 +3,7 @@ Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
 Criteria, with their candidates:
 c1 (one answer): the painter who was born in a coastal town
-  "Anna Holm": certain
+  "Anna Holm": almost certain
     + "Anna Holm (1890-1960) was a painter born in the coastal town of Vik" [Anna Holm]
   removed: "Lars Ek"
 c2 (one answer): the painter who won the Ostra Prize in the 1920s
@@ -28,7 +28,7 @@ Output:
     {"id": "c2", "candidate": "Anna Holm"},
     {"id": "c3", "candidate": null}
   ],
-  "reason": "Anna Holm is certain on c1, but removed on c2, which counts as \"unlikely\", the lowest of the answer's candidates.",
+  "reason": "Anna Holm is almost certain on c1, but removed on c2, which counts as \"unlikely\", the lowest of the answer's candidates.",
   "final_status": "unlikely"
 }
 
@@ -37,12 +37,12 @@ Query: Which lighthouse was designed by an engineer who was born in the town whe
 
 Criteria, with their candidates:
 c1 (one answer): the town where the Varn Folk Museum was founded
-  "Osby": certain
+  "Osby": confirmed
     + "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
     + "The Varn Folk Museum was founded in Osby" [Varn Folk Museum]
   removed: "Tirsa"
 c2 (one answer): the engineer who was born in c1
-  "Henrik Dahl": certain
+  "Henrik Dahl": almost certain
     + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
   removed: "Nils Berg"
 c3 (one answer): the lighthouse that was designed by c2
@@ -66,7 +66,7 @@ Output:
     {"id": "c2", "candidate": "Henrik Dahl"},
     {"id": "c3", "candidate": "Skarv Lighthouse"}
   ],
-  "reason": "Osby and Henrik Dahl are certain on c1 and c2, but the Skarv Lighthouse is only almost certain on c3, the lowest, since the Hamn Lighthouse also has support as a work of Henrik Dahl.",
+  "reason": "Osby is confirmed on c1, but Henrik Dahl and the Skarv Lighthouse are only almost certain on c2 and c3, the lowest: one source states Henrik Dahl, and the Hamn Lighthouse also has support as a work of Henrik Dahl.",
   "final_status": "almost certain"
 }
 
@@ -75,10 +75,10 @@ Query: What is the total length of the bridges over the river Varn that were bui
 
 Criteria, with their candidates:
 c1 (one answer): Osby Bridge: length
-  "120 m": certain
+  "120 m": almost certain
     + "The Osby Bridge, built in 1862, is 120 metres long" [Osby Bridge]
 c2 (one answer): Kalvik Bridge: length
-  "92 metres": certain
+  "92 metres": almost certain
     + "The Kalvik Bridge, built in 1903, is a stone arch bridge over the Varn, 92 metres long" [Kalvik Bridge]
   removed: "85 m"
 c3 (aggregate): the total length of the bridges over the river Varn that were built before 1900
