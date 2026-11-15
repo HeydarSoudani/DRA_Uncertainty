@@ -5,12 +5,15 @@
   evaluation and of the offline analyses.
 * :class:`BeliefUpdateEvaluator`: what the belief update does with a gold
   document (the ``belief`` group of the run's ``metrics.md``).
+* :func:`issue_summary`: how often the update's replies have issues
+  (rows of the ``belief`` group and the issue table of ``metrics.md``).
 * :mod:`.gold`: whether a text has a criterion's gold answer (match and
   judge), shared with belief model training.
 """
 
 from .evaluator import BeliefUpdateEvaluator, load_belief_files, passage_cut, passage_tokens, read_belief_file, read_run_config
+from .issues import ISSUE_COLUMNS, issue_summary
 from .writer import SCHEMA_VERSION, clean_record, save_belief
 
 __all__ = ["SCHEMA_VERSION", "clean_record", "save_belief", "BeliefUpdateEvaluator", "load_belief_files",
-           "passage_cut", "passage_tokens", "read_belief_file", "read_run_config"]
+           "passage_cut", "passage_tokens", "read_belief_file", "read_run_config", "ISSUE_COLUMNS", "issue_summary"]

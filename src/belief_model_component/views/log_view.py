@@ -14,13 +14,19 @@ list).  The row shows at most ``SELECTED_SHOWN`` selected candidates, then
 iteration, and always in the final belief.  ``*`` marks a criterion whose candidates or proposals changed this
 iteration.  A step without a belief update call says so.  The md also
 gives every candidate update of the iteration (previous status -> status,
-the passages it cites as support (+) or against (-), and its reason) and
-the reply's issues.  The documents labelled in the
-iteration are listed with their ids, so a label can be traced to its
-document.
+the passages it cites as support (+) or against (-), and its reason).
+Both give the reply's issues, one line per effect (``core.issues``:
+dropped, corrected, flagged), then its notes; a record of a run before
+schema 51 shows its codes under their current names.  The console lists
+every document of the iteration with its label ("(again)" when an earlier
+iteration showed it), so a label can be traced to its document; in the md
+the step's Docs list gives each document its label
+(``belief_doc_labels``, ``utils.trajectory_logger``).
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from ..core.issues import EFFECTS, NOTE, current_code, issue_effect
 
 # Selected candidates shown in a criterion's row; the rest as "+N more".
 SELECTED_SHOWN = 2
@@ -110,8 +116,27 @@ def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
     return out
 
 
-def _issues(record: Dict[str, Any]) -> List[str]:
-    return [f"{i.get('id')}: {i.get('code')} ({i.get('detail')})" for i in record.get("issues") or []]
+def _issue_text(issue: Any) -> str:
+    """``<id> <code> (<detail>)`` of an issue record (a plain string of an
+    old final scorer as it is)."""
+    if not isinstance(issue, dict):
+        return str(issue)
+    detail = f" ({issue['detail']})" if issue.get("detail") else ""
+    return f"{issue.get('id')} {current_code(str(issue.get('code')))}{detail}"
+
+
+def issue_lines(record: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """``(effect, text)`` per effect with an issue or note of *record*, in
+    the order of ``EFFECTS`` (notes last); repeated identical issues as one
+    with ``×n``."""
+    groups: Dict[str, Dict[str, int]] = {e: {} for e in EFFECTS}
+    for i in [*(record.get("issues") or []), *(record.get("notes") or [])]:
+        effect = issue_effect(str(i.get("code"))) if isinstance(i, dict) else EFFECTS[2]
+        text = _issue_text(i)
+        groups[effect][text] = groups[effect].get(text, 0) + 1
+    return [("notes" if e == NOTE else e,
+             "; ".join(t + (f" ×{n}" if n > 1 else "") for t, n in groups[e].items()))
+            for e in EFFECTS if groups[e]]
 
 
 def gold_summary(record: Dict[str, Any]) -> str:
@@ -155,18 +180,28 @@ def _final_score(record: Dict[str, Any]) -> List[Tuple[str, str]]:
                       for c in score.get("candidates") or [])
     rows = [("answer's candidates", named or "none"), ("reason", score.get("reason") or "")]
     if score.get("issues"):
-        rows.append(("score issues", "; ".join(score["issues"])))
+        rows.append(("score issues", "; ".join(_issue_text(i) for i in score["issues"])))
     return rows
 
 
-def _new_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The documents of the step with a label, first shown in it."""
-    return [d for d in record.get("docs") or [] if d.get("new") and d.get("label")]
+def _step_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The documents of the step with a label: every one the call showed,
+    new or shown before."""
+    return [d for d in record.get("docs") or [] if d.get("label")]
 
 
-def _labels(record: Dict[str, Any], md: bool) -> str:
-    fmt = "{} `{}`" if md else "{} {}"
-    return " · ".join(fmt.format(d.get("label"), d.get("doc_id")) for d in _new_labels(record))
+def belief_doc_labels(record: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """``{doc_id: {label, new}}`` of a step record's labelled documents (the
+    trajectory md's Docs list shows them); empty without a record."""
+    return {d["doc_id"]: {"label": d["label"], "new": bool(d.get("new"))}
+            for d in _step_labels(record or {}) if d.get("doc_id")}
+
+
+def _labels(record: Dict[str, Any]) -> str:
+    """``d1 3942972 (again) · d6 5496567 · ...``: every labelled document of
+    the step, "(again)" when an earlier step showed it."""
+    return " · ".join(f"{d.get('label')} {d.get('doc_id')}" + ("" if d.get("new") else " (again)")
+                      for d in _step_labels(record))
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +246,9 @@ def belief_lines(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
     for cid, mark, status, value, count in table:
         rows.append((f"{cid} {mark}".rstrip(), f"{status:<{status_w}}  {value:<{value_w}}  ({count})"))
     rows += _final_score(record)
-    if not final and _new_labels(record):
-        rows.append(("labels", _labels(record, md=False)))
-    if record.get("issues"):
-        rows.append(("issues", "; ".join(_issues(record))))
+    if not final and _step_labels(record):
+        rows.append(("labels", _labels(record)))
+    rows += issue_lines(record)
     if record.get("errors"):
         rows.append(("errors", "; ".join(map(str, record["errors"]))))
     return rows
@@ -268,10 +302,9 @@ def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final:
     scored = _final_score(record)
     if scored:
         lines += [""] + [f"- {key}: {_cell(text)}" for key, text in scored]
-    if not final and _new_labels(record):
-        lines += ["", f"labels: {_labels(record, md=True)}"]
-    if record.get("issues"):
-        lines += ["", f"*issues: {_cell('; '.join(_issues(record)))}*"]
+    issues = issue_lines(record)
+    if issues:
+        lines += [""] + [f"- *{effect}:* {_cell(text)}" for effect, text in issues]
     if record.get("errors"):
         lines += ["", f"*errors: {'; '.join(map(str, record['errors']))}*"]
     return "\n".join(lines)

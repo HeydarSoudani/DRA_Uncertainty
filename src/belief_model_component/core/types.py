@@ -258,6 +258,8 @@ class Observation:
     grounded: bool = False
     candidate: Optional[str] = None
     claim: Optional[str] = None
+    # The claim as the reply wrote it (for an issue's detail; not saved).
+    claim_written: Optional[str] = None
 
     @property
     def verified_spans(self) -> List[str]:

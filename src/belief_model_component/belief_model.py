@@ -177,7 +177,7 @@ class BeliefModel:
             step, answer_turn, errors, certainty=s_t, certainty_formula=s_t, called=bool(update.get("called")),
             beliefs=update.get("beliefs") or self._belief.beliefs(), updates=update.get("updates") or [],
             changed=update.get("changed") or [], observations=update.get("observations"),
-            issues=update.get("issues") or [], reply=update.get("reply"))
+            issues=update.get("issues") or [], notes=update.get("notes") or [], reply=update.get("reply"))
 
     def _score_final(self, step: int, answer_turn: str) -> Dict[str, Any]:
         """The final record of the final scorer's call on b_{T-1} and the
@@ -223,6 +223,7 @@ class BeliefModel:
             "changed": [],
             "observations": None,
             "issues": [],
+            "notes": [],
             "references": state.reference_lists() if state is not None else None,
             "agent_turn": answer_turn,
             "reply": None,
@@ -331,6 +332,7 @@ class BeliefModel:
             "changed": update.get("changed") or [],
             "observations": update.get("observations"),
             "issues": update.get("issues") or [],
+            "notes": update.get("notes") or [],
             "agent_turn": agent_turn,
             "reply": update.get("reply"),
             "intermediate_answer_reasoning": intermediate_answer["reasoning"] if intermediate_answer else None,

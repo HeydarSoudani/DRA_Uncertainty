@@ -136,7 +136,8 @@ class LLMBeliefUpdater:
                 turn_indexes[0] if turn_indexes else (step, "", None))
             o = Observation(criterion=criterion_id(item.get("id")), source=THINK, label=f"t{turn_step}",
                             step=turn_step, candidate=squash(item.get("candidate")) or None,
-                            claim=parse_claim(item.get("agent_claim")))
+                            claim=parse_claim(item.get("agent_claim")),
+                            claim_written=squash(item.get("agent_claim")) or None)
             _add_spans(o, span, text, index)
             claims.append(o)
 

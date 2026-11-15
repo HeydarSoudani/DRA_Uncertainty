@@ -13,7 +13,7 @@ only propose names (proposals, no status, not rivals) and make claims, saved but
 passage that supports a proposal makes it a candidate. The model writes the status from the support and, for a
 one-answer criterion, from the other candidates' support (per criterion type in
 `prompts/belief_update/statuses.txt`); code enforces only hard limits (no support: at most "possible",
-`no_support`; no new support: the status kept, `no_new_support`). The candidates with their support (quoted spans
+`status_without_support`; no new support: the status kept, `status_without_new_support`). The candidates with their support (quoted spans
 and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
 candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call
 when its search returned a passage (new or shown before, with the same label); otherwise the belief is carried forward. A
@@ -404,9 +404,10 @@ a call (a passage) and the final call on the answer turn (task `score` on a shor
 parses, its answer's candidates have no issue, and its probability is within 0.5 of $y$, inclusive so "possible" is kept for both $y$; rejection sampling so the student does
 not copy the teacher's miscalibration; the counts per $y$ are printed). Each teacher reply is replayed through the inference
 belief update to rebuild its exact prompt and check it against the saved records; a call is kept when it passes
-the gate and, with `sft.require_verified_spans`, when it is clean (`criteria.UNCLEAN_REPLY`: all its observations
-entered the trace, no status corrected by code (`no_support`, `no_new_support`), no `no_reason_opening`,
-`wrong_previous`, `not_listed`, `bad_ref`, `remove_unlisted`, `bad_removal`, `unexpected_candidate`, `against_only`,
+the gate and, with `sft.require_verified_spans`, when it is clean (`UNCLEAN_REPLY`, the codes marked unclean in
+`core.issues.ISSUES`: all its observations
+entered the trace, no status corrected by code (`status_without_support`, `status_without_new_support`), no `reason_opening_missing`,
+`reason_previous_wrong`, `ref_without_observation`, `removal_unlisted`, `removal_unsupported`, `update_without_observation`, `against_only`,
 `confirmed_with_rival` or `unequal_tie`). The main process
 writes the samples to `phase2_sft/samples.jsonl` (`train`: sft split, `val`: val split). The student learns the
 output format and the teacher's transitions, errors included; RL then corrects the transitions.

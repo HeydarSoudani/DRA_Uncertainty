@@ -19,7 +19,8 @@ Code outside the package imports from here, never from a module path.
 """
 
 from .core.certainty import AGGREGATORS, CERTAINTY_AGGREGATOR, answer_certainty, certainty, counted, criterion_scores
-from .core.issues import GATE_ISSUES, REJECTED_OBSERVATION, UNCLEAN_REPLY
+from .core.issues import (EFFECTS, ERROR_EFFECTS, GATE_ISSUES, ISSUES, NOTE_CODES, REJECTED_OBSERVATION, UNCLEAN_REPLY,
+                          issue_effect)
 from .core.state import BeliefState
 from .core.types import (
     AGGREGATE,
@@ -61,7 +62,7 @@ from .criteria.sources import (
 )
 from .eval_signals.intermediate_answer import IntermediateAnswerSignal
 from .text.agent_turn import agent_turn_text, answer_turn
-from .text.passages import Passage, span_in_passage, split_span
+from .text.passages import Passage, passage_title, span_in_passage, split_span
 from .update.final_score import (
     build_final_scorer,
     check_issues,
@@ -69,7 +70,7 @@ from .update.final_score import (
 )
 from .update.signal import BeliefUpdateSignal, CallPlan
 from .update.updater import LLMBeliefUpdater, build_belief_updater
-from .views.log_view import belief_lines, belief_md, criteria_lines, criteria_md
+from .views.log_view import belief_doc_labels, belief_lines, belief_md, criteria_lines, criteria_md
 from .views.tag import strip_belief_state
 from .belief_model import BeliefModel
 
@@ -79,7 +80,8 @@ __all__ = [
     "REMOVED", "STATUS_LEVEL", "UNKNOWN",
     "Candidate", "Criterion", "Observation", "Support",
     "exclusive", "is_computed", "is_target", "parse_status", "status_probability",
-    "GATE_ISSUES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",
+    "EFFECTS", "ERROR_EFFECTS", "GATE_ISSUES", "ISSUES", "NOTE_CODES", "REJECTED_OBSERVATION", "UNCLEAN_REPLY",
+    "issue_effect",
     "BeliefState",
     "AGGREGATORS", "CERTAINTY_AGGREGATOR", "answer_certainty", "certainty", "counted", "criterion_scores",
     # criteria
@@ -91,7 +93,7 @@ __all__ = [
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "check_issues", "parse_final_score",
     # text
-    "Passage", "agent_turn_text", "answer_turn", "span_in_passage", "split_span",
+    "Passage", "passage_title", "belief_doc_labels", "agent_turn_text", "answer_turn", "span_in_passage", "split_span",
     # views
     "strip_belief_state",
     "belief_lines", "belief_md", "criteria_lines", "criteria_md",

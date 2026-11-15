@@ -40,6 +40,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils.text_utils import parse_json_object
 
+from ..core.issues import (ISSUE_ANSWER_CANDIDATE_MISSING, ISSUE_ANSWER_CANDIDATE_UNLISTED,
+                           ISSUE_ANSWER_UNKNOWN_CRITERION)
 from ..core.state import BeliefState
 from ..core.types import BELIEF_STATUSES, criterion_id, parse_status, status_probability
 from ..prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
@@ -136,26 +138,30 @@ def parse_final_score(raw: str) -> Optional[FinalScore]:
     return FinalScore(status=status, candidates=candidates, reason=squash(data.get("reason")))
 
 
-def check_issues(score: FinalScore, state: BeliefState) -> List[str]:
+def check_issues(score: FinalScore, state: BeliefState) -> List[Dict[str, Any]]:
     """What the answer's candidates of *score* get wrong against the belief
-    *state*: a criterion missing or unknown, a candidate the criterion does
-    not list (as a candidate, proposal or removed name).  Information only:
-    the status is kept."""
-    issues: List[str] = []
+    *state*, as issue records (``{id, code, detail}``, ``core.issues``): a
+    criterion missing or unknown, a candidate the criterion does not list
+    (as a candidate, proposal or removed name).  Information only: the
+    status is kept."""
+    issues: List[Dict[str, Any]] = []
     ids = [c.id for c in state.criteria]
     seen = {c["id"] for c in score.candidates}
     missing = [i for i in ids if i not in seen]
     if missing:
-        issues.append(f"no answer's candidate for {missing}")
+        issues.append({"id": "final", "code": ISSUE_ANSWER_CANDIDATE_MISSING,
+                       "detail": f"no answer's candidate for {missing}"})
     for c in score.candidates:
         if c["id"] not in ids:
-            issues.append(f"answer's candidate of unknown criterion {c['id']!r}")
+            issues.append({"id": c["id"], "code": ISSUE_ANSWER_UNKNOWN_CRITERION,
+                           "detail": "an answer's candidate of an unknown criterion id"})
             continue
         k = ids.index(c["id"])
         names = ([x.name for x in state.candidates[k]] + [x.name for x in state.proposals[k]]
                  + state.ruled_out(k))
         if c["candidate"] and alnum(c["candidate"]) not in {alnum(n) for n in names}:
-            issues.append(f"{c['id']}: candidate {c['candidate']!r} is not listed")
+            issues.append({"id": c["id"], "code": ISSUE_ANSWER_CANDIDATE_UNLISTED,
+                           "detail": f"{c['candidate']!r}: not listed"})
     return issues
 
 

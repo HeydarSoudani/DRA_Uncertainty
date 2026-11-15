@@ -13,7 +13,7 @@ belief_model_component/
   belief_model.py    BeliefModel, the per-sample entry point
   core/              the belief itself
     types.py         statuses, criterion kinds, query shapes, dataclasses
-    issues.py        issue codes of one update, and the sets training reads
+    issues.py        the issue code table (effect, training role) and the sets training reads
     reason_text.py   the opening of a candidate update's reason, its labels
     state.py         BeliefState (b_t) and its apply rules
     certainty.py     certainty s_t of a belief
@@ -119,7 +119,7 @@ num_new_relevant, num_repeated_relevant, num_irrelevant,
 recall_so_far, num_relevant_seen, num_relevant,
 certainty, called,
 intermediate_answers, intermediate_answer_status,
-docs[], beliefs[], updates[], changed[], observations[], issues[],
+docs[], beliefs[], updates[], changed[], observations[], issues[], notes[],
 agent_turn, reply, intermediate_answer_reasoning, errors[],
 belief_state_tag            # inform only, not saved (the trajectory step has it)
 ```
@@ -160,8 +160,11 @@ belief_state_tag            # inform only, not saved (the trajectory step has it
   call was not made or failed. Together over the steps they are every
   criterion's references (the final record gathers them).
 - `issues`: one `{id, code, detail, [label]}` per thing the reply got wrong
-  (`core.issues`: an observation left out, a candidate update not taken,
-  corrected or flagged).
+  (`core.issues.ISSUES`: each code's effect, an observation or update
+  dropped, a status corrected or a flaw flagged, and its training role).
+  `notes`: the same records for what is no error (codes of effect `note`:
+  a name written again after it was dropped, an update that changes
+  nothing, an aspect fact's span off the fact).
 - `agent_turn`: the agent's reasoning of the iteration
   (`text.agent_turn.agent_turn_text`; the queries are in the trajectory),
   read by the step's call or by the next one. `reply`: the raw reply of the
@@ -183,17 +186,18 @@ One `final` line; it reads the answer turn (`text.agent_turn.answer_turn`):
 ```
 iteration, certainty, certainty_label, certainty_formula,
 certainty_answer_formula, called, final_score, beliefs, updates, changed,
-observations, issues, references, agent_turn, reply, errors
+observations, issues, notes, references, agent_turn, reply, errors
 ```
 
 - Short-answer query: the final scorer (`update.final_score`) reads b_{T-1}
   and the answer turn, and the belief is not updated. `certainty` is s_T, the
   probability of the final answer's status (`certainty_label`), null when the
-  call failed; `final_score` holds its `{status, candidates, reason, issues}`.
+  call failed; `final_score` holds its `{status, candidates, reason, issues}`
+  (its issues as records of the `answer` codes).
   `certainty_formula` is the certainty of b_{T-1} (`core.certainty.certainty`)
   and `certainty_answer_formula` its form anchored on the answer's candidates
   (`core.certainty.answer_certainty`), both baselines. `updates`, `changed`
-  and `issues` are empty, `observations` null.
+  `issues` and `notes` are empty, `observations` null.
 - Report (no final scorer): the answer turn is one more update, labelled
   "t<last step + 1>" with the turns still waiting, and s_T is the certainty
   of the belief after it (`certainty` = `certainty_formula`;

@@ -186,7 +186,7 @@ types in `statuses.txt`, and the shape's own `<shape>.txt`: its terms, its rules
 
 **When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when its search returned a
 document with text; the call shows every document of the iteration, also one shown before (labelled `d<n>` when first
-shown, the same label after; a passage shown again raises no status on its own, `no_new_support`). Otherwise no call
+shown, the same label after; a passage shown again raises no status on its own, `status_without_new_support`). Otherwise no call
 is made (`called: false`): the belief is carried forward and the turn waits; the next call reads every turn since the
 last call (the last 6), each labelled `t<iteration>`. After the last iteration, the answer turn (its reasoning and
 final answer) makes the final call: on a short-answer dataset the final scorer's (below), on a report one more
@@ -221,36 +221,43 @@ Code applies the reply (`BeliefState.apply`):
 - **Reasoning only proposes.** A claim sets the agent's claim on a listed candidate (never its status), or adds a
   proposal (no status, not a rival, never selected; at most 8 per criterion), updates it, or drops it when the claim
   is "rejected". A proposal becomes a candidate when a passage supports it.
-- **Support.** A support or against label must be a passage of the call observed on the criterion (`bad_ref`
+- **Support.** A support or against label must be a passage of the call observed on the criterion (`ref_without_observation`
   otherwise, the label dropped). A second observation of a passage on the criterion adds its new spans to the first. The basis of a
   candidate follows from its support ("passage", or "reasoning" for a computed criterion's candidates).
 - **Hard limits** (not for a computed criterion, whose status the reasoning sets): a candidate no passage supports is
-  at most "possible", and a new name without any passage of the call stays a proposal (`no_support`); a name that
+  at most "possible", and a new name without any passage of the call stays a proposal (`status_without_support`); a name that
   passages of the call only speak against is not added, and a proposal stays one (`against_only`); a listed
   candidate whose update adds no support keeps its status, unless in the same call another of its candidates gained
   support, was added or was removed (one answer: the status depends on the others; a proposal added or dropped does
-  not count); otherwise `no_new_support`. A criterion is judged on its own parts: a part that refers to another
+  not count); otherwise `status_without_new_support`. A criterion is judged on its own parts: a part that refers to another
   criterion is met when a passage links the candidate to a candidate of that criterion, whatever that candidate's
   status, so a change of the referenced criterion moves nothing.
-- **Target.** A multi-clue query's target criterion takes no observation (`derived_criterion`) and no candidate
-  update (`derived_update`). After each call code derives its candidates from the clues before it: a name listed on
+- **Target.** A multi-clue query's target criterion takes no observation (`observation_on_target`) and no candidate
+  update (`update_on_target`). After each call code derives its candidates from the clues before it: a name listed on
   every clue, at the lowest of its statuses there, with their support (shown on the clues only). A rival or a passage
   against it on one clue lowers it there.
 - **Removal.** A candidate the reply does not name keeps its status. "removed" is taken when a passage of the call
   speaks against the candidate (`against`), or for a proposal a claim of the call rejected; else flagged and kept
-  (`bad_removal`; `remove_unlisted` for a name neither listed nor proposed). Removed candidates and dropped proposals
-  are saved in the final line's `references[].removed`; a name added again is flagged (`readded`). Names are matched
-  on letters and digits only; a new name that contains a listed one, or the reverse, is flagged (`near_duplicate`).
-- **Not taken**: an update of an unknown criterion, without a name (`empty_candidate`), with a status that is no
-  candidate status (`bad_status`), a second one of the same candidate (`duplicate_candidate`), or of a criterion
-  without an observation in the call (`unexpected_candidate`); a claim without a candidate or a valid claim
-  (`bad_claim`).
-- **Flagged** (statuses kept): a reason without its opening (`no_reason_opening`), a `Was X` that is not the current
-  status (`wrong_previous`), `Was` on an unlisted candidate (`not_listed`), `New:` on a listed one (`listed_as_new`),
-  a reason citing a source with no observation on the criterion (`bad_ref`), a new candidate in none of its
-  criterion's passage spans and titles (`unknown_candidate`), no new support with the current status written again
-  (`unchanged`); in a one-answer criterion, a "confirmed" candidate while another has support (`confirmed_with_rival`)
+  (`removal_unsupported`; `removal_unlisted` for a name neither listed nor proposed). Removed candidates and dropped proposals
+  are saved in the final line's `references[].removed`; a name added again gets a note (`candidate_readded`). Names are matched
+  on letters and digits only; a new name that contains a listed one, or the reverse, is flagged (`candidate_near_duplicate`).
+- **Not taken**: an update of an unknown criterion, without a name (`candidate_missing`), with a status that is no
+  candidate status (`status_invalid`), a second one of the same candidate (`candidate_repeated`), or of a criterion
+  without an observation in the call (`update_without_observation`); a claim without a candidate or a valid claim
+  (`claim_incomplete`).
+- **Flagged** (statuses kept): a reason without its opening (`reason_opening_missing`), a `Was X` that is not the current
+  status or `Was` on an unlisted candidate (`reason_previous_wrong`), `New:` on a listed one (`reason_new_on_listed`),
+  a reason citing a source with no observation on the criterion (`ref_without_observation`, one per update with the
+  dropped labels), a new candidate in none of its criterion's passage spans and titles (`candidate_not_in_passages`);
+  in a one-answer criterion, a "confirmed" candidate while another has support (`confirmed_with_rival`)
   and two candidates with the same support but different statuses (`unequal_tie`).
+- **Issue codes.** Every code is in one table (`belief_model_component/core/issues.py`, `ISSUES`) with its effect
+  (dropped, corrected, flagged or note) and its training role (format gate, unclean); the training sets of codes are
+  derived from it. The step record's `issues` holds the errors, its `notes` what is no error: a name written again
+  after it was dropped (`candidate_readded`), no new support with the current status written again
+  (`update_unchanged`), an aspect fact's span without a content word of the fact (`span_off_fact`). The trajectory md
+  shows them one line per effect, and `metrics.md` gives the share of update calls with each effect, failing the
+  format gate or unclean, and every code that occurs (`evaluation/belief/issues.py`).
 
 Derived per criterion: its status, the highest of its candidates ("unknown" without one; an aspect's its own), and
 its selected candidate(s): for a one-answer criterion the first one listed at "possible" or above, for an aspect every
@@ -276,7 +283,7 @@ casts doubt on is "unlikely" (one a passage states fails a part is removed); oth
 The labels are Agent-BRACE's (Kent's words of estimative probability); the definitions follow the Admiralty Code
 (NATO AJP-2.1) information credibility scale ("confirmed by other independent sources", "probably true", "possibly
 true", "improbable", "cannot be judged") with Heuer's Analysis of Competing Hypotheses for rivals. Code sets a
-"confirmed" candidate with support from one source to "almost certain" (`one_source`).
+"confirmed" candidate with support from one source to "almost certain" (`confirmed_one_source`).
 
 The definitions do not overlap, so the prompt has no tie-break rule. A candidate is what its criterion asks for, never the member a member
 criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
@@ -285,8 +292,8 @@ aggregate: its passage observations state an input it needs (a member's membersh
 criterion lists; shown as "passages on its inputs"). Code sets an aggregate's statuses: each candidate at the lowest
 status of its inputs (the closed criteria before it), "unlikely" when a passage speaks against it (it uses an input a
 passage rules out, or leaves out one a passage states), at most "possible" when the reasoning computed another answer
-later (`aggregate_status` when the reply wrote another status). A computed aggregate's candidates come from the
-reasoning's claims only; an update never adds one (`not_computed`).
+later (`aggregate_status_derived` when the reply wrote another status). A computed aggregate's candidates come from the
+reasoning's claims only; an update never adds one (`answer_not_computed`).
 
 A report's aspect (multi_aspect) has one status of its own, written by the reply's item on it without a candidate:
 how well its facts back what it asks, by the sides they cover and whether every fact rests on several sources:
@@ -295,13 +302,13 @@ some fact on one source only; almost certain, several sides with every fact on s
 some fact on one source only; confirmed, every side with every fact on several sources (the ODNI analytic confidence
 levels: multiple sources vs fragmented or poorly corroborated). Its facts are only kept or removed. The status is the aspect's q_k; it
 moves only when its support moved in the call (a fact added or removed, or a passage added to a fact's support),
-never with a claim or a passage shown again alone (`aspect_no_passage`), is "unknown"
+never with a claim or a passage shown again alone (`status_without_new_support`), is "unknown"
 with no fact and "unlikely" when a passage removed its last facts (a proposal the agent rejected does not count,
-`aspect_no_fact`), and "confirmed" needs every fact supported by two
-sources (`aspect_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
-"removed" is kept (`bad_fact_status`). A new fact whose words contain a listed one, or the
-reverse, joins it (`merged_duplicate`); a supporting span that shares no content word with its fact is flagged
-(`span_off_candidate`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
+`aspect_without_fact`), and "confirmed" needs every fact supported by two
+sources (`confirmed_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
+"removed" is kept (`fact_status_invalid`). A new fact whose words contain a listed one, or the
+reverse, joins it (`fact_merged`); a supporting span that shares no content word with its fact gets a note
+(`span_off_fact`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
 neutral level 0; its "doubtful" is a removal here. "confirmed" is the paper's top label ("certain" before schema 50).
 
 The update prompt reads each criterion with its candidates (`views.tag.format_belief`):

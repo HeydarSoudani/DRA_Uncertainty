@@ -12,9 +12,9 @@ update models, criteria cap, retriever) are in the run's
 ``<belief_state>`` tags in the trajectory file
 (``trajectory/{query_id}.jsonl``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 50::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 51::
 
-    line 1  {"record": "meta", "schema_version": 50, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 51, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -43,7 +43,8 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 50::
              "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
                               {"id": "c1", "label": "d1", "step": 1, "doc_id": "doc17", "spans": ["..."]}],
-             "issues": [{"id": "c2", "code": "no_span", "detail": "no verified span", "label": "d3"}],
+             "issues": [{"id": "c2", "code": "span_unverified", "detail": "no verified span", "label": "d3"}],
+             "notes": [{"id": "c1", "code": "candidate_readded", "detail": "'Varby': dropped before, written again"}],
              "agent_turn": "...",
              "reply": "...",
              "intermediate_answer_reasoning": null, "errors": []}
@@ -54,7 +55,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 50::
              "final_score": {"status": "probable",
                              "candidates": [{"id": "c1", "candidate": "Osby"}, ...],
                              "reason": "...", "issues": []},
-             "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [],
+             "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [], "notes": [],
              "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": "possible", "basis": "reasoning",
@@ -80,6 +81,20 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in the
 trajectory md (``belief_model_component.views.log_view``).
+
+schema_version 51 (was 50): the issue codes are one table
+(``belief_model_component.core.issues.ISSUES``: each code's effect,
+dropped / corrected / flagged / note, and its training role) and renamed
+(``LEGACY_CODES`` maps the old names; the log of an old run shows the
+current ones).  A new ``notes`` list per step and final record holds the
+codes that are no error (``candidate_readded``, ``update_unchanged``,
+``span_off_fact``; before: in ``issues``).  One issue per update for its
+labels and its reason's sources with no observation on the criterion
+(before: two); ``aspect_one_source`` is ``confirmed_one_source``,
+``aspect_no_passage`` is ``status_without_new_support`` and ``not_listed``
+is ``reason_previous_wrong``.  The final scorer's ``final_score.issues``
+are issue records (``{id, code, detail}``) in place of strings.  The belief,
+its updates and the training sets of codes are unchanged.
 
 schema_version 50 (was 49): same record fields; the top status is renamed
 "certain" -> "confirmed" (Agent-BRACE's label; ``parse_status`` reads
@@ -396,7 +411,7 @@ from typing import Any, Dict
 import numpy as np
 
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 51
 
 # Kept in memory for the agent, not saved (the trajectory step has it).
 _UNSAVED_STEP_KEYS = ("belief_state_tag",)

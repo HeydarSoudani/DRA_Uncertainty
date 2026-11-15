@@ -65,7 +65,7 @@ from utils.text_utils import unique_docs
 from .config import Split
 
 # The records of one belief update (``BeliefUpdateSignal``), as saved.
-RECORD_KEYS = ("observations", "updates", "changed", "issues", "beliefs")
+RECORD_KEYS = ("observations", "updates", "changed", "issues", "notes", "beliefs")
 
 
 @dataclass
@@ -455,12 +455,12 @@ class BeliefTracker:
         to *call*, as ``submit`` gives it, without touching the belief (a
         GRPO group scores several replies to one scorer call):
         ``{iteration, parsed, observations, updates, changed, issues,
-        beliefs, ruled_out, final_score, certainty, certainty_label}``
+        notes, beliefs, ruled_out, final_score, certainty, certainty_label}``
         (``ruled_out``: ``BeliefState.ruled_out_lists`` of b_{T-1}, for
         ``core.certainty.answer_certainty``)."""
         score = parse_final_score(raw) if raw is not None else None
         return {"iteration": call.iteration, "parsed": score is not None, "observations": None, "updates": [],
-                "changed": [], "issues": [], "beliefs": self.signal.beliefs(),
+                "changed": [], "issues": [], "notes": [], "beliefs": self.signal.beliefs(),
                 "ruled_out": self.signal.state.ruled_out_lists(),
                 "final_score": ({**score.to_dict(), "issues": check_issues(score, self.signal.state)}
                                 if score else None),
@@ -470,7 +470,7 @@ class BeliefTracker:
     def submit(self, raw: Optional[str]) -> Dict[str, Any]:
         """Apply the reply *raw* (None: the call failed) to the open call;
         returns the call's outcome: ``{iteration, parsed, observations,
-        updates, changed, issues, beliefs}`` (``beliefs`` every criterion's
+        updates, changed, issues, notes, beliefs}`` (``beliefs`` every criterion's
         belief after the call; no observation and no change when the
         reply did not parse)."""
         call = self._pending
@@ -482,7 +482,7 @@ class BeliefTracker:
         parsed = self.updater.parse(raw, call.turns, call.passages, call.iteration) if raw is not None else None
         # As the inference belief model records a call whose reply did not parse.
         out: Dict[str, Any] = {"iteration": call.iteration, "parsed": parsed is not None,
-                               "observations": None, "updates": [], "changed": [], "issues": []}
+                               "observations": None, "updates": [], "changed": [], "issues": [], "notes": []}
         if parsed is not None:
             out.update(self.signal.apply(parsed, call.iteration))
         out["beliefs"] = self.signal.beliefs()

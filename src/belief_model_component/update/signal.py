@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def empty_update(errors: Optional[List[str]] = None) -> Dict[str, Any]:
     """The outcome of a step without a parsed call (``BeliefUpdateSignal``)."""
-    return {"called": False, "observations": None, "updates": [], "changed": [], "issues": [],
+    return {"called": False, "observations": None, "updates": [], "changed": [], "issues": [], "notes": [],
             "beliefs": None, "reply": None, "errors": list(errors or [])}
 
 
@@ -67,10 +67,10 @@ class BeliefUpdateSignal:
     are lost.  A document is known by its id, else by a hash of its text
     (``_doc_key``).  ``step`` and ``finish`` return the step's outcome::
 
-        {called, observations, updates, changed, issues, beliefs, reply, errors}
+        {called, observations, updates, changed, issues, notes, beliefs, reply, errors}
 
-    (``called`` whether a call was made; ``observations``, ``updates``, ``changed`` and
-    ``issues`` as ``BeliefState.apply`` gives them, null / empty when the
+    (``called`` whether a call was made; ``observations``, ``updates``, ``changed``,
+    ``issues`` and ``notes`` as ``BeliefState.apply`` gives them, null / empty when the
     call was not made or failed; ``beliefs`` every criterion's belief after
     the step (``BeliefState.belief_lists``); ``reply`` the raw reply, null
     when not called or the call raised).

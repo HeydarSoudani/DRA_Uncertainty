@@ -1516,6 +1516,11 @@ class CPMReport(BasicAgent):
             rp_entry["_cpm_step"] = entry.get("step")
             rp_entry["_cpm_output"] = entry.get("output", {})
 
+            if traj_state == "search":
+                from belief_model_component import belief_doc_labels
+                labels = belief_doc_labels(belief_records.get(entry.get("step")))
+                if labels:
+                    rp_entry["belief_labels"] = labels
             self._record_step(reasoning_path, rp_entry)
             # The steps reach the trajectory md only now, so the belief of a
             # search step (its agent_iteration is the step) is written here.

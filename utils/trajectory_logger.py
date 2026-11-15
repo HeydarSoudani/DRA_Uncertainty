@@ -226,6 +226,16 @@ def _fence(text: str, lang: str = "") -> str:
     return f"{ticks}{lang}\n{text}\n{ticks}"
 
 
+def _doc_title(doc: Dict[str, Any]) -> str:
+    """The document's metadata title, else the title the belief model reads
+    from its text (``passage_title``), else "Untitled"."""
+    title = doc_title(doc, "")
+    if title:
+        return title
+    from belief_model_component import passage_title
+    return passage_title(doc_text(doc, max_tokens=None)) or "Untitled"
+
+
 def _snippet(doc: Dict[str, Any], limit: int) -> str:
     """One-line preview of a document's text, collapsed and truncated."""
     text = doc_text(doc, max_tokens=None)
@@ -254,7 +264,12 @@ def render_step_md(
     Think text and search queries are written in full — this file is where you
     go when a run misbehaved, and a truncated thought is exactly the part you
     would have wanted.  Documents get ``doc_id``, title and a short snippet;
-    their full text lives in ``retrieval/surfaced/{qid}.trec``.
+    their full text lives in ``retrieval/surfaced/{qid}.trec``.  The title is
+    the document's metadata title, else the one the belief model reads from
+    its text (``passage_title``: front matter, else first line).  With the
+    belief model on, a document also gets its belief label (the step's
+    ``belief_labels``, md only: the label the belief log cites), "shown
+    before" when an earlier step showed it.
     """
     action = infer_action_type(step)
     phase = step.get("phase")
@@ -279,12 +294,16 @@ def render_step_md(
         seen = seen_doc_ids(step)
         if not seen:
             seen = [d.get("doc_id") or d.get("id") or "?" for d in docs[:10]]
+        labels = step.get("belief_labels") or {}
         lines = []
         for rank, did in enumerate(seen, 1):
             doc = by_id.get(did) or {}
+            known = labels.get(did) or {}
+            label = f"**{known['label']}** · " if known.get("label") else ""
+            again = " *(shown before)*" if known.get("label") and not known.get("new") else ""
             # Two trailing spaces = a hard break, so the snippet stays inside
             # the list item instead of merging into the title's paragraph.
-            lines.append(f"{rank}. `{did}` — {doc_title(doc, 'Untitled')}  ")
+            lines.append(f"{rank}. {label}`{did}` — {_doc_title(doc)}{again}  ")
             snippet = _snippet(doc, doc_snippet_chars)
             lines.append(f"   {snippet}" if snippet else "   *(no text)*")
         parts.append(

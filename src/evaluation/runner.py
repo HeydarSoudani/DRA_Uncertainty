@@ -17,7 +17,9 @@ The groups, in the order of the files and the log:
                  against its nugget coverage (reports, belief model on)
     belief       the belief's change at gold and control events, and per
                  criterion its recall, answer reached and status calibration
-                 (datasets with gold per criterion, belief model on)
+                 (datasets with gold per criterion, belief model on); the
+                 share of update calls with issues, and every issue code
+                 that occurs (belief model on, ``belief.issues``)
     trajectory   searches, agent and belief model tokens, forced answers
 
 A run with an output directory is always evaluated from its saved files, at
@@ -42,7 +44,7 @@ from indexing_corpus_dataset.layout import DATASET_SPECS
 from utils.io_utils import load_result_from_saved_files
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .belief import BeliefUpdateEvaluator, load_belief_files, read_run_config, save_belief
+from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config, save_belief
 from .belief.evaluator import BELIEF_EVAL_DIR, CALIBRATION_COLUMNS
 from .common import RULE
 from .metrics import mean
@@ -294,6 +296,9 @@ def evaluate_and_save(
         merge(bel["per_query"])
         for metric, value, lo, hi, n in bel["rows"]:
             add("belief", metric, value, lo, hi, n)
+    issues = timed("belief issues", issue_summary, belief_files) if belief_files else {}
+    for metric, value, lo, hi, n in issues.get("rows") or []:
+        add("belief", metric, value, lo, hi, n)
 
     # ── Trajectory ───────────────────────────────────────────────────────
     traj = timed("trajectory", ev.trajectory.evaluate, results)
@@ -325,6 +330,8 @@ def evaluate_and_save(
         sections.append(("Belief status calibration (final belief, per criterion)", list(CALIBRATION_COLUMNS),
                          [[status, fmt(p, 2), fmt(n), fmt(hits), fmt(share, 2)]
                           for status, p, n, hits, share in bel["calibration"]]))
+    if issues.get("table"):
+        sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), issues["table"]))
     write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
     # The grouped JSON summary of earlier evaluations is replaced by these files.

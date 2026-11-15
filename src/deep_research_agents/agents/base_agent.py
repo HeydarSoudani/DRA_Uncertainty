@@ -212,7 +212,8 @@ class AgentVerboseMixin:
            given, see ``_append_belief_state``) and stores it on the
            iteration's last step;
         4. appends the steps to *reasoning_path* through ``_record_step``,
-           after the tag, so the trajectory log has it.
+           after the tag, so the trajectory log has it, and with each
+           document's belief label (``belief_labels``, md only).
 
         Without *subqueries* and *docs* (the iteration searched nothing) the
         belief model is not called and the steps are only stamped and
@@ -226,12 +227,16 @@ class AgentVerboseMixin:
             step["iteration"] = iter_num
         tag = None
         if subqueries or docs:
-            from belief_model_component import agent_turn_text
+            from belief_model_component import agent_turn_text, belief_doc_labels
             tag = self._observe_step(
                 subqueries, docs, iter_num, original_query,
                 seen_docs=seen_docs, trajectory=trajectory,
                 agent_turn=agent_turn_text([s.get("think") for s in steps]),
             )
+            labels = belief_doc_labels(getattr(self, "_last_belief_record", None))
+            if labels:
+                for step in steps:
+                    step["belief_labels"] = labels
         if tag:
             if messages is not None:
                 self._append_belief_state(messages, tag)
