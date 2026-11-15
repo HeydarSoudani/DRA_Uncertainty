@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Tuple
 
 from belief_model_component import ERROR_EFFECTS, GATE_ISSUES, ISSUES, UNCLEAN_REPLY, issue_effect
 
+from ..metrics_file import GroupResult
+
 #: Columns of the issue table below the main table.
 ISSUE_COLUMNS = ("code", "effect", "role", "count", "calls", "share of calls")
 
@@ -35,10 +37,9 @@ def _role(code: str) -> str:
     return "+".join(r for r, on in (("gate", info.gate), ("unclean", info.unclean)) if on) or "none"
 
 
-def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> Dict[str, Any]:
-    """``{rows, table}`` of the belief files *files* (``load_belief_files``):
-    ``rows`` as ``(metric, value, ci_low, ci_high, n)``, ``table`` the cell
-    rows of ``ISSUE_COLUMNS``; ``{}`` without an update call."""
+def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
+    """The ``belief`` rows of the belief files *files* (``load_belief_files``)
+    and the issue table (``ISSUE_COLUMNS``); empty without an update call."""
     calls = parsed = gate = unclean = 0
     with_effect: Counter = Counter()
     count: Counter = Counter()
@@ -68,15 +69,19 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> Dict[str, An
             unclean += any(c in UNCLEAN_REPLY for c in codes)
             with_effect.update({issue_effect(c) for c in codes})
     if not calls:
-        return {}
-    rows = [("update calls", calls, None, None, calls),
-            ("update calls: format gate failed", gate / calls, None, None, calls),
-            ("update calls: unclean", unclean / calls, None, None, calls)]
-    rows += [(f"update calls: with {e} issue", with_effect[e] / calls, None, None, calls) for e in ERROR_EFFECTS]
+        return GroupResult()
+    res = GroupResult()
+    res.add("belief", "update calls", calls, n=calls)
+    res.add("belief", "update calls: format gate failed", gate / calls, n=calls)
+    res.add("belief", "update calls: unclean", unclean / calls, n=calls)
+    for e in ERROR_EFFECTS:
+        res.add("belief", f"update calls: with {e} issue", with_effect[e] / calls, n=calls)
     table = []
     for code, n in sorted(count.items(), key=lambda x: (-x[1], x[0])):
         info = ISSUES.get(code)
         own = scorer_calls if info is not None and info.concerns == "answer" else calls
         table.append([code, issue_effect(code), _role(code), str(n), str(in_calls[code]),
                       f"{in_calls[code] / own:.2f}" if own else ""])
-    return {"rows": rows, "table": table}
+    if table:
+        res.sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), table))
+    return res

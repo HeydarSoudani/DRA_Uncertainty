@@ -16,11 +16,12 @@ logged.  No LLM call.
 
 import logging
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from ..measures import bootstrap_ci, brier, tau_b
+from ..metrics_file import GroupResult
 
 logger = logging.getLogger(__name__)
 
@@ -32,22 +33,23 @@ class ReportUncertaintyEvaluator:
     """The report uncertainty measures of a run (module docstring)."""
 
     def evaluate(self, finals: Dict[str, Optional[Dict[str, Any]]],
-                 report_per_query: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """``{per_query, rows}`` from the ARGUE records (``nugget_coverage``,
-        ``empty_report``) and each query's ``final`` belief line (*finals*,
-        by query id); ``{}`` without any s_T."""
+                 report_per_query: List[Dict[str, Any]]) -> GroupResult:
+        """The ``uncertainty`` group from the ARGUE records
+        (``nugget_coverage``, ``empty_report``) and each query's ``final``
+        belief line (*finals*, by query id); empty without any s_T."""
         per_query: Dict[str, Dict[str, Any]] = {}
         for rec in report_per_query:
             final = finals.get(rec["query_id"]) or {}
             per_query[rec["query_id"]] = {"s_T": final.get("certainty"), "empty": bool(rec.get("empty_report")),
                                           **{key: rec.get(key) for _, key in TARGETS}}
         if not any(r["s_T"] is not None for r in per_query.values()):
-            return {}
+            return GroupResult()
         scored = [r for r in per_query.values() if r["s_T"] is not None and not r["empty"]]
         if len(scored) < len(per_query):
             logger.info("report uncertainty evaluation: %d queries left out (no s_T or an empty report)",
                         len(per_query) - len(scored))
-        rows: List[Tuple[str, Any, Any, Any, Any]] = [("queries scored", len(scored), None, None, len(per_query))]
+        res = GroupResult(per_query={q: {"s_T": r["s_T"]} for q, r in per_query.items()})
+        res.add("uncertainty", "queries scored", len(scored), n=len(per_query))
         for name, key in TARGETS:
             items = [r for r in scored if r.get(key) is not None]
             if not items:
@@ -57,8 +59,8 @@ class ReportUncertaintyEvaluator:
                 return tau_b(np.array([r["s_T"] for r in rs], dtype=float),
                              np.array([r[key] for r in rs], dtype=float)) if rs else math.nan
 
-            rows.append((f"s_T tau-b vs {name}", stat(items), *bootstrap_ci(items, stat), len(items)))
-            rows.append((f"s_T Brier vs {name}", brier(np.array([r[key] for r in items], dtype=float),
-                                                       np.array([r["s_T"] for r in items], dtype=float)),
-                         None, None, len(items)))
-        return {"per_query": {q: {"s_T": r["s_T"]} for q, r in per_query.items()}, "rows": rows}
+            res.add("uncertainty", f"s_T tau-b vs {name}", stat(items), *bootstrap_ci(items, stat), len(items))
+            res.add("uncertainty", f"s_T Brier vs {name}", brier(np.array([r[key] for r in items], dtype=float),
+                                                                 np.array([r["s_T"] for r in items], dtype=float)),
+                    n=len(items))
+        return res

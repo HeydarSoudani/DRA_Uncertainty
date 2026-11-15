@@ -78,7 +78,7 @@ from run_files.belief import BeliefFile
 from run_files.run_config import passage_cut, read_run_config
 
 from ..measures import bootstrap_ci, mean
-from ..metrics_file import BELIEF_EVAL_DIR
+from ..metrics_file import BELIEF_EVAL_DIR, GroupResult, fmt
 from .gold_match import CANDIDATE, SPANS, AnswerJudge, states
 from .gold_rows import load_gold_rows, match_row
 
@@ -372,21 +372,20 @@ class BeliefUpdateEvaluator:
     # Evaluation
     # ------------------------------------------------------------------
 
-    def evaluate(self, run_dir, files: Dict[str, BeliefFile], query_ids: Iterable[str]) -> Dict[str, Any]:
-        """The measures over the run's queries with scored gold criteria,
-        from their belief *files* (``load_belief_files``; a query of
-        *query_ids* without one counts as ``no belief file``):
-        ``{per_query, rows, calibration, events}`` (``rows``: ``(metric,
-        value, ci_low, ci_high, n)``; ``calibration``: the rows of the
-        calibration table, ``CALIBRATION_COLUMNS``); ``{}`` when no query
-        has one."""
+    def evaluate(self, run_dir, files: Dict[str, BeliefFile], query_ids: Iterable[str]) -> GroupResult:
+        """The ``belief`` group over the run's queries with scored gold
+        criteria, from their belief *files* (``load_belief_files``; a query of
+        *query_ids* without one counts as ``no belief file``): the rows, the
+        per-query means and the calibration table (``CALIBRATION_COLUMNS``);
+        *raw* is ``{"events": n}`` (the rows of ``events.csv``).  Empty when
+        no query has one."""
         run_dir = Path(run_dir)
         counts: Counter = Counter()
         queries = self._load(files, query_ids, counts)
         if counts:
             logger.info("belief evaluation: queries left out %s", dict(counts))
         if not queries:
-            return {}
+            return GroupResult()
         shown = self._shown_texts(queries, run_dir)
         judge = AnswerJudge(self.judge_model, run_dir / BELIEF_EVAL_DIR / "judge_cache.jsonl") \
             if self.judge_model else None
@@ -408,8 +407,15 @@ class BeliefUpdateEvaluator:
             per_query[q.qid] = rec
 
         self._write_events(run_dir, events)
-        return {"per_query": per_query, "rows": self._rows(groups), "calibration": self._calibration(groups),
-                "events": len(events)}
+        res = GroupResult(per_query=per_query, raw={"events": len(events)})
+        for row in self._rows(groups):
+            res.add("belief", *row)
+        calibration = self._calibration(groups)
+        if calibration:
+            res.sections.append(("Belief status calibration (final belief, per criterion)", list(CALIBRATION_COLUMNS),
+                                 [[status, fmt(p, 2), fmt(n), fmt(hits), fmt(share, 2)]
+                                  for status, p, n, hits, share in calibration]))
+        return res
 
     @staticmethod
     def _rows(groups: List[List[Dict[str, Any]]]) -> List[Tuple[str, Any, Any, Any, Any]]:

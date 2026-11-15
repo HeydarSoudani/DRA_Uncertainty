@@ -24,7 +24,9 @@ from typing import Any, Dict, List
 
 from utils.io_utils import write_jsonl
 from .report_sentences import strip_references
+from ..metrics_file import GroupResult
 from .confidence import verbal_confidence
+from .llm_judge import accuracy_result
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +127,7 @@ class NumericMatchEvaluator:
     Usage::
 
         evaluator = NumericMatchEvaluator(answers={"q1": "8269", ...})
-        metrics = evaluator.evaluate(results)   # {query_id: {"generation": str, ...}}
+        metrics = evaluator.score(results)   # {query_id: {"generation": str, ...}}
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -136,7 +138,12 @@ class NumericMatchEvaluator:
         self.answers = answers
         self.decimals = decimals
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
+    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
+        """The ``generation`` rows and per-query values of :meth:`score`, its
+        records saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
+        return accuracy_result(self.score(results), run_dir, self.save_results)
+
+    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Exact match over the queries with a ground-truth answer (*run_dir*
         is unused: the match needs no judge to cache).
 

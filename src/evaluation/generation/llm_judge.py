@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from utils.io_utils import read_jsonl, write_jsonl
 from utils.llm_client import LiteLLMClient
 
-from ..metrics_file import ACCURACY_FILE
+from ..metrics_file import ACCURACY_FILE, GroupResult
 from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client
 from .confidence import verbal_confidence
 from .report_sentences import strip_references
@@ -168,7 +168,7 @@ class AccuracyEvaluator:
 
         evaluator = AccuracyEvaluator(answers={"q1": "gold answer", ...},
                                       questions={"q1": "question", ...})
-        metrics = evaluator.evaluate(results)   # {query_id: {"generation": str, ...}}
+        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -240,7 +240,12 @@ class AccuracyEvaluator:
         return {r["query_id"]: r for r in read_jsonl(path)
                 if r.get("key") and not r.get("judge_error")}
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
+    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
+        """The ``generation`` rows and per-query values of :meth:`score`, its
+        verdicts saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
+        return accuracy_result(self.score(results, run_dir), run_dir, self.save_results)
+
+    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge every query with a ground-truth answer, reusing the verdicts
         saved in ``{run_dir}/eval/generation/accuracy.jsonl`` for unchanged queries.
 
@@ -304,3 +309,22 @@ class AccuracyEvaluator:
         fields = ("query_id", "key", "correct", "judge_error", "extracted_final_answer",
                   "reasoning", "verbal_confidence")
         write_jsonl(output_path, [{k: r.get(k) for k in fields} for r in metrics.get("per_query", [])])
+
+
+def accuracy_result(metrics: Dict[str, Any], run_dir, save) -> GroupResult:
+    """The ``generation`` group of an accuracy evaluator's *metrics* (``score``
+    of :class:`AccuracyEvaluator` or ``NumericMatchEvaluator``; *raw*), saved
+    at once with *save* when there is a *run_dir*: the verdicts are paid for,
+    and a later evaluator may fail.  Empty without any evaluated query."""
+    if not metrics:
+        return GroupResult(raw=metrics)
+    if run_dir is not None:
+        save(metrics, Path(run_dir) / ACCURACY_FILE)
+    res = GroupResult(raw=metrics, per_query={
+        r["query_id"]: {"correct": None if r.get("judge_error") else bool(r["correct"]),
+                        "verbal_confidence": r.get("verbal_confidence")} for r in metrics["per_query"]})
+    res.add("generation", "accuracy", metrics["accuracy"], n=metrics["num_evaluated"])
+    res.add("generation", "correct", metrics["num_correct"])
+    res.add("generation", "evaluated", metrics["num_evaluated"])
+    res.add("generation", "judge errors", metrics.get("num_judge_errors", 0))
+    return res

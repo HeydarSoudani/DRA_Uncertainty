@@ -70,7 +70,7 @@ from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from utils.progress import step_iter
 
 from ..measures import mean_or_none
-from ..metrics_file import GENERATION_EVAL_DIR
+from ..metrics_file import GENERATION_EVAL_DIR, GroupResult
 from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge
 from .report_sentences import report_sentences
 
@@ -228,7 +228,7 @@ class ArgueReportEvaluator:
     Usage::
 
         evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path)
-        metrics = evaluator.evaluate(results, run_dir)
+        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
 
     Args:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
@@ -320,7 +320,34 @@ class ArgueReportEvaluator:
 
     # -- public API -----------------------------------------------------
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
+    @property
+    def weighted(self) -> bool:
+        """The nuggets carry an importance (NeuCLIR, not RAGTIME): the
+        importance-weighted scores are reported too."""
+        return any(item.get("importance") for items in self.nuggets.values() for item in items)
+
+    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
+        """The ``generation`` rows and per-query values of :meth:`score`
+        (*raw*); empty when no request has nuggets."""
+        report = self.score(results, run_dir)
+        if not report:
+            return GroupResult(raw=report)
+        keys = ["nugget_coverage", "f1"] + (["nugget_coverage_weighted", "f1_weighted"] if self.weighted else [])
+        res = GroupResult(raw=report, per_query={r["query_id"]: {k: r.get(k) for k in keys}
+                                                 for r in report["per_query"]})
+        names = {"nugget_coverage": "nugget coverage", "f1": "nugget F1",
+                 "nugget_coverage_weighted": "nugget coverage (weighted)", "f1_weighted": "nugget F1 (weighted)"}
+        for key in keys:
+            res.add("generation", names[key], report["metrics"].get(key), n=report["num_evaluated"])
+        for metric, key in (("evaluated", "num_evaluated"), ("without nuggets", "num_without_nuggets"),
+                            ("empty reports", "num_empty_reports"),
+                            ("reports without citations", "num_uncited_reports"),
+                            ("reports with unmapped citations", "num_unmapped_reports"),
+                            ("judge failures", "num_judge_failures")):
+            res.add("generation", metric, report[key])
+        return res
+
+    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge (or reuse the cached judgments of) every report with nuggets
         and score them.
 

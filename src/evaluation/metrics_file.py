@@ -20,7 +20,7 @@ Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`)
 
 import csv
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -48,6 +48,30 @@ class Row:
     ci_low: Optional[float] = None
     ci_high: Optional[float] = None
     n: Optional[int] = None
+
+
+#: An extra section of ``metrics.md``: ``(title, columns, cell rows)``.
+Section = Tuple[str, List[str], List[List[str]]]
+
+
+@dataclass
+class GroupResult:
+    """What one evaluator adds to a run's evaluation: its *rows* of
+    ``metrics.md``, its *per_query* values (columns of ``per_query.csv``),
+    its extra *sections* of ``metrics.md``, and *raw*, its own output that a
+    later group reads (the answer verdicts for the uncertainty group).
+    Empty (false) when it has no row, value or section."""
+    rows: List[Row] = field(default_factory=list)
+    per_query: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    sections: List[Section] = field(default_factory=list)
+    raw: Any = None
+
+    def add(self, group: str, metric: str, value: Any, ci_low: Optional[float] = None,
+            ci_high: Optional[float] = None, n: Optional[int] = None) -> None:
+        self.rows.append(Row(group, metric, value, ci_low, ci_high, n))
+
+    def __bool__(self) -> bool:
+        return bool(self.rows or self.per_query or self.sections)
 
 
 def fmt(value: Any, digits: int = 4) -> str:
@@ -79,8 +103,7 @@ CRITERION_NOTE = ("A row with (c) is the mean over every criterion (n criteria);
                   "mean over the queries of each query's mean over its criteria (CI over queries, n queries).")
 
 
-def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row],
-                  sections: Sequence[Tuple[str, List[str], List[List[str]]]] = ()) -> None:
+def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections: Sequence[Section] = ()) -> None:
     """Write ``metrics.md``: the *header* items as a list, the table, then
     each of *sections* (``(title, columns, cell rows)``) as a titled table."""
     order = {g: i for i, g in enumerate(GROUPS)}

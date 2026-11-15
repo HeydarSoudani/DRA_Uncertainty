@@ -25,11 +25,12 @@ are logged.  No LLM call.
 
 import logging
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from ..measures import auroc, bootstrap_ci, brier
+from ..metrics_file import GroupResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +47,10 @@ class UncertaintyEvaluator:
     """The uncertainty measures of a run (module docstring)."""
 
     def evaluate(self, finals: Dict[str, Optional[Dict[str, Any]]],
-                 accuracy_per_query: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """``{per_query, rows}`` from the accuracy records (``correct``,
+                 accuracy_per_query: List[Dict[str, Any]]) -> GroupResult:
+        """The ``uncertainty`` group from the accuracy records (``correct``,
         ``judge_error``, ``verbal_confidence``) and each query's ``final``
-        belief line (*finals*, by query id); ``{}`` without any s_T."""
+        belief line (*finals*, by query id); empty without any s_T."""
         per_query: Dict[str, Dict[str, Any]] = {}
         for rec in accuracy_per_query:
             qid = rec["query_id"]
@@ -66,7 +67,7 @@ class UncertaintyEvaluator:
                     row[name] = final.get(field) if (has_scorer or name != "s_T") else None
             per_query[qid] = row
         if not any(r["s_T"] is not None for r in per_query.values()):
-            return {}
+            return GroupResult()
 
         use_verbal = any(r["verbal"] is not None for r in per_query.values())
         names = [n for n, _ in SCORES if n != "verbal" or use_verbal]
@@ -83,14 +84,15 @@ class UncertaintyEvaluator:
             return lambda rs: fn(np.array([r["y"] for r in rs], dtype=float),
                                  np.array([r[name] for r in rs], dtype=float)) if rs else math.nan
 
-        rows: List[Tuple[str, Any, Any, Any, Any]] = [("queries scored", len(common), None, None, len(per_query))]
+        res = GroupResult(per_query={q: {"s_T": r["s_T"], "s_T_label": r["s_T_label"],
+                                         "certainty_formula": r["formula"],
+                                         "certainty_answer_formula": r["answer formula"]}
+                                     for q, r in per_query.items()})
+        res.add("uncertainty", "queries scored", len(common), n=len(per_query))
         for name in names:
             scored = [r for r in common if r[name] is not None]
-            rows.append((f"{name} AUROC", stat(auroc, name)(scored), *bootstrap_ci(scored, stat(auroc, name)),
-                         len(scored)))
+            res.add("uncertainty", f"{name} AUROC", stat(auroc, name)(scored),
+                    *bootstrap_ci(scored, stat(auroc, name)), len(scored))
             if name in HEADLINE:
-                rows.append((f"{name} Brier", stat(brier, name)(scored), None, None, len(scored)))
-        out_rows = {q: {"y": r["y"], "s_T": r["s_T"], "s_T_label": r["s_T_label"],
-                        "certainty_formula": r["formula"], "certainty_answer_formula": r["answer formula"]}
-                    for q, r in per_query.items()}
-        return {"per_query": out_rows, "rows": rows}
+                res.add("uncertainty", f"{name} Brier", stat(brier, name)(scored), n=len(scored))
+        return res

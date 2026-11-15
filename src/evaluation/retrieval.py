@@ -8,6 +8,9 @@ from typing import Any, Dict
 
 from run_files.retrieval import doc_ids, seen_iterations
 
+from .measures import mean
+from .metrics_file import GroupResult
+
 
 class SeenDocEvaluator:
     """Retrieval quality of the *seen* documents: per query the set of
@@ -23,10 +26,10 @@ class SeenDocEvaluator:
     def __init__(self, qrels: Dict[str, Dict[str, int]]) -> None:
         self.qrels = qrels
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> GroupResult:
         """Per query with a relevant doc: ``{n_seen, recall_at_n,
         precision_at_n}`` (Recall@N = relevant seen / relevant; Precision@N =
-        relevant seen / N, 0 when nothing was seen)."""
+        relevant seen / N, 0 when nothing was seen); the rows are their means."""
         out: Dict[str, Dict[str, Any]] = {}
         for qid, result in results.items():
             relevant = {d for d, rel in (self.qrels.get(qid) or {}).items() if rel > 0}
@@ -39,4 +42,7 @@ class SeenDocEvaluator:
                 "recall_at_n": hits / len(relevant),
                 "precision_at_n": hits / len(seen) if seen else 0.0,
             }
-        return out
+        res = GroupResult(per_query=out)
+        for metric, key in (("Recall@N", "recall_at_n"), ("Precision@N", "precision_at_n"), ("N (docs seen)", "n_seen")):
+            res.add("retrieval", metric, mean([r[key] for r in out.values()]), n=len(out))
+        return res

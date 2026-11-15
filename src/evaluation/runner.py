@@ -39,14 +39,13 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from run_files import load_belief_files, load_result_from_saved_files
+from run_files import BELIEF_DIR, load_belief_files, load_result_from_saved_files
 from run_files.run_config import belief_model_of, read_run_config
 from utils.progress import step_iter
 
-from .belief import CALIBRATION_COLUMNS, GOLD_DATASETS, ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary
+from .belief import GOLD_DATASETS, BeliefUpdateEvaluator, issue_summary
 from .generation import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .measures import mean
-from .metrics_file import (ACCURACY_FILE, EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, RULE, Row, fmt, log_lines,
+from .metrics_file import (EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, RULE, GroupResult, Row, Section, log_lines,
                            write_metrics, write_per_query)
 from .retrieval import SeenDocEvaluator
 from .trajectory import TrajectoryEvaluator
@@ -163,11 +162,6 @@ def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int,
     }
 
 
-def _mean(values) -> float:
-    """The mean of the values that are not None, NaN when there is none."""
-    return mean([v for v in values if v is not None])
-
-
 def evaluate_and_save(
     results: Dict[str, Any],
     evaluators: Evaluators,
@@ -177,6 +171,9 @@ def evaluate_and_save(
     """Run every evaluator, print the log block and write ``metrics.md``,
     ``per_query.csv`` (``evaluation.metrics_file``) and the evaluators' own files
     (``eval/generation/``, ``eval/belief/``), all under ``eval/``.
+
+    Each evaluator returns a :class:`GroupResult`; the groups are collected
+    in the order of the files (the per-query columns keep it).
 
     Args:
         results:    Unified results dict keyed by query_id.
@@ -190,6 +187,9 @@ def evaluate_and_save(
     ev = evaluators
     run_dir = Path(run_dir) if run_dir else None
     timings: Dict[str, float] = {}
+    rows: List[Row] = []
+    sections: List[Section] = []
+    per_query: Dict[str, Dict[str, Any]] = {qid: {} for qid in results}
 
     def timed(name: str, fn, *args):
         start = time.time()
@@ -197,99 +197,35 @@ def evaluate_and_save(
         timings[name] = time.time() - start
         return out
 
-    rows: List[Row] = []
-    per_query: Dict[str, Dict[str, Any]] = {qid: {} for qid in results}
-
-    def add(group: str, metric: str, value: Any, ci_low=None, ci_high=None, n=None) -> None:
-        rows.append(Row(group, metric, value, ci_low, ci_high, n))
-
-    def merge(values: Dict[str, Dict[str, Any]]) -> None:
-        for qid, rec in values.items():
+    def collect(name: str, fn, *args) -> GroupResult:
+        res = timed(name, fn, *args)
+        for qid, rec in res.per_query.items():
             per_query.setdefault(qid, {}).update(rec)
+        rows.extend(res.rows)
+        sections.extend(res.sections)
+        return res
 
-    # ── Retrieval: the seen docs ─────────────────────────────────────────
-    seen = timed("retrieval", ev.seen.evaluate, results)
-    merge(seen)
-    add("retrieval", "Recall@N", _mean(r["recall_at_n"] for r in seen.values()), n=len(seen))
-    add("retrieval", "Precision@N", _mean(r["precision_at_n"] for r in seen.values()), n=len(seen))
-    add("retrieval", "N (docs seen)", _mean(r["n_seen"] for r in seen.values()), n=len(seen))
+    collect("retrieval", ev.seen.evaluate, results)
+    accuracy = collect("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else GroupResult()
+    report = collect("report", ev.report.evaluate, results, run_dir) if ev.report else GroupResult()
 
-    # ── Generation: correctness or nuggets ───────────────────────────────
-    accuracy = timed("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else {}
-    if accuracy and run_dir is not None:
-        # Saved at once: the verdicts are paid for, and a later evaluator may fail.
-        ev.accuracy.save_results(accuracy, run_dir / ACCURACY_FILE)
-    if accuracy:
-        merge({r["query_id"]: {"correct": None if r.get("judge_error") else bool(r["correct"]),
-                               "verbal_confidence": r.get("verbal_confidence")} for r in accuracy["per_query"]})
-        add("generation", "accuracy", accuracy["accuracy"], n=accuracy["num_evaluated"])
-        add("generation", "correct", accuracy["num_correct"])
-        add("generation", "evaluated", accuracy["num_evaluated"])
-        add("generation", "judge errors", accuracy.get("num_judge_errors", 0))
-    report = timed("report", ev.report.evaluate, results, run_dir) if ev.report else {}
-    if report:
-        weighted = ev.dataset == "neuclir"
-        keys = ["nugget_coverage", "f1"] + (["nugget_coverage_weighted", "f1_weighted"] if weighted else [])
-        merge({r["query_id"]: {k: r.get(k) for k in keys} for r in report["per_query"]})
-        names = {"nugget_coverage": "nugget coverage", "f1": "nugget F1",
-                 "nugget_coverage_weighted": "nugget coverage (weighted)", "f1_weighted": "nugget F1 (weighted)"}
-        for key in keys:
-            add("generation", names[key], report["metrics"].get(key), n=report["num_evaluated"])
-        add("generation", "evaluated", report["num_evaluated"])
-        add("generation", "without nuggets", report["num_without_nuggets"])
-        add("generation", "empty reports", report["num_empty_reports"])
-        add("generation", "reports without citations", report["num_uncited_reports"])
-        add("generation", "reports with unmapped citations", report["num_unmapped_reports"])
-        add("generation", "judge failures", report["num_judge_failures"])
-
-    # ── Uncertainty and belief update (belief files) ─────────────────────
-    has_belief = run_dir is not None and (run_dir / "belief").is_dir()
     # Each belief file is read once, for every evaluation below.
+    has_belief = run_dir is not None and (run_dir / BELIEF_DIR).is_dir()
     belief_files = timed("belief files", load_belief_files, run_dir, list(results)) if has_belief else {}
-    if belief_files and ev.uncertainty is not None and accuracy:
-        finals = {q: f[2] for q, f in belief_files.items()}
-        unc = timed("uncertainty", ev.uncertainty.evaluate, finals, accuracy["per_query"])
-        if unc:
-            merge({q: {k: v for k, v in r.items() if k != "y"} for q, r in unc["per_query"].items()})
-            for metric, value, lo, hi, n in unc["rows"]:
-                add("uncertainty", metric, value, lo, hi, n)
-    if belief_files and ev.report_uncertainty is not None and report:
-        finals = {q: f[2] for q, f in belief_files.items()}
-        unc = timed("uncertainty", ev.report_uncertainty.evaluate, finals, report["per_query"])
-        if unc:
-            merge(unc["per_query"])
-            for metric, value, lo, hi, n in unc["rows"]:
-                add("uncertainty", metric, value, lo, hi, n)
+    finals = {q: f[2] for q, f in belief_files.items()}
+    if belief_files and ev.uncertainty is not None and accuracy.raw:
+        collect("uncertainty", ev.uncertainty.evaluate, finals, accuracy.raw["per_query"])
+    if belief_files and ev.report_uncertainty is not None and report.raw:
+        collect("uncertainty", ev.report_uncertainty.evaluate, finals, report.raw["per_query"])
     if has_belief:
         # The belief stage saves no query whose call failed: the rest of the
         # group is over these queries only.
-        add("belief", "queries with a belief file", len(belief_files), n=len(results))
-    bel: Dict[str, Any] = {}
-    if belief_files and ev.belief is not None:
-        bel = timed("belief", ev.belief.evaluate, run_dir, belief_files, list(results))
-    if bel:
-        merge(bel["per_query"])
-        for metric, value, lo, hi, n in bel["rows"]:
-            add("belief", metric, value, lo, hi, n)
-    issues = timed("belief issues", issue_summary, belief_files) if belief_files else {}
-    for metric, value, lo, hi, n in issues.get("rows") or []:
-        add("belief", metric, value, lo, hi, n)
-
-    # ── Trajectory ───────────────────────────────────────────────────────
-    traj = timed("trajectory", ev.trajectory.evaluate, results)
-    belief_tokens = {q: (f[0].get("tokens") or {}).get("total_tokens") for q, f in belief_files.items()}
-    for qid, rec in traj.items():
-        if qid in belief_tokens:
-            rec["belief_tokens"] = belief_tokens[qid]
-    merge(traj)
-    add("trajectory", "searches", _mean(r["searches"] for r in traj.values()), n=len(traj))
-    add("trajectory", "agent tokens", _mean(r["agent_tokens"] for r in traj.values()),
-        n=sum(r["agent_tokens"] is not None for r in traj.values()))
-    if any(v is not None for v in belief_tokens.values()):
-        add("trajectory", "belief tokens", _mean(belief_tokens.values()),
-            n=sum(v is not None for v in belief_tokens.values()))
-    add("trajectory", "forced answers", sum(r["forced_answer"] for r in traj.values()), n=len(traj))
-    add("trajectory", "max iterations reached", sum(r["max_iter"] for r in traj.values()), n=len(traj))
+        rows.append(Row("belief", "queries with a belief file", len(belief_files), n=len(results)))
+    belief = (collect("belief", ev.belief.evaluate, run_dir, belief_files, list(results))
+              if belief_files and ev.belief is not None else GroupResult())
+    if belief_files:
+        collect("belief issues", issue_summary, belief_files)
+    collect("trajectory", ev.trajectory.evaluate, results, belief_files)
 
     # ── Log and files ────────────────────────────────────────────────────
     header = _header(run_dir, ev.dataset, len(results), num_unfinished)
@@ -300,17 +236,10 @@ def evaluate_and_save(
     print("  Evaluation time: " + ", ".join(f"{k} {v:.1f}s" for k, v in timings.items()))
     if run_dir is None:
         return
-    sections = []
-    if bel.get("calibration"):
-        sections.append(("Belief status calibration (final belief, per criterion)", list(CALIBRATION_COLUMNS),
-                         [[status, fmt(p, 2), fmt(n), fmt(hits), fmt(share, 2)]
-                          for status, p, n, hits, share in bel["calibration"]]))
-    if issues.get("table"):
-        sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), issues["table"]))
     (run_dir / EVAL_DIR).mkdir(parents=True, exist_ok=True)
     write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
     # The grouped JSON summary of earlier evaluations is replaced by these files.
     (run_dir / "summary.json").unlink(missing_ok=True)
     print(f"  Saved {run_dir / EVAL_DIR}/: metrics.md, per_query.csv"
-          f"{' and belief/events.csv' if bel else ''}")
+          f"{' and belief/events.csv' if belief else ''}")

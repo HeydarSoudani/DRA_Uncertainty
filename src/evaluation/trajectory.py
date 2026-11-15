@@ -28,9 +28,12 @@ The evaluator normalises all these formats into a common ``action_type``
 string and then computes aggregate statistics.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from utils.trajectory_logger import infer_action_type as _infer_action_type
+
+from .measures import mean
+from .metrics_file import GroupResult
 
 # Every action type an agent here ends a query on.  A type missing from
 # this set is read as "never terminated", which inflates both counts below
@@ -54,11 +57,12 @@ class TrajectoryEvaluator:
     Usage::
 
         evaluator = TrajectoryEvaluator()
-        per_query = evaluator.evaluate(results)
+        group = evaluator.evaluate(results, belief_files)
     """
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Per query:
+    def evaluate(self, results: Dict[str, Dict[str, Any]],
+                 belief_files: Optional[Dict[str, Any]] = None) -> GroupResult:
+        """The ``trajectory`` rows (means and counts) of, per query:
 
         - ``searches``: search steps (from the steps, else the saved count);
         - ``forced_answer``: the answer was forced (a force-answer action, or
@@ -67,7 +71,9 @@ class TrajectoryEvaluator:
           action, or no terminal and no force-answer action; a
           ``context_limit`` ending is not one);
         - ``agent_tokens``: the agent's total tokens (``token_usage``; None
-          when the agent records none).
+          when the agent records none);
+        - ``belief_tokens``: the belief model's total tokens, for a query of
+          *belief_files* (``load_belief_files``).
         """
         out: Dict[str, Dict[str, Any]] = {}
         for qid, result in results.items():
@@ -89,4 +95,21 @@ class TrajectoryEvaluator:
                 "max_iter": max_iter,
                 "agent_tokens": usage.get("total_tokens") if usage else None,
             }
-        return out
+        belief_tokens = {q: (f[0].get("tokens") or {}).get("total_tokens") for q, f in (belief_files or {}).items()}
+        for qid, rec in out.items():
+            if qid in belief_tokens:
+                rec["belief_tokens"] = belief_tokens[qid]
+
+        def defined(values):
+            return [v for v in values if v is not None]
+
+        res = GroupResult(per_query=out)
+        res.add("trajectory", "searches", mean([r["searches"] for r in out.values()]), n=len(out))
+        agent_tokens = defined(r["agent_tokens"] for r in out.values())
+        res.add("trajectory", "agent tokens", mean(agent_tokens), n=len(agent_tokens))
+        if defined(belief_tokens.values()):
+            res.add("trajectory", "belief tokens", mean(defined(belief_tokens.values())),
+                    n=len(defined(belief_tokens.values())))
+        res.add("trajectory", "forced answers", sum(r["forced_answer"] for r in out.values()), n=len(out))
+        res.add("trajectory", "max iterations reached", sum(r["max_iter"] for r in out.values()), n=len(out))
+        return res
