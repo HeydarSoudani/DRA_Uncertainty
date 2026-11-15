@@ -45,13 +45,12 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-from tqdm import tqdm
-
 from indexing_corpus_dataset.layout import (
     ANNOTATION_GOLD, BUILT_DATASETS, DATASET_SPECS, GOLD_CRITERIA, SILVER_CRITERIA, criteria_bank_path,
     effective_criteria_source, extraction_kind, gold_criteria_path,
 )
 from reasoner_component import create_generator, disable_native_thinking
+from utils.progress import step_iter
 
 from .sources import (
     GOLD_CRITERIA_MODEL, BankedCriteriaSource, CriteriaSource, FallbackCriteriaSource, GoldCriteriaSource,
@@ -95,7 +94,8 @@ def bank_model_id(model: str) -> str:
         with urllib.request.urlopen(f"{base}/models", timeout=30) as reply:
             served = json.load(reply).get("data") or []
     except Exception as e:  # noqa: BLE001 - the key needs the checkpoint
-        raise RuntimeError(f"criteria bank: cannot read the checkpoint of {model} from {base}/models ({e})") from e
+        raise RuntimeError(f"criteria bank: cannot read the checkpoint of {model} from {base}/models ({e}); "
+                           "start its vLLM server ($BELIEF_VLLM_API_BASE) or use an API belief model") from e
     for entry in served:
         if entry.get("id") == bare:
             return f"{model}@{entry.get('root') or bare}"
@@ -212,7 +212,7 @@ def prepare_criteria(source: CriteriaSource, queries: Dict[str, str]) -> Dict[st
     counts: Counter = Counter()
     failed = []
     with ThreadPoolExecutor(max_workers=PREPARE_WORKERS) as pool:
-        for qid, (criteria, info) in tqdm(pool.map(one, queries.items()), total=len(queries), desc="criteria"):
+        for qid, (criteria, info) in step_iter(pool.map(one, queries.items()), total=len(queries), desc="Criteria", unit="query"):
             if not criteria:
                 failed.append(qid)
                 logger.warning("No criteria for %s: %s", qid, info.get("errors"))

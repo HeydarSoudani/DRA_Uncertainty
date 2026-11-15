@@ -38,11 +38,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from tqdm import tqdm
-
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
 from utils.io_utils import belief_model_of, load_result_from_saved_files
+from utils.progress import step_iter
 
 from .answer import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
 from .belief import ISSUE_COLUMNS, BeliefUpdateEvaluator, issue_summary, load_belief_files, read_run_config
@@ -164,8 +163,8 @@ def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dic
         return {}
     start = time.time()
     with ThreadPoolExecutor(max_workers=min(8, len(query_ids))) as pool:
-        loaded = list(tqdm(pool.map(lambda qid: load_result_from_saved_files(run_dir, qid), query_ids),
-                           total=len(query_ids), desc="Loading results", unit="query"))
+        loaded = list(step_iter(pool.map(lambda qid: load_result_from_saved_files(run_dir, qid), query_ids),
+                                total=len(query_ids), desc="Loading results", unit="query"))
     results = {qid: r for qid, r in zip(query_ids, loaded) if r}
     print(f"Loaded {len(results)} queries from {run_dir} in {time.time() - start:.1f}s")
     return results

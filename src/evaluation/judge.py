@@ -14,11 +14,10 @@ import concurrent.futures
 import logging
 from typing import Any, Callable, Dict, List, Sequence
 
-from tqdm import tqdm
-
 from reasoner_component.api import get_litellm_client
 from reasoner_component.factory import disable_native_thinking
 from utils.llm_client import LiteLLMClient
+from utils.progress import StepBar
 
 logger = logging.getLogger(__name__)
 
@@ -93,11 +92,7 @@ def judge_all(
     ``on_error(item, exc)``, so every item yields one record.
     """
     records: List[Dict[str, Any]] = []
-    bar = tqdm(
-        total=len(items), desc=desc,
-        bar_format="{desc} {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}]",
-        dynamic_ncols=True,
-    )
+    bar = StepBar(len(items), desc)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(judge_one, item): item for item in items}
         for future in concurrent.futures.as_completed(futures):

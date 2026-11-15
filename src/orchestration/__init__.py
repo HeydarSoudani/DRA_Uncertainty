@@ -270,7 +270,7 @@ def quiet_logging() -> None:
 
 
 def _init_worker(worker_id: int, worker_config: dict):
-    """Initialise a GPU worker: pin GPU, load models, build agent.
+    """Initialise a worker: pin its GPU (none: a CPU worker), load models, build agent.
 
     Returns:
         (agent, search_tool, verbose)
@@ -293,7 +293,7 @@ def _init_worker(worker_id: int, worker_config: dict):
             print(f"[Worker {worker_id}] torch.cuda.current_device()={torch.cuda.current_device()}, "
                   f"device_count={n_visible}", flush=True)
     else:
-        print(f"[Worker {worker_id}] No specific GPU assigned (gpu_ids={gpu_ids})", flush=True)
+        print(f"[Worker {worker_id}] No GPU assigned: retriever on the CPU", flush=True)
 
     import shutil
     _java_bin = shutil.which("java")

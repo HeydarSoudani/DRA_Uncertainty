@@ -34,7 +34,7 @@ RETRIEVER=qwen3_emb_4b
 POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 STAGE=${STAGE:-generate}           # generate | belief | eval | all (belief: no GPU needed, see experiments/inference/README.md)
 LIMIT=${LIMIT:-50}                 # overridable for a pre-flight, see the smoke line below
-NUM_GPUS=${NUM_GPUS:-4}            # one query-level worker per GPU
+WORKERS=${WORKERS:-4}              # generate stage: one query-level worker per GPU
 
 python experiments/inference/dra_inference.py \
     --dataset "$DATASET" \
@@ -43,7 +43,7 @@ python experiments/inference/dra_inference.py \
     --policy-model "$POLICY_MODEL" \
     --stage "$STAGE" \
     --limit "$LIMIT" \
-    --num-gpus "$NUM_GPUS" \
+    --workers "$WORKERS" \
     --quiet
 
 # --quiet: silences the per-iteration agent logs, the HuggingFace "Loading weights" bars
@@ -63,6 +63,6 @@ python experiments/inference/dra_inference.py \
 # Its 4 queries are real results and are kept: resume skips them, so the follow-up
 # full run wants --export=ALL,LIMIT=46 to land on exactly 50 queries total.
 #
-# Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --limit 1 --num-gpus 1
+# Smoke test: python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --limit 1 --workers 1
 # Belief:     python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --stage belief
 # Eval only:  python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --policy-model oss_20b --stage eval

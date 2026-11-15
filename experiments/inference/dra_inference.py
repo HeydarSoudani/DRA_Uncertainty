@@ -48,15 +48,12 @@ import warnings
 import logging
 import time
 import os
-import sys
 import concurrent.futures
 import multiprocessing
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
-
-from tqdm import tqdm
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -79,9 +76,11 @@ from orchestration import (
     setup_retriever_from_args,
 )
 from utils.llm_client import setup_llm
+from utils.progress import WorkerBars
 from utils.cli_setup import (
     resolve_dataset_defaults,
-    detect_num_gpus,
+    count_gpus,
+    resolve_workers,
     assemble_pipeline_kwargs,
     cleanup_event_loop,
     load_run_config,
@@ -281,7 +280,7 @@ def _check_belief_server_survives(belief_model: str) -> None:
 
 
 def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report", verbose: bool = True,
-                 num_gpus: int = 1, worker_config: Optional[dict] = None, **kwargs):
+                 workers: int = 1, worker_config: Optional[dict] = None, **kwargs):
     """Run the stages of ``kwargs["stage"]`` (see the module docstring), then
     evaluate the whole run.
 
@@ -290,12 +289,13 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
         data_path:     Path to dataset directory (nuggets of the report datasets).
         policy_model:  Agent to use (internal name); one of ALL_AGENTS.
         verbose:       Whether to print detailed logs.
-        num_gpus:      Number of GPU workers for query-level parallelism.
-                       1 = sequential (default). >1 = spawn one process per GPU,
-                       split queries across workers; each worker saves its
-                       queries' files straight to the run directory.
-        worker_config: Serialisable config dict passed to each GPU worker so it
-                       can rebuild the agent stack.  Required when num_gpus > 1.
+        workers:       Query-level worker processes of the generate stage.
+                       1 = sequential (default). >1 = one process per worker
+                       (one GPU each on a GPU machine, CPU otherwise), queries
+                       split across them; each saves its queries' files
+                       straight to the run directory.
+        worker_config: Serialisable config dict passed to each worker so it
+                       can rebuild the agent stack.  Required when workers > 1.
         **kwargs:      Agent-specific, belief and evaluation parameters.
     """
     dataset, run_dir, answers = plan.dataset, plan.run_dir, plan.answers
@@ -306,7 +306,7 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
                                   data_path=data_path, split=plan.split)
 
     if stage in GENERATES and plan.queries:
-        _run_queries(plan, policy_model, kwargs["llm_model"], verbose, num_gpus, worker_config, kwargs)
+        _run_queries(plan, policy_model, kwargs["llm_model"], verbose, workers, worker_config, kwargs)
     if stage in BELIEVES:
         _run_belief(plan, verbose, kwargs)
 
@@ -406,7 +406,7 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     print(f"[Belief] Completed {n_done}/{len(todo)} queries")
 
 
-def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool, num_gpus: int,
+def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool, workers: int,
                  worker_config: Optional[dict], kwargs: dict) -> None:
     """Run the agent on ``plan.queries`` and save each query's files under
     ``plan.run_dir``, then release every GPU the run held."""
@@ -432,14 +432,14 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
         )
 
     # ==================== Instantiate Agent ====================
-    # In multi-GPU mode the agent is not built in the main process; each
-    # worker spawns its own instance on its assigned GPU (see
+    # With several workers the agent is not built in the main process; each
+    # worker spawns its own instance on its assigned GPU or the CPU (see
     # orchestration._init_worker).  Building it here would create unused LLM
     # clients that are immediately torn down.
     from orchestration import build_agent, run_query
 
     agent = None
-    if num_gpus <= 1:
+    if workers <= 1:
         agent = build_agent(
             policy_model=policy_model,
             policy_model_cli=kwargs["policy_model_cli"],
@@ -469,43 +469,21 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     n_done = 0
     query_items = list(plan.queries.items())
 
-    if num_gpus > 1 and worker_config is not None:
-        # ── Multi-GPU path ──────────────────────────────────────────────────
-        # Split queries round-robin across GPU workers so load is balanced even
+    if workers > 1 and worker_config is not None:
+        # ── Parallel path ───────────────────────────────────────────────────
+        # Split queries round-robin across the workers so load is balanced even
         # when queries vary in difficulty; never more workers than queries.
-        num_workers = min(num_gpus, len(query_items))
+        num_workers = min(workers, len(query_items))
         chunks = [query_items[i::num_workers] for i in range(num_workers)]
 
-        # The live bars redraw in place on every progress event.  That is what
-        # you want on a terminal (with or without --quiet) and useless in an
-        # sbatch .out file, where each redraw is appended verbatim (~1 MB per
-        # run).  Off a terminal the bars are disabled and replaced by one line
-        # per finished query.
-        live_bars = sys.stdout.isatty()
-        worker_config = {**worker_config, "live_bars": live_bars}
+        # One bar per worker (utils.progress.WorkerBars): live on a terminal,
+        # one line per finished query off it (an sbatch .out file).
+        bars = WorkerBars([len(c) for c in chunks], "Worker")
+        worker_config = {**worker_config, "live_bars": bars.live}
 
         print(f"\nParallel mode: {num_workers} workers")
         for i, chunk in enumerate(chunks):
             print(f"  Worker {i}: {len(chunk)} queries")
-
-        bars = [
-            tqdm(
-                total=len(chunks[i]),
-                position=i,
-                leave=True,
-                desc=f"[Worker {i}]",
-                bar_format=(
-                    "{desc} {percentage:3.0f}%|{bar}|"
-                    " {n}/{total} [{elapsed}<{remaining}] {postfix}"
-                ),
-                dynamic_ncols=True,
-                disable=not live_bars,
-            )
-            for i in range(num_workers)
-        ]
-        if live_bars:
-            for bar in bars:
-                bar.set_postfix_str("(—, init)", refresh=True)
 
         mp_ctx = multiprocessing.get_context("spawn")
         _manager = mp_ctx.Manager()
@@ -523,30 +501,14 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
                     if done_count >= num_workers:
                         break
                     continue
-                w_id, qid, idx, total, stage, iter_info = item
-                bar = bars[w_id]
-                if not live_bars:
-                    # Only per-query completions are worth a line; the
-                    # "processing"/"update" ticks are the high-frequency ones.
-                    if stage not in ("processing", "update"):
-                        bar.n = idx
-                        print(
-                            f"[Worker {w_id}] {idx}/{total} done  ({qid}, {stage})",
-                            flush=True,
-                        )
-                    continue
+                w_id, qid, _idx, _total, stage, iter_info = item
                 if stage == "processing":
-                    bar.set_postfix_str(f"({qid}, starting)", refresh=True)
+                    bars.status(w_id, f"{qid}, starting")
                 elif stage == "update":
                     stage_name, iteration, max_iter_val = iter_info
-                    bar.set_postfix_str(
-                        f"({qid}, turn {iteration}/{max_iter_val}, {stage_name})", refresh=True
-                    )
+                    bars.status(w_id, f"{qid}, turn {iteration}/{max_iter_val}, {stage_name}")
                 else:
-                    bar.n = idx
-                    iter_str = f"turns {iter_info}" if iter_info else "turns —"
-                    bar.set_postfix_str(f"({qid}, {iter_str}, {stage})", refresh=True)
-                    bar.refresh()
+                    bars.done(w_id, qid, f"turns {iter_info}" if iter_info else stage)
 
         _drain_stop = threading.Event()
         drain_thread = threading.Thread(target=_drain_progress, args=(_drain_stop,), daemon=True)
@@ -564,36 +526,54 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
                 try:
                     worker_done = future.result()
                     n_done += len(worker_done)
-                    tqdm.write(
+                    bars.write(
                         f"[Worker {worker_id}] Completed {len(worker_done)}/{len(chunks[worker_id])} queries"
                     )
                 except Exception as e:
-                    tqdm.write(f"  Worker {worker_id} failed: {e}")
+                    bars.write(f"  Worker {worker_id} failed: {e}")
 
         _drain_stop.set()
         drain_thread.join(timeout=3)
         _manager.shutdown()
-
-        for bar in bars:
-            bar.close()
+        bars.close()
 
         print(f"\nCompleted {n_done} queries (parallel)")
 
     else:
-        # ── Sequential path (default / single GPU) ──────────────────────────
+        # ── Sequential path (default / one worker) ──────────────────────────
+        # Not verbose: the same bar as one parallel worker.  Verbose: the
+        # agent's trace, each query under a header line.
+        max_iteration = kwargs["max_iteration"]
+        bars = None if verbose else WorkerBars([len(query_items)], "Worker")
         for idx, (query_id, query_text) in enumerate(query_items, 1):
-            _answer_line = f"\n  Answer: {answers[query_id]}" if answers.get(query_id) else ""
-            print(f"\n[{idx}/{len(query_items)}] Processing query: {query_id}\n  Query text: {query_text}{_answer_line}")
+            status_cb = None
+            if bars is None:
+                _answer_line = f"\n  Answer: {answers[query_id]}" if answers.get(query_id) else ""
+                print(f"\n[{idx}/{len(query_items)}] Processing query: {query_id}\n  Query text: {query_text}{_answer_line}")
+            else:
+                bars.status(0, f"{query_id}, starting")
+
+                def status_cb(stage: str, iteration: int, _qid=query_id):
+                    bars.status(0, f"{_qid}, turn {iteration}/{max_iteration}, {stage}")
             result = run_query(
                 agent, run_dir, query_id, query_text,
                 policy_model=policy_model, llm_model=llm_model,
                 answer=answers.get(query_id), temperature=kwargs["temperature"],
+                status_callback=status_cb,
             )
             if result is None:
-                print(f"  ✗ Skipping {query_id} (error during processing)")
+                if bars is None:
+                    print(f"  ✗ Skipping {query_id} (error during processing)")
+                else:
+                    bars.done(0, query_id, "skipped")
                 continue
             n_done += 1
-            print(f"  ✓ Saved: {query_id}")
+            if bars is None:
+                print(f"  ✓ Saved: {query_id}")
+            else:
+                bars.done(0, query_id, f"turns {result.get('num_iterations', '?')}/{max_iteration}")
+        if bars is not None:
+            bars.close()
 
         if agent:
             agent.cleanup()
@@ -601,7 +581,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
 
     # ==================== Release the GPUs ====================
     _vllm_mgr = kwargs.get("vllm_manager")
-    _total_gpus = kwargs.get("total_gpus_on_machine", 8)
+    _total_gpus = kwargs["total_gpus_on_machine"]
 
     # ── Aggressively release ALL GPU memory ──────────────────────────
     # Break every reference chain to GPU-resident objects so gc can
@@ -634,8 +614,12 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
     kwargs.pop("post_fusion_reranker", None)
 
     # 3) Force garbage collection and return GPU memory to CUDA
-    import gc, torch
+    import gc
     gc.collect()
+    if _total_gpus == 0:
+        # CPU machine: no GPU memory to return, no vLLM server was started.
+        return
+    import torch
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
@@ -698,27 +682,18 @@ def main():
 
     resolve_dataset_defaults(args)
 
-    # ── Parse --gpu-ids and reconcile with --num-gpus ────────────────────
-    gpu_ids = None
-    if args.gpu_ids is not None:
-        gpu_ids = [int(x) for x in args.gpu_ids.split(",")]
-        if args.num_gpus <= 1:
-            args.num_gpus = len(gpu_ids)
-    num_gpus            = detect_num_gpus(args.num_gpus)
-
     from utils.vllm_manager import VLLMServerManager
     vllm_manager = VLLMServerManager()
 
-    # Detect the *real* total GPU count on the machine (not the user's
-    # --num-gpus which is the desired worker count).
-    try:
-        import torch
-        total_gpus_on_machine = max(1, torch.cuda.device_count())
-    except ImportError:
-        total_gpus_on_machine = num_gpus
+    # Workers and GPUs of the generate stage, set below when there are
+    # queries to generate: the belief and eval stages use no GPU (they run
+    # on a CPU machine), so nothing here touches torch or CUDA for them.
+    workers = 1
+    gpu_ids = None
+    total_gpus_on_machine = 0
 
     def _pipeline_kwargs(llm_client=None, retriever=None) -> dict:
-        kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus, verbose, gpu_ids=gpu_ids)
+        kwargs = assemble_pipeline_kwargs(args, llm_client, retriever, workers, verbose, gpu_ids=gpu_ids)
         # ── Deep-research-pipeline-specific kwargs ────────────────────────
         kwargs.update({
             "stage": args.stage,
@@ -751,15 +726,28 @@ def main():
         # With nothing to generate (the belief or eval stage, or every query
         # generated) no vLLM server, LLM client, retriever or reranker is set
         # up.  The belief stage reads the documents from the corpus and calls
-        # its own model; the LLM-as-judge evaluators use the OpenRouter-hosted
-        # judge, so no GPU is needed for them.
+        # its own model (belief_workers threads); the LLM-as-judge evaluators
+        # use the OpenRouter-hosted judge, so no GPU is needed for them.
+        if not plan.queries and (args.workers != 1 or args.gpu_ids is not None):
+            print("[Workers] Nothing to generate: --workers and --gpu-ids are ignored "
+                  "(the belief stage runs --belief-workers threads)")
         if plan.queries:
+            # ── Workers and GPUs ─────────────────────────────────────────────
+            total_gpus_on_machine = count_gpus()
+            if args.gpu_ids is not None:
+                gpu_ids = [int(x) for x in str(args.gpu_ids).split(",")]
+            workers = resolve_workers(args.workers, total_gpus_on_machine, gpu_ids)
+
             # ── GPU plan: retriever first (fixed footprint), then agent ──────────
             from utils.config import resolve_agent_backend, RETRIEVER_VRAM_GB
             _agent_backend, _agent_slug = resolve_agent_backend(args.policy_model_cli)
             print(f"[GPU Plan] total GPUs : {total_gpus_on_machine}")
-            print(f"[GPU Plan] retriever  : {args.retriever} "
-                  f"(~{RETRIEVER_VRAM_GB} GB fp16, FAISS on CPU — shares a worker GPU)")
+            if total_gpus_on_machine:
+                print(f"[GPU Plan] retriever  : {args.retriever} "
+                      f"(~{RETRIEVER_VRAM_GB} GB fp16, FAISS on CPU — shares a worker GPU)")
+            else:
+                print(f"[GPU Plan] retriever  : {args.retriever} on CPU (no GPU on this machine; "
+                      f"slow for a dense encoder, one copy in RAM per worker)")
             if _agent_backend == "api":
                 print(f"[GPU Plan] agent      : {args.policy_model_cli} → "
                       f"OpenRouter '{_agent_slug}' (0 local GPU)")
@@ -773,29 +761,35 @@ def main():
             worker_gpu_ids = vllm_manager.auto_start(args, total_gpus=total_gpus_on_machine)
             if worker_gpu_ids is not None:
                 gpu_ids = worker_gpu_ids
-                num_gpus = len(worker_gpu_ids)
-            elif gpu_ids is None and num_gpus > 1:
-                gpu_ids = list(range(min(num_gpus, total_gpus_on_machine)))
+                workers = max(1, len(worker_gpu_ids))
+            elif gpu_ids is None and workers > 1 and total_gpus_on_machine:
+                gpu_ids = list(range(total_gpus_on_machine))
+            # One worker per GPU on a GPU machine; CPU workers otherwise.
+            if gpu_ids and workers > len(gpu_ids):
+                print(f"[Workers] {workers} workers asked, {len(gpu_ids)} GPUs: running {len(gpu_ids)} (one per GPU)")
+                workers = len(gpu_ids)
             # Never more workers than queries.
-            num_gpus = min(num_gpus, len(plan.queries))
+            workers = min(workers, len(plan.queries))
             if gpu_ids is not None:
-                gpu_ids = gpu_ids[:max(num_gpus, 1)]
-            args.num_gpus = num_gpus
+                gpu_ids = gpu_ids[:max(workers, 1)]
+            args.workers = workers
+            print(f"[Workers] {workers} query worker(s) on "
+                  f"{f'GPUs {gpu_ids}' if gpu_ids else ('the CPU' if not total_gpus_on_machine else 'the visible GPUs')}")
 
             # ── Restrict main process to pipeline GPUs before any CUDA init ───────
             # When --gpu-ids is specified the main process must not touch vLLM's
             # GPUs (typically 0..3).  Setting CUDA_VISIBLE_DEVICES early prevents
             # accidental CUDA context creation on those devices.
-            if gpu_ids is not None:
+            if gpu_ids:
                 os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
 
-            if num_gpus > 1:
-                # Multi-GPU: each worker builds its own LLM client, retriever and
-                # rerankers on its assigned GPU.  Skip them in the main process to
-                # avoid OOM on shared GPUs.
+            if workers > 1:
+                # Several workers: each builds its own LLM client, retriever and
+                # rerankers on its assigned GPU (or the CPU).  Skip them in the
+                # main process to avoid OOM on shared GPUs.
                 pipeline_kwargs = _pipeline_kwargs()
             else:
-                pipeline_kwargs = _pipeline_kwargs(setup_llm(args, num_gpus), setup_retriever_from_args(args))
+                pipeline_kwargs = _pipeline_kwargs(setup_llm(args, workers), setup_retriever_from_args(args))
                 # ── Optional post-retrieval & post-fusion rerankers ─────────────────
                 from utils.config import get_reranker_configs
                 from searcher_component.rerankers import build_reranker_from_config
@@ -856,12 +850,12 @@ def parse_args():
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
     parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
+    parser.add_argument("--workers", type=int, default=1, help="Query-level worker processes of the generate stage; each loads its own retriever and agent. On a GPU machine one worker per GPU (capped at the GPUs, or at --gpu-ids); on a CPU machine CPU processes (the retriever on CPU, one copy in RAM each). 0 = auto: the GPU count, 1 without GPU. Ignored by the belief and eval stages (no GPU; the belief stage runs --belief-workers threads).")
     # ── Belief ──────────────────────────────────────────────────────────────
     parser.add_argument("--belief-model", type=str, default=None, help="Backbone LLM of the belief model, for its three calls: criteria init (banked under this model), belief update and final score. A vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE). Unset = belief_model in --config.")
     parser.add_argument("--criteria-source", type=str, default=None, choices=list(CRITERIA_SOURCES), help="Criteria of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by --belief-model). A choice only on TRQA and trqa_validation; elsewhere the dataset's own source is used. Unset = criteria_source in --config.")
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap the queries each stage runs (for quick tests): the generate stage's queries left to generate, the belief stage's trajectories left without a belief file")
-    parser.add_argument("--num-gpus", type=int, default=1, help="Number of GPU workers for query-level parallelism of the generate stage. 0 = auto-detect from torch.cuda.device_count(). Each worker loads its own model instance on its assigned GPU.")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
@@ -911,8 +905,12 @@ if __name__ == "__main__":
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
-#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 1 --num-gpus 1
-#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --num-gpus 1
+#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 1 --workers 1
+#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --workers 1
+#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1
+#   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1
 
-#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1 --num-gpus 1
-#   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1 --num-gpus 1
+#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 2 --workers 2
+#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --workers 1
+#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 2 --workers 2
+#   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1

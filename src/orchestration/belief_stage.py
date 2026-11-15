@@ -23,24 +23,22 @@ and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log
 A query whose belief file exists is done: the stage resumes.  A query
 whose criteria or a belief call failed before any reply (the API, not the
 model) stops there and is not saved, so the next call runs it again; the
-stage lists these queries at its end.  Queries run in
-parallel threads, each with its own belief model (its own client and token
-meter, so each query's tokens are its own).
+stage lists these queries at its end.  The queries are split round-robin
+across parallel threads, each with its own belief model (its own client and
+token meter, so each query's tokens are its own) and its own progress bar
+(``utils.progress.WorkerBars``: the query and its step).
 """
 
 import contextlib
 import io
 import logging
-import queue
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from tqdm import tqdm
-
 from utils.io_utils import atomic_write_text, read_jsonl
+from utils.progress import WorkerBars
 
 logger = logging.getLogger(__name__)
 
@@ -161,21 +159,29 @@ def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
 
 
 def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[str]], List[Dict[str, Any]]],
-                     verbose: bool) -> Dict[str, Any]:
+                     verbose: bool, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
     iteration, finish on the answer turn.  ``failed`` names what failed for
     a reason other than the model's reply (the criteria, a call that raised
     before any reply, an exception); the query then stops there, is not
-    saved, and the next belief stage runs it again."""
+    saved, and the next belief stage runs it again.  *progress* gets the
+    step being run: ``criteria``, ``step k/N`` (N: the search iterations
+    plus the final update), ``final``."""
     from utils.text_utils import verbose_print_belief, verbose_print_criteria
 
     qid = saved.qid
     summary: Dict[str, Any] = {"criteria": []}
+    n_steps = len(saved.iterations) + 1
+
+    def tick(text: str) -> None:
+        if progress is not None:
+            progress(text)
 
     def out(failed: Optional[str] = None) -> Dict[str, Any]:
         return {"meta": belief_model.meta(), "steps": list(belief_model.steps), "final": belief_model.final,
                 "summary": summary, "failed": failed}
 
+    tick("criteria")
     try:
         belief_model.reset(query_id=qid, query=saved.question)
         summary = belief_model.criteria_summary()
@@ -187,7 +193,8 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
     if verbose:
         verbose_print_criteria(summary, agent_name=f"Belief {qid}")
     criteria = summary.get("criteria") or []
-    for it in saved.iterations:
+    for k, it in enumerate(saved.iterations, 1):
+        tick(f"step {k}/{n_steps}")
         try:
             record = belief_model.observe(
                 subqueries=it.subqueries, docs=docs_of(it.doc_ids),
@@ -200,6 +207,7 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
             return out(f"belief update call at iteration {it.agent_iteration}")
         if verbose:
             verbose_print_belief(it.agent_iteration, record, criteria, agent_name=f"Belief {qid}")
+    tick(f"step {n_steps}/{n_steps}, final")
     try:
         belief_model.finish(saved.answer_turn)
     except Exception:
@@ -235,7 +243,7 @@ def run_belief_stage(
         corpus_path: The run's corpus JSONL (the documents' text).
         retriever_name: The run's retriever (``corpus_doc``).
         policy_model: The run's agent (``NO_TURN_AGENTS``).
-        workers: Queries run at once.
+        workers: Belief threads (queries run at once), one bar each.
         verbose: Print each query's belief.
     """
     from evaluation.belief import save_belief
@@ -247,25 +255,22 @@ def run_belief_stage(
     lookup = CorpusLookup(corpus_path)
     lookup.ensure_index()
     workers = max(1, min(workers, len(qids)))
-    models: "queue.SimpleQueue" = queue.SimpleQueue()
-    models.put(build_model())
+    # Round-robin, as the generate stage splits its queries across workers.
+    chunks = [qids[i::workers] for i in range(workers)]
+    models = [build_model()]
     with contextlib.redirect_stdout(io.StringIO()):
-        for _ in range(workers - 1):
-            models.put(build_model())
-    local = threading.local()
+        models += [build_model() for _ in range(workers - 1)]
 
     def docs_of(doc_ids: List[str]) -> List[Dict[str, Any]]:
         contents = lookup.contents(doc_ids)
         return [corpus_doc(i, contents.get(i, ""), retriever_name) for i in doc_ids]
 
-    def run_one(qid: str) -> Optional[str]:
+    def run_one(model, qid: str, progress: Callable[[str], None]) -> Optional[str]:
         """None when the query's belief is saved, else what failed."""
         saved = read_saved_query(run_dir, qid, policy_model)
         if saved is None:
             return "no finished trajectory"
-        if getattr(local, "model", None) is None:
-            local.model = models.get()
-        out = _belief_of_query(local.model, saved, docs_of, verbose)
+        out = _belief_of_query(model, saved, docs_of, verbose, progress)
         if out["failed"]:
             logger.warning("Belief of %s not saved (%s failed); the next belief stage runs it again",
                            qid, out["failed"])
@@ -276,18 +281,27 @@ def run_belief_stage(
         save_belief(qid, saved.question, out["meta"], out["steps"], out["final"], belief_dir)
         return None
 
+    # Verbose prints each query's belief, which live bars would scramble:
+    # one line per finished query instead.
+    bars = WorkerBars([len(c) for c in chunks], "Belief", live=False if verbose else None)
     not_saved: Dict[str, str] = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(run_one, qid): qid for qid in qids}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Belief", unit="query"):
-            qid = futures[future]
+
+    def run_chunk(worker: int) -> None:
+        for qid in chunks[worker]:
+            bars.status(worker, f"{qid}, starting")
             try:
-                failed = future.result()
+                failed = run_one(models[worker], qid, lambda text, q=qid: bars.status(worker, f"{q}, {text}"))
             except Exception as exc:
                 logger.error("Belief stage failed for %s: %s", qid, exc, exc_info=True)
                 failed = f"{type(exc).__name__}: {exc}"
             if failed:
                 not_saved[qid] = failed
+            bars.done(worker, qid, f"not saved: {failed}" if failed else "saved")
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(run_chunk, i) for i in range(workers)]:
+            future.result()
+    bars.close()
     if not_saved:
         shown = sorted(not_saved)[:20]
         print(f"[Belief] {len(not_saved)} queries not saved (run again by the next belief stage): "

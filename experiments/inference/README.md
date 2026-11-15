@@ -32,7 +32,7 @@ python experiments/inference/dra_inference.py \
     --retriever qwen3_emb_4b \
     --policy-model glm \
     --stage all \
-    --num-gpus 0
+    --workers 0
 ```
 
 | Flag | Values |
@@ -43,7 +43,8 @@ python experiments/inference/dra_inference.py \
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
 | `--belief-model` | the belief model's LLM (criteria init, belief update, final score); unset = `belief_model` in the YAML |
 | `--criteria-source` | `gold` or `silver` criteria of the belief model (TRQA, trqa_validation) |
-| `--num-gpus` | query-level workers of the generate stage, one per GPU; `0` = auto-detect |
+| `--workers` | query-level worker processes of the generate stage: one per GPU on a GPU machine, CPU processes otherwise; `0` = auto (GPU count, 1 without GPU) |
+| `--belief-workers` | queries the belief stage runs at once (threads; `belief_workers` in the YAML) |
 | `--limit N` | each stage runs at most N queries |
 
 Every other setting (top_k, rerankers, judges, eval k-values, ...) is in

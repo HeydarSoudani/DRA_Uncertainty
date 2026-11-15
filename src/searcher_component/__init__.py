@@ -1,13 +1,10 @@
-"""Searcher component: local retrievers, fusion, and the unified search tool."""
+"""Searcher component: local retrievers, fusion, and the unified search tool.
 
-from .retriever import (
-    BaseRetriever,
-    BM25Retriever,
-    SPLADERetriever,
-    RerankRetriever,
-    DenseRetriever,
-    Encoder,
-)
+The retrievers are imported on first use (``__getattr__``): their module loads
+torch, FAISS and sentence-transformers, which the belief and eval stages,
+importing only ``normalize_retrieval_response``, do not need (they run on CPU).
+"""
+
 from .fusion import (
     interleaving_fusion,
     reciprocal_rank_fusion,
@@ -19,6 +16,16 @@ from .fusion import (
 from .normalize import normalize_retrieval_response
 
 from .searcher import RetrievalSearchTool
+
+_RETRIEVER_NAMES = ("BaseRetriever", "BM25Retriever", "SPLADERetriever",
+                    "RerankRetriever", "DenseRetriever", "Encoder")
+
+
+def __getattr__(name):
+    if name in _RETRIEVER_NAMES:
+        from . import retriever
+        return getattr(retriever, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

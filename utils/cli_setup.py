@@ -8,6 +8,7 @@ only on stdlib and ``utils`` — no heavy component imports.
 import argparse
 import asyncio
 import logging
+from typing import List, Optional
 from pathlib import Path
 
 import yaml
@@ -249,24 +250,29 @@ def resolve_dataset_defaults(args) -> None:
         args.qrels_data_path = args.data_path
 
 
-def detect_num_gpus(args_num_gpus: int) -> int:
-    """Resolve the number of GPU workers."""
-    if args_num_gpus != 0:
-        return args_num_gpus
+def count_gpus() -> int:
+    """The GPUs visible on this machine (0 without CUDA or torch)."""
     try:
         import torch
-        detected = torch.cuda.device_count()
-        num_gpus = max(1, detected)
-        if detected > 1:
-            print(f"Auto-detected {detected} GPUs — enabling parallel mode ({num_gpus} workers)")
-        else:
-            print(f"Auto-detected {detected} GPU(s) — running single-GPU / sequential mode")
-        return num_gpus
     except ImportError:
-        return 1
+        return 0
+    return torch.cuda.device_count() if torch.cuda.is_available() else 0
 
 
-def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose: bool, gpu_ids=None) -> dict:
+def resolve_workers(requested: int, total_gpus: int, gpu_ids: Optional[List[int]] = None) -> int:
+    """The generate stage's worker count from ``--workers`` (``0`` = auto:
+    the GPUs of ``--gpu-ids``, else the machine's, else 1 on a CPU machine).
+    ``--gpu-ids`` with the default single worker runs one worker per listed GPU."""
+    if gpu_ids and requested <= 1:
+        return len(gpu_ids)
+    if requested != 0:
+        return requested
+    workers = max(1, total_gpus)
+    print(f"Auto-selected {workers} worker(s) ({total_gpus} GPUs on this machine)")
+    return workers
+
+
+def assemble_pipeline_kwargs(args, llm_client, retriever, workers: int, verbose: bool, gpu_ids=None) -> dict:
     """Build the kwargs dict to pass to run_pipeline() (includes worker_config)."""
     pipeline_kwargs = {
         "retriever":                  retriever,
@@ -319,7 +325,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "hard_mode":               args.hard_mode,
         "max_passage_tokens":       args.max_passage_tokens,
         "verbose":                 verbose,
-        "gpu_ids":                 gpu_ids if gpu_ids is not None else list(range(num_gpus)),
+        "gpu_ids":                 gpu_ids or [],  # empty: CPU workers
         "post_retrieval_reranker_type": args.post_retrieval_reranker,
         "post_fusion_reranker_type":    args.post_fusion_reranker,
         "rerank_top_k":                 args.rerank_top_k,
@@ -330,7 +336,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, num_gpus: int, verbose
         "quiet":                         args.quiet,
     }
 
-    pipeline_kwargs["num_gpus"]      = num_gpus
+    pipeline_kwargs["workers"]       = workers
     pipeline_kwargs["worker_config"] = worker_config
     pipeline_kwargs["policy_model_cli"] = args.policy_model_cli
     return pipeline_kwargs

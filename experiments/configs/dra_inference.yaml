@@ -7,8 +7,10 @@
 # The frequently-varied knobs stay on the CLI:
 #   --stage
 #   generation: --dataset  --subset  --policy-model  --retriever
-#   belief:     --belief-model  --criteria-source   (defaults below)
-#   shared:     --limit  --num-gpus  --quiet
+#   generation: --workers  (query worker processes; one per GPU, or CPU processes)
+#   belief:     --belief-model  --criteria-source  --belief-workers   (defaults below)
+#   shared:     --limit  --quiet
+#   The belief and eval stages need no GPU (with an API belief model): run them on a CPU node.
 #
 # Precedence (lowest -> highest):
 #   built-in fallback  <  this file  <  explicit CLI flag
@@ -73,4 +75,4 @@ output: null                    # Root dir for results; null = $DRA_OUTPUT_ROOT 
 max_iteration: 100              # Max iterations/steps per query (all agents)
 max_retries: 3                  # Max retries when output format fails (all agents)
 verbose: true                   # Print detailed logs
-gpu_ids: null                   # Comma-separated physical GPU IDs, e.g. '4,5,6,7'
+gpu_ids: null                   # Comma-separated physical GPU IDs of the generate stage's workers, e.g. '4,5,6,7' (one worker each)

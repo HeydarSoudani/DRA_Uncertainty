@@ -65,9 +65,9 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from tqdm import tqdm
 
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
+from utils.progress import step_iter
 
 from ..metrics import mean_or_none
 from ..report import GENERATION_EVAL_DIR
@@ -289,7 +289,7 @@ class ArgueReportEvaluator:
 
         out: Dict[str, Any] = {}
         tasks = [asyncio.ensure_future(one(*item)) for item in todo]
-        for fut in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="[ARGUE]", dynamic_ncols=True):
+        for fut in step_iter(asyncio.as_completed(tasks), total=len(tasks), desc="[ARGUE]"):
             qid, judged = await fut
             out[qid] = judged
         return out
