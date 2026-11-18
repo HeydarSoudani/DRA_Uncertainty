@@ -2,7 +2,7 @@
 the final belief.
 
 One renderer feeds the console (``utils.text_utils.verbose_print_*``) and
-the belief markdown (``belief/{qid}.md``, written by the belief stage), so
+the belief markdown (``belief/{model}/{qid}.md``, written by the belief stage), so
 the two never drift apart.  It reads the saved shapes only: the step and final
 records of ``BeliefModel`` and ``BeliefModel.init_summary``.
 

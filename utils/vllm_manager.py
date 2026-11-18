@@ -14,6 +14,10 @@ Usage (inside dra_inference.py)::
         ...  # run pipeline
     finally:
         manager.shutdown()
+
+The belief stage serves a ``vllm/`` belief model with :func:`belief_server`
+(``with belief_server(model) as api_base: ...``): its own server, on its own
+port, for the stage only.
 """
 
 from __future__ import annotations
@@ -28,10 +32,11 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import urllib.request
 import urllib.error
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +212,30 @@ _RERANKER_SERVER_SPECS: Dict[str, ServerSpec] = {
         enable_prefix_caching=True,
         model_gb=9.0, allowed_tp=(1,),         # 4B
         label="Qwen3-Reranker-4B",
+    ),
+}
+
+# --- Belief model servers (port 7010) ---------------------------------------
+# A ``vllm/<HF name>`` belief model (utils.config.BELIEF_MODEL_TO_LLM), keyed by
+# the HF name.  Started by the belief stage itself (:func:`belief_server`), after
+# the generate stage released its GPUs, on a port outside :meth:`cleanup_ports`
+# and outside sshd's X11 forwarding range (6000 + display number, taken on login nodes).
+# Tuned for throughput: the belief stage sends --belief-workers requests at once
+# (each query's calls run one after another), so the server batches many
+# sequences; paged attention reserves no memory for max_model_len up front, so
+# it covers the longest belief call (prompt + up to 16k output tokens).
+_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
+    "Qwen/Qwen3.5-4B": ServerSpec(
+        model="Qwen/Qwen3.5-4B",
+        port=7010, tp_size=1,
+        max_model_len=65536, max_num_seqs=128,
+        gpu_memory_utilization=0.90,
+        enforce_eager=False,                   # CUDA graphs on
+        dtype="bfloat16",
+        enable_prefix_caching=True,            # every call shares the system prompt
+        model_gb=9.0, allowed_tp=(1,),
+        extra_args=["--language-model-only"],  # text only: the vision tower is not loaded
+        label="Belief model Qwen3.5-4B",
     ),
 }
 
@@ -770,3 +799,73 @@ class VLLMServerManager:
         """Check if a port is already bound."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             return s.connect_ex(("localhost", port)) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Belief model server (the belief stage)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def belief_server_spec(model: str) -> ServerSpec:
+    """The server spec of the ``vllm/<HF name>`` belief model *model*."""
+    bare = model.removeprefix("vllm/")
+    if bare not in _BELIEF_SERVER_SPECS:
+        raise SystemExit(f"belief model {model}: no vLLM server spec for {bare} in utils/vllm_manager.py "
+                         f"_BELIEF_SERVER_SPECS (known: {sorted(_BELIEF_SERVER_SPECS)})")
+    return _BELIEF_SERVER_SPECS[bare]
+
+
+def _visible_gpus() -> int:
+    """The GPUs this process may use (``nvidia-smi -L`` under
+    ``$CUDA_VISIBLE_DEVICES``), without importing torch: the belief stage
+    process stays torch-free."""
+    if os.environ.get("CUDA_VISIBLE_DEVICES", None) == "":
+        return 0
+    try:
+        out = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=10).stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return 0
+    return sum(line.startswith("GPU ") for line in out.splitlines())
+
+
+def _served_models(base: str) -> List[str]:
+    """The model names a vLLM server at *base* serves (``/models``); empty
+    when nothing answers there as one."""
+    import json
+    try:
+        with urllib.request.urlopen(f"{base}/models", timeout=5) as reply:
+            return [m.get("id") for m in json.load(reply).get("data") or []]
+    except Exception:  # noqa: BLE001 - not a vLLM server
+        return []
+
+
+@contextmanager
+def belief_server(model: str, *, health_timeout: int = 900) -> Iterator[str]:
+    """Serve the ``vllm/`` belief model *model* for the ``with`` block and
+    yield its API base (``http://127.0.0.1:{port}/v1``).
+
+    A server already on the spec's port that serves the model is reused
+    and left running; otherwise one is started on the first visible GPU
+    (TP=1) and stopped when the block ends, also on an error.  Stops when
+    no GPU is visible, or when the port is taken by anything else."""
+    spec = belief_server_spec(model)
+    base = f"http://127.0.0.1:{spec.port}/v1"
+    if VLLMServerManager._port_in_use(spec.port):
+        served = _served_models(base)
+        if spec.model not in served:
+            raise SystemExit(f"belief model {model}: port {spec.port} is taken by another process "
+                             f"(serving {served or 'no vLLM model'}); free it or change the port in "
+                             "utils/vllm_manager.py _BELIEF_SERVER_SPECS")
+        print(f"[vLLM Manager] {spec.model} already served on port {spec.port}: using that server")
+        yield base
+        return
+    if _visible_gpus() == 0:
+        raise SystemExit(f"belief model {model} is served by vLLM and needs a GPU, and none is visible: "
+                         "run the belief stage on a GPU node (scripts/run_dra_inference.sh), "
+                         "or pick an OpenRouter belief model")
+    manager = VLLMServerManager()
+    try:
+        manager._launch_server(spec, [0])
+        manager._wait_for_health(spec, timeout=health_timeout)
+        yield base
+    finally:
+        manager.shutdown()

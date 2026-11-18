@@ -2,20 +2,27 @@
 
 Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`):
 
-- ``metrics.md``: a header (run, dataset, agent, belief model, queries),
-  one aligned markdown table, one row per measure: ``group | metric |
-  value | ci_low | ci_high | n`` (groups in order: retrieval, generation,
-  uncertainty, belief, trajectory), then any extra section (a titled
-  table, e.g. the belief status calibration).  Read in the editor as is, or
-  in the markdown preview; the main table is parsed back by
-  ``read_metrics`` (the cross-run collector, ``analysis/collect_results.py``).
+- ``metrics.md``: a header (run, dataset, agent, belief models, queries),
+  one aligned markdown table, one row per measure: ``group | belief_model
+  | metric | value | ci_low | ci_high | n`` (groups in order: retrieval,
+  generation, uncertainty, belief, trajectory).  A measure of the
+  generation (retrieval, generation, the agent's trajectory) has one row,
+  ``belief_model`` "-" (:data:`NO_MODEL`); a measure of the beliefs
+  (uncertainty, belief, the belief tokens) has one row per belief model of
+  the run.  Then any extra section (a titled table, e.g. the belief status
+  calibration, one per belief model).  Read in the editor as is, or in the
+  markdown preview; the main table is parsed back by ``read_metrics`` (the
+  cross-run collector, ``analysis/collect_results.py``).
 - ``per_query.csv``: one row per query, every per-query value of every
-  group (the aggregates of ``metrics.md`` are computed from them).
+  group (the aggregates of ``metrics.md`` are computed from them); a belief
+  model's columns are prefixed ``{model}/``.
 - ``generation/``: the generation evaluators' verdicts, ``accuracy.jsonl``
   (datasets with answers) or the Auto-ARGUE cache and ``scores.tsv``
   (report datasets).
-- ``belief/``: the belief evaluation's ``events.csv`` and ``judge_cache.jsonl``.
-- the log: one line per group with the headline measures (``log_lines``).
+- ``belief/{model}/``: each belief model's evaluation files, ``events.csv``
+  and ``judge_cache.jsonl`` (:func:`belief_eval_dir`).
+- the log: one line per group with the headline measures, the belief
+  groups once per belief model (``log_lines``).
 """
 
 import csv
@@ -33,9 +40,16 @@ PER_QUERY_FILE = f"{EVAL_DIR}/per_query.csv"
 #: The generation evaluators' files (``accuracy.jsonl`` or the Auto-ARGUE cache).
 GENERATION_EVAL_DIR = f"{EVAL_DIR}/generation"
 ACCURACY_FILE = f"{GENERATION_EVAL_DIR}/accuracy.jsonl"
-#: The belief evaluation's files (``events.csv``, ``judge_cache.jsonl``).
+#: The belief evaluation's files (``events.csv``, ``judge_cache.jsonl``), one folder per belief model.
 BELIEF_EVAL_DIR = f"{EVAL_DIR}/belief"
-COLUMNS = ("group", "metric", "value", "ci_low", "ci_high", "n")
+COLUMNS = ("group", "belief_model", "metric", "value", "ci_low", "ci_high", "n")
+#: The ``belief_model`` cell of a measure of the generation (no belief model).
+NO_MODEL = "-"
+
+
+def belief_eval_dir(model: str) -> str:
+    """The evaluation folder of the belief model *model*, relative to the run directory."""
+    return f"{BELIEF_EVAL_DIR}/{model}"
 #: The rule around the log block.
 RULE = "=" * 80
 
@@ -48,6 +62,7 @@ class Row:
     ci_low: Optional[float] = None
     ci_high: Optional[float] = None
     n: Optional[int] = None
+    belief_model: str = NO_MODEL
 
 
 #: An extra section of ``metrics.md``: ``(title, columns, cell rows)``.
@@ -108,7 +123,8 @@ def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections:
     each of *sections* (``(title, columns, cell rows)``) as a titled table."""
     order = {g: i for i, g in enumerate(GROUPS)}
     rows = sorted(rows, key=lambda r: order.get(r.group, len(GROUPS)))
-    body = [[r.group, r.metric, fmt(r.value), fmt(r.ci_low), fmt(r.ci_high), fmt(r.n)] for r in rows]
+    body = [[r.group, r.belief_model, r.metric, fmt(r.value), fmt(r.ci_low), fmt(r.ci_high), fmt(r.n)]
+            for r in rows]
     lines = ["# Evaluation", ""] + [f"- {k}: {v}" for k, v in header.items()] + [""]
     lines += table(list(COLUMNS), body)
     if any(r.metric.endswith(" (b)") for r in rows):
@@ -149,7 +165,8 @@ def read_metrics(path: Path) -> List[Row]:
             except ValueError:
                 return math.nan if cell == "n/a" else cell
 
-        rows.append(Row(cells[0], cells[1], num(cells[2]), num(cells[3]), num(cells[4]), num(cells[5])))
+        rows.append(Row(cells[0], cells[2], num(cells[3]), num(cells[4]), num(cells[5]), num(cells[6]),
+                        belief_model=cells[1]))
     return rows
 
 
@@ -167,6 +184,7 @@ def write_per_query(path: Path, per_query: Dict[str, Dict[str, Any]]) -> None:
 
 
 def _get(rows: List[Row], group: str, metric: str) -> Optional[Row]:
+    """The row of *group* and *metric* (*rows* are of one belief model, or of none)."""
     return next((r for r in rows if r.group == group and r.metric == metric), None)
 
 
@@ -189,20 +207,34 @@ def _ci(rows: List[Row], group: str, metric: str) -> str:
 
 
 def log_lines(title: str, rows: List[Row]) -> List[str]:
-    """The terminal block: one line per group present in *rows* (the belief
-    group: its files and update calls, then its gold measures when the
-    dataset has gold per belief)."""
+    """The terminal block: one line per group of the generation present in
+    *rows*, then, per belief model, its lines (uncertainty, the belief
+    group: its files, update calls and tokens, then its gold measures when
+    the dataset has gold per belief)."""
+    shared = [r for r in rows if r.belief_model == NO_MODEL]
     out = [title]
-    out.append(f"retrieval    Recall@N {_val(rows, 'retrieval', 'Recall@N')}"
-               f" | Precision@N {_val(rows, 'retrieval', 'Precision@N')}"
-               f" (N {_val(rows, 'retrieval', 'N (docs seen)', 1)})")
-    if _get(rows, "generation", "accuracy"):
-        out.append(f"generation   accuracy {_val(rows, 'generation', 'accuracy')}"
-                   f" ({_val(rows, 'generation', 'correct')}/{_val(rows, 'generation', 'evaluated')})")
-    elif _get(rows, "generation", "nugget coverage"):
-        out.append(f"generation   nugget coverage {_val(rows, 'generation', 'nugget coverage')}"
-                   f" | F1 {_val(rows, 'generation', 'nugget F1')}"
-                   f" ({_val(rows, 'generation', 'evaluated')} reports)")
+    out.append(f"retrieval    Recall@N {_val(shared, 'retrieval', 'Recall@N')}"
+               f" | Precision@N {_val(shared, 'retrieval', 'Precision@N')}"
+               f" (N {_val(shared, 'retrieval', 'N (docs seen)', 1)})")
+    if _get(shared, "generation", "accuracy"):
+        out.append(f"generation   accuracy {_val(shared, 'generation', 'accuracy')}"
+                   f" ({_val(shared, 'generation', 'correct')}/{_val(shared, 'generation', 'evaluated')})")
+    elif _get(shared, "generation", "nugget coverage"):
+        out.append(f"generation   nugget coverage {_val(shared, 'generation', 'nugget coverage')}"
+                   f" | F1 {_val(shared, 'generation', 'nugget F1')}"
+                   f" ({_val(shared, 'generation', 'evaluated')} reports)")
+    out.append(f"trajectory   searches {_val(shared, 'trajectory', 'searches', 1)}"
+               f" | agent tok {_val(shared, 'trajectory', 'agent tokens', 0)}"
+               f" | forced {_val(shared, 'trajectory', 'forced answers')}")
+    models = list(dict.fromkeys(r.belief_model for r in rows if r.belief_model != NO_MODEL))
+    for model in models:
+        out += _model_lines(model, [r for r in rows if r.belief_model == model])
+    return out
+
+
+def _model_lines(model: str, rows: List[Row]) -> List[str]:
+    """The log lines of the belief model *model* (*rows* are its rows)."""
+    out = [f"[{model}]"]
     if _get(rows, "uncertainty", "s_T AUROC"):
         line = (f"uncertainty  s_T AUROC {_ci(rows, 'uncertainty', 's_T AUROC')}"
                 f" Brier {_val(rows, 'uncertainty', 's_T Brier')}")
@@ -219,6 +251,8 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
         if _get(rows, "belief", "update calls"):
             line += (f" | update calls {_val(rows, 'belief', 'update calls')}"
                      f" | format gate failed {_val(rows, 'belief', 'update calls: format gate failed')}")
+        if _get(rows, "trajectory", "belief tokens"):
+            line += f" | belief tok {_val(rows, 'trajectory', 'belief tokens', 0)}"
         out.append(line)
     if _get(rows, "belief", "reached answer"):
         out.append(f"belief gold  gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
@@ -228,9 +262,4 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
                    f" (gold seen {_val(rows, 'belief', 'reached answer, gold seen')})"
                    f" | status Brier {_val(rows, 'belief', 'status Brier')}"
                    f" (n {_n(rows, 'belief', 'reached answer')})")
-    line = (f"trajectory   searches {_val(rows, 'trajectory', 'searches', 1)}"
-            f" | agent tok {_val(rows, 'trajectory', 'agent tokens', 0)}")
-    if _get(rows, "trajectory", "belief tokens"):
-        line += f" | belief tok {_val(rows, 'trajectory', 'belief tokens', 0)}"
-    out.append(line + f" | forced {_val(rows, 'trajectory', 'forced answers')}")
     return out

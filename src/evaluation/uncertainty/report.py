@@ -2,7 +2,7 @@
 reports by how many nuggets they cover?
 
 Per query of a report dataset (``task == "report"``), s_T is the certainty
-of the final belief (the ``final`` line of ``belief/{qid}.jsonl``,
+of the final belief (the ``final`` line of ``belief/{model}/{qid}.jsonl``,
 ``certainty``: the mean of the aspects' status probabilities,
 ``belief_model_component.core.certainty``; a report has no final scorer),
 and y is the report's nugget coverage from Auto-ARGUE

@@ -8,7 +8,8 @@
 #   --stage
 #   generation: --dataset  --subset  --policy-model  --retriever
 #   generation: --workers  (query worker processes; one per GPU, or CPU processes)
-#   belief:     --belief-model  --belief-source  --belief-workers   (defaults below)
+#   belief:     --belief-model  (qwen3.6_27b | qwen3.5_9b; utils/config.py BELIEF_MODEL_TO_LLM)
+#               --belief-source  --belief-workers   (defaults below)
 #   shared:     --limit  --quiet
 #   The belief and eval stages need no GPU (with an API belief model): run them on a CPU node.
 #
@@ -61,10 +62,9 @@ max_extend_steps: 5             # Max outline extensions (cpm_report)
 hard_mode: true                 # Enforce strict validation rules (cpm_report)
 max_passage_tokens: 512         # Tokens of one retrieved document (its first ones, Qwen/Qwen3.5-4B tokenizer) shown to every agent; the belief stage reads the value the generate stage recorded (run_config.json); as BrowseComp-Plus
 
-# ── Belief model (--stage belief; --belief-model, --belief-source on the CLI) ──
-belief_model: "openrouter/qwen/qwen3.6-27b"  # Backbone LLM of the belief model, for its three calls: belief init (once per query, then read from the bank of their kind, BELIEF_ROOT/{dataset}/belief_bank/{gold|silver}/beliefs_{split}.jsonl; a training dataset: BELIEF_ROOT/training_datasets/{dataset}/belief_bank/silver/beliefs_all.jsonl; keyed by this model, a vllm/ model by its served checkpoint; reasoning off), belief update (one call per step) and final score. A vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE)
+# ── Belief model (--stage belief; --belief-model is CLI only, --belief-source also on the CLI) ──
 max_beliefs: null                  # Cap on silver beliefs only (null = the dataset's default in layout.DATASET_SPECS): TRQA and trqa_validation 52 (50 members, the rest and the aggregate), webshaper_frames' FRAMES 8. Gold beliefs are never capped; a value on BrowseComp-Plus, NeuCLIR or RAGTIME (gold only) stops the run
-belief_source: gold                # gold | silver. Effective only on TRQA and trqa_validation, whose queries have both: gold (TRQA: made from the intermediate info on demand, texts by belief_model, banked in BELIEF_ROOT/trqa/belief_bank/gold/beliefs_{split}.jsonl; trqa_validation: the dataset rows) or silver (extracted by belief_model); the belief stage replaces the run's beliefs when it changes. Elsewhere ignored: BrowseComp-Plus, NeuCLIR, RAGTIME use the beliefs extracted from the question (gold); infoseek and webshaper_frames the dataset's gold beliefs (InfoSeek, WebShaper), silver for a query without them (FRAMES). A query without gold beliefs always gets silver ones (gold_missing in its belief_info)
+belief_source: gold                # gold | silver. Effective only on TRQA and trqa_validation, whose queries have both: gold (TRQA: made from the intermediate info on demand, texts by --belief-model, banked in BELIEF_ROOT/trqa/belief_bank/gold/beliefs_{split}.jsonl; trqa_validation: the dataset rows) or silver (extracted by --belief-model); the belief stage replaces the run's beliefs when it changes. Elsewhere ignored: BrowseComp-Plus, NeuCLIR, RAGTIME use the beliefs extracted from the question (gold); infoseek and webshaper_frames the dataset's gold beliefs (InfoSeek, WebShaper), silver for a query without them (FRAMES). A query without gold beliefs always gets silver ones (gold_missing in its belief_info)
 belief_workers: 8                   # Queries the belief stage runs at once (threads, each with its own belief model client)
 
 # ── Evaluation ───────────────────────────────────────────────────────────────

@@ -115,7 +115,7 @@ waits for the next call.
 
 ### Step record
 
-One per iteration, saved as one `step` line of `belief/{query_id}.jsonl` by
+One per iteration, saved as one `step` line of `belief/{model}/{query_id}.jsonl` by
 `utils.run_files.save_belief`; flat scalars first, nested detail last:
 
 ```

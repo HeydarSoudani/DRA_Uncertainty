@@ -65,12 +65,28 @@ PREPARE_WORKERS = 16
 
 def belief_llm(model: str):
     """LLM client of a belief model call, native reasoning off.  A ``vllm/``
-    model (e.g. a trained belief model) is served locally at
-    ``$BELIEF_VLLM_API_BASE`` (default ``$VLLM_API_BASE``, so it can sit
-    next to a locally served agent); any other model goes through the API."""
+    model is served locally at ``$BELIEF_VLLM_API_BASE`` (set by the belief
+    stage to the server it starts, ``utils.vllm_manager.belief_server``);
+    any other model goes through the API, routed to the hosts of its
+    provider pin (:func:`belief_provider_pin`)."""
     if model.startswith("vllm/"):
         return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base()))
-    return disable_native_thinking(create_generator(model, backend="api"))
+    generator = create_generator(model, backend="api")
+    pin = belief_provider_pin(model)
+    client = getattr(generator, "_client", generator)
+    if pin and isinstance(getattr(client, "config", None), dict):
+        # Before the reasoning switch, which copies this body.
+        client.config["extra_body"] = {**(client.config.get("extra_body") or {}), "provider": pin}
+    return disable_native_thinking(generator)
+
+
+def belief_provider_pin(model: str):
+    """The OpenRouter ``provider`` routing of the belief model LLM *model*
+    (``utils.config.BELIEF_OPENROUTER_PROVIDER``), None when it has none."""
+    from utils.config import BELIEF_OPENROUTER_PROVIDER
+
+    pin = BELIEF_OPENROUTER_PROVIDER.get(model)
+    return dict(pin) if pin else None
 
 
 def belief_vllm_api_base() -> str:
@@ -122,7 +138,7 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
     dataset without silver beliefs (``check_max_beliefs``) or when a
     training dataset's gold belief file is missing."""
     if not belief_model:
-        raise SystemExit("The belief stage needs a belief model: set belief_model in --config or pass --belief-model")
+        raise SystemExit("The belief stage needs a belief model: pass --belief-model")
     check_max_beliefs(dataset, max_beliefs)
     spec = DATASET_SPECS[dataset]
     source = effective_belief_source(belief_source, dataset)
@@ -192,13 +208,14 @@ def build_belief_source(
     return FallbackBeliefSource(gold, source)
 
 
-def prepare_beliefs(source: BeliefSource, queries: Dict[str, str]) -> Dict[str, Any]:
+def prepare_beliefs(source: BeliefSource, queries: Dict[str, str], workers: int = PREPARE_WORKERS) -> Dict[str, Any]:
     """Get the beliefs of every query of *queries* (``{qid: text}``) from
     *source*, so the missing ones are made and banked here, before the
     workers start (they then read them from the bank; a query still
     missing is made by its worker).  Prints and returns the counts: per
     kind, per origin (``bank_hit``, ``bank_added``, ``dataset``: a
-    training dataset's gold) and the queries ``failed`` (no beliefs)."""
+    training dataset's gold) and the queries ``failed`` (no beliefs).
+    *workers*: queries made at once (a locally served model takes more)."""
     source.prepare()
 
     def one(item):
@@ -211,7 +228,7 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str]) -> Dict[str, 
 
     counts: Counter = Counter()
     failed = []
-    with ThreadPoolExecutor(max_workers=PREPARE_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for qid, (beliefs, info) in step_iter(pool.map(one, queries.items()), total=len(queries), desc="Beliefs", unit="query"):
             if not beliefs:
                 failed.append(qid)

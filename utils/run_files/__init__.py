@@ -7,7 +7,8 @@ The generate stage writes, per query (:func:`save_query_outputs`):
     trajectory/{qid}.jsonl                       the steps, then the meta line (``trajectory``);
                                                  written last: it marks the query as finished
 
-The belief stage writes ``belief/{qid}.jsonl`` (``belief``); both write
+The belief stage writes ``belief/{model}/{qid}.jsonl``, one folder per
+belief model (``belief``); both write
 ``run_config.json`` (``run_config``).  The evaluation only reads these files
 (:func:`load_result_from_saved_files`, ``belief.load_belief_files``) and
 writes its own under ``eval/`` (``evaluation.metrics_file``).
@@ -18,8 +19,8 @@ from typing import Any, Dict, Union
 
 from utils.config import AGENT_META_KEYS
 
-from .belief import (BELIEF_DIR, SCHEMA_VERSION, BeliefFile, believed_queries, clean_record, load_belief_files,
-                     read_belief_file, save_belief)
+from .belief import (BELIEF_DIR, SCHEMA_VERSION, BeliefFile, belief_dir, belief_models, believed_queries,
+                     clean_record, load_belief_files, read_belief_file, save_belief)
 from .generation import GENERATION_DIR, read_generation, save_generation
 from .retrieval import (CITED_DIR, SEEN_DIR, SURFACED_DIR, cited_docs, doc_ids, save_retrieval, seen_iterations,
                         surfaced_iterations)
@@ -73,8 +74,8 @@ def load_result_from_saved_files(run_dir: Union[str, Path], query_id: str) -> Di
 
 __all__ = [
     "QUERY_OUTPUT_DIRS", "save_query_outputs", "load_result_from_saved_files",
-    "BELIEF_DIR", "SCHEMA_VERSION", "BeliefFile", "believed_queries", "clean_record", "load_belief_files",
-    "read_belief_file", "save_belief",
+    "BELIEF_DIR", "SCHEMA_VERSION", "BeliefFile", "belief_dir", "belief_models", "believed_queries", "clean_record",
+    "load_belief_files", "read_belief_file", "save_belief",
     "GENERATION_DIR", "read_generation", "save_generation",
     "CITED_DIR", "SEEN_DIR", "SURFACED_DIR", "cited_docs", "doc_ids", "save_retrieval", "seen_iterations",
     "surfaced_iterations",

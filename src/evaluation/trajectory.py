@@ -7,10 +7,11 @@ lines of ``trajectory/{qid}.jsonl``), ``num_searches`` and the agent's
 ``token_usage``.  A line's action type is the one it saved, else inferred
 from its keys (``trajectory_logger.infer_action_type``: a ``search_query``
 is a search, a ``prediction`` an answer, ...), so every agent's lines are
-counted the same way.
+counted the same way.  The belief model's tokens are one belief model's
+(:func:`belief_tokens`, once per belief model of the run).
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from utils.run_files.trajectory_logger import infer_action_type as _infer_action_type
 
@@ -39,11 +40,10 @@ class TrajectoryEvaluator:
     Usage::
 
         evaluator = TrajectoryEvaluator()
-        group = evaluator.evaluate(results, belief_files)
+        group = evaluator.evaluate(results)
     """
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]],
-                 belief_files: Optional[Dict[str, Any]] = None) -> GroupResult:
+    def evaluate(self, results: Dict[str, Dict[str, Any]]) -> GroupResult:
         """The ``trajectory`` rows (means and counts) of, per query:
 
         - ``searches``: search steps (from the steps, else the saved count);
@@ -53,9 +53,7 @@ class TrajectoryEvaluator:
           action, or no terminal and no force-answer action; a
           ``context_limit`` ending is not one);
         - ``agent_tokens``: the agent's total tokens (``token_usage``; None
-          when the agent records none);
-        - ``belief_tokens``: the belief model's total tokens, for a query of
-          *belief_files* (``load_belief_files``).
+          when the agent records none).
         """
         out: Dict[str, Dict[str, Any]] = {}
         for qid, result in results.items():
@@ -77,21 +75,22 @@ class TrajectoryEvaluator:
                 "max_iter": max_iter,
                 "agent_tokens": usage.get("total_tokens") if usage else None,
             }
-        belief_tokens = {q: (f[0].get("tokens") or {}).get("total_tokens") for q, f in (belief_files or {}).items()}
-        for qid, rec in out.items():
-            if qid in belief_tokens:
-                rec["belief_tokens"] = belief_tokens[qid]
-
-        def defined(values):
-            return [v for v in values if v is not None]
-
         res = GroupResult(per_query=out)
         res.add("trajectory", "searches", mean([r["searches"] for r in out.values()]), n=len(out))
-        agent_tokens = defined(r["agent_tokens"] for r in out.values())
+        agent_tokens = [r["agent_tokens"] for r in out.values() if r["agent_tokens"] is not None]
         res.add("trajectory", "agent tokens", mean(agent_tokens), n=len(agent_tokens))
-        if defined(belief_tokens.values()):
-            res.add("trajectory", "belief tokens", mean(defined(belief_tokens.values())),
-                    n=len(defined(belief_tokens.values())))
         res.add("trajectory", "forced answers", sum(r["forced_answer"] for r in out.values()), n=len(out))
         res.add("trajectory", "max iterations reached", sum(r["max_iter"] for r in out.values()), n=len(out))
         return res
+
+
+def belief_tokens(files: Dict[str, Any]) -> GroupResult:
+    """The ``belief tokens`` row of one belief model and its per-query
+    ``belief_tokens``: the model's total tokens of each query of its belief
+    *files* (``load_belief_files``)."""
+    tokens = {q: (f[0].get("tokens") or {}).get("total_tokens") for q, f in files.items()}
+    defined = [v for v in tokens.values() if v is not None]
+    res = GroupResult(per_query={q: {"belief_tokens": v} for q, v in tokens.items()})
+    if defined:
+        res.add("trajectory", "belief tokens", mean(defined), n=len(defined))
+    return res

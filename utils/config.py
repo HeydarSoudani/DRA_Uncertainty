@@ -73,6 +73,31 @@ AGENT_META_KEYS: Tuple[str, ...] = (
 )
 
 
+# CLI --belief-model value → the LLM of the belief model's calls (belief init,
+# belief update, final score); the models differ in size (the belief model
+# size study), all run with the same prompts and settings.  The full id is
+# what the belief bank and run_config.json record.  A "vllm/<HF name>" LLM is
+# served locally by the belief stage (utils.vllm_manager.belief_server, its
+# spec in _BELIEF_SERVER_SPECS; needs a GPU); the others go through OpenRouter.
+BELIEF_MODEL_TO_LLM: Dict[str, str] = {
+    "qwen3.5_4b":  "vllm/Qwen/Qwen3.5-4B",
+    "qwen3.5_9b":  "openrouter/qwen/qwen3.5-9b",
+    "qwen3.6_27b": "openrouter/qwen/qwen3.6-27b",
+}
+DEFAULT_BELIEF_MODEL = "qwen3.6_27b"
+
+# OpenRouter routing of a belief model's calls (OpenRouter's ``provider``
+# request field), by LLM id: only hosts that serve the weights at this
+# precision, so every call of a model runs the same weights.  qwen3.5-9b:
+# bf16, as the local qwen3.5_4b (its fp8 and fp4 hosts left out); qwen3.6-27b:
+# fp8, the only precision its hosts state (2026-11-18).  Recorded in the run's
+# belief_models entry; a changed pin makes that model's beliefs again.
+BELIEF_OPENROUTER_PROVIDER: Dict[str, Dict[str, Any]] = {
+    "openrouter/qwen/qwen3.5-9b":  {"quantizations": ["bf16"]},
+    "openrouter/qwen/qwen3.6-27b": {"quantizations": ["fp8"]},
+}
+
+
 # CLI --policy-model value → internal agent name (when they differ).
 POLICY_MODEL_ALIAS: Dict[str, str] = {
     "oss_20b":  "oss",

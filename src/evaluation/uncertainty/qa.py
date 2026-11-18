@@ -7,7 +7,7 @@ correctness of the agent's final answer (``eval/generation/accuracy.jsonl``: the
 the scores are:
 
 - ``s_T``: the belief model's final scorer (the ``final`` line of
-  ``belief/{qid}.jsonl``, ``certainty``), the headline;
+  ``belief/{model}/{qid}.jsonl``, ``certainty``), the headline;
 - ``verbal``: the agent's own confidence in its answer
   (``generation.confidence``, glm and oss), the baseline;
 - ``formula``: the fixed function of the final beliefs' statuses

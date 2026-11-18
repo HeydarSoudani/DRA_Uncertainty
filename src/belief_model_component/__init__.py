@@ -42,6 +42,7 @@ from .core.types import (
 )
 from .init.factory import (
     belief_llm,
+    belief_provider_pin,
     belief_vllm_api_base,
     build_belief_source,
     check_belief_inputs,
@@ -83,7 +84,7 @@ __all__ = [
     "BANK_ONLY", "FINAL", "GOLD_BELIEF_MODEL",
     "BeliefSource", "LLMBeliefSource", "BankedBeliefSource", "FallbackBeliefSource",
     "belief_kinds",
-    "belief_llm", "belief_vllm_api_base", "build_belief_source", "check_belief_inputs", "check_max_beliefs", "prepare_beliefs",
+    "belief_llm", "belief_provider_pin", "belief_vllm_api_base", "build_belief_source", "check_belief_inputs", "check_max_beliefs", "prepare_beliefs",
     # update
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "parse_final_score",

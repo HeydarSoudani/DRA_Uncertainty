@@ -32,7 +32,7 @@ candidate is already "certain" cannot rise and has no change.
 
 A candidate is a gold answer when it matches one (``gold_match.states``), else
 when the judge says so (``gold_match.AnswerJudge``, the run's ``judge_model``,
-cached in ``eval/belief/judge_cache.jsonl``; no judge model: the match
+cached in ``eval/belief/{model}/judge_cache.jsonl``; no judge model: the match
 only).  Only belief files of the current ``SCHEMA_VERSION`` are scored
 (``load_belief_files``; an older file counts as no belief file).
 
@@ -64,7 +64,7 @@ how many, how many with a correct most probable candidate (the Brier's y,
 In the files, for diagnosis: every gold and control event, with a gold
 event's funnel stage (``call_failed``, ``not_assigned``,
 ``no_gold_candidate``, ``not_selected``, ``correct_lost``, ``correct_kept``),
-in ``eval/belief/events.csv``; per query in ``eval/per_query.csv`` the means of
+in ``eval/belief/{model}/events.csv``; per query in ``eval/per_query.csv`` the means of
 its beliefs and ``belief_correct`` (every scored closed belief
 reached).
 """
@@ -83,7 +83,7 @@ from utils.run_files.belief import BeliefFile
 from utils.run_files.run_config import passage_cut, read_run_config
 
 from ..measures import bootstrap_ci, mean
-from ..metrics_file import BELIEF_EVAL_DIR, GroupResult, fmt
+from ..metrics_file import GroupResult, belief_eval_dir, fmt
 from .gold_match import CANDIDATE, SPANS, AnswerJudge, states
 from .gold_rows import load_gold_rows, match_row
 
@@ -188,12 +188,12 @@ class BeliefUpdateEvaluator:
             queries.append(_Query(qid, meta, steps, final, gold, list(row.get("entity_names") or [])))
         return queries
 
-    def _shown_texts(self, queries: List[_Query], run_dir: Path) -> Dict[str, str]:
-        """Each needed document's text as the update read it."""
+    def _shown_texts(self, queries: List[_Query], run_dir: Path, model: str) -> Dict[str, str]:
+        """Each needed document's text as the belief model *model*'s update read it."""
         ids = set().union(*(q.needed_doc_ids() for q in queries)) if queries else set()
         if not ids or not self.corpus_path:
             return {}
-        cut = passage_cut(read_run_config(run_dir), DATASET_SPECS[self.dataset].query_shape)
+        cut = passage_cut(read_run_config(run_dir), model, DATASET_SPECS[self.dataset].query_shape)
         contents = CorpusLookup(self.corpus_path).contents(ids)
         return {i: cut(str(t).strip()) for i, t in contents.items()}
 
@@ -387,13 +387,13 @@ class BeliefUpdateEvaluator:
     # Evaluation
     # ------------------------------------------------------------------
 
-    def evaluate(self, run_dir, files: Dict[str, BeliefFile], query_ids: Iterable[str]) -> GroupResult:
-        """The ``belief`` group over the run's queries with scored gold
-        beliefs, from their belief *files* (``load_belief_files``; a query of
-        *query_ids* without one counts as ``no belief file``): the rows, the
-        per-query means and the calibration table (``CALIBRATION_COLUMNS``),
-        its events written to ``eval/belief/events.csv``.  Empty when no
-        query has one."""
+    def evaluate(self, run_dir, model: str, files: Dict[str, BeliefFile], query_ids: Iterable[str]) -> GroupResult:
+        """The ``belief`` group of the belief model *model* over the run's
+        queries with scored gold beliefs, from its belief *files*
+        (``load_belief_files``; a query of *query_ids* without one counts as
+        ``no belief file``): the rows, the per-query means and the
+        calibration table (``CALIBRATION_COLUMNS``), its events written to
+        ``eval/belief/{model}/events.csv``.  Empty when no query has one."""
         run_dir = Path(run_dir)
         counts: Counter = Counter()
         queries = self._load(files, query_ids, counts)
@@ -401,8 +401,9 @@ class BeliefUpdateEvaluator:
             logger.info("belief evaluation: queries left out %s", dict(counts))
         if not queries:
             return GroupResult()
-        shown = self._shown_texts(queries, run_dir)
-        judge = AnswerJudge(self.judge_model, run_dir / BELIEF_EVAL_DIR / "judge_cache.jsonl") \
+        shown = self._shown_texts(queries, run_dir, model)
+        out_dir = run_dir / belief_eval_dir(model)
+        judge = AnswerJudge(self.judge_model, out_dir / "judge_cache.jsonl") \
             if self.judge_model else None
         is_gold = self._gold_names(queries, judge)
         doc_states = self._gold_docs(queries, shown, judge)
@@ -421,7 +422,7 @@ class BeliefUpdateEvaluator:
             rec["belief_correct"] = int(all(v["reached"] for v in members)) if members else None
             per_query[q.qid] = rec
 
-        self._write_events(run_dir, events)
+        self._write_events(out_dir / "events.csv", events)
         res = GroupResult(per_query=per_query)
         for row in self._rows(groups):
             res.add("belief", *row)
@@ -459,8 +460,7 @@ class BeliefUpdateEvaluator:
         return out
 
     @staticmethod
-    def _write_events(run_dir: Path, events: List[Dict]) -> None:
-        path = run_dir / BELIEF_EVAL_DIR / "events.csv"
+    def _write_events(path: Path, events: List[Dict]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=EVENT_FIELDS, extrasaction="ignore")

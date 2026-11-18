@@ -6,7 +6,11 @@
                             ``eval/metrics.md`` and ``eval/per_query.csv``
                             (``evaluation.metrics_file``).
 
-The groups, in the order of the files and the log:
+The groups, in the order of the files and the log.  The generation's
+(retrieval, generation, the agent's trajectory) are scored once; the
+beliefs' (uncertainty, belief, the belief tokens) once per belief model of
+the run (``belief/{model}/``, ``utils.run_files.belief_models``), so a run
+whose beliefs several belief models made reports each of them:
 
     retrieval    Recall@N, Precision@N of the seen docs (N = docs seen)
     generation   accuracy (QA) or Auto-ARGUE nugget coverage and F1 (reports)
@@ -20,13 +24,14 @@ The groups, in the order of the files and the log:
                  (datasets with gold per belief, belief files); the
                  share of update calls with issues, and every issue code
                  that occurs (belief files, ``belief.issues``)
-    trajectory   searches, agent and belief model tokens, forced answers
+    trajectory   searches, agent tokens, forced answers; belief model tokens
 
 A run with an output directory is always evaluated from its saved files,
 whatever its stage (``--stage``), so every stage writes the same files.
 The LLM-judged evaluators keep their verdicts in the run directory
 under ``eval/`` (``eval/generation/``: ``accuracy.jsonl`` or the Auto-ARGUE
-cache; ``eval/belief/judge_cache.jsonl``) and judge only what changed.
+cache; ``eval/belief/{model}/judge_cache.jsonl``) and judge only what
+changed: a belief model added to a run costs only its own judge calls.
 """
 
 import logging
@@ -39,16 +44,16 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.run_files import BELIEF_DIR, load_belief_files, load_result_from_saved_files
-from utils.run_files.run_config import belief_model_of, read_run_config
+from utils.run_files import belief_models, load_belief_files, load_result_from_saved_files
+from utils.run_files.run_config import belief_config_of, belief_model_of, read_run_config
 from utils.progress import step_iter
 
 from .belief import GOLD_DATASETS, BeliefUpdateEvaluator, issue_summary
 from .generation import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
-from .metrics_file import (EVAL_DIR, METRICS_FILE, PER_QUERY_FILE, RULE, GroupResult, Row, Section, log_lines,
-                           write_metrics, write_per_query)
+from .metrics_file import (EVAL_DIR, METRICS_FILE, NO_MODEL, PER_QUERY_FILE, RULE, GroupResult, Row, Section,
+                           log_lines, write_metrics, write_per_query)
 from .retrieval import SeenDocEvaluator
-from .trajectory import TrajectoryEvaluator
+from .trajectory import TrajectoryEvaluator, belief_tokens
 from .uncertainty import ReportUncertaintyEvaluator, UncertaintyEvaluator
 
 logger = logging.getLogger(__name__)
@@ -143,19 +148,24 @@ def load_run_results(run_dir: Union[str, Path], query_ids: Iterable[str]) -> Dic
     return results
 
 
-def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int,
+def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int, models: List[str],
             num_unfinished: Optional[int] = None) -> Dict[str, Any]:
     """The run's identity for the header of ``metrics.md`` and the log
-    (``run_config.json``); ``queries`` counts the finished (evaluated)
-    ones, ``unfinished`` those of the split not finished yet."""
+    (``run_config.json``); ``belief`` names each belief model of *models*
+    (short name, LLM, belief source), ``queries`` counts the finished
+    (evaluated) ones, ``unfinished`` those of the split not finished yet."""
     config = read_run_config(run_dir) if run_dir is not None else {}
-    data, agent, belief = config.get("dataset") or {}, config.get("agent") or {}, config.get("belief_model") or {}
+    data, agent = config.get("dataset") or {}, config.get("agent") or {}
+
+    def model_line(model: str) -> str:
+        section = belief_config_of(config, model) or {}
+        return f"{model} ({belief_model_of(section) or '-'}, {section.get('belief_source_effective')} beliefs)"
+
     return {
         "run": str(run_dir) if run_dir else "-",
         "dataset": f"{data.get('dataset') or dataset} / {data.get('split') or '-'}",
         "agent": agent.get("policy_model") or "-",
-        "belief": (f"{belief_model_of(belief) or '-'} ({belief.get('belief_source_effective')} beliefs)"
-                   if belief else "-"),
+        "belief": "; ".join(model_line(m) for m in models) or "-",
         "queries": num_queries,
         **({"unfinished": num_unfinished} if num_unfinished is not None else {}),
         "evaluated": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -170,10 +180,13 @@ def evaluate_and_save(
 ) -> None:
     """Run every evaluator, print the log block and write ``metrics.md``,
     ``per_query.csv`` (``evaluation.metrics_file``) and the evaluators' own files
-    (``eval/generation/``, ``eval/belief/``), all under ``eval/``.
+    (``eval/generation/``, ``eval/belief/{model}/``), all under ``eval/``.
 
     Each evaluator returns a :class:`GroupResult`; the groups are collected
-    in the order of the files (the per-query columns keep it).
+    in the order of the files (the per-query columns keep it).  The
+    beliefs' groups are collected once per belief model of the run, their
+    rows tagged with the model, their per-query columns prefixed
+    ``{model}/`` and their section titles suffixed `` ({model})``.
 
     Args:
         results:    Unified results dict keyed by query_id.
@@ -197,39 +210,46 @@ def evaluate_and_save(
         timings[name] = time.time() - start
         return out
 
-    def collect(name: str, fn, *args) -> GroupResult:
-        res = timed(name, fn, *args)
+    def collect(name: str, fn, *args, model: str = NO_MODEL) -> GroupResult:
+        res = timed(name if model == NO_MODEL else f"{name} [{model}]", fn, *args)
+        prefix = "" if model == NO_MODEL else f"{model}/"
         for qid, rec in res.per_query.items():
-            per_query.setdefault(qid, {}).update(rec)
+            per_query.setdefault(qid, {}).update({prefix + k: v for k, v in rec.items()})
+        for r in res.rows:
+            r.belief_model = model
         rows.extend(res.rows)
-        sections.extend(res.sections)
+        sections.extend(res.sections if model == NO_MODEL
+                        else [(f"{title} ({model})", cols, cells) for title, cols, cells in res.sections])
         return res
 
     collect("retrieval", ev.seen.evaluate, results)
     accuracy = collect("accuracy", ev.accuracy.evaluate, results, run_dir) if ev.accuracy else GroupResult()
     report = collect("report", ev.report.evaluate, results, run_dir) if ev.report else GroupResult()
+    collect("trajectory", ev.trajectory.evaluate, results)
 
-    # Each belief file is read once, for every evaluation below.
-    has_belief = run_dir is not None and (run_dir / BELIEF_DIR).is_dir()
-    belief_files = timed("belief files", load_belief_files, run_dir, list(results)) if has_belief else {}
-    finals = {q: f[2] for q, f in belief_files.items()}
-    if belief_files and ev.uncertainty is not None and accuracy.raw:
-        collect("uncertainty", ev.uncertainty.evaluate, finals, accuracy.raw["per_query"])
-    if belief_files and ev.report_uncertainty is not None and report.raw:
-        collect("uncertainty", ev.report_uncertainty.evaluate, finals, report.raw["per_query"])
-    if has_belief:
+    # Per belief model: each belief file is read once, for every evaluation below.
+    models = belief_models(run_dir) if run_dir is not None else []
+    for model in models:
+        belief_files = timed(f"belief files [{model}]", load_belief_files, run_dir, model, list(results))
+        finals = {q: f[2] for q, f in belief_files.items()}
+        if belief_files and ev.uncertainty is not None and accuracy.raw:
+            collect("uncertainty", ev.uncertainty.evaluate, finals, accuracy.raw["per_query"], model=model)
+        if belief_files and ev.report_uncertainty is not None and report.raw:
+            collect("uncertainty", ev.report_uncertainty.evaluate, finals, report.raw["per_query"], model=model)
         # The belief stage saves no query whose call failed: the rest of the
         # group is over these queries only.
-        rows.append(Row("belief", "queries with a belief file", len(belief_files), n=len(results)))
-    belief = (collect("belief", ev.belief.evaluate, run_dir, belief_files, list(results))
-              if belief_files and ev.belief is not None else GroupResult())
-    if belief_files:
-        collect("belief issues", issue_summary, belief_files)
-    collect("trajectory", ev.trajectory.evaluate, results, belief_files)
+        rows.append(Row("belief", "queries with a belief file", len(belief_files), n=len(results),
+                        belief_model=model))
+        if belief_files and ev.belief is not None:
+            collect("belief", ev.belief.evaluate, run_dir, model, belief_files, list(results), model=model)
+        if belief_files:
+            collect("belief issues", issue_summary, belief_files, model=model)
+            collect("belief tokens", belief_tokens, belief_files, model=model)
 
     # ── Log and files ────────────────────────────────────────────────────
-    header = _header(run_dir, ev.dataset, len(results), num_unfinished)
-    title = f"EVALUATION  {header['dataset']} / {header['agent']} / {header['belief']}  (n={len(results)})"
+    header = _header(run_dir, ev.dataset, len(results), models, num_unfinished)
+    title = (f"EVALUATION  {header['dataset']} / {header['agent']} / belief models: {', '.join(models) or '-'}"
+             f"  (n={len(results)})")
     print(f"\n{RULE}")
     print("\n".join(log_lines(title, rows)))
     print(RULE)
@@ -239,5 +259,4 @@ def evaluate_and_save(
     (run_dir / EVAL_DIR).mkdir(parents=True, exist_ok=True)
     write_metrics(run_dir / METRICS_FILE, header, rows, sections)
     write_per_query(run_dir / PER_QUERY_FILE, per_query)
-    print(f"  Saved {run_dir / EVAL_DIR}/: metrics.md, per_query.csv"
-          f"{' and belief/events.csv' if belief else ''}")
+    print(f"  Saved {run_dir / EVAL_DIR}/: metrics.md, per_query.csv")

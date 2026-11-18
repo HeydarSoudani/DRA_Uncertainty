@@ -1,8 +1,9 @@
 """The run's settings: the run directory's name and ``run_config.json``.
 
 ``run_config.json`` holds every setting that changes what the agent does
-(:func:`build_run_config`, the generate stage), the belief stage's section
-(:func:`build_belief_config`) and the evaluation's judge model; the
+(:func:`build_run_config`, the generate stage), the belief stage's
+settings per belief model (``belief_models``, :func:`build_belief_config`)
+and the evaluation's judge model; the
 per-query files carry no run settings.
 """
 
@@ -57,11 +58,13 @@ def build_run_name_for_pipeline(policy_model: str, llm_model: str, **kwargs) -> 
 #: Sections of ``run_config.json`` that the trajectories of one run
 #: directory share: a generate stage with other values is refused
 #: (``check_run_config``), a belief or eval stage with another ``dataset``
-#: section too (``check_run_dataset``).  ``belief_model`` is the belief
-#: stage's: other values replace the run's beliefs (``belief_config_diffs``).
+#: section too (``check_run_dataset``).  ``belief_models`` is the belief
+#: stage's: ``{model: settings}``, one entry per belief model (its short
+#: ``--belief-model`` name, the folder ``belief/{model}/``); other settings
+#: of a model replace that model's beliefs only (``belief_config_diffs``).
 #: ``evaluation`` may change between calls (it only re-judges).
 LOCKED_RUN_CONFIG_SECTIONS = ("dataset", "agent", "searcher")
-BELIEF_CONFIG_SECTION = "belief_model"
+BELIEF_CONFIG_SECTION = "belief_models"
 #: Keys of the locked sections recorded for information only: a path that
 #: moves with the data root (another machine, ``$DRA_DATA_ROOT``) while the
 #: dataset and split, which name the documents, stay the same.  A change is
@@ -133,10 +136,11 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
 
 
 def build_belief_config(dataset: str, *, max_passage_tokens: Optional[int], **kwargs) -> Dict[str, Any]:
-    """The ``belief_model`` section of ``run_config.json``: the belief
-    stage's settings (the belief cap as ``resolve_dataset_defaults`` set
+    """One belief model's entry of the ``belief_models`` section of
+    ``run_config.json``: the belief stage's settings (the belief cap as ``resolve_dataset_defaults`` set
     it from the dataset).  *max_passage_tokens* is the run's (its agent
     section): the belief update reads the text the agent was shown."""
+    from belief_model_component import belief_provider_pin
     from indexing_corpus_dataset.layout import effective_belief_source
 
     return {
@@ -145,6 +149,8 @@ def build_belief_config(dataset: str, *, max_passage_tokens: Optional[int], **kw
         "belief_source": kwargs["belief_source"],
         "belief_source_effective": effective_belief_source(kwargs["belief_source"], dataset),
         "max_passage_tokens": max_passage_tokens,
+        # The OpenRouter hosts its calls are routed to (None: local or unpinned).
+        "openrouter_provider": belief_provider_pin(kwargs.get("belief_model") or ""),
     }
 
 
@@ -205,33 +211,39 @@ def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
     atomic_write_text(path, _json.dumps(config, indent=2))
 
 
+def belief_config_of(config: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
+    """The saved settings of the belief model *model* in a
+    ``run_config.json`` *config* (None when it has none)."""
+    return (config.get(BELIEF_CONFIG_SECTION) or {}).get(model)
+
+
 def belief_model_of(section: Optional[Dict[str, Any]]) -> Optional[str]:
-    """The belief model of a saved belief section."""
+    """The belief model LLM of one saved belief model entry."""
     return (section or {}).get("belief_model")
 
 
-def belief_config_diffs(run_dir: Union[str, Path], section: Dict[str, Any]) -> List[str]:
-    """How *section* (:func:`build_belief_config`) differs from the belief
-    section of the run's ``run_config.json`` (``section.key: old -> new``),
-    empty when it is the same or the run has none.  Reads only."""
-    saved = _json.loads((Path(run_dir) / RUN_CONFIG_FILE).read_text())
-    old = saved.get(BELIEF_CONFIG_SECTION)
+def belief_config_diffs(run_dir: Union[str, Path], model: str, section: Dict[str, Any]) -> List[str]:
+    """How *section* (:func:`build_belief_config`) differs from the saved
+    entry of the belief model *model* (``key: old -> new``), empty when it
+    is the same or the run has none.  Reads only."""
+    old = belief_config_of(read_run_config(run_dir), model)
     if old is None:
         return []
-    return run_config_diffs({BELIEF_CONFIG_SECTION: old}, {BELIEF_CONFIG_SECTION: section},
-                            sections=(BELIEF_CONFIG_SECTION,))
+    return run_config_diffs({model: old}, {model: section}, sections=(model,))
 
 
-def set_belief_config(run_dir: Union[str, Path], section: Dict[str, Any]) -> None:
-    """Set the belief section of the run's ``run_config.json`` to *section*
-    (:func:`build_belief_config`).  The run must have a ``run_config.json``
+def set_belief_config(run_dir: Union[str, Path], model: str, section: Dict[str, Any]) -> None:
+    """Set the entry of the belief model *model* in the run's
+    ``run_config.json`` to *section* (:func:`build_belief_config`); the
+    other models' entries are kept.  The run must have a ``run_config.json``
     (the generate stage's).  The belief stage calls it after removing the
-    beliefs of other settings (:func:`belief_config_diffs`), so the file
-    never names settings its beliefs were not made with."""
+    model's beliefs of other settings (:func:`belief_config_diffs`), so an
+    entry never names settings its beliefs were not made with."""
     path = Path(run_dir) / RUN_CONFIG_FILE
     saved = _json.loads(path.read_text())
-    if saved.get(BELIEF_CONFIG_SECTION) != section:
-        saved[BELIEF_CONFIG_SECTION] = section
+    models = saved.setdefault(BELIEF_CONFIG_SECTION, {})
+    if models.get(model) != section:
+        models[model] = section
         atomic_write_text(path, _json.dumps(saved, indent=2))
 
 
@@ -271,39 +283,26 @@ def update_run_config_evaluation(run_dir: Union[str, Path], config: Dict[str, An
 LEGACY_PASSAGE_CHARS = 3000
 
 
-def _recorded(config: Dict[str, Any], key: str) -> Tuple[bool, Optional[int]]:
-    """``(recorded, value)`` of *key* in the belief section of a
-    ``run_config.json`` *config*, else in its agent section (the shared cut,
-    the same value)."""
-    for section in ("belief_model", "agent"):
-        values = config.get(section) or {}
+def _recorded(config: Dict[str, Any], key: str, model: str) -> Tuple[bool, Optional[int]]:
+    """``(recorded, value)`` of *key* in the entry of the belief model
+    *model* of a ``run_config.json`` *config*, else in its agent section
+    (the shared cut, the same value)."""
+    for values in (belief_config_of(config, model) or {}, config.get("agent") or {}):
         if key in values:
             return True, values[key]
     return False, None
 
 
-def passage_tokens(config: Dict[str, Any]) -> Optional[int]:
-    """Tokens of one document the belief update of a run read (or, a run
-    without the belief model, will read in training): its
-    ``max_passage_tokens``; None: whole documents.  A run made before the
-    token cut (it recorded characters, or nothing) cannot be replayed with
-    the same text: ValueError."""
-    recorded, value = _recorded(config, "max_passage_tokens")
-    if not recorded:
-        raise ValueError("the run was made before the shared token cut (no max_passage_tokens in its "
-                         "run_config.json); rerun it")
-    return value
-
-
-def passage_cut(config: Dict[str, Any], query_shape: str) -> Callable[[str], str]:
-    """The cut of one document as the belief update of a run read it, from
-    its ``run_config.json`` *config*: ``max_passage_tokens`` (tokens), else
-    an older run's ``max_passage_chars`` (characters), else the cut before
-    either was recorded."""
-    recorded, tokens = _recorded(config, "max_passage_tokens")
+def passage_cut(config: Dict[str, Any], model: str, query_shape: str) -> Callable[[str], str]:
+    """The cut of one document as the belief update of the belief model
+    *model* read it, from the run's ``run_config.json`` *config*:
+    ``max_passage_tokens`` (tokens), else an older run's
+    ``max_passage_chars`` (characters), else the cut before either was
+    recorded."""
+    recorded, tokens = _recorded(config, "max_passage_tokens", model)
     if recorded:
         return lambda text: cut_passage(text, tokens)
-    recorded, chars = _recorded(config, "max_passage_chars")
+    recorded, chars = _recorded(config, "max_passage_chars", model)
     if not recorded:
         from belief_model_component import MULTI_ASPECT
         chars = None if query_shape == MULTI_ASPECT else LEGACY_PASSAGE_CHARS

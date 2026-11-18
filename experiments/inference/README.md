@@ -41,7 +41,7 @@ python experiments/inference/dra_inference.py \
 | `--retriever` | must have an index built for the dataset |
 | `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
-| `--belief-model` | the belief model's LLM (belief init, belief update, final score); unset = `belief_model` in the YAML |
+| `--belief-model` | the belief model, one of `BELIEF_MODEL_TO_LLM` (`utils/config.py`): `qwen3.5_4b`, `qwen3.5_9b`, `qwen3.6_27b` (default); see [Belief model](#belief-model) |
 | `--belief-source` | `gold` or `silver` beliefs of the belief model (TRQA, trqa_validation) |
 | `--workers` | query-level worker processes of the generate stage: one per GPU on a GPU machine, CPU processes otherwise; `0` = auto (GPU count, 1 without GPU) |
 | `--belief-workers` | queries the belief stage runs at once (threads; `belief_workers` in the YAML) |
@@ -80,12 +80,16 @@ belief file (`queries with a belief file`, the belief group). With `--stage all 
 queries this call generated first. A generate stage whose `dataset`, `agent` or `searcher` settings differ from the run's `run_config.json` is
 refused, so every trajectory of a directory ran with the same settings; the belief and eval stages are refused when
 the `dataset` settings (split, query key, relevance threshold) differ. The corpus path is recorded but not
-compared (a data root may move); a change is printed. A belief stage whose belief settings
-(belief model, belief source and cap) differ from the run's `belief_model` section removes the run's beliefs
-(`belief/`, `eval/belief/`), then saves the new settings, and runs every query again; copy them first to keep them.
-The belief stage needs a belief model (`belief_model` empty stops it).
-`--stage all` with a `vllm/` belief model on a port the GPU release clears after generating (6008, 8000) is refused:
-run `--stage generate`, then `--stage belief`, or serve it elsewhere (`$BELIEF_VLLM_API_BASE`).
+compared (a data root may move); a change is printed.
+
+One generation, many belief models: each belief model (`--belief-model`, its short name) has its own folder
+`belief/{model}/` and its own entry in the `belief_models` section of `run_config.json`, so running the belief stage
+with another `--belief-model` adds that model's beliefs and keeps the others. A belief stage whose settings for a
+model (belief source and cap) differ from that model's saved entry removes that model's beliefs only
+(`belief/{model}/`, `eval/belief/{model}/`), then saves the new settings, and runs every query again; copy them first
+to keep them. The evaluation reports every belief model of the run (see Evaluation).
+A `vllm/` belief model (`qwen3.5_4b`) is served by the belief stage itself: it starts the model's vLLM server
+after the generate stage released its GPUs (so `--stage all` works), and stops it when the stage ends.
 
 ## Belief model
 
@@ -95,8 +99,29 @@ the observation of a search iteration is its documents and the agent's turn, and
 belief of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
 how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
 passage supports yet. All beliefs and belief
-calls are LLM calls on one backbone, `belief_model` (`--belief-model`): the belief init, the belief update
+calls are LLM calls on one backbone, the LLM of `--belief-model` (`belief_models.{model}.belief_model` in `run_config.json`, the full id): the belief init, the belief update
 (`src/belief_model_component/update/updater.py`) and the final score.
+
+The backbone is chosen by `--belief-model`; the models differ in size only (same prompts, temperature, token caps,
+passage cut, reasoning off), for the model size study:
+
+| `--belief-model` | LLM | runs on | precision | script |
+|---|---|---|---|---|
+| `qwen3.5_4b` | `vllm/Qwen/Qwen3.5-4B` | local vLLM, 1 GPU | bf16 | `scripts/run_dra_inference.sh` |
+| `qwen3.5_9b` | `openrouter/qwen/qwen3.5-9b` | OpenRouter, bf16 hosts only | bf16 | either script (`run_dra_inference_cpu.sh` needs no GPU) |
+| `qwen3.6_27b` (default) | `openrouter/qwen/qwen3.6-27b` | OpenRouter, fp8 hosts only | fp8 | either script |
+
+The OpenRouter models are pinned to the hosts of one precision (`BELIEF_OPENROUTER_PROVIDER` in `utils/config.py`,
+OpenRouter's `provider.quantizations`), so every call of a model runs the same weights; qwen3.6-27b has no bf16 host.
+The pin is recorded in the model's `belief_models` entry (`openrouter_provider`); a changed pin makes that model's
+beliefs again.
+
+The local model's server (`utils/vllm_manager.py`, `_BELIEF_SERVER_SPECS` and `belief_server`) runs on GPU 0, port 7010
+(`$BELIEF_VLLM_API_BASE` is set to it), text only (`--language-model-only`), bf16, prefix caching on, up to 128
+sequences at once; a server already on port 7010 that serves the model is reused and left running (anything else on the port stops the stage). Weights come from
+`$DRA_MODELS_DIR/Qwen--Qwen3.5-4B/` when pre-staged there, else from the Hugging Face cache. The belief stage sends
+`--belief-workers` queries at once (64 in `run_dra_inference.sh` for this model; each query's calls run one
+after another), and belief init runs as many queries at once. Each model writes its own `belief/{model}/` folder.
 
 ### Beliefs
 
@@ -286,7 +311,9 @@ aggregates.
   never its candidate (`subject_candidate`).
 - **Not taken**: an item of an unknown belief, a second item of one belief (`belief_repeated`), an item of a belief
   without a passage observation in the call (`update_without_observation`); a claim without a candidate or a valid
-  claim (`claim_incomplete`). Removed facts and dropped proposals (rejected, or past the cap) are saved in the final
+  claim (`claim_incomplete`); a claim "unknown" (a name the agent only checks) is not taken either, as a note
+  (`claim_unknown`). A - passage on a one-answer candidate whose spans share no content word with the belief is
+  flagged (`span_off_belief`). Removed facts and dropped proposals (rejected, or past the cap) are saved in the final
   line's `references[].removed`; a name added again gets a note (`candidate_readded`).
 - **Issue codes.** Every code is in one table (`belief_model_component/core/issues.py`, `ISSUES`) with its effect
   (dropped, corrected, flagged or note) and its training role (format gate, unclean). The step record's `issues` holds
@@ -318,7 +345,7 @@ probability by `STATUS_PROBABILITY`. It weighs each belief by how much the answe
 not told which candidate the answer is. The fixed function of the final statuses is kept next to it as a baseline
 (`certainty_formula`). On a report, s_T is the fixed function of the belief after the final update.
 
-Saved in `belief/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
+Saved in `belief/{model}/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every belief's state after the step (`beliefs`: `{id, status, most_probable, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
@@ -326,7 +353,7 @@ reply (with their reasons and passage observations), the beliefs it `changed`, t
 passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
 belief every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
 with `certainty_label`, `certainty_formula` and `final_score` (status, reason). The same belief is readable in
-`belief/{qid}.md`: the beliefs, a belief table after each iteration (with the labels of its documents) and the
+`belief/{model}/{qid}.md`: the beliefs, a belief table after each iteration (with the labels of its documents) and the
 final belief. For evaluation only: `new_item_precision` and `recall_so_far`, against the qrels at the dataset's
 `min_relevance_score` (NeuCLIR and RAGTIME: grade 3, the very valuable docs), the same relevant docs as the
 end-of-run Recall@N.
@@ -337,7 +364,12 @@ A run is evaluated from its saved files at the end of every stage, so every stag
 verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run makes no LLM call and
 needs no GPU. The uncertainty and belief groups score the queries with a belief file.
 
-The measures, by group, in the order of the files and the log:
+The measures, by group, in the order of the files and the log. The generation's measures (retrieval, generation,
+the agent's trajectory) have one row; the beliefs' measures (uncertainty, belief, belief model tokens) have one row
+per belief model of the run (`belief/{model}/`), tagged in the `belief_model` column of `metrics.md` ("-" on the
+generation's rows), with their per-query columns of `per_query.csv` prefixed `{model}/` and their sections (status
+calibration, issues) titled `({model})`. Each evaluation scores every belief model found; the judge verdicts are
+cached per model, so adding a belief model costs only its own judge calls.
 
 | Group | Measures | Datasets |
 |---|---|---|
@@ -383,20 +415,26 @@ answer and documents) and an aggregate (gold answer only).
 Each row comes twice: per query (each query's mean over its beliefs, then the mean over queries, CI over queries)
 and `(c)`, the mean over every belief. Below the table, the status calibration: per final status, how many
 beliefs had it and how many have a gold answer as most probable candidate (the Brier's y). A candidate is a gold answer when it matches one, else when the
-judge (`judge_model`) says so, cached in `eval/belief/judge_cache.jsonl`. For diagnosis, `eval/belief/events.csv`
+judge (`judge_model`) says so, cached in `eval/belief/{model}/judge_cache.jsonl`. For diagnosis, `eval/belief/{model}/events.csv`
 has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
 `not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`
 (every member or hop reached).
 
-The terminal log prints one block, one line per group:
+The terminal log prints one block: one line per group of the generation, then per belief model its lines:
 
 ```
-EVALUATION  trqa / wiki2_test / glm / qwen3.6-27b (gold beliefs)  (n=200)
+EVALUATION  trqa / wiki2_test / glm / belief models: qwen3.5_9b, qwen3.6_27b  (n=200)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
+trajectory   searches 9.2 | agent tok 41234 | forced 4
+[qwen3.5_9b]
+uncertainty  s_T AUROC 0.710 [0.63,0.78] Brier 0.220 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
+belief       files 200 | update calls 1840 | format gate failed 0.020 | belief tok 18230
+belief gold  gold change 0.540 | control change 0.050 | recall 0.710 | reached 0.470 (gold seen 0.680) | status Brier 0.210 (n 200)
+[qwen3.6_27b]
 uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
-belief       gold change 0.620 | control change 0.030 | recall 0.710 | reached 0.520 (gold seen 0.730) | status Brier 0.180 (n 200)
-trajectory   searches 9.2 | agent tok 41234 | belief tok 23102 | forced 4
+belief       files 200 | update calls 1840 | format gate failed 0.010 | belief tok 23102
+belief gold  gold change 0.620 | control change 0.030 | recall 0.710 | reached 0.520 (gold seen 0.730) | status Brier 0.180 (n 200)
 ```
 
 Every run can be compared in one table with `analysis/collect_results.py --root run_outputs` (one row per run, the
@@ -413,7 +451,7 @@ utils/run_files/
 ├── generation.py    generation/{qid}.md
 ├── trajectory.py    trajectory/{qid}.jsonl, scan_queries (finished queries)
 ├── trajectory_logger.py  streamed trajectory lines and the step shaping both writers share
-├── belief.py        belief/{qid}.jsonl (schema, SCHEMA_VERSION), save/read/load, believed_queries
+├── belief.py        belief/{model}/{qid}.jsonl (schema, SCHEMA_VERSION), save/read/load, believed_queries
 └── run_config.py    run directory name, run_config.json, passage cut of a run
 
 src/evaluation/
@@ -467,7 +505,7 @@ pip install --no-deps "auto-argue @ git+https://github.com/hltcoe/auto-argue.git
 ```
 $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{model}/
 ├── run_config.json                 every resolved setting: dataset, agent (temperature included), searcher
-│                                   (generate stage), belief_model (belief stage), evaluation
+│                                   (generate stage), belief_models ({model: settings}, belief stage), evaluation
 ├── retrieval/
 │   ├── surfaced/{qid}.trec         raw retriever output (all iterations, col 6 = iter_N)
 │   ├── seen/{qid}.trec             docs shown to the LLM
@@ -476,14 +514,15 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 ├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, the search_step of a search
 │   │                               iteration), then the meta line (counts, agent data, agent_generation)
 │   └── {qid}.md                    the same trajectory, human-readable, written live
-├── belief/{qid}.jsonl              belief stage: meta line (beliefs) + one line per search iteration + final line
+├── belief/{model}/                 belief stage, one folder per belief model (--belief-model short name)
+│   ├── {qid}.jsonl                 meta line (beliefs) + one line per search iteration + final line
 │   └── {qid}.md                    the same belief, human-readable
 └── eval/                           the evaluation, written by every stage
-    ├── metrics.md                  every measure: group | metric | value | ci_low | ci_high | n
-    ├── per_query.csv               every per-query value of every group
+    ├── metrics.md                  every measure: group | belief_model | metric | value | ci_low | ci_high | n
+    ├── per_query.csv               every per-query value of every group (belief model columns: {model}/...)
     ├── generation/                 accuracy.jsonl: per-query verdicts (datasets with answers); or Auto-ARGUE
     │                               inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv (reports)
-    └── belief/                     belief update evaluation: events.csv (one row per gold or control event),
+    └── belief/{model}/             belief update evaluation: events.csv (one row per gold or control event),
                                     judge_cache.jsonl
 ```
 
@@ -495,6 +534,6 @@ evaluation output, rebuilt by every evaluation and never read by inference or tr
 `summary.json` of earlier code.
 
 A query is generated when its `trajectory/{qid}.jsonl` ends with the meta line, which is written after every other
-file of the query; its belief is done when `belief/{qid}.jsonl` exists (written last, atomically). The meta line's
+file of the query; its belief by a belief model is done when `belief/{model}/{qid}.jsonl` exists (written last, atomically). The meta line's
 `agent_generation` is the generation as the agent returned it, the answer the belief stage reads; `generation/{qid}.md`
 has the References section the pipeline appends, with docid citations renumbered `[N]`.

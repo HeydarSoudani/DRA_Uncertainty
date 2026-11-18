@@ -53,9 +53,9 @@ Per request:
    TRQA with gold reads its gold bank, made on demand from the
    intermediate info (:mod:`indexing_corpus_dataset.training_datasets.gold.trqa`);
    its criteria name every member, so its entity reachability is near 1 by
-   construction, a check of the gold.  ``belief_model``, ``max_beliefs`` and
-   ``belief_source`` default to the run config
-   (``--config``, ``dra_inference.yaml``), so the analysis reads the
+   construction, a check of the gold.  ``belief_model`` defaults to the
+   default belief model's LLM, ``max_beliefs`` and ``belief_source`` to the
+   run config (``--config``, ``dra_inference.yaml``), so the analysis reads the
    criteria the runs use.  A request whose extraction failed (a reply
    truncated twice included), or without gold criteria, is left out, so
    every judgment is of the criteria a run uses.
@@ -143,6 +143,7 @@ from indexing_corpus_dataset.layout import (
 from reasoner_component.factory import create_generator, disable_native_thinking
 from belief_model_component import CLOSED, BeliefSource, check_max_beliefs, span_in_passage, split_span
 from utils.cli_setup import load_run_config
+from utils.config import BELIEF_MODEL_TO_LLM, DEFAULT_BELIEF_MODEL
 from utils.text_utils import doc_text, doc_title, parse_json_object
 
 logger = logging.getLogger(__name__)
@@ -700,9 +701,10 @@ def run(args: argparse.Namespace) -> None:
     if args.grades and spec.reachability != "documents":
         raise SystemExit(f"--grades is for document reachability; {args.dataset} has reachability {spec.reachability}")
     config = load_run_config(args.config)
-    for field in ("belief_model", "max_beliefs", "belief_source"):
+    for field in ("max_beliefs", "belief_source"):
         if getattr(args, field) is None:
             setattr(args, field, config[field])
+    args.belief_model = args.belief_model or BELIEF_MODEL_TO_LLM[DEFAULT_BELIEF_MODEL]
     args.judge_model = args.judge_model or args.belief_model
     apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_beliefs"))
     check_max_beliefs(args.dataset, args.max_beliefs)
@@ -738,9 +740,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus, layout.default_corpus_path).")
 
     # ── Criteria and judge ──────────────────────────────────────────────────
-    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that belief_model, max_beliefs and belief_source are read from.")
+    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that max_beliefs and belief_source are read from.")
     parser.add_argument("--belief-source", type=str, default=None, choices=BELIEF_SOURCES, help="gold | silver (None = the config's belief_source); a choice on TRQA only (output folder {dataset}_{split}-{source}), elsewhere the dataset's criteria.")
-    parser.add_argument("--belief-model", type=str, default=None, help="Belief model LLM, which extracts the criteria (None = the config's belief_model).")
+    parser.add_argument("--belief-model", type=str, default=None, help="Belief model LLM id, which extracts the criteria (None = the default belief model's LLM, utils/config.py BELIEF_MODEL_TO_LLM).")
     parser.add_argument("--max-criteria", type=int, default=None, help="Cap on silver criteria only: TRQA with --belief-source silver (None = the config's max_beliefs, else the dataset's; refused on a dataset whose criteria are gold).")
     parser.add_argument("--judge-model", type=str, default=None, help="Reachability judge LLM (None = the criteria-extraction LLM).")
 

@@ -2,10 +2,12 @@
 
 Reads every run under ``--root`` that has an ``eval/metrics.md``
 (``evaluation.metrics_file``, written by ``dra_inference.py`` and its
-``--eval-only``) with its ``run_config.json``, and writes one table: a row
-per run (dataset, split, agent, belief source, finished and
-unfinished queries), a column
-per measure.
+``--stage eval``) with its ``run_config.json``, and writes one table: a row
+per run and belief model (dataset, split, agent, belief model, belief
+source, finished and unfinished queries), a column per measure.  The
+generation's measures (``belief_model`` "-" in ``metrics.md``) repeat on
+each belief model's row; a run without beliefs has one row, belief model
+"-".
 
 Usage::
 
@@ -31,8 +33,9 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "src"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from evaluation.metrics_file import GROUPS, METRICS_FILE, fmt, read_header, read_metrics, table  # noqa: E402
-from utils.run_files.run_config import read_run_config  # noqa: E402
+from evaluation.metrics_file import (GROUPS, METRICS_FILE, NO_MODEL, fmt, read_header, read_metrics,  # noqa: E402
+                                    table)
+from utils.run_files.run_config import belief_config_of, read_run_config  # noqa: E402
 
 #: The headline measures, (group, metric), in column order.
 HEADLINE: Tuple[Tuple[str, str], ...] = (
@@ -55,44 +58,53 @@ HEADLINE: Tuple[Tuple[str, str], ...] = (
     ("trajectory", "agent tokens"),
     ("trajectory", "belief tokens"),
 )
-RUN_COLUMNS = ("dataset", "split", "agent", "belief source", "queries", "unfinished")
+RUN_COLUMNS = ("dataset", "split", "agent", "belief model", "belief source", "queries", "unfinished")
 
 
-def run_identity(run_dir: Path) -> Dict[str, str]:
+def run_identity(run_dir: Path, model: str) -> Dict[str, str]:
+    """The identity of the run and its belief model *model* (``-``: none)."""
     config = read_run_config(run_dir)
-    data, agent, belief = config.get("dataset") or {}, config.get("agent") or {}, config.get("belief_model") or {}
+    data, agent = config.get("dataset") or {}, config.get("agent") or {}
+    belief = belief_config_of(config, model) or {}
     return {
         "dataset": data.get("dataset") or "?",
         "split": data.get("split") or "-",
         "agent": agent.get("policy_model") or "?",
+        "belief model": model,
         "belief source": belief.get("belief_source_effective") or "-",
     }
 
 
 def collect(root: Path, groups: List[str], all_metrics: bool,
             with_ci: bool) -> Tuple[List[str], List[Dict[str, str]], List[Dict[str, str]]]:
-    """The columns and one row per run under *root*: the markdown cells (3
-    digits, with the CI when *with_ci*) and the CSV cells (4 digits, no CI)."""
+    """The columns and one row per run and belief model under *root*: the
+    markdown cells (3 digits, with the CI when *with_ci*) and the CSV cells
+    (4 digits, no CI)."""
     md_rows, csv_rows, seen_metrics = [], [], []
     for path in sorted(root.rglob(METRICS_FILE)):
         run_dir = path.parent.parent   # {run_dir}/eval/metrics.md
         header = read_header(path)
-        ident = {**run_identity(run_dir), "run": str(run_dir.relative_to(root)),
-                 "queries": header.get("queries", ""), "unfinished": header.get("unfinished", "")}
-        md_row, csv_row = dict(ident), dict(ident)
-        for r in read_metrics(path):
-            if r.group not in groups or (not all_metrics and (r.group, r.metric) not in HEADLINE):
-                continue
-            key = f"{r.group}: {r.metric}"
-            if key not in seen_metrics:
-                seen_metrics.append(key)
-            cell = fmt(r.value, 3)
-            if with_ci and r.ci_low is not None:
-                cell += f" [{fmt(r.ci_low, 2)}, {fmt(r.ci_high, 2)}]"
-            md_row[key] = cell
-            csv_row[key] = fmt(r.value)
-        md_rows.append(md_row)
-        csv_rows.append(csv_row)
+        rows = read_metrics(path)
+        models = list(dict.fromkeys(r.belief_model for r in rows if r.belief_model != NO_MODEL)) or [NO_MODEL]
+        for model in models:
+            ident = {**run_identity(run_dir, model), "run": str(run_dir.relative_to(root)),
+                     "queries": header.get("queries", ""), "unfinished": header.get("unfinished", "")}
+            md_row, csv_row = dict(ident), dict(ident)
+            for r in rows:
+                if r.belief_model not in (NO_MODEL, model):
+                    continue
+                if r.group not in groups or (not all_metrics and (r.group, r.metric) not in HEADLINE):
+                    continue
+                key = f"{r.group}: {r.metric}"
+                if key not in seen_metrics:
+                    seen_metrics.append(key)
+                cell = fmt(r.value, 3)
+                if with_ci and r.ci_low is not None:
+                    cell += f" [{fmt(r.ci_low, 2)}, {fmt(r.ci_high, 2)}]"
+                md_row[key] = cell
+                csv_row[key] = fmt(r.value)
+            md_rows.append(md_row)
+            csv_rows.append(csv_row)
     if all_metrics:
         metric_cols = seen_metrics
     else:
@@ -119,7 +131,7 @@ def main() -> None:
         writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(csv_rows)
-    print(f"{len(md_rows)} runs -> {args.out.with_suffix('.md')} and {args.out.with_suffix('.csv')}")
+    print(f"{len(md_rows)} rows (run, belief model) -> {args.out.with_suffix('.md')} and {args.out.with_suffix('.csv')}")
 
 
 if __name__ == "__main__":

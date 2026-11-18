@@ -18,8 +18,9 @@ what the agent's turns showed:
   ``agent_generation``; ``generation/{qid}.md`` has the References section
   the pipeline appends, and its docid citations renumbered).
 
-Each query's belief goes to ``belief/{qid}.jsonl`` (``utils.run_files.save_belief``)
-and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log_view``).
+Each query's belief goes to ``belief/{model}/{qid}.jsonl``, one folder per
+belief model (``utils.run_files.save_belief``), and its readable view to
+``belief/{model}/{qid}.md`` (``belief_model_component.views.log_view``).
 A query whose belief file exists is done: the stage resumes.  A query
 whose beliefs or a belief call failed before any reply (the API, not the
 model) stops there and is not saved, so the next call runs it again; the
@@ -222,6 +223,7 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
 
 def run_belief_stage(
     run_dir: Path,
+    model_name: str,
     qids: List[str],
     *,
     build_model: Callable[[], Any],
@@ -236,6 +238,7 @@ def run_belief_stage(
 
     Args:
         run_dir: The run directory (its ``trajectory/`` and ``generation/``).
+        model_name: The belief model's short name (its folder ``belief/{model_name}/``).
         qids: The finished queries without a belief file.
         build_model: Builds one belief model (``orchestration.build_belief_model``,
             on the run's shared belief source); one per worker, built here
@@ -246,11 +249,11 @@ def run_belief_stage(
         workers: Belief threads (queries run at once), one bar each.
         verbose: Print each query's belief.
     """
-    from utils.run_files import BELIEF_DIR, save_belief
+    from utils.run_files import belief_dir as belief_dir_of, save_belief
     from indexing_corpus_dataset.doc_lookup import CorpusLookup
 
     run_dir = Path(run_dir)
-    belief_dir = run_dir / BELIEF_DIR
+    belief_dir = belief_dir_of(run_dir, model_name)
     belief_dir.mkdir(parents=True, exist_ok=True)
     lookup = CorpusLookup(corpus_path)
     lookup.ensure_index()
@@ -278,7 +281,7 @@ def run_belief_stage(
         # The .jsonl last: it marks the query as done.
         atomic_write_text(belief_dir / f"{qid}.md",
                           _belief_md(out["summary"], out["steps"], out["final"], qid, saved.question))
-        save_belief(run_dir, qid, saved.question, out["meta"], out["steps"], out["final"])
+        save_belief(run_dir, model_name, qid, saved.question, out["meta"], out["steps"], out["final"])
         return None
 
     # Verbose prints each query's belief, which live bars would scramble:

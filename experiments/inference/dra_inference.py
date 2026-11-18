@@ -32,11 +32,14 @@ Agentic workflows:
 Stages (--stage):
     generate   Run the agent on the queries without a finished trajectory, save
                its files, then evaluate the run.
-    belief     Run the belief model over the finished trajectories without a
-               belief file (orchestration.belief_stage: no agent, no retrieval;
-               document text from the corpus by id), then evaluate the run.
-               Other belief settings than the run's replace its beliefs.
-    eval       Evaluate the run from its saved files (judge verdicts reused).
+    belief     Run the belief model --belief-model over the finished
+               trajectories without a belief file of its own, in its folder
+               belief/{model}/ (orchestration.belief_stage: no agent, no
+               retrieval; document text from the corpus by id), then evaluate
+               the run.  One generation, many belief models: each has its own
+               folder; other settings of a model replace that model's beliefs only.
+    eval       Evaluate the run from its saved files (judge verdicts reused),
+               every belief model of the run.
     all        generate, then belief, then evaluate.
 
 Output structure: see OUTPUT STRUCTURE at the end of this file.
@@ -53,7 +56,7 @@ import multiprocessing
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -69,7 +72,7 @@ from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, reso
 from indexing_corpus_dataset.layout import BELIEF_SOURCES, DATASETS, DATASET_SPECS, OUTPUT_ROOT
 
 from deep_research_agents.agents import ALL_AGENTS
-from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
+from utils.config import BELIEF_MODEL_TO_LLM, DEFAULT_BELIEF_MODEL, POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
 from orchestration import (
     gpu_worker,
     quiet_logging,
@@ -89,7 +92,7 @@ from utils.cli_setup import (
     _sm_bool,
 )
 from utils.io_utils import setup_output_dirs
-from utils.run_files import BELIEF_DIR, QUERY_OUTPUT_DIRS, believed_queries, scan_queries
+from utils.run_files import QUERY_OUTPUT_DIRS, belief_dir, believed_queries, scan_queries
 from utils.run_files.run_config import (
     belief_config_diffs,
     build_belief_config,
@@ -102,7 +105,7 @@ from utils.run_files.run_config import (
     set_belief_config,
     update_run_config_evaluation,
 )
-from evaluation.metrics_file import BELIEF_EVAL_DIR
+from evaluation.metrics_file import belief_eval_dir
 from evaluation.runner import build_evaluators, evaluate_and_save, load_run_results
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
@@ -247,35 +250,11 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
         if not queries:
             print("All queries already generated")
 
-    if stage == "all" and queries and (kwargs["belief_model"] or "").startswith("vllm/"):
-        _check_belief_server_survives(kwargs["belief_model"])
-
     return RunPlan(
         dataset=dataset, split=file_data_set, query_key=query_key, queries=queries,
         all_questions=all_questions, qrels=qrels, answers=answers,
         run_dir=run_dir, limit=limit,
     )
-
-
-def _check_belief_server_survives(belief_model: str) -> None:
-    """``--stage all`` with a ``vllm/`` belief model: after generating, the
-    GPU release kills every process on the known server ports
-    (``VLLMServerManager.cleanup_ports``), so a belief model served on one
-    of them would be gone before the belief stage.  Stops before any query
-    runs."""
-    from urllib.parse import urlparse
-
-    from belief_model_component import belief_vllm_api_base
-    from utils.vllm_manager import VLLMServerManager
-
-    base = belief_vllm_api_base()
-    port = urlparse(base).port
-    if port in VLLMServerManager.cleanup_ports():
-        raise SystemExit(
-            f"--stage all with belief model {belief_model} at {base}: port {port} is cleared after the generate "
-            "stage, so the belief model's server would be killed before the belief stage. Run --stage generate, "
-            "then --stage belief, or serve the belief model on another port ($BELIEF_VLLM_API_BASE)."
-        )
 
 
 def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report", verbose: bool = True,
@@ -337,41 +316,41 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
 
 
 def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
-    """The belief stage: the belief model over the run's finished
-    trajectories without a belief file (``orchestration.belief_stage``).
+    """The belief stage of the belief model ``--belief-model``: the model
+    over the run's finished trajectories without a belief file of its own
+    (``orchestration.belief_stage``, ``belief/{model}/``); the other belief
+    models of the run are left as they are.
 
-    Its settings are the ``belief_model`` section of ``run_config.json``
-    (``build_belief_config``; the passage cut, retriever and agent are the
-    generate stage's, read from the file; the corpus is this call's, of
-    the run's dataset and split, ``check_run_dataset``); when they differ
-    from the saved ones, the run's beliefs (``belief/``, ``eval/belief/``)
-    are removed, then the new settings saved, and every query is run
-    again.  A belief file of an older schema is made again too.  With
-    ``--limit`` (``--stage all``), the queries this call generated come
-    first."""
-    from belief_model_component import build_belief_source, prepare_beliefs
-    from orchestration import build_belief_model
-    from orchestration.belief_stage import run_belief_stage
-
+    Its settings are its entry of the ``belief_models`` section of
+    ``run_config.json`` (``build_belief_config``; the passage cut, retriever
+    and agent are the generate stage's, read from the file; the corpus is
+    this call's, of the run's dataset and split, ``check_run_dataset``);
+    when they differ from the saved ones, the model's beliefs
+    (``belief/{model}/``, ``eval/belief/{model}/``) are removed, then the
+    new settings saved, and every query is run again.  A belief file of an
+    older schema is made again too.  With ``--limit`` (``--stage all``),
+    the queries this call generated come first."""
     run_dir = Path(plan.run_dir)
+    name = kwargs["belief_model_name"]
     saved = read_run_config(run_dir)
     max_passage_tokens = saved["agent"]["max_passage_tokens"]
     section = build_belief_config(
         plan.dataset, max_passage_tokens=max_passage_tokens,
         **{k: kwargs[k] for k in ("belief_model", "max_beliefs", "belief_source")},
     )
-    diffs = belief_config_diffs(run_dir, section)
+    diffs = belief_config_diffs(run_dir, name, section)
     if diffs:
-        print(f"\n[Belief] Other belief settings than the run's ({'; '.join(diffs)}): "
-              f"removing its beliefs (belief/, {BELIEF_EVAL_DIR}/) and running every query again")
+        print(f"\n[Belief] Other {name} settings than the run's ({'; '.join(diffs)}): removing its beliefs "
+              f"({belief_dir(run_dir, name).relative_to(run_dir)}/, {belief_eval_dir(name)}/) "
+              "and running every query again")
         # Removed before the new settings are saved: an interrupted call
         # never leaves old beliefs under the new settings.
-        for name in (BELIEF_DIR, BELIEF_EVAL_DIR):
-            shutil.rmtree(run_dir / name, ignore_errors=True)
-    set_belief_config(run_dir, section)
+        for path in (belief_dir(run_dir, name), run_dir / belief_eval_dir(name)):
+            shutil.rmtree(path, ignore_errors=True)
+    set_belief_config(run_dir, name, section)
 
     finished = scan_queries(run_dir)[0]
-    done, stale = believed_queries(run_dir)
+    done, stale = believed_queries(run_dir, name)
     todo = [qid for qid in plan.all_questions if qid in finished and qid not in done]
     todo.sort(key=lambda qid: qid not in plan.queries)   # this call's generated queries first
     if done:
@@ -384,11 +363,38 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
         print("[Belief] No finished trajectory without a belief file")
         return
 
+    if not kwargs["belief_model"].startswith("vllm/"):
+        _believe(plan, todo, saved, max_passage_tokens, verbose, kwargs)
+        return
+    # A locally served belief model: its own vLLM server for this stage only
+    # (started after the generate stage released its GPUs), more queries at
+    # once for belief init (the server batches them).
+    from utils.vllm_manager import belief_server
+    with belief_server(kwargs["belief_model"]) as api_base:
+        os.environ["BELIEF_VLLM_API_BASE"] = api_base
+        _believe(plan, todo, saved, max_passage_tokens, verbose, kwargs, prepare_workers=kwargs["belief_workers"])
+
+
+def _believe(plan: RunPlan, todo: List[str], saved: dict, max_passage_tokens: int, verbose: bool, kwargs: dict,
+             prepare_workers: Optional[int] = None) -> None:
+    """Make the beliefs of *todo* (``prepare_beliefs``, *prepare_workers*
+    queries at once, None = its default), then run the belief model over
+    their saved trajectories (``run_belief_stage``)."""
+    from belief_model_component import build_belief_source, prepare_beliefs
+    from orchestration import build_belief_model
+    from orchestration.belief_stage import run_belief_stage
+
+    run_dir = Path(plan.run_dir)
+    name = kwargs["belief_model_name"]
     # Beliefs, made and banked before the workers start; the workers'
     # belief models share this source and read every query's from the bank.
     source = build_belief_source(plan.dataset, plan.split, belief_model=kwargs["belief_model"],
                                  max_beliefs=kwargs["max_beliefs"], belief_source=kwargs["belief_source"])
-    prepare_beliefs(source, {qid: plan.all_questions[qid] for qid in todo})
+    questions = {qid: plan.all_questions[qid] for qid in todo}
+    if prepare_workers:
+        prepare_beliefs(source, questions, workers=prepare_workers)
+    else:
+        prepare_beliefs(source, questions)
 
     def build_model():
         return build_belief_model(
@@ -396,9 +402,10 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
             qrels=plan.qrels, max_passage_tokens=max_passage_tokens,
         )
 
-    print(f"\n[Belief] Running the belief model on {len(todo)} queries, saving to {run_dir}/belief/...")
+    print(f"\n[Belief] Running the belief model {name} on {len(todo)} queries, "
+          f"saving to {belief_dir(run_dir, name)}/...")
     n_done = run_belief_stage(
-        run_dir, todo, build_model=build_model, corpus_path=kwargs["corpus_path"],
+        run_dir, name, todo, build_model=build_model, corpus_path=kwargs["corpus_path"],
         retriever_name=saved["searcher"]["retriever_name"], policy_model=saved["agent"]["policy_model"],
         workers=kwargs["belief_workers"], verbose=verbose,
     )
@@ -636,7 +643,6 @@ def _resolve_args(args, extras):
     # ── Merge file-backed config (+ any CLI overrides) onto args ────────────
     cli_subset = args.subset
     cli_belief_source = args.belief_source
-    cli_belief_model = args.belief_model
     config = load_run_config(args.config)
     overrides = parse_cli_overrides(extras)
     apply_config_to_args(args, config, overrides)
@@ -644,8 +650,11 @@ def _resolve_args(args, extras):
         args.subset = cli_subset
     if cli_belief_source is not None:
         args.belief_source = cli_belief_source
-    if cli_belief_model is not None:
-        args.belief_model = cli_belief_model
+
+    # ── Map --belief-model to its LLM (the full id is what the bank and run_config record);
+    # the short name names the model's folder (belief/{name}/) and run_config entry ──
+    args.belief_model_name = args.belief_model
+    args.belief_model = BELIEF_MODEL_TO_LLM[args.belief_model]
 
     # ── Derive --llm-model from --policy-model ────────────────────────────-
     args.llm_model = POLICY_MODEL_TO_LLM[args.policy_model]
@@ -842,16 +851,16 @@ def parse_args():
     )
 
     # ── Stage ───────────────────────────────────────────────────────────────
-    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model over the finished trajectories without a belief file (belief/{qid}.jsonl and .md; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; belief settings (--belief-model, --belief-source) other than the run's replace its beliefs. 'eval': the evaluation only, from the saved files (every evaluator of the dataset; judge verdicts reused from eval/generation/ and eval/belief/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same eval/metrics.md and eval/per_query.csv.")
+    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model --belief-model over the finished trajectories without a belief file of its own (belief/{model}/{qid}.jsonl and .md, one folder per belief model; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; other settings (--belief-source, --max-beliefs) than the model's saved ones replace that model's beliefs only. 'eval': the evaluation only, from the saved files (every evaluator of the dataset, every belief model of the run; judge verdicts reused from eval/generation/ and eval/belief/{model}/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same eval/metrics.md and eval/per_query.csv.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
     # ── Generation (the belief and eval stages need the same values to find the run directory) ──
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
     parser.add_argument("--subset", type=_none_if_null, default=None, help="Dataset subset/collection (unset or null = the dataset's default in layout.DATASET_SPECS). trqa: wiki1|wiki2|ecommerce; neuclir: news|technical; browsecomp_plus: test; ragtime: unused.")
-    parser.add_argument("--policy-model", type=str, default="oss_20b", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
+    parser.add_argument("--policy-model", type=str, default="glm", choices=list(POLICY_MODEL_TO_LLM), help="Agent to run; the LLM is selected automatically from the agent. cpm_report = Writing-as-Reasoning (report generation); searchr1/research/stepsearch/react/selfask/searcho1 = Reasoning-augmented retrieval; glm/oss_20b/oss_120b/tongyi = vendor-specific ReAct agents.")
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--workers", type=int, default=1, help="Query-level worker processes of the generate stage; each loads its own retriever and agent. On a GPU machine one worker per GPU (capped at the GPUs, or at --gpu-ids); on a CPU machine CPU processes (the retriever on CPU, one copy in RAM each). 0 = auto: the GPU count, 1 without GPU. Ignored by the belief and eval stages (no GPU; the belief stage runs --belief-workers threads).")
     # ── Belief ──────────────────────────────────────────────────────────────
-    parser.add_argument("--belief-model", type=str, default=None, help="Backbone LLM of the belief model, for its three calls: belief init (banked under this model), belief update and final score. A vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE). Unset = belief_model in --config.")
+    parser.add_argument("--belief-model", type=str, default=DEFAULT_BELIEF_MODEL, choices=list(BELIEF_MODEL_TO_LLM), help="Belief model (its folder belief/{name}/ of the run, one per model); its LLM is selected from utils/config.py BELIEF_MODEL_TO_LLM: qwen3.5_4b (Qwen/Qwen3.5-4B on local vLLM: the belief stage starts its server on GPU 0, port 7010, and stops it after; needs a GPU), qwen3.5_9b (openrouter/qwen/qwen3.5-9b) or qwen3.6_27b (openrouter/qwen/qwen3.6-27b). One LLM for its three calls: belief init (banked under the LLM id), belief update and final score.")
     parser.add_argument("--belief-source", type=str, default=None, choices=list(BELIEF_SOURCES), help="Beliefs of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by --belief-model). A choice only on TRQA and trqa_validation; elsewhere the dataset's own source is used. Unset = belief_source in --config.")
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap the queries each stage runs (for quick tests): the generate stage's queries left to generate, the belief stage's trajectories left without a belief file")
@@ -875,8 +884,9 @@ if __name__ == "__main__":
 #
 #   One home per fact: each file below holds its facts only.
 #     ├── run_config.json       every resolved setting: dataset, agent, searcher (generate
-#     │                         stage; a resume with other settings is refused), belief_model
-#     │                         (belief stage; other settings replace the beliefs), evaluation
+#     │                         stage; a resume with other settings is refused), belief_models
+#     │                         ({model: settings}, belief stage; other settings of a model
+#     │                         replace that model's beliefs), evaluation
 #     ├── retrieval/
 #     │   ├── surfaced/{qid}.trec   surfaced-doc TREC (raw retriever output, col 6 = iter_N)
 #     │   ├── seen/{qid}.trec       seen-doc TREC (docs shown to the LLM)
@@ -888,25 +898,29 @@ if __name__ == "__main__":
 #     │   │                     agent_generation); written last: the meta line marks the
 #     │   │                     query as generated
 #     │   └── {qid}.md          the same trajectory, human-readable, written live
-#     ├── belief/               belief stage (orchestration.belief_stage)
+#     ├── belief/{model}/       belief stage (orchestration.belief_stage), one folder per
+#     │   │                     belief model (--belief-model short name)
 #     │   ├── {qid}.jsonl       meta line + one line per search iteration + final line
 #     │   │                     (utils.run_files.belief); written last: marks the query as done
 #     │   └── {qid}.md          the same belief, human-readable
 #     └── eval/                 the evaluation (every stage, evaluation.runner)
-#         ├── metrics.md        one table: group | metric | value | ci_low | ci_high | n
-#         │                     (retrieval, generation, uncertainty, belief, trajectory)
-#         ├── per_query.csv     every per-query value of every group
+#         ├── metrics.md        one table: group | belief_model | metric | value | ci_low |
+#         │                     ci_high | n (retrieval, generation, uncertainty, belief,
+#         │                     trajectory); belief_model "-" on the rows of the generation,
+#         │                     one row per belief model on the uncertainty and belief rows
+#         ├── per_query.csv     every per-query value of every group (a belief model's
+#         │                     columns prefixed "{model}/")
 #         ├── generation/       accuracy.jsonl: per-query answer correctness (datasets with
 #         │                     answers); or Auto-ARGUE inputs, cached judgments and
 #         │                     per-query scores.tsv (report datasets)
-#         └── belief/           belief update evaluation: events.csv, judge_cache.jsonl
+#         └── belief/{model}/   belief update evaluation: events.csv, judge_cache.jsonl
 #
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
 #   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 1 --workers 1
 #   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --workers 1
-#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1
+#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1 --workers 1
 #   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1
 
 #   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 2 --workers 2 --quiet

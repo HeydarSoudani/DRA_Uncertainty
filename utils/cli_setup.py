@@ -65,8 +65,7 @@ FILE_BACKED_DEFAULTS = {
     "max_extend_steps": 5,
     "hard_mode": True,
     "max_passage_tokens": MAX_PASSAGE_TOKENS,
-    # Belief model (the belief stage)
-    "belief_model": "openrouter/qwen/qwen3.6-27b",
+    # Belief model (the belief stage; the model itself is --belief-model)
     "max_beliefs": None,
     "belief_source": "gold",
     "belief_workers": 8,
@@ -300,6 +299,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, workers: int, verbose:
     pipeline_kwargs["max_passage_tokens"] = args.max_passage_tokens
 
     pipeline_kwargs["belief_model"] = args.belief_model
+    pipeline_kwargs["belief_model_name"] = args.belief_model_name
     pipeline_kwargs["max_beliefs"] = args.max_beliefs
     pipeline_kwargs["belief_source"] = args.belief_source
     pipeline_kwargs["belief_workers"] = args.belief_workers
