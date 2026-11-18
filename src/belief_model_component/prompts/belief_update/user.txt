@@ -1,0 +1,11 @@
+Query: {query}
+
+Previous belief state:
+{criteria}
+
+Current observation:
+{turns}
+
+{passages}
+
+Write the new belief state.

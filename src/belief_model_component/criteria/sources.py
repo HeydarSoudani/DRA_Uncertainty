@@ -23,7 +23,8 @@ Each criterion is closed (one fact with one answer: a clue, a hop, a
 member's value), an aggregate (the target of a multi-clue query, the
 entity that meets the clues before it, or the computation of a
 multi-member query), or, in a report request, an aspect of the topic.  A criterion refers to criteria before it by their
-ids ("born in c1", "the composer that meets c1 to c3"), never to a
+ids ("born in B1", "the composer that meets B1 to B3"; "c1" in banks
+before the B ids; the criteria keep the ids "c<k>"), never to a
 later one (``parsing.forward_refs``).  A capped list keeps the answer and
 the criteria closest to it (``parsing.cap_chain``); a multi-clue list is
 checked against its layout (``parsing.clue_layout``).  A multi-member query lists its members as
@@ -48,10 +49,13 @@ from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILV
 from utils.text_utils import parse_json_object
 
 from ..core.types import CRITERION_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Criterion
-from ..prompts import CRITERIA_INIT_SYSTEMS, criteria_init_user
+from ..prompts import BELIEF_INIT_SYSTEMS, belief_init_user
 from .parsing import cap_chain, clue_layout, criterion_kinds, forward_refs, member_layout, salvage_items
 
 logger = logging.getLogger(__name__)
+
+# The list of the initializer's reply (``prompts/belief_init/system.txt``).
+_REPLY_KEY = "beliefs"
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +88,7 @@ class LLMCriteriaSource(CriteriaSource):
 
     The dataset's query shape (multi-clue, multi-hop, multi-member or
     multi-aspect) picks the prompt and the kind of each criterion; the
-    model only lists the criteria, as strings.  The shape is saved in
+    model only lists the criteria (``{id, text}`` each; the ids are code's).  The shape is saved in
     *info* as ``query_shape``.
 
     Args:
@@ -114,7 +118,7 @@ class LLMCriteriaSource(CriteriaSource):
         model_name: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        query_shape: str = "multi_clue",
+        query_shape: str = MULTI_CLUE,
         kind: str = SILVER_CRITERIA,
     ) -> None:
         if query_shape not in QUERY_SHAPES:
@@ -129,7 +133,7 @@ class LLMCriteriaSource(CriteriaSource):
                              "(a member and the aggregate)")
         self._shape = query_shape
         self.kind = kind
-        self._system = CRITERIA_INIT_SYSTEMS[query_shape]
+        self._system = BELIEF_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
         self.model_name = model_name
         self._max_criteria = max_criteria
@@ -141,7 +145,7 @@ class LLMCriteriaSource(CriteriaSource):
         """What, besides the query, decides the criteria: the bank key of
         ``BankedCriteriaSource``.  ``prompt`` hashes the system prompt and
         the user message without the query."""
-        prompt = self._system + "\n" + criteria_init_user(self._shape, "", self._max_criteria)
+        prompt = self._system + "\n" + belief_init_user(self._shape, "", self._max_criteria)
         return {
             "model": self.model_name,
             "query_shape": self._shape,
@@ -153,7 +157,7 @@ class LLMCriteriaSource(CriteriaSource):
         """The extractor's chat messages for *query*."""
         return [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": criteria_init_user(self._shape, query, self._max_criteria)},
+            {"role": "user", "content": belief_init_user(self._shape, query, self._max_criteria)},
         ]
 
     def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
@@ -171,20 +175,20 @@ class LLMCriteriaSource(CriteriaSource):
         info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "criteria_kind": self.kind,
                                 "errors": []}
         data = parse_json_object(raw or "")
-        if data is None or not isinstance(data.get("criteria"), list):
+        if data is None or not isinstance(data.get(_REPLY_KEY), list):
             # Keep the complete items of malformed or truncated output.
-            body = (raw or "").partition('"criteria"')[2].partition("[")[2]
+            body = (raw or "").partition(f'"{_REPLY_KEY}"')[2].partition("[")[2]
             salvaged = salvage_items(body)
             if not salvaged:
-                info["errors"].append("parse: no JSON object with a 'criteria' list")
+                info["errors"].append(f"parse: no JSON object with a '{_REPLY_KEY}' list")
                 info["raw"] = raw
                 return [], info
             info["warnings"] = [f"parse: invalid JSON, kept {len(salvaged)} complete items"]
             info["salvaged"] = True
-            data = {"criteria": salvaged}
+            data = {_REPLY_KEY: salvaged}
 
         items: List[str] = []
-        for item in data["criteria"]:
+        for item in data[_REPLY_KEY]:
             if isinstance(item, dict):
                 item = item.get("text") or ""
             item = str(item).strip()
@@ -366,13 +370,6 @@ class BankedCriteriaSource(CriteriaSource):
 
 # Model name in the criteria info of gold criteria (``GoldCriteriaSource``).
 GOLD_CRITERIA_MODEL = "gold"
-
-
-# The annotation level of a query whose gold criteria have every gold
-# answer and document (training_datasets/gold/annotations.py); belief model training
-# scores only such queries.  The belief model uses the gold criteria of any
-# level.
-GOLD_CRITERIA_LEVEL = "full"
 
 
 class GoldCriteriaSource(CriteriaSource):

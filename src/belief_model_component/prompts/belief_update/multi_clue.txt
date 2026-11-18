@@ -1,30 +1,22 @@
----terms---
-  The parts of a criterion are the conditions its wording sets on its answer, the type of entity it asks for included.
-- Candidate: one possible answer of a criterion, named specifically.
-
 ---rules---
-6. When a candidate's support changes, also give the competing candidates whose belief status changes with it.
-7. The aggregate criterion takes no observation and no update: its candidates follow from the criteria before it.
+- Every clue belief is answered by the target: name a candidate the same way on every clue belief where it appears.
+- A belief that only combines earlier beliefs ("the painter that meets B1 to B2") takes no observation.
 
 ---example---
 Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
-Criteria, with their current candidates:
-c1 (one answer): the painter who was born in a coastal town
-  (no candidate)
-  proposed: "Lars Ek"
-c2 (one answer): the painter who won the Ostra Prize in the 1920s
-  "Erik Lind": probable
-    + "Erik Lind, a painter, received the Ostra Prize" [Erik Lind]
-  proposed: "Anna Holm"
-c3 (aggregate): the painter that meets c1 to c2
-  (no candidate)
+Previous belief state:
+B1: It is unknown which candidate addresses the painter who was born in a coastal town.
+  proposed: Lars Ek
+B2: It is possible that Erik Lind addresses the painter who won the Ostra Prize in the 1920s.
+  + Erik Lind: "Erik Lind, a painter, received the Ostra Prize" [Erik Lind]
+  proposed: Anna Holm
+B3: It is unknown which candidate addresses the painter that meets B1 to B2.
 
-The agent's reasoning since the last update:
+Current observation:
 [t2]
 Anna Holm won the Ostra Prize, but I am not sure about the decade. Lars Ek was born inland, so he does not fit. I should check the list of winners.
 
-Passages:
 [d2] Ostra Prize
 In 1927 the Ostra Prize for painting went to Maja Strand.
 
@@ -34,19 +26,16 @@ Anna Holm (1890-1960) was a painter born in the coastal town of Vik. She won the
 Output:
 {
   "reasoning_observations": [
-    {"id": "c2", "candidate": "Anna Holm", "span": "Anna Holm won the Ostra Prize, but I am not sure about the decade", "agent_claim": "possible"},
-    {"id": "c1", "candidate": "Lars Ek", "span": "Lars Ek was born inland, so he does not fit", "agent_claim": "rejected"}
+    {"id": "B2", "candidate": "Anna Holm", "span": "Anna Holm won the Ostra Prize, but I am not sure about the decade", "agent_claim": "possible"},
+    {"id": "B1", "candidate": "Lars Ek", "span": "Lars Ek was born inland, so he does not fit", "agent_claim": "rejected"}
   ],
   "passage_observations": [
-    {"id": "c2", "passage": "d2", "spans": ["In 1927 the Ostra Prize for painting went to Maja Strand"]},
-    {"id": "c1", "passage": "d3", "spans": ["Anna Holm (1890-1960) was a painter born in the coastal town of Vik"]},
-    {"id": "c2", "passage": "d3", "spans": ["She won the Ostra Prize in 1934"]}
+    {"id": "B2", "passage": "d2", "candidate": "Maja Strand", "stance": "+", "spans": ["In 1927 the Ostra Prize for painting went to Maja Strand"]},
+    {"id": "B1", "passage": "d3", "candidate": "Anna Holm", "stance": "+", "spans": ["Anna Holm (1890-1960) was a painter born in the coastal town of Vik"]},
+    {"id": "B2", "passage": "d3", "candidate": "Anna Holm", "stance": "-", "spans": ["She won the Ostra Prize in 1934"]}
   ],
-  "candidates": [
-    {"id": "c1", "candidate": "Lars Ek", "support": [], "against": [], "reason": "Was proposed: the reasoning rejects him, as he was born inland, and no passage supports him.", "belief_status": "removed"},
-    {"id": "c1", "candidate": "Anna Holm", "support": ["d3"], "against": [], "reason": "New: d3 states that she was a painter born in the coastal town of Vik, so its support states every part directly, and no other candidate has support, but only one source states it.", "belief_status": "almost certain"},
-    {"id": "c2", "candidate": "Anna Holm", "support": [], "against": ["d3"], "reason": "Was proposed: d3 states that she won the Ostra Prize in 1934, not in the 1920s, so a passage states that she fails a part.", "belief_status": "removed"},
-    {"id": "c2", "candidate": "Erik Lind", "support": [], "against": [], "reason": "Was probable: Maja Strand now has stronger support, since d2 states the decade for her, while his support does not state the decade.", "belief_status": "unlikely"},
-    {"id": "c2", "candidate": "Maja Strand", "support": ["d2"], "against": [], "reason": "New: d2 states that she won the Ostra Prize for painting in 1927, which implies she is a painter, so her support is the strongest and states every part, one only by inference.", "belief_status": "almost certain"}
+  "beliefs": [
+    {"id": "B1", "reason": "d3 states directly that Anna Holm was a painter born in the coastal town of Vik, and no other candidate has passage support, but only one source states it.", "most_probable": "Anna Holm", "wep": "almost certain"},
+    {"id": "B2", "reason": "d2 states that Maja Strand won the Ostra Prize for painting in 1927, every part, while the Erik Lind passage does not state the decade and d3 places Anna Holm's prize in 1934; Erik Lind stays a supported candidate.", "most_probable": "Maja Strand", "wep": "probable"}
   ]
 }

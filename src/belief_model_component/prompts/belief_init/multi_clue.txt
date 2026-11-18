@@ -1,0 +1,17 @@
+---rules---
+- Every clue the query gives about the unnamed entity it asks about is one belief: the clue in the query's words, starting with the entity's type, not merged with or split from another clue.
+- One belief combines the clues: "the <type> that meets B1 to B<k>". When the query asks for something other than this entity itself (not its name or title), that is one more belief, by its id: "the <what is asked> of B<k+1>".
+
+---example---
+Query: A composer studied in Vienna in the 1880s. He wrote an opera about a lighthouse keeper, and his brother was the mayor of a port town. In what year was the composer's wife born?
+
+Output:
+{
+  "beliefs": [
+    {"id": "B1", "text": "the composer who studied in Vienna in the 1880s"},
+    {"id": "B2", "text": "the composer who wrote an opera about a lighthouse keeper"},
+    {"id": "B3", "text": "the composer whose brother was the mayor of a port town"},
+    {"id": "B4", "text": "the composer that meets B1 to B3"},
+    {"id": "B5", "text": "the birth year of the wife of B4"}
+  ]
+}

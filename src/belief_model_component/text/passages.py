@@ -61,18 +61,6 @@ def doc_label(value: Any) -> str:
     return _label(value, "d")
 
 
-_LABEL_SEP_RE = re.compile(r"[,;\s]+")
-
-
-def reply_labels(value: Any) -> List[str]:
-    """The passage labels of a reply's ``support`` / ``against`` list (a
-    single label read as a list of one, a string of several, "d1, d2",
-    split)."""
-    items = value if isinstance(value, list) else [value] if value not in (None, "") else []
-    pieces = [p for v in items for p in (_LABEL_SEP_RE.split(v) if isinstance(v, str) else [v])]
-    return [lb for lb in (doc_label(v) for v in pieces) if lb]
-
-
 class Passage(NamedTuple):
     """One passage of a call: its label, document id and text."""
     label: str

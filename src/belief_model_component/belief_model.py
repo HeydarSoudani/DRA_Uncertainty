@@ -10,11 +10,10 @@ from typing import Any, Dict, List, Optional, Set
 
 from utils.text_utils import doc_id as _doc_id, unique_docs
 
-from .core.certainty import answer_certainty
-from .core.types import Criterion, is_computed
+from .core.types import Criterion
 from .criteria.sources import CriteriaSource
 from .eval_signals.retrieval_gain import RetrievalGainSignal
-from .update.final_score import LLMFinalScorer, check_issues
+from .update.final_score import LLMFinalScorer
 from .update.signal import BeliefUpdateSignal
 from .update.updater import LLMBeliefUpdater
 
@@ -168,25 +167,19 @@ class BeliefModel:
         errors: List[str] = []
         score, raw = None, None
         try:
-            score, raw, call_errors = self._final_scorer.score(self._belief.query, state, answer_turn)
+            score, raw, call_errors = self._final_scorer.score(self._belief.query, state, answer_turn, step)
             errors.extend(f"final_score: {e}" for e in call_errors)
         except Exception as e:
             logger.warning("BeliefModel: final scorer failed", exc_info=True)
             errors.append(f"final_score: {e}")
-        beliefs = self._belief.beliefs()
-        kinds = [c.kind for c in state.criteria]
-        computed = [is_computed(c.kind, c.text) for c in state.criteria]
-        s_answer = (answer_certainty(beliefs, kinds, score.candidates, state.ruled_out_lists(), computed=computed)
-                    if score else None)
         return self._final_record(
             step, answer_turn, errors,
             certainty=_round(score.probability) if score else None,
             certainty_label=score.status if score else None,
             certainty_formula=_round(self._belief.certainty()),
-            certainty_answer_formula=_round(s_answer),
             called=True,
-            final_score={**score.to_dict(), "issues": check_issues(score, state)} if score else None,
-            beliefs=beliefs, reply=raw)
+            final_score=score.to_dict() if score else None,
+            beliefs=self._belief.beliefs(), reply=raw)
 
     def _final_record(self, step: int, answer_turn: str, errors: List[str], **fields: Any) -> Dict[str, Any]:
         """The final record: every key (README), *fields* over the defaults
@@ -197,7 +190,6 @@ class BeliefModel:
             "certainty": None,
             "certainty_label": None,
             "certainty_formula": None,
-            "certainty_answer_formula": None,
             "called": False,
             "final_score": None,
             "beliefs": None,

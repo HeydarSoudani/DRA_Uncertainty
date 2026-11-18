@@ -12,9 +12,9 @@ per-iteration seen doc ids and queries in the trajectory file
 (``trajectory/{query_id}.jsonl``), which the belief stage reads
 (``orchestration.belief_stage``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 52::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
 
-    line 1  {"record": "meta", "schema_version": 52, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 53, "query_id": "q1", "question": "...",
              "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
              "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -27,38 +27,38 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 52::
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
              "certainty": 0.4807, "called": true,
              "docs": [{"doc_id": "doc17", "new": true, "label": "d1"}, ...],
-             "beliefs": [{"id": "c1", "status": "confirmed", "selected": ["Osby"],
-                          "candidates": [{"name": "Osby", "status": "confirmed", "basis": "passage",
+             "beliefs": [{"id": "c1", "status": "almost certain", "most_probable": "Osby", "selected": ["Osby"],
+                          "candidates": [{"name": "Osby", "status": "almost certain", "basis": "passage",
                                           "added_step": 1,
                                           "support": [{"label": "d1", "doc_id": "doc17", "title": "Osby",
                                                        "step": 1, "spans": ["..."], "against": false}],
                                           "claim": "probable", "claim_step": 1}, ...],
                           "proposals": [{"name": "Varby", "claim": "possible", "step": 1,
                                          "added_step": 1}]}, ...],
-             "updates": [{"id": "c1", "candidate": "Osby", "reason": "New: d1 states ...",
-                          "support": ["d1"], "against": [],
-                          "written": "confirmed", "previous": null, "status": "confirmed"}, ...],
+             "updates": [{"id": "c1", "reason": "d1 states directly ...",
+                          "passages": [{"candidate": "Osby", "stance": "+", "passage": "d1"}],
+                          "written": {"most_probable": "Osby", "wep": "almost certain"},
+                          "previous": "unknown", "most_probable": "Osby", "status": "almost certain"}, ...],
              "changed": ["c1"],
              "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
-                              {"id": "c1", "label": "d1", "step": 1, "doc_id": "doc17", "spans": ["..."]}],
+                              {"id": "c1", "label": "d1", "step": 1, "doc_id": "doc17", "candidate": "Osby",
+                               "stance": "+", "spans": ["..."]}],
              "issues": [{"id": "c2", "code": "span_unverified", "detail": "no verified span", "label": "d3"}],
              "notes": [{"id": "c1", "code": "candidate_readded", "detail": "'Varby': dropped before, written again"}],
              "agent_turn": "...",
              "reply": "...", "errors": []}
     ...
     last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.7,
-             "certainty_label": "probable", "certainty_formula": 0.5, "certainty_answer_formula": 0.5,
+             "certainty_label": "probable", "certainty_formula": 0.5,
              "called": true,
-             "final_score": {"status": "probable",
-                             "candidates": [{"id": "c1", "candidate": "Osby"}, ...],
-                             "reason": "...", "issues": []},
+             "final_score": {"status": "probable", "reason": "..."},
              "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [], "notes": [],
              "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
-                             "removed": [{"name": "Nils Berg", "status": "possible", "basis": "reasoning",
-                                          "added_step": 1, "removed_step": 2, "reason": "Was possible: ...",
-                                          "against": true}]}, ...],
+                             "removed": [{"name": "Nils Berg", "status": null, "basis": "reasoning",
+                                          "added_step": 1, "removed_step": 2,
+                                          "reason": "rejected in t2: ..."}]}, ...],
              "agent_turn": "... Final answer: ...", "reply": "...", "errors": []}
 
 The fields are described in ``belief_model_component/README.md``
@@ -80,6 +80,28 @@ criterion's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in
 ``belief/{query_id}.md`` (``belief_model_component.views.log_view``).
 
+schema_version 53 (was 52): the belief update and final scorer follow the
+finalized prompts (``prompts/belief_*``).  The update's passage
+observations carry their candidate and stance (``observations``: a
+passage item has ``candidate`` and ``stance``; null candidate on a
+computed answer); its belief items are ``{id, reason, most_probable,
+wep}``, the WEP judged by the model (no n+/n count: ``beliefs`` has no
+``count``; ``updates`` items are ``{id, reason, passages, written,
+previous, most_probable, status}``).  A belief has one WEP: a candidate
+other than the most probable has status null.  A multi-clue target's
+candidate is the name that is the most probable candidate of every clue;
+a computed answer is shown as "unknown" with the passages on its inputs.
+Issue codes: ``count_mismatch``, ``wep_mismatch``,
+``ref_without_observation`` and the scorer's ``answer_*`` codes are gone;
+new ``update_on_computed``, ``belief_missing``, ``wep_without_support``,
+``unknown_with_support``.  The final scorer replies ``{reason, wep}``:
+``final_score`` is ``{status, reason}``; ``certainty_answer_formula`` is
+gone.  The agent's "rejected" claim removes no candidate (a computed
+answer stays listed with the claim; a rejected proposal leaves the
+proposals), so ``references[].removed`` records have no ``against`` and
+the final scorer reads no ``removed:`` line.  The update and scorer show
+per candidate and stance the latest 5 passage lines.
+
 schema_version 52 (was 51): the belief model runs over saved trajectories
 (the belief stage) and no longer asks the agent for intermediate answers:
 the step fields ``intermediate_answers``, ``intermediate_answer_status`` and
@@ -88,9 +110,7 @@ unchanged.
 
 schema_version 51 (was 50): the issue codes are one table
 (``belief_model_component.core.issues.ISSUES``: each code's effect,
-dropped / corrected / flagged / note, and its training role) and renamed
-(``LEGACY_CODES`` maps the old names; the log of an old run shows the
-current ones).  A new ``notes`` list per step and final record holds the
+dropped / corrected / flagged / note, and its training role) and renamed.  A new ``notes`` list per step and final record holds the
 codes that are no error (``candidate_readded``, ``update_unchanged``,
 ``span_off_fact``; before: in ``issues``).  One issue per update for its
 labels and its reason's sources with no observation on the criterion
@@ -421,7 +441,7 @@ from utils.io_utils import read_jsonl
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 53
 BELIEF_DIR = "belief"
 
 

@@ -1,0 +1,18 @@
+---rules---
+- Every member of the set the query computes over is one belief, "<member>: <property>", the member by its name (the only entity a belief adds to the query): only members under the query's exact definition, not related entities (a predecessor, a broader group); the property with the query's qualifiers (a year, a unit) but no condition on its value.
+- The last belief is the answer: what the query computes (a count, a sum, the earliest value), in its words, with every condition on the set and the values.
+
+---example---
+Query: How many novels by Jules Verne that were published before 1870 were adapted into films?
+
+Output:
+{
+  "beliefs": [
+    {"id": "B1", "text": "Five Weeks in a Balloon: film adaptations"},
+    {"id": "B2", "text": "Journey to the Center of the Earth: film adaptations"},
+    {"id": "B3", "text": "From the Earth to the Moon: film adaptations"},
+    {"id": "B4", "text": "The Adventures of Captain Hatteras: film adaptations"},
+    {"id": "B5", "text": "In Search of the Castaways: film adaptations"},
+    {"id": "B6", "text": "the number of novels by Jules Verne published before 1870 that were adapted into films"}
+  ]
+}

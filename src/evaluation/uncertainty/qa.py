@@ -10,14 +10,12 @@ the scores are:
   ``belief/{qid}.jsonl``, ``certainty``), the headline;
 - ``verbal``: the agent's own confidence in its answer
   (``generation.confidence``, glm and oss), the baseline;
-- ``formula`` and ``answer formula``: the fixed function of the final
-  beliefs' statuses (``certainty_formula``) and its form on the scorer's
-  answer candidates (``certainty_answer_formula``), ablations.
+- ``formula``: the fixed function of the final beliefs' statuses
+  (``certainty_formula``), an ablation.
 
 Every score is measured on the same queries: those with y, s_T and (when
 any query of the run has one) a verbal confidence; an ablation on those of
-them where it has a value (the answer formula has none without
-criteria), with its own n.  Rows: the
+them where it has a value, with its own n.  Rows: the
 queries scored; AUROC with a bootstrap CI over queries for every score;
 the Brier score for s_T and the verbal confidence.  The queries left out
 are logged.  No LLM call.
@@ -36,8 +34,7 @@ logger = logging.getLogger(__name__)
 
 #: The scores, in report order: (name, the final line's field or None for
 #: the verbal confidence).
-SCORES = (("s_T", "certainty"), ("verbal", None), ("formula", "certainty_formula"),
-          ("answer formula", "certainty_answer_formula"))
+SCORES = (("s_T", "certainty"), ("verbal", None), ("formula", "certainty_formula"))
 #: The scores that select the queries and have a Brier row; the others are
 #: ablations (AUROC only).
 HEADLINE = ("s_T", "verbal")
@@ -85,8 +82,7 @@ class UncertaintyEvaluator:
                                  np.array([r[name] for r in rs], dtype=float)) if rs else math.nan
 
         res = GroupResult(per_query={q: {"s_T": r["s_T"], "s_T_label": r["s_T_label"],
-                                         "certainty_formula": r["formula"],
-                                         "certainty_answer_formula": r["answer formula"]}
+                                         "certainty_formula": r["formula"]}
                                      for q, r in per_query.items()})
         res.add("uncertainty", "queries scored", len(common), n=len(per_query))
         for name in names:

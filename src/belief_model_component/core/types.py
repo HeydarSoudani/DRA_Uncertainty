@@ -5,79 +5,37 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
-# The status of a candidate: how likely it is an answer of its criterion,
-# as the passages show it (the agent's reasoning only proposes names: a
-# name without passage support stays proposed); the status of a criterion is derived from its
-# candidates (the highest one; "unknown" without candidates).  One of the
-# seven words of Agent-BRACE's verbal belief scale (arXiv 2605.11436),
-# lowest level first, without its "doubtful": a candidate a passage rules
-# out is removed (``REMOVED``), not kept at a lowest status.  The paper
-# ranks "unknown" lowest; here it is the neutral level 0 (no observation
-# gives a candidate); "unlikely" is below it (a passage speaks against the
-# candidate, or another candidate of a one-answer criterion has stronger
-# support).  An aspect has one status of its own; its facts are kept or
-# removed (``KEPT``).
+# The word of estimative probability (WEP) of a belief: how likely its
+# most probable candidate addresses it (an aspect: how well its kept facts
+# cover it), judged by the belief update from all the belief's passages
+# (``prompts/shared/wep_definitions.txt``); "unknown" when no passage
+# supports a candidate.  A belief has one WEP: its most probable candidate
+# carries it, its other candidates have none.  Ordered by probability
+# (``STATUS_PROBABILITY``), lowest first.
 BELIEF_STATUSES = (
-    "unlikely",
+    "almost no chance",
     "unknown",
+    "unlikely",
     "possible",
     "probable",
     "almost certain",
-    "confirmed",
+    "certain",
 )
-# The neutral status: no observation gives a candidate (b_0).
+# The status of a belief no passage supports a candidate of (b_0).
 UNKNOWN = "unknown"
-# The lowest status: a passage speaks against the candidate.
 UNLIKELY = "unlikely"
-# Signed level of each status (-1 to 4), for analysis.
+ALMOST_NO_CHANCE = "almost no chance"
+# Signed level of each status, "unknown" 0, for ordering and analysis.
 STATUS_LEVEL: Dict[str, int] = {
     status: k - BELIEF_STATUSES.index(UNKNOWN) for k, status in enumerate(BELIEF_STATUSES)
 }
-# The highest status: passages from several sources state every part
-# (Agent-BRACE's top label; the Admiralty Code's "confirmed by other
-# independent sources").
-CONFIRMED = "confirmed"
-ALMOST_CERTAIN = "almost certain"
-# The name of the highest status before schema 50: "certain" read as
-# "confirmed" (old runs, stray replies).
-_STATUS_SYNONYMS = {"certain": CONFIRMED}
 
 
 def parse_status(text: Any) -> Optional[str]:
-    """The belief status *text* names (case, underscores, hyphens and extra
-    spaces ignored; "certain" accepted for "confirmed"), or None."""
+    """The status *text* names (case, underscores, hyphens and extra
+    spaces ignored), or None."""
     key = " ".join(str(text or "").lower().replace("_", " ").replace("-", " ").split())
-    return key if key in STATUS_LEVEL else _STATUS_SYNONYMS.get(key)
-
-
-# What the update writes in place of a status to remove a candidate: a
-# passage states that it fails a part of the criterion.  An action, not a
-# status: ``parse_status`` does not accept it.
-REMOVED = "removed"
-
-
-def is_removed(text: Any) -> bool:
-    """Whether a reply's status *text* is ``REMOVED`` (case and spaces ignored)."""
-    return str(text or "").strip().lower() == REMOVED
-
-
-# The highest status of an earlier answer of a computed aggregate once the
-# reasoning computes another (``BeliefState._derive_aggregates``), and the
-# lowest status a selected candidate has.  A one-answer candidate always
-# has passage support: a name without it stays proposed ("unknown", or
-# "unlikely" when another candidate has support).
-NO_SUPPORT_MAX_STATUS = "possible"
-
-
-# What the update writes for a fact of an aspect in place of a status: the
-# fact stays (``REMOVED`` takes it out).  A fact has no status of its own;
-# the aspect has one (``BeliefState.aspect_status``).
-KEPT = "kept"
-
-
-def is_kept(text: Any) -> bool:
-    """Whether a reply's status *text* is ``KEPT`` (case and spaces ignored)."""
-    return str(text or "").strip().lower() == KEPT
+    return key if key in STATUS_LEVEL else None
 
 
 # What the reasoning says of a candidate (a claim): a status of the scale,
@@ -94,26 +52,30 @@ def parse_claim(text: Any) -> Optional[str]:
     return status if status not in (None, UNKNOWN) else None
 
 
+# The status of an earlier answer of a computed aggregate once the
+# reasoning computes another (``BeliefState._derive_aggregates``), and the
+# lowest status a selected candidate has.
+NO_SUPPORT_MAX_STATUS = "possible"
+
+
 # Each status as a probability, the one scale of every number read from a
-# status (the certainty formula, the final scorer's s_T, the status
-# calibration and the training rewards).  "unlikely" (a passage speaks
-# against it) is near 0; "unknown" (no evidence) is below "possible";
-# "possible" is even odds; "confirmed" stays below 1, so a log or squared
-# error term never saturates.  Only the order of the statuses matters to a
-# ranking (AUROC); the values matter to calibration (Brier, ECE).
+# status (the certainty formula, the final scorer's s_T and the status
+# calibration): the midpoint of each word's range; "unknown" (no
+# evidence) 0.25; "certain" stays below 1, so a log or squared error term
+# never saturates.
 STATUS_PROBABILITY: Dict[str, float] = {
-    "unlikely": 0.10,
+    "almost no chance": 0.10,
     "unknown": 0.25,
+    "unlikely": 0.30,
     "possible": 0.50,
     "probable": 0.70,
-    "almost certain": 0.90,
-    "confirmed": 0.97,
+    "almost certain": 0.875,
+    "certain": 0.97,
 }
 
 
 def status_probability(status: str) -> float:
-    """A status as a probability (``STATUS_PROBABILITY``; a synonym, such
-    as "certain" of runs before schema 50, read as its status)."""
+    """A status as a probability (``STATUS_PROBABILITY``)."""
     return STATUS_PROBABILITY[parse_status(status) or status]
 
 
@@ -122,9 +84,10 @@ def status_probability(status: str) -> float:
 # of a multi-member query); an aggregate criterion combines the answers of
 # the criteria before it (its inputs), its status set by code
 # (``BeliefState._derive_aggregates``): the target of a multi-clue query
-# ("the composer that meets c1 to c3", ``is_target``), whose candidates are
-# the names listed on every clue, and the computation of a multi-member
-# query (``is_computed``), whose candidates the reasoning gives; an aspect
+# ("the composer that meets c1 to c3", ``is_target``), whose candidate is
+# the name that is the most probable candidate of every clue, and the
+# computation of a multi-member query (``is_computed``), whose candidates
+# the reasoning gives (saved, never shown to the update); an aspect
 # criterion is one aspect of a report topic: its candidates are the facts
 # on it, kept or removed, and the aspect has one status.
 CLOSED = "closed"
@@ -146,14 +109,16 @@ def exclusive(kind: str) -> bool:
     return kind in EXCLUSIVE_KINDS
 
 
-# The text of a multi-clue query's target: "the <type> that meets c1 to c<k>".
-TARGET_RE = re.compile(r"\bmeets\s+c1\s+to\s+c(\d+)\b", re.IGNORECASE)
+# The text of a multi-clue query's target: "the <type> that meets B1 to B<k>"
+# (the ids the belief model shows; "c1" of earlier criteria banks too).
+TARGET_RE = re.compile(r"\bmeets\s+[cB]1\s+to\s+[cB](\d+)\b")
 
 
 def is_target(kind: str, text: str) -> bool:
     """Whether a criterion of *kind* and *text* is a target: an aggregate
-    whose candidates are derived from the clues before it (the names listed
-    on every one), never written by the belief update."""
+    whose candidate is derived from the clues before it (the name that is
+    the most probable candidate of every one), never written by the belief
+    update."""
     return kind == AGGREGATE and TARGET_RE.search(text or "") is not None
 
 
@@ -202,13 +167,25 @@ MULTI_ASPECT = "multi_aspect"
 QUERY_SHAPES = (MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, MULTI_ASPECT)
 
 
-# A reference to another criterion in a criterion's text ("born in c1").
-CRITERION_REF_RE = re.compile(r"\bc(\d+)\b")
+# A reference to another criterion in a criterion's text ("born in B1";
+# "c1" in criteria banked before the B ids).  Criterion ids are kept as
+# "c<k>" (banks, gold annotations, evaluation); the belief update reads
+# and writes them as "B<k>" (``belief_label``).
+CRITERION_REF_RE = re.compile(r"\b[cB](\d+)\b")
+_ID_RE = re.compile(r"^[bc](\d+)$")
 
 
 def criterion_id(value: Any) -> str:
-    """A criterion id as a reply writes it ("C1", "c1.", "[c1]") as "c1"."""
-    return str(value if value is not None else "").strip().strip("[].:").strip().lower()
+    """A criterion id as a reply writes it ("B1", "b1.", "[c1]") as "c1"."""
+    key = str(value if value is not None else "").strip().strip("[].:").strip().lower()
+    m = _ID_RE.match(key)
+    return f"c{m.group(1)}" if m else key
+
+
+def belief_label(cid: str) -> str:
+    """The id "c<k>" as the belief update reads it: "B<k>"."""
+    m = _ID_RE.match(cid or "")
+    return f"B{m.group(1)}" if m else cid
 
 
 @dataclass
@@ -236,12 +213,13 @@ class Observation:
     wrote it.
 
     A passage observation (``DOC``): the ``spans`` of the passage that
-    state a part of the criterion.  It has no stance and no candidate: the
-    candidate updates say which observations support or speak against
-    which candidate.  A reasoning observation (``THINK``, a claim): one
-    span of the agent's turn that names, assesses or rejects one
-    ``candidate``, and the ``claim`` it makes (a status, or
-    ``REJECTED``).
+    state a part of the criterion, the ``candidate`` they are about and
+    their stance (``against``: the candidate fails the part, "-"; else
+    "+").  On a computed aggregate the candidate is the agent's computed
+    answer, or None when the reasoning computed none.  A reasoning
+    observation (``THINK``, a claim): one span of the agent's turn that
+    names, assesses or rejects one ``candidate``, and the ``claim`` it
+    makes (a status, or ``REJECTED``).
 
     ``span_verified[i]`` says whether ``spans[i]`` occurs in the source as
     the call showed it (then it is the source's own words); ``grounded``:
@@ -257,6 +235,10 @@ class Observation:
     doc_id: Optional[str] = None
     grounded: bool = False
     candidate: Optional[str] = None
+    against: bool = False
+    # The stance as the reply wrote it, when it is neither "+" nor "-"
+    # (an issue; not saved).
+    bad_stance: Optional[str] = None
     claim: Optional[str] = None
     # The claim as the reply wrote it (for an issue's detail; not saved).
     claim_written: Optional[str] = None
@@ -265,10 +247,14 @@ class Observation:
     def verified_spans(self) -> List[str]:
         return [s for s, ok in zip(self.spans, self.span_verified) if ok]
 
+    @property
+    def stance(self) -> str:
+        return "-" if self.against else "+"
+
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"id": self.criterion, "label": self.label, "step": self.step}
         if self.source == DOC:
-            out["doc_id"] = self.doc_id
+            out.update(doc_id=self.doc_id, candidate=self.candidate, stance=self.stance)
         else:
             out.update(candidate=self.candidate, claim=self.claim)
         out["spans"] = self.verified_spans
@@ -314,11 +300,14 @@ class Candidate:
     the step it was added in, its support (the passage observations that
     support it or speak against it, ``Support``) and the agent's latest
     claim on it (``claim``, from the turn ``claim_step``; never shown to
-    the update).  A candidate the update does not name keeps its status;
-    one the update removes (``REMOVED``) leaves the list, and is kept in
-    the hidden removal log of its criterion (``RemovedCandidate``)."""
+    the update).  The status is the belief's WEP for its most probable
+    candidate and for an aspect's facts, code's for an aggregate's
+    candidates, and None for any other candidate (a belief has one WEP).
+    Only an aspect's fact a passage speaks against leaves the list (kept
+    in the hidden removal log of its criterion, ``RemovedCandidate``); the
+    agent's rejection is a claim and removes no candidate."""
     name: str
-    status: str
+    status: Optional[str]
     added_step: int = 0
     support: List[Support] = field(default_factory=list)
     claim: Optional[str] = None
@@ -343,8 +332,8 @@ class Proposal:
     passage supports yet: no status, not a rival of the candidates.  It
     keeps the agent's latest claim on it and the turn it came from
     (``step``), and the step it was proposed in (``added_step``); a
-    passage that supports it makes it a candidate, a claim that rejects
-    it drops it."""
+    passage on it makes it a candidate, a claim that rejects it takes it
+    off the proposals (into the removal log)."""
     name: str
     claim: Optional[str]
     step: int
@@ -356,39 +345,29 @@ class Proposal:
 
 @dataclass
 class RemovedCandidate:
-    """One candidate or proposal the belief dropped: its name, its status
-    when removed (null for a proposal), the step it was added in and the
-    step it was removed in, the reason (the update's, or the claim
-    that rejected a proposal) and whether the call ruled it out
-    (``against``: a passage spoke against it, or the agent's claim did: a
-    rejected computed answer or proposal; not a
-    proposal dropped for room).  The final scorer reads a ruled-out name as
-    removed.  Saved, never shown to the update."""
+    """One candidate or proposal the belief dropped: an aspect's fact a
+    passage spoke against, a proposal the agent's claim rejected, or a
+    proposal dropped for room.  Its name, its status when removed (null
+    for a proposal), the step it was added in and the step it was removed
+    in, and the reason.  Saved, never shown."""
     name: str
     status: Optional[str]
     basis: str
     added_step: int
     removed_step: int
     reason: str = ""
-    against: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {"name": self.name, "status": self.status, "basis": self.basis, "added_step": self.added_step,
-                "removed_step": self.removed_step, "reason": self.reason, "against": self.against}
+                "removed_step": self.removed_step, "reason": self.reason}
 
 
 @dataclass
-class CandidateUpdate:
-    """One item of the reply's ``candidates`` list, as written: the
-    criterion id, the candidate, the labels of the call's passages whose
-    observations support it (``support``) or speak against it
-    (``against``), the reason of the change ("Was <status>: ...", "Was
-    proposed: ..." or "New: ...") and the new status (raw text).  On an
-    aspect, an item without a candidate carries the aspect's status, and a
-    fact's status is ``KEPT`` or ``REMOVED``."""
+class BeliefUpdate:
+    """One item of the reply's ``beliefs`` list, as written: the belief id,
+    the reason, its most probable candidate (None: none written; an
+    aspect's is null) and its WEP (raw text)."""
     id: str
-    candidate: str
-    reason: str
-    status: str
-    support: List[str] = field(default_factory=list)
-    against: List[str] = field(default_factory=list)
+    reason: str = ""
+    most_probable: Optional[str] = None
+    wep: str = ""

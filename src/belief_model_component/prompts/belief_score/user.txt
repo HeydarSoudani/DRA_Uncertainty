@@ -1,0 +1,9 @@
+Query: {query}
+
+Final belief state:
+{criteria}
+
+Final turn:
+{answer}
+
+Score the final answer.

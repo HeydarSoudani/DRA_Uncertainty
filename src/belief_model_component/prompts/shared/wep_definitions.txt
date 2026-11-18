@@ -1,0 +1,17 @@
+---one_answer---
+- "unknown": It is unknown which candidate addresses the belief, as no passage supports a candidate.
+- "almost no chance": There is almost no chance (below 20%) that the most probable candidate addresses the belief, given its supports and the other candidates.
+- "unlikely": It is unlikely (20-40%) that the most probable candidate addresses the belief, given its supports and the other candidates.
+- "possible": There is a roughly even chance (40-60%) that the most probable candidate addresses the belief, given its supports and the other candidates.
+- "probable": It is likely (60-80%) that the most probable candidate addresses the belief, given its supports and the other candidates.
+- "almost certain": It is very likely (80-95%) that the most probable candidate addresses the belief, given its supports and the other candidates.
+- "certain": It is certain (95% or more) that the most probable candidate addresses the belief, given its supports and the other candidates.
+
+---aspect---
+- "unknown": It is unknown how well the facts address the belief, as no passage supports a fact.
+- "almost no chance": There is almost no chance (below 20%) that the kept facts address the belief, given the parts of the belief they state.
+- "unlikely": It is unlikely (20-40%) that the kept facts address the belief, given the parts of the belief they state.
+- "possible": There is a roughly even chance (40-60%) that the kept facts address the belief, given the parts of the belief they state.
+- "probable": It is likely (60-80%) that the kept facts address the belief, given the parts of the belief they state.
+- "almost certain": It is very likely (80-95%) that the kept facts address the belief, given the parts of the belief they state.
+- "certain": It is certain (95% or more) that the kept facts address the belief, given the parts of the belief they state.

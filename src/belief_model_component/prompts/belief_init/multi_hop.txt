@@ -1,0 +1,14 @@
+---rules---
+- Every entity the query describes without naming it on the way to the answer is one belief, after the beliefs it needs. The last belief is the answer.
+
+---example---
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+
+Output:
+{
+  "beliefs": [
+    {"id": "B1", "text": "the town where the Varn Folk Museum was founded"},
+    {"id": "B2", "text": "the engineer who was born in B1"},
+    {"id": "B3", "text": "the lighthouse that was designed by B2"}
+  ]
+}

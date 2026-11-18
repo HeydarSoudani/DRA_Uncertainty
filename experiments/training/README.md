@@ -1,5 +1,8 @@
 # Belief Model Training
 
+> The training code (`src/belief_model_training`, its launcher and YAML) was removed on
+> 2026-11-15. This file keeps the plan; the scripts and phases it names do not exist now.
+
 Training plan of the belief model, with the deep research agent frozen.
 
 ## Goal: uncertainty of the deep research agent
@@ -12,7 +15,7 @@ each with a status (how likely it is an answer, Agent-BRACE's verbal scale) and 
 only propose names (proposals, no status, not rivals) and make claims, saved but never shown to the update; a
 passage that supports a proposal makes it a candidate. The model writes the status from the support and, for a
 one-answer criterion, from the other candidates' support (per criterion type in
-`prompts/belief_update/statuses.txt`); code enforces only hard limits (no support: at most "possible",
+`prompts/shared/wep_definitions.txt`); code enforces only hard limits (no support: at most "possible",
 `status_without_support`; no new support: the status kept, `status_without_new_support`). The candidates with their support (quoted spans
 and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
 candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call
@@ -54,7 +57,7 @@ Only the belief model is trained; the agent stays frozen.
 
 One call per step with a passage, then the final call, the same prompts for
 the prompted teacher and the trained student (`belief_model_component/prompts/belief_update/system.txt`,
-`prompts/final_score/system.txt`):
+`prompts/belief_score/system.txt`):
 
 | Call | Input | Output |
 |---|---|---|

@@ -198,12 +198,12 @@ Rules of a bank line:
 ### Belief update
 
 The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. A call
-(`system.txt` in `src/belief_model_component/prompts/belief_update/`, the status definitions of the shape's criterion
-types in `statuses.txt`, and the shape's own `<shape>.txt`: its terms, its rules, its output notes and its example) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
+(`system.txt` in `src/belief_model_component/prompts/belief_update/`, the WEP definitions of the shape's belief
+types in `prompts/shared/wep_definitions.txt`, its user template in `user.txt`, and the shape's own `<shape>.txt`: its rules and its example) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
 **When a call is made** (`BeliefUpdateSignal.plan`). A search iteration makes a call when its search returned a
 document with text; the call shows every document of the iteration, also one shown before (labelled `d<n>` when first
-shown, the same label after; a passage shown again raises no status on its own, `status_without_new_support`). Otherwise no call
+shown, the same label after; a passage shown again on the same candidate and stance counts once). Otherwise no call
 is made (`called: false`): the belief is carried forward and the turn waits; the next call reads every turn since the
 last call (the last 6), each labelled `t<iteration>`. After the last iteration, the answer turn (its reasoning and
 final answer) makes the final call: on a short-answer dataset the final scorer's (below), on a report one more
@@ -214,170 +214,118 @@ update with the turns still waiting.
 tokenizer whatever the agent's model, no marker at the cut; `utils.text_utils.cut_passage`), report documents
 included. A passage's title is its metadata title, else its front matter's (`title:`), else its first line.
 
-The call reads every criterion with its current candidates, their support and its proposals, the turns and the
-passages. The reply has three lists:
+The call reads every belief (shown as `B<k>`, saved as `c<k>`) with its statement, its passages and its
+proposals, the turns and the passages (prompt in `prompts/belief_update/`). The reply has three lists:
 
-1. **Reasoning observations** (claims): per candidate the reasoning names, assesses or rejects, `{id, turn,
-   candidate, span, claim}`: the claim is a status, or "rejected". The span must occur in its turn.
-2. **Passage observations**: per passage and criterion (not a computed one), the spans of the passage that state a
-   part of the criterion. Each span is checked on its own (a span joined with "..." is split first); an observation
-   without a verified span is dropped.
-3. **Candidates**: per candidate whose support or status changes, `{id, candidate, support, against, reason,
-   status}`: the labels of the call's passages whose observations support it or speak against it, a reason opening
-   with `Was <current status>:`, `Was proposed:` or `New:`, and the new status, or "removed".
+1. **Reasoning observations** (claims): per candidate the reasoning names, assesses or rejects, `{id, candidate,
+   span, agent_claim}`: the claim is a word of estimative probability (WEP), or "rejected". The span must occur in a turn.
+2. **Passage observations**: per passage, belief and candidate, `{id, passage, candidate, stance, spans}`: `+` when the
+   spans say the candidate meets a part of the belief, `-` when they say it fails one. Each span is checked on its own
+   (a span joined with "..." is split first); an observation without a verified span is dropped.
+3. **Beliefs**: per belief with a new passage observation, `{id, reason, most_probable, wep}`: the model chooses the
+   most probable candidate and its WEP from all the belief's passages, previous and new (more passages, more parts
+   and more direct spans raise the word; a `-` passage, a hedged span or another supported candidate lowers it).
 
-The belief is kept at two levels. **Shown** to the next update: per criterion its candidates, highest status first,
-each with its support, one line per passage observation (`+` supports, `-` against: the spans and the passage's title
-in brackets; a passage keeps its label `d<n>` across calls, but the support lines show its title only), then `proposed:` and the names the agent
-proposed that no passage supports yet. **Saved**: every observation that entered (verified spans), per criterion every
-source ever assigned to it (the `references` of the `final` line), the agent's latest claim on each candidate, and
-the candidate updates with their reasons (`updates`); the claims and reasons are never shown.
+The words, lowest first, with their ranges (`prompts/shared/wep_definitions.txt`, `core.types.STATUS_PROBABILITY`
+the midpoints): almost no chance (below 20%, 0.10), unknown (no passage supports a candidate, 0.25), unlikely
+(20-40%, 0.30), possible (40-60%, 0.50), probable (60-80%, 0.70), almost certain (80-95%, 0.875), certain (95% or
+more, 0.97). The labels are Agent-BRACE's (Kent's words of estimative probability). On a report's aspect each
+candidate is one fact; it has no most probable candidate (null), the WEP rates how well the kept facts cover the
+aspect, and a `-` removes a fact.
 
-Code applies the reply (`BeliefState.apply`):
+The belief is kept at two levels. **Shown** to the next update (`views.belief_text.format_belief`): per belief its
+statement, built by code (`belief_statement`: "It is <wep> that <most probable candidate> addresses <belief>.", "It is
+unknown which candidate addresses <belief>.", on an aspect "the kept facts address"), one line per passage on a
+candidate (the stance, the candidate, the spans and the passage's title in brackets; per candidate and stance the
+latest 5, the earlier ones counted as `+ <candidate>: (N more passages)`), then `proposed:` and the names the agent
+proposed that no passage supports yet:
 
-- **Reasoning only proposes.** A claim sets the agent's claim on a listed candidate (never its status), or adds a
-  proposal (no status, not a rival, never selected; at most 8 per criterion), updates it, or drops it when the claim
-  is "rejected". A proposal becomes a candidate when a passage supports it.
-- **Support.** A support or against label must be a passage of the call observed on the criterion (`ref_without_observation`
-  otherwise, the label dropped). A second observation of a passage on the criterion adds its new spans to the first. The basis of a
-  candidate follows from its support ("passage", or "reasoning" for a computed criterion's candidates).
-- **Hard limits** (not for a computed criterion, whose status the reasoning sets): a candidate no passage supports is
-  at most "possible", and a new name without any passage of the call stays a proposal (`status_without_support`); a name that
-  passages of the call only speak against is not added, and a proposal stays one (`against_only`); a listed
-  candidate whose update adds no support keeps its status, unless in the same call another of its candidates gained
-  support, was added or was removed (one answer: the status depends on the others; a proposal added or dropped does
-  not count); otherwise `status_without_new_support`. A criterion is judged on its own parts: a part that refers to another
-  criterion is met when a passage links the candidate to a candidate of that criterion, whatever that candidate's
-  status, so a change of the referenced criterion moves nothing.
-- **Target.** A multi-clue query's target criterion takes no observation (`observation_on_target`) and no candidate
-  update (`update_on_target`). After each call code derives its candidates from the clues before it: a name listed on
-  every clue, at the lowest of its statuses there, with their support (shown on the clues only). A rival or a passage
-  against it on one clue lowers it there.
-- **Removal.** A candidate the reply does not name keeps its status. "removed" is taken when a passage of the call
-  speaks against the candidate (`against`), or for a proposal a claim of the call rejected; else flagged and kept
-  (`removal_unsupported`; `removal_unlisted` for a name neither listed nor proposed). Removed candidates and dropped proposals
-  are saved in the final line's `references[].removed`; a name added again gets a note (`candidate_readded`). Names are matched
-  on letters and digits only; a new name that contains a listed one, or the reverse, is flagged (`candidate_near_duplicate`).
-- **Not taken**: an update of an unknown criterion, without a name (`candidate_missing`), with a status that is no
-  candidate status (`status_invalid`), a second one of the same candidate (`candidate_repeated`), or of a criterion
-  without an observation in the call (`update_without_observation`); a claim without a candidate or a valid claim
-  (`claim_incomplete`).
-- **Flagged** (statuses kept): a reason without its opening (`reason_opening_missing`), a `Was X` that is not the current
-  status or `Was` on an unlisted candidate (`reason_previous_wrong`), `New:` on a listed one (`reason_new_on_listed`),
-  a reason citing a source with no observation on the criterion (`ref_without_observation`, one per update with the
-  dropped labels), a new candidate in none of its criterion's passage spans and titles (`candidate_not_in_passages`);
-  in a one-answer criterion, a "confirmed" candidate while another has support (`confirmed_with_rival`)
-  and two candidates with the same support but different statuses (`unequal_tie`).
+```
+B1: It is possible that Osby addresses the town where the Varn Folk Museum was founded.
+  + Osby: "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
+  + Tirsa: "a crafts museum with objects from the Varn valley opened in Tirsa in 1925" [Tirsa]
+B2: It is unknown which candidate addresses the engineer who was born in B1.
+  proposed: Nils Berg
+```
+
+**Saved**: every observation that entered (verified spans), per criterion every source ever observed on it (the
+`references` of the `final` line), the agent's latest claim on each candidate, and the belief items as written and as
+kept, with their reasons (`updates`); the claims are never shown.
+
+Code applies the reply (`BeliefState.apply`), in order: observations, claims, passage observations, belief items,
+aggregates.
+
+- **Reasoning only proposes.** A claim sets the agent's claim on a listed candidate, or adds a proposal (never
+  selected; at most 8 per belief), updates it, or takes it off the proposals when the claim is "rejected". A
+  rejection never removes a candidate (a computed answer included): it is saved as the candidate's claim. A proposal
+  becomes a candidate when a passage observation names it.
+- **Passage observations.** The passage must be one of the call (`unknown_passage`), the stance `+` or `-`
+  (`stance_invalid`), the candidate given (`candidate_missing`). The observation joins its candidate's support (the
+  same passage and stance on a candidate counts once). A new name becomes a candidate (a `-` alone too); on an aspect
+  a new fact whose words contain a listed one, or the reverse, joins it with a `+` (`fact_merged`), and a `-` removes
+  the fact or proposal it names (never a near one). A one-answer candidate is never removed by a passage. A new
+  candidate with a `+` in none of its belief's passage spans and titles is flagged (`candidate_not_in_passages`; a
+  figure such as "120 m" is found by its numbers), one whose name contains a listed one, or the reverse
+  (`candidate_near_duplicate`).
+- **Most probable and WEP.** The most probable candidate written is kept when it is listed with a `+` passage, else
+  code takes the first added of those with the most `+` passages (`most_probable_wrong`). The WEP is taken as written;
+  one that is no word of the scale keeps the previous WEP (`wep_invalid`); a word above "unknown" with no supported
+  candidate is set to "unknown" (`wep_without_support`); "unknown" written with a supported candidate is kept and
+  flagged (`unknown_with_support`). A belief has one WEP: the most probable candidate carries it (an aspect: every
+  kept fact), any other candidate has no status. A belief with a new passage observation and no item keeps its WEP
+  (`belief_missing`).
+- **Target.** A multi-clue query's target takes no observation (`observation_on_target`) and no belief item
+  (`update_on_target`). After each call code derives its candidate: the name that is the most probable candidate of
+  every clue, at the lowest of their WEPs; none when a clue is "unknown" or names another.
+- **Computed answer** (multi_member). Its candidates are the answers the reasoning computes (claims); a passage
+  observation on it names one (`answer_not_computed` otherwise) or none (null: it states an input). It takes no
+  belief item (`update_on_computed`). Code keeps each answer at the lowest status of the inputs, "unlikely" when a
+  passage speaks against it, at most "possible" when the reasoning computed another answer later or rejects it; saved,
+  never shown:
+  the update reads the belief as "unknown" with the passages on its inputs. The member a member belief is about is
+  never its candidate (`subject_candidate`).
+- **Not taken**: an item of an unknown belief, a second item of one belief (`belief_repeated`), an item of a belief
+  without a passage observation in the call (`update_without_observation`); a claim without a candidate or a valid
+  claim (`claim_incomplete`). Removed facts and dropped proposals (rejected, or past the cap) are saved in the final
+  line's `references[].removed`; a name added again gets a note (`candidate_readded`).
 - **Issue codes.** Every code is in one table (`belief_model_component/core/issues.py`, `ISSUES`) with its effect
-  (dropped, corrected, flagged or note) and its training role (format gate, unclean); the training sets of codes are
-  derived from it. The step record's `issues` holds the errors, its `notes` what is no error: a name written again
-  after it was dropped (`candidate_readded`), no new support with the current status written again
-  (`update_unchanged`), an aspect fact's span without a content word of the fact (`span_off_fact`). The trajectory md
-  shows them one line per effect, and `metrics.md` gives the share of update calls with each effect, failing the
-  format gate or unclean, and every code that occurs (`evaluation/belief/issues.py`).
+  (dropped, corrected, flagged or note) and its training role (format gate, unclean). The step record's `issues` holds
+  the errors, its `notes` what is no error. The trajectory md shows them one line per effect, and `metrics.md` gives
+  the share of update calls with each effect, failing the format gate or unclean, and every code that occurs
+  (`evaluation/belief/issues.py`).
 
-Derived per criterion: its status, the highest of its candidates ("unknown" without one; an aspect's its own), and
-its selected candidate(s): for a one-answer criterion the first one listed at "possible" or above, for an aspect every
-fact; a proposal is never selected. `changed` lists the criteria whose candidates or proposals changed. When the call
-fails the belief stays as it was and its turns' claims are lost. Every problem goes into the step's `issues` list (`criteria.ISSUE_*`).
-
-The statuses, lowest first: `unlikely` (-1), `possible` (1), `probable` (2), `almost certain` (3), `confirmed` (4);
-"unknown" (level 0) is the status of a criterion without candidates. Each query type has one status set
-(`prompts/belief_update/statuses.txt`), and each dataset's prompt holds only its own: "one answer" for
-multi_clue, multi_hop and multi_member (plus the aggregate: a target for multi_clue, a computation for multi_member), "aspect" for
-multi_aspect. A one-answer candidate's status combines its rivals and its own support (support is stronger when it
-states more parts, or states them more directly; a source is the document a passage comes from). A candidate a passage
-casts doubt on is "unlikely" (one a passage states fails a part is removed); otherwise:
-
-| status | one answer (candidates compete) |
-|---|---|
-| unlikely | another candidate has stronger support |
-| possible | another candidate has support as strong |
-| probable | its support is the strongest, but leaves a part unstated |
-| almost certain | its support is the strongest and states every part, but some only by inference, or only one source states it, or another candidate has weaker support |
-| confirmed | passages from several sources each state every part directly, and no other candidate has support |
-
-The labels are Agent-BRACE's (Kent's words of estimative probability); the definitions follow the Admiralty Code
-(NATO AJP-2.1) information credibility scale ("confirmed by other independent sources", "probably true", "possibly
-true", "improbable", "cannot be judged") with Heuer's Analysis of Competing Hypotheses for rivals. Code sets a
-"confirmed" candidate with support from one source to "almost certain" (`confirmed_one_source`).
-
-The definitions do not overlap, so the prompt has no tie-break rule. A candidate is what its criterion asks for, never the member a member
-criterion ("<member>: <property>") is about: the member criteria only collect values, and code drops a member name
-written as a candidate or proposal (`subject_candidate`). Whether a member belongs to the set is judged on the
-aggregate: its passage observations state an input it needs (a member's membership, or the value of a member no
-criterion lists; shown as "passages on its inputs"). Code sets an aggregate's statuses: each candidate at the lowest
-status of its inputs (the closed criteria before it), "unlikely" when a passage speaks against it (it uses an input a
-passage rules out, or leaves out one a passage states), at most "possible" when the reasoning computed another answer
-later (`aggregate_status_derived` when the reply wrote another status). A computed aggregate's candidates come from the
-reasoning's claims only; an update never adds one (`answer_not_computed`).
-
-A report's aspect (multi_aspect) has one status of its own, written by the reply's item on it without a candidate:
-how well its facts back what it asks, by the sides they cover and whether every fact rests on several sources:
-unlikely, its facts all removed; unknown, no fact yet; possible, one side; probable, several sides (not every one) with
-some fact on one source only; almost certain, several sides with every fact on several sources, or every side with
-some fact on one source only; confirmed, every side with every fact on several sources (the ODNI analytic confidence
-levels: multiple sources vs fragmented or poorly corroborated). Its facts are only kept or removed. The status is the aspect's q_k; it
-moves only when its support moved in the call (a fact added or removed, or a passage added to a fact's support),
-never with a claim or a passage shown again alone (`status_without_new_support`), is "unknown"
-with no fact and "unlikely" when a passage removed its last facts (a proposal the agent rejected does not count,
-`aspect_without_fact`), and "confirmed" needs every fact supported by two
-sources (`confirmed_one_source`: "almost certain" otherwise). A fact written with a status other than "kept" or
-"removed" is kept (`fact_status_invalid`). A new fact whose words contain a listed one, or the
-reverse, joins it (`fact_merged`); a supporting span that shares no content word with its fact gets a note
-(`span_off_fact`, information only). Differences from Agent-BRACE: it ranks "unknown" lowest; here it is the
-neutral level 0; its "doubtful" is a removal here. "confirmed" is the paper's top label ("certain" before schema 50).
-
-The update prompt reads each criterion with its candidates (`views.belief_text.format_belief`):
-
-```
-c1 (one answer): the town where the Varn Folk Museum was founded
-  "Osby": almost certain
-    + "The Varn Folk Museum was founded in Osby in 1921" [Osby]
-c2 (one answer): the engineer who was born in c1
-  "Henrik Dahl": almost certain
-    + "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
-c3 (one answer): the lighthouse that was designed by c2
-  (no candidate)
-  proposed: "Kalvik Lighthouse"
-```
+Derived per belief: its status (its WEP; an aggregate's the highest of its candidates), and its selected
+candidate(s): for a one-answer belief its most probable candidate at "possible" or above, for an aspect every fact; a
+proposal is never selected. When the call fails the belief stays as it was and its turns' claims are lost.
 
 The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed function of the statuses:
 
-1. Each criterion's status (the highest of its candidates) becomes a probability, `core.types.STATUS_PROBABILITY`
-   (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, confirmed 0.97): q_k. The same table
-   turns every status into a number, the final scorer's included. The status of a one-answer candidate already counts
-   its rivals (two tied ones are at most "possible", 0.5), so the candidates share nothing.
+1. Each belief's status (its WEP) becomes a probability, `core.types.STATUS_PROBABILITY` (the midpoint of each
+   word's range, unknown 0.25): q_k. The same table turns every status into a number, the final scorer's included.
+   The update judges a one-answer WEP from all the belief's passages, rivals included, so the candidates share
+   nothing.
 2. s_t is the mean q_k over the criteria the updater judges, on every query shape: the expected share of criteria
    that hold, so a change on any criterion moves it. An aggregate is left out: its status is derived from its inputs
    (the lowest of them), so it would count its weakest input twice. How much each criterion counts for the final
    answer is the final scorer's to judge (s_T below), not the formula's.
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
-scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/final_score/`): one call reads the query,
-the belief before the answer turn (candidates, statuses, support, proposals and the names a passage ruled out)
-and the answer turn (its last 2000 characters of reasoning, shown only to tell which candidates the answer relies on,
-and the final answer), and writes per criterion the answer's candidate, a reason and the status of the final answer, on the belief's scale and read as a candidate's
-status is (unlikely 0.10, unknown 0.25, possible 0.50, probable 0.70, almost certain 0.90, confirmed 0.97). The prompt shares
-the belief update's definitions and status definitions: the final status is the lowest belief status of the answer's
-candidates, a name only proposed or absent counting as one no passage supports ("unknown", or "unlikely" when another
-candidate has support) and a removed one as "unlikely"; an answer the query computes is judged as a candidate of the
-computed aggregate (the lowest status of its inputs, "unlikely" when it uses an input a passage rules out or leaves
-out one a passage states).
-The fixed function of the final statuses is kept next to it as a baseline (`certainty_formula`), with its form
-anchored on the answer's candidates (`certainty_answer_formula`: a candidate's status, "unlikely" for a name a
-passage ruled out, for a proposal or an unlisted name "unknown" when the criterion lists no candidate, else
-"unlikely"; an unlisted answer on a computed aggregate at the lowest score of its inputs). On a report, s_T is the fixed function of the belief after the final update.
-`analysis/final_score_ablation.py` rescores saved runs: the scorer and both formulas.
+scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/belief_score/`): one call reads the query,
+the belief before the answer turn (statements, passages and proposals, as the update reads it) and
+the final turn (`[t<N>]`, the last 2000 characters of its reasoning and the final answer under `Final answer:`, no
+citations, no confidence line), and writes a reason and the WEP that the final answer is correct, read as a
+probability by `STATUS_PROBABILITY`. It weighs each belief by how much the answer's correctness depends on it; it is
+not told which candidate the answer is. The fixed function of the final statuses is kept next to it as a baseline
+(`certainty_formula`). On a report, s_T is the fixed function of the belief after the final update.
 
 Saved in `belief/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
-(`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, selected,
-candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the candidate `updates` of the
-reply (with their reasons and support labels), the criteria it `changed`, the `observations` that entered (claims and
+(`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, most_probable, selected,
+candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
+reply (with their reasons and passage observations), the criteria it `changed`, the `observations` that entered (claims and
 passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
 criterion every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
-with `certainty_label`, `certainty_formula`, `certainty_answer_formula` and `final_score` (status, answer's candidates, reason, issues). The same belief is readable in
+with `certainty_label`, `certainty_formula` and `final_score` (status, reason). The same belief is readable in
 `belief/{qid}.md`: the criteria, a belief table after each iteration (with the labels of its documents) and the
 final belief. For evaluation only: `new_item_precision` and `recall_so_far`, against the qrels at the dataset's
 `min_relevance_score` (NeuCLIR and RAGTIME: grade 3, the very valuable docs), the same relevant docs as the
@@ -396,7 +344,7 @@ The measures, by group, in the order of the files and the log:
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
-| uncertainty | queries scored; s_T and verbal: AUROC [CI], Brier; formula and answer formula: AUROC [CI] | QA, belief on |
+| uncertainty | queries scored; s_T and verbal: AUROC [CI], Brier; formula: AUROC [CI] | QA, belief on |
 | | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
 | belief | gold and control event change, criterion recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
@@ -409,8 +357,7 @@ raw outputs stay in the run, for `analysis/`).
 query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
 oss; read from `generation/{qid}.md` by a regex, `evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85"
 accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
-the mean of the status probabilities of the criteria the updater judges, aggregates left out) and `answer formula`
-(the same on the candidates the scorer says the answer uses, a computed aggregate kept). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
+the mean of the status probabilities of the criteria the updater judges, aggregates left out). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
 confidence. Rows: AUROC [CI] for every score, Brier for s_T and verbal. On a report dataset (`uncertainty/report.py`)
 s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
 final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the
@@ -424,17 +371,18 @@ answer and documents) and an aggregate (gold answer only).
   `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new
   document observed on k that is not one of its gold documents and does not state its answer.
 - `gold event: gold candidate change`: the change of the gold candidate's status probability at the criterion's
-  first gold event (unknown -> confirmed = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
+  first gold event (unknown -> certain = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
   `control event: ...`: the same at its control events, which should be about 0. An event whose gold candidate is
-  already "confirmed" is left out.
+  already "certain" is left out.
 - `criterion recall`: the share of the criterion's gold documents the agent saw.
 - `reached answer`: at the end, the criterion's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
   share).
-- `status Brier`: the final status probability against reached.
+- `status Brier`: the final status probability (the WEP) against whether the most probable
+  candidate is a gold answer (whatever the WEP; `reached` needs "possible" or above).
 
 Each row comes twice: per query (each query's mean over its criteria, then the mean over queries, CI over queries)
 and `(c)`, the mean over every criterion. Below the table, the status calibration: per final status, how many
-criteria had it and how many reached the answer. A candidate is a gold answer when it matches one, else when the
+criteria had it and how many have a gold answer as most probable candidate (the Brier's y). A candidate is a gold answer when it matches one, else when the
 judge (`judge_model`) says so, cached in `eval/belief/judge_cache.jsonl`. For diagnosis, `eval/belief/events.csv`
 has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
 `not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`

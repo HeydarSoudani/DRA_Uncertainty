@@ -1,0 +1,27 @@
+---example---
+Query: What is the total length of the bridges over the river Varn that were built before 1900?
+
+Final belief state:
+B1: It is almost certain that 120 m addresses Osby Bridge: length.
+  + 120 m: "The Osby Bridge, built in 1862, is 120 metres long" [Osby Bridge]
+B2: It is almost certain that 92 metres addresses Kalvik Bridge: length.
+  + 92 metres: "It is 92 metres long" [Kalvik Bridge]
+  - 85 m: "It is 92 metres long" [Kalvik Bridge]
+B3: It is unknown which candidate addresses the total length of the bridges over the river Varn that were built before 1900.
+  passages on its inputs:
+    "The Osby Bridge, built in 1862" [Osby Bridge]
+    "The Kalvik Bridge is a stone arch bridge over the Varn, built in 1903" [Kalvik Bridge]
+    "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
+
+Final turn:
+[t5]
+The Kalvik Bridge is 92 metres long, not 85 m. Osby Bridge is 120 m, so the total is 120 m + 92 m = 212 m.
+
+Final answer:
+212 m
+
+Output:
+{
+  "reason": "The lengths in B1 and B2 are almost certain, but the total counts the Kalvik Bridge, which a passage states was built in 1903, and leaves out the Tirsa footbridge, built in 1895 over the Varn.",
+  "wep": "almost no chance"
+}

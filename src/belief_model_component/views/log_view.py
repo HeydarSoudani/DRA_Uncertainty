@@ -13,11 +13,11 @@ list).  The row shows at most ``SELECTED_SHOWN`` selected candidates, then
 (with its status) under the table when the criterion changed in the
 iteration, and always in the final belief.  ``*`` marks a criterion whose candidates or proposals changed this
 iteration.  A step without a belief update call says so.  The md also
-gives every candidate update of the iteration (previous status -> status,
-the passages it cites as support (+) or against (-), and its reason).
+gives every belief item of the iteration (previous status -> status, the
+most probable candidate, what the reply wrote when code set otherwise, the
+passage observations attached on the belief, + or -, and the reason).
 Both give the reply's issues, one line per effect (``core.issues``:
-dropped, corrected, flagged), then its notes; a record of a run before
-schema 51 shows its codes under their current names.  The console lists
+dropped, corrected, flagged), then its notes.  The console lists
 every document of the iteration with its label ("(again)" when an earlier
 iteration showed it), so a label can be traced to its document; so does the
 md, under the iteration's heading.
@@ -25,7 +25,7 @@ md, under the iteration's heading.
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..core.issues import EFFECTS, NOTE, current_code, issue_effect
+from ..core.issues import EFFECTS, NOTE, issue_effect
 
 # Selected candidates shown in a criterion's row; the rest as "+N more".
 SELECTED_SHOWN = 2
@@ -65,7 +65,8 @@ def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
         n = len(b.get("candidates") or [])
         m = len(b.get("proposals") or [])
         count = f"{n} candidate" + ("" if n == 1 else "s") + (f", {m} proposed" if m else "")
-        rows.append((cid, "*" if cid in changed else "", str(b.get("status") or "unknown"), selected, count))
+        status = str(b.get("status") or "unknown")
+        rows.append((cid, "*" if cid in changed else "", status, selected, count))
     return rows
 
 
@@ -91,37 +92,35 @@ def selected_lists(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
 
 
 def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """``(criterion id, text)`` of each candidate update of the reply:
-    ``"<candidate>": <previous> -> <status> (<reason>)``, "new" for an
-    added candidate, "removed" for a removed one, "not taken" when code did
-    not take it, and the status written when code corrected it (a removal
-    code did not take: ``<status> -> <status> (wrote removed)``)."""
+    """``(criterion id, text)`` of each belief item of the reply:
+    ``<previous> -> <status>, "<most probable>"`` (the most probable
+    candidate or WEP written in parentheses where code differs), then the
+    passage observations attached on the belief ``+<candidate> d4`` and the
+    reason; "not taken" when code did not take it."""
     out = []
     for u in record.get("updates") or []:
-        kept, written = u.get("status"), u.get("written")
-        if kept is None:
-            move = f"not taken (wrote {written})" if written else "not taken"
-        else:
-            move = f"{u.get('previous') or 'new'} -> {kept}"
-            if written and written != kept:
-                move += f" (wrote {written})"
-        cited = " ".join([f"+{lb}" for lb in u.get("support") or []] + [f"-{lb}" for lb in u.get("against") or []])
-        if cited:
-            move += f" [{cited}]"
-        reason = " ".join(str(u.get("reason") or "").split())
-        # An aspect's own status (an item without a candidate): "status: ...".
-        head = f'"{u.get("candidate")}"' if u.get("candidate") else "status"
-        out.append((str(u.get("id")), f"{head}: {move}" + (f" ({reason})" if reason else "")))
+        written = u.get("written") or {}
+        cited = " ".join(f"{a.get('stance')}{a.get('candidate')} {a.get('passage')}" for a in u.get("passages") or [])
+        cited = f" [{cited}]" if cited else ""
+        reason = f" | {u['reason']}" if u.get("reason") else ""
+        if u.get("status") is None:
+            out.append((str(u.get("id")), f"not taken (wrote {written.get('wep') or 'no WEP'}){cited}{reason}"))
+            continue
+        move = f"{u.get('previous') or 'unknown'} -> {u['status']}"
+        if written.get("wep") and written["wep"] != u["status"]:
+            move += f" (wrote {written['wep']})"
+        if u.get("most_probable"):
+            move += f', "{u["most_probable"]}"'
+        if (written.get("most_probable") or None) != (u.get("most_probable") or None) and written.get("most_probable"):
+            move += f' (wrote "{written["most_probable"]}")'
+        out.append((str(u.get("id")), move + cited + reason))
     return out
 
 
-def _issue_text(issue: Any) -> str:
-    """``<id> <code> (<detail>)`` of an issue record (a plain string of an
-    old final scorer as it is)."""
-    if not isinstance(issue, dict):
-        return str(issue)
+def _issue_text(issue: Dict[str, Any]) -> str:
+    """``<id> <code> (<detail>)`` of an issue record."""
     detail = f" ({issue['detail']})" if issue.get("detail") else ""
-    return f"{issue.get('id')} {current_code(str(issue.get('code')))}{detail}"
+    return f"{issue.get('id')} {issue.get('code')}{detail}"
 
 
 def issue_lines(record: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -130,7 +129,7 @@ def issue_lines(record: Dict[str, Any]) -> List[Tuple[str, str]]:
     with ``×n``."""
     groups: Dict[str, Dict[str, int]] = {e: {} for e in EFFECTS}
     for i in [*(record.get("issues") or []), *(record.get("notes") or [])]:
-        effect = issue_effect(str(i.get("code"))) if isinstance(i, dict) else EFFECTS[2]
+        effect = issue_effect(str(i.get("code")))
         text = _issue_text(i)
         groups[effect][text] = groups[effect].get(text, 0) + 1
     return [("notes" if e == NOTE else e,
@@ -154,8 +153,7 @@ def gold_summary(record: Dict[str, Any]) -> str:
 def _summary(record: Dict[str, Any], final: bool) -> str:
     out = f"certainty={_num(record.get('certainty'))}"
     if final and record.get("final_score") is not None:
-        out += (f" ({record.get('certainty_label')}) | formula={_num(record.get('certainty_formula'))}"
-                f" | answer formula={_num(record.get('certainty_answer_formula'))}")
+        out += f" ({record.get('certainty_label')}) | formula={_num(record.get('certainty_formula'))}"
     elif final and record.get("certainty_formula") != record.get("certainty"):
         out += f" | formula={_num(record.get('certainty_formula'))}"
     if not final:
@@ -166,17 +164,11 @@ def _summary(record: Dict[str, Any], final: bool) -> str:
 
 
 def _final_score(record: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """The final scorer's answer's candidates, reason and issues of a final
-    record."""
+    """The final scorer's reason of a final record."""
     score = record.get("final_score")
     if not score:
         return []
-    named = "; ".join(f"{c.get('id')} " + (f"\"{c['candidate']}\"" if c.get("candidate") else "none")
-                      for c in score.get("candidates") or [])
-    rows = [("answer's candidates", named or "none"), ("reason", score.get("reason") or "")]
-    if score.get("issues"):
-        rows.append(("score issues", "; ".join(_issue_text(i) for i in score["issues"])))
-    return rows
+    return [("reason", score.get("reason") or "")]
 
 
 def _step_labels(record: Dict[str, Any]) -> List[Dict[str, Any]]:

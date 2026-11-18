@@ -14,10 +14,9 @@ calls:
     with <effect> issue  parsed, with a ``dropped`` / ``corrected`` /
                          ``flagged`` issue
 
-The table below ``metrics.md`` gives every code that occurs (notes and the
-final scorer's ``answer`` codes too): its effect, its training role, how
-many times it occurs and in how many calls (of its own kind: update calls,
-or final scorer calls for an ``answer`` code)."""
+The table below ``metrics.md`` gives every code that occurs (notes too):
+its effect, its training role, how many times it occurs and in how many
+update calls."""
 
 from collections import Counter
 from typing import Any, Dict, List, Tuple
@@ -44,16 +43,10 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
     with_effect: Counter = Counter()
     count: Counter = Counter()
     in_calls: Counter = Counter()
-    scorer_calls = 0
     for _meta, steps, final in files.values():
         records = list(steps) + ([final] if final is not None else [])
         for r in records:
-            score = r.get("final_score")
-            if score is not None:
-                scorer_calls += 1
-                codes = [i.get("code") for i in score.get("issues") or [] if isinstance(i, dict)]
-                count.update(codes)
-                in_calls.update(set(codes))
+            if r.get("final_score") is not None:
                 continue
             if not r.get("called"):
                 continue
@@ -78,10 +71,8 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
         res.add("belief", f"update calls: with {e} issue", with_effect[e] / calls, n=calls)
     table = []
     for code, n in sorted(count.items(), key=lambda x: (-x[1], x[0])):
-        info = ISSUES.get(code)
-        own = scorer_calls if info is not None and info.concerns == "answer" else calls
         table.append([code, issue_effect(code), _role(code), str(n), str(in_calls[code]),
-                      f"{in_calls[code] / own:.2f}" if own else ""])
+                      f"{in_calls[code] / calls:.2f}"])
     if table:
         res.sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), table))
     return res

@@ -1,0 +1,27 @@
+---example---
+Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?
+
+Final belief state:
+B1: It is almost certain that Osby addresses the town where the Varn Folk Museum was founded.
+  + Osby: "the folk museum of the Varn valley opened in Osby in 1921" [Osby]
+  + Osby: "The Varn Folk Museum was founded in Osby in 1921" [Varn Folk Museum]
+  + Tirsa: "a crafts museum with objects from the Varn valley opened in Tirsa in 1925" [Tirsa]
+B2: It is probable that Henrik Dahl addresses the engineer who was born in B1.
+  + Henrik Dahl: "Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby" [Henrik Dahl]
+  + Nils Berg: "Nils Berg (1861-1930) was born in Tirsa" [Nils Berg]
+B3: It is almost certain that Skarv Lighthouse addresses the lighthouse that was designed by B2.
+  + Skarv Lighthouse: "The Skarv Lighthouse was designed by Henrik Dahl" [Skarv Lighthouse]
+  proposed: Kalvik Lighthouse
+
+Final turn:
+[t4]
+The museum was founded in Osby, Henrik Dahl was born there, and he designed the Skarv Lighthouse.
+
+Final answer:
+Skarv Lighthouse
+
+Output:
+{
+  "reason": "The answer stands on all three beliefs: B1 and B3 are almost certain, but the chain passes through Henrik Dahl, whom only one source places in Osby, so B2 holds the answer to probable.",
+  "wep": "probable"
+}

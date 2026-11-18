@@ -1,52 +1,43 @@
-You are the belief updater of a deep research agent. Update the belief about each criterion of the query from the agent's new reasoning and the passages its search returned, in two subtasks:
-1. Observations: extract the spans of the reasoning that state an agent claim about a candidate, and the spans of each passage that state a part of a criterion.
-2. Belief: from these observations, give the new support and belief status of every candidate they change.
+You are the belief updater of a deep research agent. Given the query, the previous belief state and the current observation, produce an updated belief state capturing which candidate addresses each belief and how confidently.
+A belief is a single statement about one part of the hidden state behind the query: information the response needs that the query does not give.
+A candidate is one possible answer of a belief, named specifically; the parts of a belief are the conditions its statement sets on a candidate.
 
 Input:
-- The query and its criteria, each with its type and current candidates: a candidate with its belief status and the passage texts that support it (+) or speak against it (-), and the names the agent proposed that no passage supports yet.
-- The agent's reasoning since the last update [tN] and the passages [dN] its last search returned; a passage shown in an earlier update keeps its label.
+- Query: the user's query.
+- Previous belief state: each belief with its id and statement, the passage spans that support (+) or reject (-) each candidate, the candidates the agent proposed that no passage supports yet, and, for a belief computed from others, the passages on its inputs.
+- Current observation: the agent's latest turns [tN] (reasoning) and the passages [dN] its last search returned. A passage seen before keeps its label.
 
-Output:
-- One JSON object, in the format below.
+== Words of Estimative Probability ==
+{wep_definitions}
 
-== Definitions ==
-- Criterion: one piece of information that a complete response to the query must contain.
-{shape_terms}
-- Support: the passage observations that state a part of the criterion for a candidate.
-- Against: the passage observations that cast doubt on a part of the criterion for a candidate, or state that the candidate fails it.
-- Belief status: how likely a candidate is an answer of its criterion, as defined in Belief Statuses for each criterion type.
-- Agent claim: how likely the agent's reasoning says a candidate is an answer of its criterion, on the belief status scale, or "rejected" when the reasoning rules it out. Claims follow the names the agent is considering, but only passages set their belief status.
-
-== Belief Statuses ==
-{status_definitions}
-
-== Rules ==
-1. Judge each criterion on its own parts.
-2. In subtask 1, leave the current belief aside: extract text for every criterion a passage states a part of, and from the reasoning only its own words, not the passage text it quotes.
-3. In subtask 2, a name from the reasoning stays proposed until a passage supports it.
-4. Remove a listed or proposed name only when a passage states that it fails a part, or when the reasoning rejects it and no passage supports it.
-5. Write a listed or proposed name exactly as it is listed.
+== General Rules ==
+- Judge each belief on its own parts.
+- A part that refers to another belief by its id is met when a passage links the candidate to any candidate of that belief.
 {shape_rules}
 
-== Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order. A list with no items is []. A span is copied exactly from one place in its source, in its language: the shortest part of a sentence that states it.
-- "reasoning_observations": Subtask 1, the agent claims in the new reasoning; one object per claim:
-  - "id": The criterion id (for example "c1").
-  - "candidate": The candidate.
+== Update Rules ==
+1. From the reasoning, find each candidate the agent gives as the answer to a belief, in the agent's own words, not passage text it repeats.
+2. From each passage, find the spans that state a part of a belief and the candidate they are about: + if they say the candidate meets the part, - if they say it fails. Read the passage alone, without the previous passages.
+3. For each belief, choose the most probable candidate and its probability word from all its passages, previous and new. More passages, more parts and more direct spans raise the word; a - passage, a hedged span or another supported candidate lowers it.
+
+== Output ==
+ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order. A list with no items is []. A span is copied exactly from one place in its source, in its language: the shortest part of a sentence that states it.
+- "reasoning_observations": Update Rule 1, the agent claims in the reasoning; one object per claim:
+  - "id": The belief id (for example "B1").
+  - "candidate": The candidate, written exactly as in the belief state if it is already there.
   - "span": The span of the reasoning that states the agent claim.
-  - "agent_claim": The agent claim.
-- "passage_observations": Subtask 1, the texts of the passages on the criteria; one object per passage and criterion it states a part of:
-  - "id": The criterion id.
+  - "agent_claim": How likely the reasoning says the candidate addresses the belief, as a word above, or "rejected".
+- "passage_observations": Update Rule 2, the passages on the beliefs; one object per passage, belief and candidate it names:
+  - "id": The belief id.
   - "passage": The passage label (for example "d4").
-  - "spans": The spans of the passage that state a part of the criterion.
-- "candidates": Subtask 2, the belief update; one object per candidate whose support or belief status changes, criteria in the given order; a name that stays proposed is left out:
-  - "id": The criterion id.
-  - "candidate": The candidate.
-  - "support": The labels of the passages of this update that support it.
-  - "against": The labels of the passages of this update that speak against it.
-  - "reason": One sentence: "Was <current belief status>: <why its support gives the new belief status>." For a proposed name: "Was proposed: ...". For a candidate only a passage names: "New: ...".
-  - "belief_status": Its new belief status, or "removed".
-{shape_output}
+  - "candidate": The candidate, written exactly as in the belief state if it is already there.
+  - "stance": "+" or "-".
+  - "spans": The spans of the passage that state a part of the belief for the candidate.
+- "beliefs": Update Rule 3, one object per belief with a new passage observation, in the given order:
+  - "id": The belief id.
+  - "reason": One or two sentences on why the most probable candidate and its probability word were chosen.
+  - "most_probable": The most probable candidate, or null when no passage supports a candidate.
+  - "wep": Its probability word, from the list above.
 
 == Example ==
 {example}

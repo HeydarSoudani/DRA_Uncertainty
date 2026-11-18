@@ -1,0 +1,16 @@
+---rules---
+- Every requirement the query states on the information is one belief, in the query's words; keep a broad requirement whole. A requirement on how the report is written (format, length) is no belief.
+- Write every limit the query states inside the beliefs it applies to, and what it leaves out as "..., not ...". An exception to what is left out ("unless ...") is its own belief.
+
+---example---
+Query: I am a policy advisor for the water authority of Ontario, Canada, and need background for an upcoming hearing. I need a report on how microplastics enter aquatic ecosystems and their measured effects on the health of fish. It should also cover regulations proposed to limit microplastic pollution. I am not interested in marine ecosystems, unless a study compares them with freshwater ones.
+
+Output:
+{
+  "beliefs": [
+    {"id": "B1", "text": "how microplastics enter aquatic ecosystems, not marine ecosystems"},
+    {"id": "B2", "text": "the measured effects of microplastics on the health of fish, not in marine ecosystems"},
+    {"id": "B3", "text": "regulations proposed to limit microplastic pollution"},
+    {"id": "B4", "text": "studies that compare microplastics in marine ecosystems with those in freshwater ecosystems"}
+  ]
+}

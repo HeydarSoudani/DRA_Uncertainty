@@ -2,64 +2,48 @@
 answer is correct, judged by the LLM from the belief.
 
 One call after the last step, in place of a belief update on the answer
-turn: it reads the query, the belief b_{T-1} (every criterion with its
-candidates, their statuses and support, the proposals and the names a
-passage ruled out: ``format_belief(state, removed=True)``) and the agent's
-final response (``scorer_answer_text``: no citations, no confidence line;
-the end of the reasoning only when the response is the answer alone), and replies with one JSON object:
+turn: it reads the query, the belief b_{T-1} (every belief with its
+statement, the passages on its candidates and the proposals:
+``format_belief``, as the update reads it) and the agent's
+final turn (``scorer_answer_text``: "[t<N>]", the end of its reasoning and
+its final answer under "Final answer:", with no citations and no
+confidence line), and replies with one JSON object:
 
-- ``candidates``: per criterion, the answer's candidate (the one the
-  answer relies on, or null);
-- ``reason``: one sentence;
-- ``final_status``: the status of the final answer, on the belief's scale
-  (``FINAL_STATUSES``: every belief status, "unknown" included, no
-  "removed"), read as a probability as a candidate's status is
+- ``reason``: one or two sentences naming the beliefs that set the word;
+- ``wep``: the word of estimative probability that the final answer is
+  correct (``core.types.BELIEF_STATUSES``, "unknown" included),
+  read as a probability as a belief's WEP is
   (``core.types.status_probability``).
 
-The prompt shares the belief update's definitions and status definitions.
-The final status is the lowest belief status of the answer's candidates,
-a name only proposed or absent counting as one no passage supports
-("unknown", or "unlikely" when another candidate has support) and a
-removed one as "unlikely"; an answer the query computes is judged as a
-candidate of the computed aggregate (the lowest status of its inputs,
-"unlikely" when it uses an input a passage rules out or leaves out one a
-passage states) (``core.certainty.answer_certainty`` is its
-fixed-function form on the scorer's answer's candidates).  The scorer
-anchors s_T on the agent's answer, which ``core.certainty.certainty``
-cannot (it scores the belief, whatever the answer).
-Short-answer queries only (``prompts.FINAL_SCORE_SYSTEMS``): a report has
-no single answer to judge.
+The scorer weighs each belief by how much the answer's correctness depends
+on it; it is not told which candidate the answer is.  It anchors s_T on
+the agent's answer, which ``core.certainty.certainty`` cannot (it scores
+the belief, whatever the answer).  Short-answer queries only
+(``prompts.BELIEF_SCORE_SYSTEMS``): a report has no single answer to judge.
 
 The same prompt serves the prompted teacher and the trained student (the
 belief model's second task).
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.text_utils import parse_json_object
 
-from ..core.issues import (ISSUE_ANSWER_CANDIDATE_MISSING, ISSUE_ANSWER_CANDIDATE_UNLISTED,
-                           ISSUE_ANSWER_UNKNOWN_CRITERION)
 from ..core.state import BeliefState
-from ..core.types import BELIEF_STATUSES, criterion_id, parse_status, status_probability
-from ..prompts import FINAL_SCORE_SYSTEMS, FINAL_SCORE_USER_TEMPLATE
+from ..core.types import BELIEF_STATUSES, MULTI_CLUE, parse_status, status_probability
+from ..prompts import BELIEF_SCORE_SYSTEMS, BELIEF_SCORE_USER, TURN_TEMPLATE
 from ..text.agent_turn import FINAL_ANSWER_HEADER
-from ..text.matching import alnum, squash
+from ..text.matching import squash
 from ..views.belief_text import format_belief
 from .repair import complete_with_repair
 
-# The status of the final answer, lowest first: the belief statuses
-# (``core.types.STATUS_PROBABILITY``: unlikely 0.10, unknown 0.25, possible
-# 0.50, probable 0.70, almost certain 0.90, confirmed 0.97).
-FINAL_STATUSES = BELIEF_STATUSES
-
-# Output tokens of one call (a multi-member query has up to ~50 criteria).
+# Output tokens of one call (a reason and a word, after any thinking).
 MAX_TOKENS = 4096
 
-# Characters of the answer turn's reasoning the scorer reads when the final
-# response is the answer alone (its last ones, the conclusion).
+# Characters of the answer turn's reasoning the scorer reads (its last
+# ones, the conclusion).
 ANSWER_REASONING_CHARS = 2000
 
 # A citation in the agent's response: a bracketed document id (one with a
@@ -78,38 +62,32 @@ def clean_response(response: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def scorer_answer_text(answer_turn: str, max_reasoning_chars: int = ANSWER_REASONING_CHARS) -> str:
-    """The answer turn as the scorer reads it: the agent's final response
-    (``clean_response``) when it explains the answer (more than one line);
-    a response that is the answer alone comes after the last
-    *max_reasoning_chars* of the reasoning, under ``FINAL_ANSWER_HEADER``."""
+def scorer_answer_text(answer_turn: str, step: int, max_reasoning_chars: int = ANSWER_REASONING_CHARS) -> str:
+    """The answer turn as the scorer reads it: "[t<step>]", the last
+    *max_reasoning_chars* of its reasoning (no citations) and the agent's
+    final response (``clean_response``) under ``FINAL_ANSWER_HEADER``."""
     text = answer_turn.strip()
     cut = text.rfind(FINAL_ANSWER_HEADER)
     reasoning, response = (text[:cut].strip(), text[cut + len(FINAL_ANSWER_HEADER):]) if cut >= 0 else ("", text)
     response = clean_response(response)
-    if len([line for line in response.splitlines() if line.strip()]) > 1 or not reasoning:
-        return response
     if len(reasoning) > max_reasoning_chars:
         reasoning = "..." + reasoning[-max_reasoning_chars:].lstrip(".")
-    reasoning = _CITATION_RE.sub("", reasoning)
-    return f"{reasoning}\n\n{FINAL_ANSWER_HEADER}\n{response}"
+    reasoning = _CITATION_RE.sub("", reasoning).strip()
+    body = "\n\n".join(p for p in (reasoning, f"{FINAL_ANSWER_HEADER}\n{response}") if p)
+    return TURN_TEMPLATE.format(label=f"t{step}", text=body)
 
 
 def parse_final_status(value: Any) -> Optional[str]:
-    """The final status a reply writes (as ``core.types.parse_status``, a
-    trailing period and quotes ignored), None when it is none of
-    ``FINAL_STATUSES``."""
-    status = parse_status(str(value or "").strip(" .\"'"))
-    return status if status in FINAL_STATUSES else None
+    """The WEP a reply writes (as ``core.types.parse_status``, a trailing
+    period and quotes ignored), None when it is no word of the scale."""
+    return parse_status(str(value or "").strip(" .\"'"))
 
 
 @dataclass
 class FinalScore:
-    """One parsed reply: the status of the final answer and its
-    probability, the answer's candidates (``{id, candidate}``) and the
-    reason."""
+    """One parsed reply: the WEP of the final answer (``status``) and its
+    probability, and the reason."""
     status: str
-    candidates: List[Dict[str, Any]] = field(default_factory=list)
     reason: str = ""
 
     @property
@@ -117,104 +95,72 @@ class FinalScore:
         return status_probability(self.status)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"status": self.status, "candidates": self.candidates, "reason": self.reason}
+        return {"status": self.status, "reason": self.reason}
 
 
 def parse_final_score(raw: str) -> Optional[FinalScore]:
     """The reply *raw* as a ``FinalScore``, None unless it is a JSON object
-    with a valid status."""
+    with a valid ``wep``."""
     data = parse_json_object(raw or "")
     if data is None:
         return None
-    status = parse_final_status(data.get("final_status"))
+    status = parse_final_status(data.get("wep"))
     if status is None:
         return None
-    candidates = []
-    for item in data.get("candidates") if isinstance(data.get("candidates"), list) else []:
-        if not isinstance(item, dict):
-            continue
-        name = squash(item.get("candidate"))
-        candidates.append({"id": criterion_id(item.get("id")), "candidate": name or None})
-    return FinalScore(status=status, candidates=candidates, reason=squash(data.get("reason")))
-
-
-def check_issues(score: FinalScore, state: BeliefState) -> List[Dict[str, Any]]:
-    """What the answer's candidates of *score* get wrong against the belief
-    *state*, as issue records (``{id, code, detail}``, ``core.issues``): a
-    criterion missing or unknown, a candidate the criterion does not list
-    (as a candidate, proposal or removed name).  Information only: the
-    status is kept."""
-    issues: List[Dict[str, Any]] = []
-    ids = [c.id for c in state.criteria]
-    seen = {c["id"] for c in score.candidates}
-    missing = [i for i in ids if i not in seen]
-    if missing:
-        issues.append({"id": "final", "code": ISSUE_ANSWER_CANDIDATE_MISSING,
-                       "detail": f"no answer's candidate for {missing}"})
-    for c in score.candidates:
-        if c["id"] not in ids:
-            issues.append({"id": c["id"], "code": ISSUE_ANSWER_UNKNOWN_CRITERION,
-                           "detail": "an answer's candidate of an unknown criterion id"})
-            continue
-        k = ids.index(c["id"])
-        names = ([x.name for x in state.candidates[k]] + [x.name for x in state.proposals[k]]
-                 + state.ruled_out(k))
-        if c["candidate"] and alnum(c["candidate"]) not in {alnum(n) for n in names}:
-            issues.append({"id": c["id"], "code": ISSUE_ANSWER_CANDIDATE_UNLISTED,
-                           "detail": f"{c['candidate']!r}: not listed"})
-    return issues
+    return FinalScore(status=status, reason=squash(data.get("reason")))
 
 
 class LLMFinalScorer:
     """The final scorer call: one JSON-replying LLM call, its retries and
     its errors."""
 
-    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = "multi_clue",
+    def __init__(self, llm_client: Any, model_name: Optional[str] = None, query_shape: str = MULTI_CLUE,
                  max_tokens: int = MAX_TOKENS, temperature: float = 0.0, parse_retries: int = 1) -> None:
-        if query_shape not in FINAL_SCORE_SYSTEMS:
+        if query_shape not in BELIEF_SCORE_SYSTEMS:
             raise ValueError(f"no final scorer for query shape {query_shape!r}; "
-                             f"expected one of {list(FINAL_SCORE_SYSTEMS)}")
+                             f"expected one of {list(BELIEF_SCORE_SYSTEMS)}")
         self._llm = llm_client
         self.name = f"llm:{model_name}"
         self.query_shape = query_shape
-        self._system = FINAL_SCORE_SYSTEMS[query_shape]
+        self._system = BELIEF_SCORE_SYSTEMS[query_shape]
         self.max_tokens = max_tokens
         self._temperature = temperature
         self._parse_retries = parse_retries
 
-    def prompt(self, query: str, state: BeliefState, answer_turn: str) -> List[Dict[str, str]]:
+    def prompt(self, query: str, state: BeliefState, answer_turn: str, step: int) -> List[Dict[str, str]]:
         """The messages of the call: *state* is b_{T-1}, *answer_turn* the
-        agent's answer turn."""
+        agent's answer turn, labelled "t<step>"."""
         return [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": FINAL_SCORE_USER_TEMPLATE.format(
-                query=query, criteria=format_belief(state, removed=True), answer=scorer_answer_text(answer_turn))},
+            {"role": "user", "content": BELIEF_SCORE_USER.format(
+                query=query, criteria=format_belief(state),
+                answer=scorer_answer_text(answer_turn, step))},
         ]
 
-    def score(self, query: str, state: BeliefState, answer_turn: str
+    def score(self, query: str, state: BeliefState, answer_turn: str, step: int
               ) -> Tuple[Optional[FinalScore], Optional[str], List[str]]:
         """``(score, raw, errors)``: *score* None when no reply parsed
         (*raw* the last reply, None when the first call raised).  A retry
         tells the model what was wrong with its reply
         (``repair.complete_with_repair``)."""
         return complete_with_repair(
-            "LLMFinalScorer", self._llm, self.prompt(query, state, answer_turn), parse_final_score,
-            FINAL_SCORE_REPAIR, f"no JSON object with a final_status of {list(FINAL_STATUSES)}", self._parse_retries,
+            "LLMFinalScorer", self._llm, self.prompt(query, state, answer_turn, step), parse_final_score,
+            FINAL_SCORE_REPAIR, f"no JSON object with a wep of {list(BELIEF_STATUSES)}", self._parse_retries,
             max_tokens=self.max_tokens, temperature=self._temperature)
 
 
 # The retry message after a reply that did not parse.
 FINAL_SCORE_REPAIR = ("Your reply could not be read. Respond with ONLY a raw JSON object with the keys "
-                      "\"candidates\", \"reason\" and \"final_status\", the final status one of: "
-                      + ", ".join(f'"{t}"' for t in FINAL_STATUSES) + ".")
+                      "\"reason\" and \"wep\", the wep one of: "
+                      + ", ".join(f'"{t}"' for t in BELIEF_STATUSES) + ".")
 
 
-def build_final_scorer(llm_client: Any, model: str = "", query_shape: str = "multi_clue"
+def build_final_scorer(llm_client: Any, model: str = "", query_shape: str = MULTI_CLUE
                        ) -> Optional[LLMFinalScorer]:
     """The final scorer on one LLM client (named *model*) for the queries
     of one shape; None for a shape without one (a report)."""
     if llm_client is None:
         raise ValueError("the final scorer needs an LLM client")
-    if query_shape not in FINAL_SCORE_SYSTEMS:
+    if query_shape not in BELIEF_SCORE_SYSTEMS:
         return None
     return LLMFinalScorer(llm_client, model_name=model, query_shape=query_shape)

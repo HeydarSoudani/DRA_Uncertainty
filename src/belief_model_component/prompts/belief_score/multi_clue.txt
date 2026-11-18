@@ -1,0 +1,24 @@
+---example---
+Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
+
+Final belief state:
+B1: It is almost certain that Anna Holm addresses the painter who was born in a coastal town.
+  + Anna Holm: "Anna Holm (1890-1960) was a painter born in the coastal town of Vik" [Anna Holm]
+B2: It is probable that Maja Strand addresses the painter who won the Ostra Prize in the 1920s.
+  + Maja Strand: "In 1927 the Ostra Prize for painting went to Maja Strand" [Ostra Prize]
+  + Erik Lind: "Erik Lind, a painter, received the Ostra Prize" [Erik Lind]
+  - Anna Holm: "She won the Ostra Prize in 1934" [Anna Holm]
+B3: It is unknown which candidate addresses the painter that meets B1 to B2.
+
+Final turn:
+[t3]
+Anna Holm was born in the coastal town of Vik and is a well-known winner of the Ostra Prize, so she fits both clues.
+
+Final answer:
+Anna Holm
+
+Output:
+{
+  "reason": "The answer is Anna Holm on both clues: B1 supports her as the coastal-born painter, but on B2 her only passage states that she won the Ostra Prize in 1934, outside the 1920s, and Maja Strand is supported as the 1927 winner.",
+  "wep": "almost no chance"
+}

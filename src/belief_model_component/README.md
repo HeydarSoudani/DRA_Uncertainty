@@ -14,8 +14,7 @@ belief_model_component/
   belief_model.py    BeliefModel, the per-sample entry point
   core/              the belief itself
     types.py         statuses, criterion kinds, query shapes, dataclasses
-    issues.py        the issue code table (effect, training role) and the sets training reads
-    reason_text.py   the opening of a candidate update's reason, its labels
+    issues.py        the issue code table (effect, role) and the sets by role
     state.py         BeliefState (b_t) and its apply rules
     certainty.py     certainty s_t of a belief
   update/            the LLM calls on the belief
@@ -29,14 +28,14 @@ belief_model_component/
     factory.py       the source of a dataset and criteria_source; prepare
   text/              plain string helpers, no belief logic
     matching.py      letter-and-digit matching (alnum, contains_words)
-    passages.py      span checks, passage titles, reply labels, Passage, Turn
+    passages.py      span checks, passage titles, passage labels, Passage, Turn
     agent_turn.py    the agent's turn as the update reads it
   views/             text renderings of the belief
     belief_text.py   the belief as the update and final scorer prompts read it
     log_view.py      readable console and markdown logs
   eval_signals/      evaluation only, never shown to the agent
     retrieval_gain.py
-  prompts/           system prompts (.txt) and user templates
+  prompts/           one folder per call (belief_init, belief_update, belief_score): system.txt, user.txt, <shape>.txt; shared/wep_definitions.txt
 ```
 
 Imports between the folders go one way: `text` -> `core` -> `prompts` ->
@@ -45,36 +44,49 @@ Imports between the folders go one way: `text` -> `core` -> `prompts` ->
 
 ## The belief
 
-The belief state b_t gives each criterion of a fixed per-query criteria list
-its candidates (possible answers), each with an Agent-BRACE belief status
-(how likely it is an answer) and its support (the passage observations that
-support it or speak against it), and the names the agent proposed that no
-passage supports yet. Each query type has one status set
-(`prompts/belief_update/statuses.txt`): "one answer" for a
-short-answer query (every closed criterion: clues, hops, members' values),
-"aspect" for a report, where the status is the aspect's own (how well its
-facts with support back it; the facts are only kept or removed). An
-aggregate (a multi-clue query's target, a multi-member query's
-computation) has no status set: code sets its statuses, the lowest of its
-inputs', "unlikely" when a passage speaks against a candidate.
+The belief state b_t gives each belief (a criterion of a fixed per-query
+list, shown to the update as "B<k>", saved as "c<k>") its candidates
+(possible answers), the passages on each (+ it states a part for the
+candidate, - it states the candidate fails a part), its most probable
+candidate and its word of estimative probability (WEP,
+`prompts/shared/wep_definitions.txt`), both judged by the update from all
+the belief's passages, and the names the agent proposed that no passage
+supports yet. A belief has one WEP: its most probable candidate carries
+it, its other candidates have no status. On a report's aspect the
+candidates are facts, the WEP rates how well the kept facts cover the
+aspect, and a - removes a fact. An aggregate has no WEP of its own and
+takes no belief item: a multi-clue query's target has as candidate the
+name that is the most probable candidate of every clue, at the lowest of
+their WEPs; a multi-member query's computed answer keeps the agent's
+computed answers (saved, never shown: the update reads it as "unknown"
+with the passages on its inputs), each at the lowest status of the
+inputs, "unlikely" when a passage speaks against it.
+
+The agent's reasoning only proposes: a claim ("rejected" included) is
+saved on its candidate and never removes one; a rejected proposal leaves
+the proposals. Only a `-` passage on an aspect's fact removes it.
 
 A step with a passage (new or shown before) makes one call (b_t = f(query, b_{t-1}, o_t)). It
 records the claims of the agent's turns since the last call (reasoning
-observations: they only propose or reject names) and the spans of the
-passages that state a part of each criterion (passage observations, kept as
-the criterion's references), then gives, with the passages that support or
-speak against it and its reason, the status of every candidate they change.
-Code keeps every other candidate as it was and enforces the hard limits (no
-support: at most "possible"). Other steps carry the belief forward.
+observations: they only propose or reject names), the passage
+observations (a passage, a belief, a candidate and a stance, with the
+spans that state it; attached to the candidate after the claims, and kept
+as the criterion's references), then per belief with a new passage
+observation its most probable candidate, WEP and reason. Code checks that
+the most probable candidate is listed with a + passage and that "unknown"
+goes with no supported candidate, and takes the WEP as written. Other
+steps carry the belief forward.
 
-The candidates, their support and the proposals are shown to the next
-update (the agent sees the candidates and proposals); the claims and reasons
-are saved. The certainty s_t of each step is a fixed function of the
+Each belief's statement (built by code from its WEP and most probable
+candidate), its passages (per candidate and stance the latest
+`views.belief_text.MAX_SUPPORT_LINES`, the earlier ones counted) and its
+proposals are shown to the next update and, before the answer turn, to
+the final scorer; the claims are saved. The certainty s_t of each step is a fixed function of the
 statuses. On a short-answer query, the final scorer reads b_{T-1} and the
-agent's answer turn and judges how likely the answer is correct (s_T, a word
-of estimative probability); on a report the answer turn is one more update
-and s_T the certainty of the final belief. For evaluation only, it also
-saves the retrieval gain against the qrels.
+agent's final turn and judges how likely the answer is correct (s_T, a word
+of estimative probability, with a reason); on a report the answer turn is
+one more update and s_T the certainty of the final belief. For evaluation
+only, it also saves the retrieval gain against the qrels.
 
 ## Per sample
 
@@ -95,8 +107,8 @@ belief from b_{t-1} to b_t): b_t, then the retrieval gain (for evaluation
 only). When the step has a document
 (new or shown before, with the same label), one belief update call reads the agent's turns
 since the last call and those passages, records the claims of the turns and
-the observations of the passages, and gives the support and status of every
-candidate they change, with its reason. Otherwise b_t = b_{t-1} and the turn
+the passage observations, and gives the most probable candidate and WEP of
+every belief with a new passage observation. Otherwise b_t = b_{t-1} and the turn
 waits for the next call.
 
 ## Saved records
@@ -130,74 +142,74 @@ agent_turn, reply, errors[]
   to the belief update; null for a document without text).
 - `called`: whether the step made a belief update call.
 - `beliefs`: per criterion in `criteria` order, its belief after the step,
-  `{id, status, selected, candidates, proposals}`.
-  - `candidates`: as shown to the next update, highest status first, each
-    `{name, status, basis, added_step, support, claim, claim_step}`.
+  `{id, status, most_probable, selected, candidates, proposals}`.
+  - `candidates`: as shown to the next update, most probable first, each
+    `{name, status, basis, added_step, support, claim, claim_step}`
+    (`status` null for a candidate that is not the most probable).
     `support` holds the passage observations on it,
     `{label, doc_id, title, step, spans, against}`; `claim` is the agent's
     latest claim on it, never shown to the update.
   - `proposals`: the names the agent proposed that no passage supports, each
     `{name, claim, step, added_step}` (`step` its latest claim's).
-  - `status` and `selected` are derived from the candidates: the
-    criterion's status on the scale `core.types.BELIEF_STATUSES` and its
-    selected candidate(s) (`BeliefState.belief_lists`); an aspect's
-    `status` is its own, its facts' `status` "kept".
-- `updates`: the reply's candidate updates,
-  `{id, candidate, reason, support, against, written, previous, status}`.
-  The reason is saved here only, never shown; `status` is the one code kept:
-  "removed" for a removed candidate, "proposed" for a name kept as a
-  proposal, null when the update was not taken; an aspect's status item has
-  `candidate` null.
-- `changed`: the ids of the criteria whose candidates or proposals changed.
+  - `status` is the belief's WEP on the scale `core.types.BELIEF_STATUSES`
+    (an aggregate's: its highest candidate's), `most_probable` its most
+    probable candidate (null for an aspect or aggregate), and `selected` its selected candidate(s) (`BeliefState.belief_lists`); an
+    aspect's facts carry its WEP as their `status`.
+- `updates`: the reply's belief items,
+  `{id, reason, passages, written, previous, most_probable, status}`:
+  `passages` the call's passage observations attached on the belief
+  (`{candidate, stance, passage}`), `written` the item's
+  `{most_probable, wep}` as the reply wrote them, `previous` the belief's
+  status before; `status` null when the item was not taken.
+- `changed`: the ids of the criteria whose candidates, proposals, most
+  probable candidate or WEP changed.
 - `observations`: the observations that entered the belief in the call
   (claims `{id, label, step, candidate, claim, spans}`, passage observations
-  `{id, label, step, doc_id, spans}`, verified spans only), null when the
+  `{id, label, step, doc_id, candidate, stance, spans}`, verified spans
+  only; a null candidate on a computed answer states an input), null when the
   call was not made or failed. Together over the steps they are every
   criterion's references (the final record gathers them).
 - `issues`: one `{id, code, detail, [label]}` per thing the reply got wrong
   (`core.issues.ISSUES`: each code's effect, an observation or update
   dropped, a status corrected or a flaw flagged, and its training role).
   `notes`: the same records for what is no error (codes of effect `note`:
-  a name written again after it was dropped, an update that changes
-  nothing, an aspect fact's span off the fact).
+  a name written again after it was dropped, an aspect fact's span off the
+  fact).
 - `agent_turn`: the agent's reasoning of the iteration
   (`text.agent_turn.agent_turn_text`; the queries are in the trajectory),
   read by the step's call or by the next one. `reply`: the raw reply of the
   call.
 - `certainty`: the certainty score s_t of the belief after the step
   (`core.certainty.certainty`: over the criteria their status's probability,
-  `core.types.STATUS_PROBABILITY`; the lowest on a short-answer query, the
-  mean on a report; every criterion counted); null without criteria.
+  `core.types.STATUS_PROBABILITY`; their mean, aggregates left out); null
+  without criteria.
 
 ### Final record
 
 One `final` line; it reads the answer turn (`text.agent_turn.answer_turn`):
 
 ```
-iteration, certainty, certainty_label, certainty_formula,
-certainty_answer_formula, called, final_score, beliefs, updates, changed,
-observations, issues, notes, references, agent_turn, reply, errors
+iteration, certainty, certainty_label, certainty_formula, called,
+final_score, beliefs, updates, changed, observations, issues, notes,
+references, agent_turn, reply, errors
 ```
 
 - Short-answer query: the final scorer (`update.final_score`) reads b_{T-1}
   and the answer turn, and the belief is not updated. `certainty` is s_T, the
-  probability of the final answer's status (`certainty_label`), null when the
-  call failed; `final_score` holds its `{status, candidates, reason, issues}`
-  (its issues as records of the `answer` codes).
-  `certainty_formula` is the certainty of b_{T-1} (`core.certainty.certainty`)
-  and `certainty_answer_formula` its form anchored on the answer's candidates
-  (`core.certainty.answer_certainty`), both baselines. `updates`, `changed`
+  probability of the WEP the scorer gives the final answer
+  (`certainty_label`), null when the call failed; `final_score` holds its
+  `{status, reason}`. `certainty_formula` is the certainty of b_{T-1}
+  (`core.certainty.certainty`), a baseline. `updates`, `changed`
   `issues` and `notes` are empty, `observations` null.
 - Report (no final scorer): the answer turn is one more update, labelled
   "t<last step + 1>" with the turns still waiting, and s_T is the certainty
   of the belief after it (`certainty` = `certainty_formula`;
-  `certainty_label`, `certainty_answer_formula` and `final_score` null).
+  `certainty_label` and `final_score` null).
 - `reply`: the raw reply of the call.
 - `references`: per criterion every source assigned to it over the sample
   and the candidates and proposals it dropped (`BeliefState.reference_lists`:
   `{id, references: [{label, step, [doc_id, title | candidate, claim],
   spans}], removed: [{name, status, basis, added_step, removed_step,
-  reason, against}]}`; `against`: ruled out, by a passage or by the agent's
-  claim, which the final scorer reads as removed; false for a proposal
-  dropped for room).
+  reason}]}`: an aspect's fact a passage spoke against, a proposal the
+  agent rejected or one dropped for room; saved, never shown).
 - The final record is null without an answer turn.

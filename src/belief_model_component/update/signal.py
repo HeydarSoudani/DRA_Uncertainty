@@ -56,10 +56,10 @@ class BeliefUpdateSignal:
     the final turn always makes one.  The call shows every document of
     the step, also one shown in an earlier step: a passage gets its label
     when first shown (``BeliefState.label_doc``) and keeps it, so the
-    update sees which candidates it already supports, and a passage shown
-    again raises no status on its own (``BeliefState.apply``: a status
-    change needs support the candidate did not have).  A step without a
-    call carries the belief forward, and its turn waits for the next
+    update sees which candidates it already supports (the same passage
+    and stance on a candidate counts once; the update judges the WEP from
+    all the belief's passages).  A step without a call carries the belief
+    forward, and its turn waits for the next
     call, which reads every turn since the last one (the last
     ``MAX_PENDING_TURNS``).
 

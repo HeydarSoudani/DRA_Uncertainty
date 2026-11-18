@@ -28,7 +28,7 @@ The **gold candidate's probability** at a step: the status probability
 (``core.types.status_probability``) of k's gold candidate (several: the
 highest), "unknown" when the gold answer is not a candidate.  An event's
 change is that probability after the step minus before; an event whose gold
-candidate is already "confirmed" cannot rise and has no change.
+candidate is already "certain" cannot rise and has no change.
 
 A candidate is a gold answer when it matches one (``gold_match.states``), else
 when the judge says so (``gold_match.AnswerJudge``, the run's ``judge_model``,
@@ -47,14 +47,19 @@ Per criterion (a value is None where it does not apply):
     reached_seen    ``reached``, for a closed criterion with a gold document
                     seen (the belief's own share: no seen gold document is
                     a retrieval failure)
-    brier           (p - y)^2 of its final status probability p against
-                    y = ``reached``
+    brier           (p - y)^2 of its final status probability p (its WEP:
+                    how likely its most probable candidate is right)
+                    against y = its most probable candidate (an
+                    aggregate: its first candidate) is a gold answer,
+                    whatever the WEP (``reached`` needs "possible" or
+                    above)
 
 Each row of ``metrics.md`` is one of them twice: the mean over the queries
 of each query's mean over its criteria (bootstrap CI over queries, n
 queries), and ``(c)``: the mean over every criterion (n criteria).  Below the
 table, the final status of every criterion with a Brier item, per status:
-how many, how many reached (``calibration``).
+how many, how many with a correct most probable candidate (the Brier's y,
+``calibration``).
 
 In the files, for diagnosis: every gold and control event, with a gold
 event's funnel stage (``call_failed``, ``not_assigned``,
@@ -92,8 +97,8 @@ MEASURES = (("gold event: gold candidate change", "gold_change"),
             ("reached answer, gold seen", "reached_seen"),
             ("status Brier", "brier"))
 #: Columns of the calibration table below the main table.
-CALIBRATION_COLUMNS = ("status", "p", "criteria", "reached", "share reached")
-_CONFIRMED = "confirmed"
+CALIBRATION_COLUMNS = ("status", "p", "criteria", "most probable correct", "share correct")
+_TOP_STATUS = "certain"
 EVENT_FIELDS = ("query_id", "criterion", "kind", "type", "first", "step", "doc_id", "assigned", "p_before",
                 "p_after", "change", "correct_after", "correct_end", "stage")
 
@@ -271,11 +276,20 @@ class BeliefUpdateEvaluator:
                 selected = selected[:1]
             return any(gold_name(cid, name) for name in selected)
 
+        def top_correct(belief: Optional[Dict], cid: str) -> bool:
+            """Whether the most probable candidate (an aggregate: its first
+            candidate) is a gold answer, whatever its WEP."""
+            belief = belief or {}
+            top = belief.get("most_probable")
+            if top is None and q.gold[cid]["kind"] == AGGREGATE:
+                top = next((c.get("name") for c in belief.get("candidates") or []), None)
+            return top is not None and gold_name(cid, top)
+
         def change(before: Optional[Dict], after: Optional[Dict], cid: str) -> Dict[str, Any]:
             s_before, s_after = gold_status(before, cid), gold_status(after, cid)
             p_before, p_after = status_probability(s_before), status_probability(s_after)
             return {"p_before": p_before, "p_after": p_after,
-                    "change": None if s_before == _CONFIRMED else p_after - p_before}
+                    "change": None if s_before == _TOP_STATUS else p_after - p_before}
 
         final = q.final_beliefs()
         prev: Dict[str, Dict] = {}
@@ -355,6 +369,7 @@ class BeliefUpdateEvaluator:
             controls = [e["change"] for e in events
                         if e["type"] == "control" and e["criterion"] == cid and e["change"] is not None]
             p = status_probability((final.get(cid) or {}).get("status") or UNKNOWN)
+            y = float(top_correct(final.get(cid), cid))
             values[cid] = {
                 "kind": c["kind"],
                 "gold_change": (firsts.get(cid) or {}).get("change"),
@@ -362,7 +377,8 @@ class BeliefUpdateEvaluator:
                 "recall": len(seen[cid]) / len(c["doc_ids"]) if has_docs else None,
                 "reached": float(reached),
                 "reached_seen": float(reached) if has_docs and seen[cid] else None,
-                "brier": (p - float(reached)) ** 2,
+                "brier": (p - y) ** 2,
+                "top_correct": y,
                 "status": (final.get(cid) or {}).get("status") or UNKNOWN,
             }
         return values, events
@@ -431,13 +447,13 @@ class BeliefUpdateEvaluator:
 
     @staticmethod
     def _calibration(groups: List[List[Dict[str, Any]]]) -> List[Tuple[str, float, int, int, Optional[float]]]:
-        """Per status, highest first: ``(status, p, criteria, reached, share
-        reached)`` over the criteria with a Brier item."""
+        """Per status, highest first: ``(status, p, criteria, most probable
+        correct, share correct)`` over the criteria with a Brier item."""
         items = [v for g in groups for v in g if v["brier"] is not None]
         out = []
         for status in sorted(STATUS_LEVEL, key=STATUS_LEVEL.get, reverse=True):
             with_status = [v for v in items if v["status"] == status]
-            hits = int(sum(v["reached"] for v in with_status))
+            hits = int(sum(v["top_correct"] for v in with_status))
             out.append((status, status_probability(status), len(with_status), hits,
                         hits / len(with_status) if with_status else None))
         return out
