@@ -31,16 +31,18 @@ Agentic workflows:
 
 Stages (--stage):
     generate   Run the agent on the queries without a finished trajectory, save
-               its files, then evaluate the run.
+               its files, then evaluate the generation (retrieval, generation,
+               verbal confidence, trajectory).
     belief     Run the belief model --belief-model over the finished
                trajectories without a belief file of its own, in its folder
                belief/{model}/ (orchestration.belief_stage: no agent, no
                retrieval; document text from the corpus by id), then evaluate
-               the run.  One generation, many belief models: each has its own
-               folder; other settings of a model replace that model's beliefs only.
+               that belief model and add it to the run's evaluation files.  One
+               generation, many belief models: each has its own folder and its
+               own rows; other settings of a model replace that model's beliefs only.
     eval       Evaluate the run from its saved files (judge verdicts reused),
                every belief model of the run.
-    all        generate, then belief, then evaluate.
+    all        generate, then belief, then evaluate everything.
 
 Output structure: see OUTPUT STRUCTURE at the end of this file.
 """
@@ -260,7 +262,8 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
 def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report", verbose: bool = True,
                  workers: int = 1, worker_config: Optional[dict] = None, **kwargs):
     """Run the stages of ``kwargs["stage"]`` (see the module docstring), then
-    evaluate the whole run.
+    evaluate the stage's scope (generate: the generation; belief: its belief
+    model; eval, all: everything), keeping the rest of the evaluation files.
 
     Args:
         plan:          From :func:`prepare_run`.
@@ -289,8 +292,8 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
         _run_belief(plan, verbose, kwargs)
 
     # ==================== Read the run back from disk ====================
-    # Every query of the run is evaluated from its saved files, whatever the
-    # stage, so every stage writes the same eval/metrics.md and eval/per_query.csv.
+    # Every query of the run is evaluated from its saved files; each stage
+    # scores its own scope of eval/metrics.md and eval/per_query.csv.
     finished, unfinished = scan_queries(run_dir)
     if unfinished:
         print(f"\n{len(unfinished)} unfinished queries (no meta line in trajectory/{{qid}}.jsonl); "
@@ -307,7 +310,9 @@ def run_pipeline(plan: RunPlan, data_path: str, policy_model: str = "cpm_report"
     # The LLM-as-judge evaluators (BrowseComp-Plus accuracy, Auto-ARGUE reports)
     # call the OpenRouter-hosted judge directly and reuse the verdicts saved in
     # the run directory; no local server to start.
-    evaluate_and_save(results, evaluators, run_dir, num_unfinished=len(unfinished))
+    scope = {"generate": dict(generation=True, models=[]),
+             "belief": dict(generation=False, models=[kwargs["belief_model_name"]])}.get(stage, {})
+    evaluate_and_save(results, evaluators, run_dir, num_unfinished=len(unfinished), **scope)
 
     # ==================== Final status ==========================================
     print(f"\n{'=' * 80}")
@@ -370,9 +375,18 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     # (started after the generate stage released its GPUs), more queries at
     # once for belief init (the server batches them).
     from utils.vllm_manager import belief_server
+    previous = os.environ.get("BELIEF_VLLM_API_BASE")
     with belief_server(kwargs["belief_model"]) as api_base:
         os.environ["BELIEF_VLLM_API_BASE"] = api_base
-        _believe(plan, todo, saved, max_passage_tokens, verbose, kwargs, prepare_workers=kwargs["belief_workers"])
+        try:
+            _believe(plan, todo, saved, max_passage_tokens, verbose, kwargs,
+                     prepare_workers=kwargs["belief_workers"])
+        finally:
+            # The server stops with the block: no later call may reach for it.
+            if previous is None:
+                os.environ.pop("BELIEF_VLLM_API_BASE", None)
+            else:
+                os.environ["BELIEF_VLLM_API_BASE"] = previous
 
 
 def _believe(plan: RunPlan, todo: List[str], saved: dict, max_passage_tokens: int, verbose: bool, kwargs: dict,
@@ -851,7 +865,7 @@ def parse_args():
     )
 
     # ── Stage ───────────────────────────────────────────────────────────────
-    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model --belief-model over the finished trajectories without a belief file of its own (belief/{model}/{qid}.jsonl and .md, one folder per belief model; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; other settings (--belief-source, --max-beliefs) than the model's saved ones replace that model's beliefs only. 'eval': the evaluation only, from the saved files (every evaluator of the dataset, every belief model of the run; judge verdicts reused from eval/generation/ and eval/belief/{model}/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same eval/metrics.md and eval/per_query.csv.")
+    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation of the generation (retrieval, generation, verbal confidence, trajectory). 'belief': the belief model --belief-model over the finished trajectories without a belief file of its own (belief/{model}/{qid}.jsonl and .md, one folder per belief model; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation of that belief model, added to the run's evaluation files (the generation's rows and other belief models' rows kept); other settings (--belief-source, --max-beliefs) than the model's saved ones replace that model's beliefs only. 'eval': the evaluation only, from the saved files (every evaluator of the dataset, every belief model of the run; judge verdicts reused from eval/generation/ and eval/belief/{model}/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation of everything. Every stage writes eval/metrics.md and eval/per_query.csv, keeping the rows it does not score.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
     # ── Generation (the belief and eval stages need the same values to find the run directory) ──
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
@@ -903,11 +917,13 @@ if __name__ == "__main__":
 #     │   ├── {qid}.jsonl       meta line + one line per search iteration + final line
 #     │   │                     (utils.run_files.belief); written last: marks the query as done
 #     │   └── {qid}.md          the same belief, human-readable
-#     └── eval/                 the evaluation (every stage, evaluation.runner)
+#     └── eval/                 the evaluation (evaluation.runner): generate scores the
+#         │                     generation's rows, belief its model's rows, eval and all every row
 #         ├── metrics.md        one table: group | belief_model | metric | value | ci_low |
 #         │                     ci_high | n (retrieval, generation, uncertainty, belief,
-#         │                     trajectory); belief_model "-" on the rows of the generation,
-#         │                     one row per belief model on the uncertainty and belief rows
+#         │                     trajectory); belief_model "-" on the rows of the generation
+#         │                     (verbal confidence included), one row per belief model on
+#         │                     the s_T and belief rows
 #         ├── per_query.csv     every per-query value of every group (a belief model's
 #         │                     columns prefixed "{model}/")
 #         ├── generation/       accuracy.jsonl: per-query answer correctness (datasets with

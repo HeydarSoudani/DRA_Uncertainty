@@ -29,7 +29,7 @@ export OMP_NUM_THREADS=16
 DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
 SUBSET=wiki2                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
-POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
+POLICY_MODEL=glm               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 STAGE=${STAGE:-generate}                # generate | belief | eval | all (= generate, then belief)
 LIMIT=${LIMIT:-49}                 # generate stage only: new queries to generate (1 already done -> 50 total)
 WORKERS=${WORKERS:-3}              # generate stage: one query-level worker per GPU

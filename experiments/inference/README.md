@@ -54,10 +54,10 @@ The stages:
 
 | `--stage` | Runs |
 |---|---|
-| `generate` | the agent on the queries without a finished trajectory, then the evaluation |
-| `belief` | the belief model over the finished trajectories without a belief file, then the evaluation |
-| `eval` | the evaluation only, from the saved files |
-| `all` | `generate`, then `belief`, then the evaluation |
+| `generate` | the agent on the queries without a finished trajectory, then the evaluation of the generation |
+| `belief` | the belief model over the finished trajectories without a belief file, then the evaluation of that belief model |
+| `eval` | the evaluation of everything, from the saved files |
+| `all` | `generate`, then `belief`, then the evaluation of everything |
 
 The agent runs once; any number of belief model versions can then run over the same trajectories. The belief stage
 needs no agent, retriever or GPU: it reads each search iteration's queries, the ids of the documents the agent was
@@ -360,23 +360,27 @@ end-of-run Recall@N.
 
 ## Evaluation
 
-A run is evaluated from its saved files at the end of every stage, so every stage writes the same files. Judge
-verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run makes no LLM call and
-needs no GPU. The uncertainty and belief groups score the queries with a belief file.
+A run is evaluated from its saved files at the end of every stage. Each stage scores its own scope and keeps the
+rest of `eval/metrics.md` and `eval/per_query.csv`: `generate` the generation, `belief` its belief model, `eval` and
+`all` everything. The belief stage scores the generation too when the saved generation rows cannot be kept (no
+`metrics.md`, no generation row in it, or another number of queries than the run's, e.g. after an interrupted
+generate stage). Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
+makes no LLM call and needs no GPU. The s_T and belief rows score the queries with a belief file.
 
 The measures, by group, in the order of the files and the log. The generation's measures (retrieval, generation,
-the agent's trajectory) have one row; the beliefs' measures (uncertainty, belief, belief model tokens) have one row
-per belief model of the run (`belief/{model}/`), tagged in the `belief_model` column of `metrics.md` ("-" on the
-generation's rows), with their per-query columns of `per_query.csv` prefixed `{model}/` and their sections (status
-calibration, issues) titled `({model})`. Each evaluation scores every belief model found; the judge verdicts are
-cached per model, so adding a belief model costs only its own judge calls.
+the agent's verbal confidence, the agent's trajectory) have one row; the beliefs' measures (s_T, belief, belief
+model tokens) have one row per belief model of the run (`belief/{model}/`), tagged in the `belief_model` column of
+`metrics.md` ("-" on the generation's rows), with their per-query columns of `per_query.csv` prefixed `{model}/` and
+their sections (status calibration, issues) titled `({model})`. The judge verdicts are cached per model, so adding a
+belief model costs only its own judge calls.
 
 | Group | Measures | Datasets |
 |---|---|---|
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
-| uncertainty | queries scored; s_T and verbal: AUROC [CI], Brier; formula: AUROC [CI] | QA, belief on |
+| uncertainty | verbal: queries scored, AUROC [CI], Brier (once per run) | QA, glm and oss |
+| | queries scored; s_T: AUROC [CI], Brier; formula: AUROC [CI] (per belief model) | QA, belief on |
 | | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
 | belief | gold and control event change, belief recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
@@ -386,11 +390,13 @@ computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, so
 raw outputs stay in the run, for `analysis/`).
 
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
-query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
-oss; read from `generation/{qid}.md` by a regex, `evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85"
-accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
-the mean of the status probabilities of the beliefs the updater judges, aggregates left out). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
-confidence. Rows: AUROC [CI] for every score, Brier for s_T and verbal. On a report dataset (`uncertainty/report.py`)
+query out). The baseline `verbal` (`uncertainty/verbal.py`) is a measure of the generation, scored once per run: the
+agent's own `Confidence: X%` (glm and oss; read from `generation/{qid}.md` by a regex,
+`evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85" accepted; a generation without it has
+none), on the judged queries with a verbal confidence. Per belief model (`uncertainty/qa.py`): `s_T` (the final
+scorer, the headline) and the ablation `formula` (the fixed function of the final statuses: the mean of the status
+probabilities of the beliefs the updater judges, aggregates left out), on the queries with y and s_T. The verbal and
+s_T rows can therefore have different n. Rows: AUROC [CI] for every score, Brier for verbal and s_T. On a report dataset (`uncertainty/report.py`)
 s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
 final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the
 expected coverage); an empty report is left out. Left-out queries are logged.
@@ -423,16 +429,17 @@ has every event with a gold event's funnel stage (`call_failed`, `not_assigned`,
 The terminal log prints one block: one line per group of the generation, then per belief model its lines:
 
 ```
-EVALUATION  trqa / wiki2_test / glm / belief models: qwen3.5_9b, qwen3.6_27b  (n=200)
+EVALUATION  trqa / wiki2_test / glm / belief models: qwen3.5_9b, qwen3.6_27b  (n=200; scored now: generation, qwen3.5_9b, qwen3.6_27b)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
+uncertainty  verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 196)
 trajectory   searches 9.2 | agent tok 41234 | forced 4
 [qwen3.5_9b]
-uncertainty  s_T AUROC 0.710 [0.63,0.78] Brier 0.220 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
+uncertainty  s_T AUROC 0.710 [0.63,0.78] Brier 0.220 (n 188)
 belief       files 200 | update calls 1840 | format gate failed 0.020 | belief tok 18230
 belief gold  gold change 0.540 | control change 0.050 | recall 0.710 | reached 0.470 (gold seen 0.680) | status Brier 0.210 (n 200)
 [qwen3.6_27b]
-uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
+uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 (n 188)
 belief       files 200 | update calls 1840 | format gate failed 0.010 | belief tok 23102
 belief gold  gold change 0.620 | control change 0.030 | recall 0.710 | reached 0.520 (gold seen 0.730) | status Brier 0.180 (n 200)
 ```

@@ -7,15 +7,17 @@ Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`)
   | metric | value | ci_low | ci_high | n`` (groups in order: retrieval,
   generation, uncertainty, belief, trajectory).  A measure of the
   generation (retrieval, generation, the agent's trajectory) has one row,
-  ``belief_model`` "-" (:data:`NO_MODEL`); a measure of the beliefs
-  (uncertainty, belief, the belief tokens) has one row per belief model of
-  the run.  Then any extra section (a titled table, e.g. the belief status
+  ``belief_model`` "-" (:data:`NO_MODEL`), the agent's verbal confidence
+  among them (group uncertainty); a measure of the beliefs (s_T, belief,
+  the belief tokens) has one row per belief model of the run.  Then any extra section (a titled table, e.g. the belief status
   calibration, one per belief model).  Read in the editor as is, or in the
   markdown preview; the main table is parsed back by ``read_metrics`` (the
-  cross-run collector, ``analysis/collect_results.py``).
+  cross-run collector, ``analysis/collect_results.py``, and a scoped
+  evaluation that keeps the rows it does not score), the sections by
+  ``read_sections``.
 - ``per_query.csv``: one row per query, every per-query value of every
   group (the aggregates of ``metrics.md`` are computed from them); a belief
-  model's columns are prefixed ``{model}/``.
+  model's columns are prefixed ``{model}/``; read back by ``read_per_query``.
 - ``generation/``: the generation evaluators' verdicts, ``accuracy.jsonl``
   (datasets with answers) or the Auto-ARGUE cache and ``scores.tsv``
   (report datasets).
@@ -170,6 +172,32 @@ def read_metrics(path: Path) -> List[Row]:
     return rows
 
 
+def read_sections(path: Path) -> List[Section]:
+    """The extra sections of a ``metrics.md`` (``## title`` and its table),
+    as :func:`write_metrics` takes them."""
+    sections: List[Section] = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            sections.append((line[3:].strip(), [], []))
+        elif sections and line.startswith("|"):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if set("".join(cells)) <= {"-"}:
+                continue   # the separator line
+            title, columns, body = sections[-1]
+            if not columns:
+                columns.extend(cells)
+            else:
+                body.append(cells)
+    return sections
+
+
+def read_per_query(path: Path) -> Dict[str, Dict[str, Any]]:
+    """The rows of a ``per_query.csv``, ``{query_id: {column: cell}}`` (cells
+    as written, empty cells kept so an empty column stays)."""
+    with open(path, newline="", encoding="utf-8") as fh:
+        return {row.pop("query_id"): row for row in csv.DictReader(fh)}
+
+
 def write_per_query(path: Path, per_query: Dict[str, Dict[str, Any]]) -> None:
     """Write ``per_query.csv``: one row per query, columns in first-seen order."""
     columns: List[str] = []
@@ -223,6 +251,10 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
         out.append(f"generation   nugget coverage {_val(shared, 'generation', 'nugget coverage')}"
                    f" | F1 {_val(shared, 'generation', 'nugget F1')}"
                    f" ({_val(shared, 'generation', 'evaluated')} reports)")
+    if _get(shared, "uncertainty", "verbal AUROC"):
+        out.append(f"uncertainty  verbal AUROC {_ci(shared, 'uncertainty', 'verbal AUROC')}"
+                   f" Brier {_val(shared, 'uncertainty', 'verbal Brier')}"
+                   f" (n {_val(shared, 'uncertainty', 'verbal: queries scored')})")
     out.append(f"trajectory   searches {_val(shared, 'trajectory', 'searches', 1)}"
                f" | agent tok {_val(shared, 'trajectory', 'agent tokens', 0)}"
                f" | forced {_val(shared, 'trajectory', 'forced answers')}")
@@ -236,12 +268,9 @@ def _model_lines(model: str, rows: List[Row]) -> List[str]:
     """The log lines of the belief model *model* (*rows* are its rows)."""
     out = [f"[{model}]"]
     if _get(rows, "uncertainty", "s_T AUROC"):
-        line = (f"uncertainty  s_T AUROC {_ci(rows, 'uncertainty', 's_T AUROC')}"
-                f" Brier {_val(rows, 'uncertainty', 's_T Brier')}")
-        if _get(rows, "uncertainty", "verbal AUROC"):
-            line += (f" | verbal AUROC {_ci(rows, 'uncertainty', 'verbal AUROC')}"
-                     f" Brier {_val(rows, 'uncertainty', 'verbal Brier')}")
-        out.append(line + f" (n {_val(rows, 'uncertainty', 'queries scored')})")
+        out.append(f"uncertainty  s_T AUROC {_ci(rows, 'uncertainty', 's_T AUROC')}"
+                   f" Brier {_val(rows, 'uncertainty', 's_T Brier')}"
+                   f" (n {_val(rows, 'uncertainty', 'queries scored')})")
     elif _get(rows, "uncertainty", "s_T tau-b vs nugget coverage"):
         out.append(f"uncertainty  s_T tau-b vs coverage {_ci(rows, 'uncertainty', 's_T tau-b vs nugget coverage')}"
                    f" Brier {_val(rows, 'uncertainty', 's_T Brier vs nugget coverage')}"

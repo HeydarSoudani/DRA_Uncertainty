@@ -596,7 +596,7 @@ class VLLMServerManager:
 
     # ── Launch a server process ─────────────────────────────────────────────
 
-    def _launch_server(self, spec: ServerSpec, gpu_ids: List[int]):
+    def _launch_server(self, spec: ServerSpec, gpu_ids: List[int | str]):
         """Start a vLLM server as a background subprocess."""
         # Check if port is already in use (server already running)
         if self._port_in_use(spec.port):
@@ -827,6 +827,14 @@ def _visible_gpus() -> int:
     return sum(line.startswith("GPU ") for line in out.splitlines())
 
 
+def _first_visible_gpu() -> str:
+    """The first GPU of this process's ``$CUDA_VISIBLE_DEVICES`` (its id as
+    the variable names it), GPU 0 when the variable is unset: the server's
+    own ``CUDA_VISIBLE_DEVICES`` must name the same device."""
+    visible = [g.strip() for g in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if g.strip()]
+    return visible[0] if visible else "0"
+
+
 def _served_models(base: str) -> List[str]:
     """The model names a vLLM server at *base* serves (``/models``); empty
     when nothing answers there as one."""
@@ -864,7 +872,7 @@ def belief_server(model: str, *, health_timeout: int = 900) -> Iterator[str]:
                          "or pick an OpenRouter belief model")
     manager = VLLMServerManager()
     try:
-        manager._launch_server(spec, [0])
+        manager._launch_server(spec, [_first_visible_gpu()])
         manager._wait_for_health(spec, timeout=health_timeout)
         yield base
     finally:

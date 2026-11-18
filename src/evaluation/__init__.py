@@ -8,12 +8,13 @@ retrieval
     Recall@N, Precision@N of the seen docs (``SeenDocEvaluator``).
 generation
     Answer correctness (``AccuracyEvaluator`` by LLM judge,
-    ``NumericMatchEvaluator`` by numeric match), the report evaluation
-    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE) and the agent's
-    verbal confidence.
+    ``NumericMatchEvaluator`` by numeric match) and the report evaluation
+    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE).
 uncertainty
-    s_T and its baselines against correctness (``UncertaintyEvaluator``)
-    or against nugget coverage (``ReportUncertaintyEvaluator``).
+    The agent's verbal confidence against correctness
+    (``VerbalConfidenceEvaluator``, once per run); s_T and its formula
+    ablation against correctness (``UncertaintyEvaluator``) or against
+    nugget coverage (``ReportUncertaintyEvaluator``), once per belief model.
 belief
     The belief update evaluation (``BeliefUpdateEvaluator``) with its
     per-belief gold, and the update's issues (``issue_summary``).
