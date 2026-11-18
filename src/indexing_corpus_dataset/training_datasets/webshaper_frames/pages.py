@@ -356,7 +356,7 @@ def _check_settings(cfg: BuildConfig, paths: DatasetPaths) -> None:
         raise SystemExit(f"{paths.root}: the earlier builds used other page settings ({'; '.join(diffs)}); "
                          "their pages and verdicts would mix with this build's. "
                          f"Restore the settings, or remove the built files in {paths.root} (keep "
-                         "criteria_bank/, the silver criteria) and build the dataset again")
+                         "belief_bank/, the silver criteria) and build the dataset again")
 
 
 def run_pages(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None,

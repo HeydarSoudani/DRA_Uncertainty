@@ -245,7 +245,7 @@ class BankedCriteriaSource(CriteriaSource):
     gold producer (``indexing_corpus_dataset.training_datasets.gold.trqa``: the
     writer of the texts and its prompt hash).
 
-    The bank (``layout.criteria_bank_path``) is a JSONL file, one line per
+    The bank (``layout.belief_bank_path``) is a JSONL file, one line per
     query and setting: the query id and text, ``inner.bank_fields``, the
     criteria, the info and the producer's bank-only data (``BANK_ONLY`` of
     its info, e.g. a gold annotation row; never returned).  A line is used

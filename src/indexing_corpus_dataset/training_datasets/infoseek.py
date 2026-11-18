@@ -124,7 +124,7 @@ def _check_corpus(paths: DatasetPaths) -> None:
     recorded = read_stats(paths.stats).get("corpus", {}).get("revision")
     if recorded is not None and recorded != CORPUS[2]:
         raise SystemExit(f"{paths.root} was built from {CORPUS[0]} at {recorded}, the code pins {CORPUS[2]}; "
-                         f"remove the built files in {paths.root} (keep criteria_bank/, the silver criteria) "
+                         f"remove the built files in {paths.root} (keep belief_bank/, the silver criteria) "
                          "and build the dataset again")
 
 

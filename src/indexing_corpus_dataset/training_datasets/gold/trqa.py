@@ -2,7 +2,7 @@
 or validation), made from its intermediate info when the belief model
 first needs them, and banked (``TRQAGoldCriteria`` is the producer of a
 ``BankedCriteriaSource`` over the gold bank,
-``layout.criteria_bank_path(..., "gold")``).
+``layout.belief_bank_path(..., "gold")``).
 
 Per query, the row of the training datasets' format
 (``training_datasets/gold/annotations.py``, ``annotations.multi_member_row``), as the

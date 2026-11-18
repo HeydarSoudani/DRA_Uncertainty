@@ -110,7 +110,7 @@ def exclusive(kind: str) -> bool:
 
 
 # The text of a multi-clue query's target: "the <type> that meets B1 to B<k>"
-# (the ids the belief model shows; "c1" of earlier criteria banks too).
+# (the ids the belief model shows; "c1" of earlier belief banks too).
 TARGET_RE = re.compile(r"\bmeets\s+[cB]1\s+to\s+[cB](\d+)\b")
 
 

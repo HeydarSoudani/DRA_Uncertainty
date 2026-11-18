@@ -143,7 +143,7 @@ in the belief update and final scorer prompts; each user prompt closes
 with one general sentence ("List the criteria of this query.", "Update
 the belief about each criterion of the query.", "Score the agent's final
 answer."; the criteria init's "FIXED" sentence and its report variant
-dropped, so the criteria bank's prompt key changes); the final scorer
+dropped, so the belief bank's prompt key changes); the final scorer
 reads the agent's final response without citations or confidence line
 (the end of the reasoning only when the response is the answer alone)
 and has no "judge from the belief only" rule.

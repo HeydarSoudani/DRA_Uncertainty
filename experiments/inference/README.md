@@ -168,10 +168,10 @@ and read them from the bank, and a query still missing is made by its worker. Th
 
 The banks:
 
-- The extractor's criteria (`belief_model`): `CRITERIA_ROOT/{dataset}/criteria_bank/{gold|silver}/criteria_{split}.jsonl`
+- The extractor's criteria (`belief_model`): `CRITERIA_ROOT/{dataset}/belief_bank/{gold|silver}/criteria_{split}.jsonl`
   (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
-  `CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
-- TRQA's gold criteria, in `criteria_bank/gold/` next to its silver ones (key: the writer and the hash of its
+  `CRITERIA_ROOT/training_datasets/{dataset}/belief_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
+- TRQA's gold criteria, in `belief_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
   (`annotations.multi_member_row`: one criterion per member, then the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `belief_model` writes

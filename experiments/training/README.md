@@ -312,7 +312,7 @@ follows the split:
 
 | Split | Mode | Belief model |
 |---|---|---|
-| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source`, `shared.criteria_source`: gold, or silver on trqa_validation; a query without gold criteria: the teacher's silver ones, through the criteria bank, `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates |
+| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source`, `shared.criteria_source`: gold, or silver on trqa_validation; a query without gold criteria: the teacher's silver ones, through the belief bank, `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates |
 | `rl` | off | none |
 
 The belief does not change what the agent does, so the documents and agent turns of every step are fixed, and

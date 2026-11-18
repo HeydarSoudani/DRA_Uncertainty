@@ -49,7 +49,7 @@ experiments/
 └── configs/                  YAML defaults of every script
 analysis/                     criteria reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)
-data/                         criteria banks, training datasets
+data/                         belief banks, training datasets
 ```
 
 ## Installation
@@ -59,7 +59,7 @@ pip install -e .
 ```
 
 This registers all packages so imports resolve from any working directory. Set `DRA_DATA_ROOT` (corpus + indices),
-`DRA_OUTPUT_ROOT` (run outputs) and `DRA_CRITERIA_ROOT` (criteria banks, default the repo's `data/`) to control
+`DRA_OUTPUT_ROOT` (run outputs) and `DRA_CRITERIA_ROOT` (belief banks, default the repo's `data/`) to control
 where data is read and written. On Slurm, `scripts/_activate.sh` loads the modules, activates the venv and exports
 these variables.
 

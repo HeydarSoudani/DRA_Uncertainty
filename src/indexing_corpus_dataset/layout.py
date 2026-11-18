@@ -91,7 +91,7 @@ REPO_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 # The training datasets, one folder each (``{TRAINING_DATASETS_ROOT}/{dataset}``).
 TRAINING_DATASETS_ROOT = REPO_DATA_ROOT / "training_datasets"
 
-# Root of the criteria banks, in the repo's data folder; ``DRA_CRITERIA_ROOT``
+# Root of the belief banks, in the repo's data folder; ``DRA_CRITERIA_ROOT``
 # overrides it.
 CRITERIA_ROOT = Path(os.environ.get("DRA_CRITERIA_ROOT", str(REPO_DATA_ROOT)))
 
@@ -162,7 +162,7 @@ class DatasetSpec:
                              ``"documents"`` (the gold documents),
                              ``"entities"`` (the entity set of each query), or
                              None (the criteria are the query's own clues,
-                             reachable by construction; criteria bank only).
+                             reachable by construction; belief bank only).
         answer_eval:         Answer-correctness evaluator: ``"numeric_match"``,
                              ``"llm_judge"``, or None (retrieval-only evaluation).
         doc_max_length:      Max tokens per passage at index build, for
@@ -387,20 +387,20 @@ def extraction_kind(dataset: str) -> str:
     return GOLD_CRITERIA if DATASET_SPECS[dataset].gold_criteria == QUESTION_GOLD else SILVER_CRITERIA
 
 
-def criteria_bank_path(dataset: str, split: str, kind: str | None = None) -> Path:
+def belief_bank_path(dataset: str, split: str, kind: str | None = None) -> Path:
     """Return the bank of the criteria the extractor lists for a split
     (*kind*: ``extraction_kind`` by default), e.g.
-    ``CRITERIA_ROOT/ragtime/criteria_bank/gold/criteria_2025.jsonl`` or
-    ``CRITERIA_ROOT/trqa/criteria_bank/silver/criteria_wiki2_test.jsonl``.
+    ``CRITERIA_ROOT/ragtime/belief_bank/gold/criteria_2025.jsonl`` or
+    ``CRITERIA_ROOT/trqa/belief_bank/silver/criteria_wiki2_test.jsonl``.
     A training dataset has one bank for all its splits:
-    ``CRITERIA_ROOT/training_datasets/{dataset}/criteria_bank/silver/criteria_all.jsonl``.
+    ``CRITERIA_ROOT/training_datasets/{dataset}/belief_bank/silver/criteria_all.jsonl``.
     The belief model reads and adds to them (``belief_model_component.criteria.factory``)."""
     kind = kind or extraction_kind(dataset)
     if kind not in CRITERIA_SOURCES:
         raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")
     if dataset in BUILT_DATASETS:
-        return CRITERIA_ROOT / "training_datasets" / dataset / "criteria_bank" / kind / f"criteria_{ALL_SPLIT}.jsonl"
-    return CRITERIA_ROOT / dataset / "criteria_bank" / kind / f"criteria_{split}.jsonl"
+        return CRITERIA_ROOT / "training_datasets" / dataset / "belief_bank" / kind / f"criteria_{ALL_SPLIT}.jsonl"
+    return CRITERIA_ROOT / dataset / "belief_bank" / kind / f"criteria_{split}.jsonl"
 
 
 def is_training_dataset(data_path: Path | str) -> bool:
@@ -422,7 +422,7 @@ def gold_criteria_path(dataset: str) -> Path:
     one row per query (every split) with its gold annotation, e.g.
     ``TRAINING_DATASETS_ROOT/infoseek/queries/queries_all.jsonl``
     (``training_datasets/gold/annotations.py``).  TRQA's gold criteria are made
-    on demand into its gold bank (``criteria_bank_path(..., "gold")``,
+    on demand into its gold bank (``belief_bank_path(..., "gold")``,
     ``training_datasets.gold.trqa``); the other datasets' are the extractor's."""
     if dataset not in BUILT_DATASETS:
         raise ValueError(f"gold criteria files exist for the training datasets only ({sorted(BUILT_DATASETS)}), "

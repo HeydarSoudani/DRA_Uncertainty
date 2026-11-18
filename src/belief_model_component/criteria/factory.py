@@ -18,10 +18,10 @@ Per query:
    - the extractor's criteria (``LLMCriteriaSource``): gold where they are
      the question's own (BrowseComp-Plus, NeuCLIR, RAGTIME), silver
      elsewhere (``layout.extraction_kind``); bank
-     ``layout.criteria_bank_path``;
+     ``layout.belief_bank_path``;
    - TRQA's gold criteria, made from the intermediate info
      (``indexing_corpus_dataset.training_datasets.gold.trqa``); bank
-     ``layout.criteria_bank_path(..., "gold")``;
+     ``layout.belief_bank_path(..., "gold")``;
    - a training dataset's gold criteria (``GoldCriteriaSource``): the dataset's
      queries file is their bank, written by the dataset build only
      (``build_training_dataset.py``); a query without them gets silver ones.
@@ -46,7 +46,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
 from indexing_corpus_dataset.layout import (
-    ANNOTATION_GOLD, BUILT_DATASETS, DATASET_SPECS, GOLD_CRITERIA, SILVER_CRITERIA, criteria_bank_path,
+    ANNOTATION_GOLD, BUILT_DATASETS, DATASET_SPECS, GOLD_CRITERIA, SILVER_CRITERIA, belief_bank_path,
     effective_criteria_source, extraction_kind, gold_criteria_path,
 )
 from reasoner_component import create_generator, disable_native_thinking
@@ -94,12 +94,12 @@ def bank_model_id(model: str) -> str:
         with urllib.request.urlopen(f"{base}/models", timeout=30) as reply:
             served = json.load(reply).get("data") or []
     except Exception as e:  # noqa: BLE001 - the key needs the checkpoint
-        raise RuntimeError(f"criteria bank: cannot read the checkpoint of {model} from {base}/models ({e}); "
+        raise RuntimeError(f"belief bank: cannot read the checkpoint of {model} from {base}/models ({e}); "
                            "start its vLLM server ($BELIEF_VLLM_API_BASE) or use an API belief model") from e
     for entry in served:
         if entry.get("id") == bare:
             return f"{model}@{entry.get('root') or bare}"
-    raise RuntimeError(f"criteria bank: {bare} is not served at {base} "
+    raise RuntimeError(f"belief bank: {bare} is not served at {base} "
                        f"(served: {[e.get('id') for e in served]})")
 
 
@@ -165,7 +165,7 @@ def build_criteria_source(
     kind = extraction_kind(dataset)
     llm = belief_llm(belief_model)
     model_id = bank_model_id(belief_model)
-    bank = criteria_bank_path(dataset, split, kind)
+    bank = belief_bank_path(dataset, split, kind)
     source: CriteriaSource = BankedCriteriaSource(
         LLMCriteriaSource(llm_client=llm, max_criteria=max_criteria, model_name=model_id,
                           query_shape=spec.query_shape, kind=kind),
@@ -182,7 +182,7 @@ def build_criteria_source(
     else:
         from indexing_corpus_dataset.training_datasets.gold.trqa import TRQAGoldCriteria
 
-        gold_bank = criteria_bank_path(dataset, split, GOLD_CRITERIA)
+        gold_bank = belief_bank_path(dataset, split, GOLD_CRITERIA)
         gold = BankedCriteriaSource(TRQAGoldCriteria(split, writer=model_id, llm_client=llm), gold_bank)
         print(f"Belief model: gold criteria from the bank {gold_bank}, missing ones made from the "
               f"intermediate info (texts by {model_id})")

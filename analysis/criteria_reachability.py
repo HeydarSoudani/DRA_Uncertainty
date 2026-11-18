@@ -37,14 +37,14 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
 
 * None (BrowseComp-Plus): no reachability.  The criteria are the clues the
   question states, so every one is reachable by construction; the run only
-  fills the criteria bank.
+  fills the belief bank.
 
 Per request:
 
 1. Criteria: as ``dra_inference`` reads them with ``criteria_source``
    (``--criteria-source``, default the config's).  The extractor's
    criteria come from the bank of their kind
-   (:func:`indexing_corpus_dataset.layout.criteria_bank_path`, shared with
+   (:func:`indexing_corpus_dataset.layout.belief_bank_path`, shared with
    ``dra_inference``; gold for BrowseComp-Plus, NeuCLIR and RAGTIME, whose
    criteria are the question's own, silver for TRQA); a request missing
    from it gets its criteria from
@@ -221,7 +221,7 @@ def criteria_step(args, source: CriteriaSource, queries: Dict[str, str], qids: L
     print(f"Done {len(criteria)}, to do in this run {len(todo)}, left for later {pending}")
 
     todo_criteria, bank = bank_criteria(args, source, {q: queries[q] for q in todo})
-    print(f"Criteria bank {source.path}: {bank['hit']} read, {bank['added']} added, "
+    print(f"Belief bank {source.path}: {bank['hit']} read, {bank['added']} added, "
           f"{bank['failed']} failed")
     no_criteria = [q for q in todo if not todo_criteria.get(q)]
     if no_criteria:
@@ -448,7 +448,7 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "grades": grades,
             "config": args.config, "belief_model": args.belief_model, "max_criteria": args.max_criteria,
             "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
-            "criteria_bank": str(source.path), "judge_model": args.judge_model, "judge_prompt": PROMPT_HASH,
+            "belief_bank": str(source.path), "judge_model": args.judge_model, "judge_prompt": PROMPT_HASH,
             "topic_key": spec.title_key, "passage": "full document",
         },
         "counts": {
@@ -629,7 +629,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "config": args.config,
             "belief_model": args.belief_model, "max_criteria": args.max_criteria,
             "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
-            "criteria_bank": str(source.path),
+            "belief_bank": str(source.path),
             "judge_model": args.judge_model, "judge_prompt": ENTITY_MATCH_PROMPT_HASH,
             "criteria_matched": "member criteria (not the rest and aggregate criteria)",
         },
@@ -682,7 +682,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
 def run_bank_only(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
     queries, _, _ = load_split(data_path, split, query_key=args.query_key,
                                min_relevance_score=spec.min_relevance_score, only_with_qrels=True)
-    print(f"{args.dataset} {split}: {len(queries)} requests; no reachability, criteria bank only")
+    print(f"{args.dataset} {split}: {len(queries)} requests; no reachability, belief bank only")
     step = criteria_step(args, source, queries, sorted(queries), lambda q, crit: True)
     sizes = [len(c) for c in step["criteria"].values()]
     print(f"Banked {len(sizes)} of {len(queries)} requests, {mean_or_none(sizes, 2)} criteria per request")
@@ -729,7 +729,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # ── Dataset ─────────────────────────────────────────────────────────────
-    parser.add_argument("--dataset", type=str, default="neuclir", choices=DATASETS, help="Dataset; its reachability (layout.DATASET_SPECS) picks the gold: documents (neuclir, ragtime), entities (trqa), none (browsecomp_plus: criteria bank only).")
+    parser.add_argument("--dataset", type=str, default="neuclir", choices=DATASETS, help="Dataset; its reachability (layout.DATASET_SPECS) picks the gold: documents (neuclir, ragtime), entities (trqa), none (browsecomp_plus: belief bank only).")
     parser.add_argument("--subset", type=str, default=None, help="Subset (None = the dataset's default). neuclir: news|technical; trqa: wiki1|wiki2; ragtime: unused.")
     parser.add_argument("--dataset-year", type=str, default=None, help="Split year (None = the dataset's default); trqa: test|validation.")
     parser.add_argument("--query-key", type=str, default=None, help="Key of the query text in the query records (None = the dataset's default).")

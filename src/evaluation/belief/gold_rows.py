@@ -8,7 +8,7 @@ doc_ids, kind``, plus ``entity_names`` and ``source``):
 
 - a training dataset (infoseek, webshaper_frames, trqa_validation): its queries file
   (``layout.gold_criteria_path``), one row per query;
-- TRQA: its gold bank (``layout.criteria_bank_path(..., "gold")``), the row
+- TRQA: its gold bank (``layout.belief_bank_path(..., "gold")``), the row
   kept in each line's ``bank_only`` (``training_datasets.gold.trqa``); a query may
   have several lines (other writers), so every row is returned;
 - any other dataset: none (its criteria are the question's clues, with no
@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from indexing_corpus_dataset.layout import BUILT_DATASETS, criteria_bank_path, gold_criteria_path
+from indexing_corpus_dataset.layout import BUILT_DATASETS, belief_bank_path, gold_criteria_path
 
 #: Datasets whose queries have a gold answer and documents per criterion.
 GOLD_DATASETS = ("trqa",) + tuple(sorted(BUILT_DATASETS))
@@ -50,7 +50,7 @@ def load_gold_rows(dataset: str, split: Optional[str]) -> Dict[str, List[Dict[st
     if dataset in BUILT_DATASETS:
         return _rows(gold_criteria_path(dataset), bank=False)
     if dataset == "trqa" and split:
-        return _rows(criteria_bank_path(dataset, split, "gold"), bank=True)
+        return _rows(belief_bank_path(dataset, split, "gold"), bank=True)
     return {}
 
 
