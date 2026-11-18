@@ -122,7 +122,7 @@ class DatasetSpec:
         task:                ``"qa"`` (short answer) or ``"report"`` (a report
                              request).  Report tasks get report prompts and no
                              intermediate answers.
-        query_shape:         Shape of the dataset's queries, for the beliefs
+        query_shape:         Shape of the dataset's queries, for the belief
                              extraction: ``"multi_clue"`` (a list of clues
                              on one entity, the target: one belief per
                              clue, then the target, then the asked answer
@@ -131,7 +131,7 @@ class DatasetSpec:
                              belief per hop), ``"multi_member"`` (a value over every
                              member of a set) or ``"multi_aspect"`` (a report
                              on several aspects of a topic).
-        max_beliefs:        Cap on the number of beliefs the beliefs
+        max_beliefs:         Cap on the number of beliefs the belief
                              extractor lists per query, or None (uncapped).
                              Gold beliefs are never capped: a dataset
                              whose extracted beliefs are its gold
@@ -139,7 +139,7 @@ class DatasetSpec:
                              the others it caps the silver extraction (the
                              members of a TRQA set, the hops of a FRAMES
                              question).
-        gold_beliefs:       Where the dataset's gold beliefs come from:
+        gold_beliefs:        Where the dataset's gold beliefs come from:
                              ``"question"`` (the beliefs the extractor
                              takes from the question are the gold: every
                              clue of a BrowseComp-Plus question, every
@@ -152,12 +152,12 @@ class DatasetSpec:
                              an annotation dataset without gold beliefs
                              (webshaper_frames' FRAMES) gets silver ones, extracted
                              from the question by an LLM.
-        belief_choice:     ``belief_source`` picks between the gold and
+        belief_choice:       ``belief_source`` picks between the gold and
                              the silver beliefs of every query (TRQA);
                              else it has no effect: the dataset's
                              queries use their gold, a query without it
                              silver.
-        reachability:        Gold the beliefs reachability is measured
+        reachability:        Gold the belief reachability is measured
                              against (``analysis/criteria_reachability.py``):
                              ``"documents"`` (the gold documents),
                              ``"entities"`` (the entity set of each query), or

@@ -136,7 +136,7 @@ def _belief_md(summary: Dict[str, Any], steps: List[Dict[str, Any]], final: Opti
     return "\n\n".join(parts) + "\n"
 
 
-#: Beliefs errors of a call that raised before any reply (nothing banked,
+#: Belief init errors of a call that raised before any reply (nothing banked,
 #: so the next call makes them again): the belief source itself, the
 #: extractor's call, TRQA's gold belief writer (whose failure would
 #: otherwise leave the query on its silver beliefs).

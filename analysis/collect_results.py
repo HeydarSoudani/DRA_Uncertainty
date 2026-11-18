@@ -3,7 +3,7 @@
 Reads every run under ``--root`` that has an ``eval/metrics.md``
 (``evaluation.metrics_file``, written by ``dra_inference.py`` and its
 ``--eval-only``) with its ``run_config.json``, and writes one table: a row
-per run (dataset, split, agent, belief mode, criteria source, finished and
+per run (dataset, split, agent, belief source, finished and
 unfinished queries), a column
 per measure.
 
@@ -25,7 +25,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+# Repo root (utils) and src/ (component packages), as for experiments/.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+for _path in (_REPO_ROOT, _REPO_ROOT / "src"):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from evaluation.metrics_file import GROUPS, METRICS_FILE, fmt, read_header, read_metrics, table  # noqa: E402
 from utils.run_files.run_config import read_run_config  # noqa: E402
@@ -43,7 +47,7 @@ HEADLINE: Tuple[Tuple[str, str], ...] = (
     ("uncertainty", "s_T tau-b vs nugget coverage"),
     ("belief", "gold event: gold candidate change"),
     ("belief", "control event: gold candidate change"),
-    ("belief", "criterion recall"),
+    ("belief", "belief recall"),
     ("belief", "reached answer"),
     ("belief", "reached answer, gold seen"),
     ("belief", "status Brier"),
@@ -51,7 +55,7 @@ HEADLINE: Tuple[Tuple[str, str], ...] = (
     ("trajectory", "agent tokens"),
     ("trajectory", "belief tokens"),
 )
-RUN_COLUMNS = ("dataset", "split", "agent", "belief", "criteria", "queries", "unfinished")
+RUN_COLUMNS = ("dataset", "split", "agent", "belief source", "queries", "unfinished")
 
 
 def run_identity(run_dir: Path) -> Dict[str, str]:
@@ -61,8 +65,7 @@ def run_identity(run_dir: Path) -> Dict[str, str]:
         "dataset": data.get("dataset") or "?",
         "split": data.get("split") or "-",
         "agent": agent.get("policy_model") or "?",
-        "belief": belief.get("mode") or "?",
-        "criteria": belief.get("belief_source_effective") or "-",
+        "belief source": belief.get("belief_source_effective") or "-",
     }
 
 

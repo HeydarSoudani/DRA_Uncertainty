@@ -1,4 +1,4 @@
-"""Beliefs factory of the belief model: the belief source of each query.
+"""Belief init factory of the belief model: the belief source of each query.
 
 The belief model makes its belief list once per sample
 (``BeliefModel.reset`` calls ``BeliefSource.get``).  This module decides
@@ -115,8 +115,8 @@ def check_max_beliefs(dataset: str, max_beliefs: Optional[int]) -> None:
 
 
 def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional[str],
-                          max_beliefs: Optional[int] = None) -> None:
-    """Check the beliefs settings of a run of *dataset* before any model is
+                        max_beliefs: Optional[int] = None) -> None:
+    """Check the belief settings of a run of *dataset* before any model is
     loaded, and say where its beliefs come from.  Stops when there is no
     *belief_model* (it makes the beliefs), when *max_beliefs* is set on a
     dataset without silver beliefs (``check_max_beliefs``) or when a
@@ -168,7 +168,7 @@ def build_belief_source(
     bank = belief_bank_path(dataset, split, kind)
     source: BeliefSource = BankedBeliefSource(
         LLMBeliefSource(llm_client=llm, max_beliefs=max_beliefs, model_name=model_id,
-                          query_shape=spec.query_shape, kind=kind),
+                        query_shape=spec.query_shape, kind=kind),
         bank)
     cap = "uncapped" if max_beliefs is None else f"at most {max_beliefs}"
     print(f"Belief model: {kind} beliefs ({cap}) from the bank {bank}, missing ones from {model_id}")
@@ -206,7 +206,7 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str]) -> Dict[str, 
         try:
             return qid, source.get(qid, query)
         except Exception as e:  # noqa: BLE001 - its worker tries again
-            logger.warning("Beliefs of %s failed", qid, exc_info=True)
+            logger.warning("Belief init of %s failed", qid, exc_info=True)
             return qid, ([], {"errors": [f"belief_source: {e}"]})
 
     counts: Counter = Counter()

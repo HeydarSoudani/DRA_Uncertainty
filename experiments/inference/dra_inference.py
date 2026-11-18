@@ -387,12 +387,12 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     # Beliefs, made and banked before the workers start; the workers'
     # belief models share this source and read every query's from the bank.
     source = build_belief_source(plan.dataset, plan.split, belief_model=kwargs["belief_model"],
-                                   max_beliefs=kwargs["max_beliefs"], belief_source=kwargs["belief_source"])
+                                 max_beliefs=kwargs["max_beliefs"], belief_source=kwargs["belief_source"])
     prepare_beliefs(source, {qid: plan.all_questions[qid] for qid in todo})
 
     def build_model():
         return build_belief_model(
-            dataset=plan.dataset, belief_model=kwargs["belief_model"], beliefs=source,
+            dataset=plan.dataset, belief_model=kwargs["belief_model"], belief_source=source,
             qrels=plan.qrels, max_passage_tokens=max_passage_tokens,
         )
 

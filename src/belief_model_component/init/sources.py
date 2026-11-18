@@ -16,7 +16,7 @@ Beliefs are gold or silver (``layout.BELIEF_SOURCES``): gold when they
 come from the question (the extractor's beliefs of a BrowseComp-Plus
 question or a report request, ``layout.extraction_kind``) or from the
 dataset's annotation; silver when an LLM extracts structure the question
-does not state (TRQA's members, FRAMES' hops).  Each query's beliefs info
+does not state (TRQA's members, FRAMES' hops).  Each query's belief info
 records the kind as ``belief_source``.
 
 Each belief is closed (one fact with one answer: a clue, a hop, a
@@ -221,7 +221,7 @@ class LLMBeliefSource(BeliefSource):
 
 
 # Key of the info a producer returns that goes to the bank only (its
-# record's ``bank_only``), never to a run's beliefs info: e.g. the gold
+# record's ``bank_only``), never to a run's belief info: e.g. the gold
 # annotation row of a TRQA query.
 BANK_ONLY = "bank_only"
 # Key of the info of a producer's empty result that is final (banked, so
@@ -367,7 +367,7 @@ class BankedBeliefSource(BeliefSource):
         return beliefs, {**info, "bank": "added" if beliefs else "failed"}
 
 
-# Model name in the beliefs info of gold beliefs (``GoldBeliefSource``).
+# Model name in the belief info of gold beliefs (``GoldBeliefSource``).
 GOLD_BELIEF_MODEL = "gold"
 
 

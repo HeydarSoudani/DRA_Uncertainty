@@ -41,8 +41,8 @@ def status_score(belief: Dict[str, Any]) -> float:
 
 
 def certainty(beliefs: List[Dict[str, Any]], kinds: List[str]) -> Optional[float]:
-    """s_t of a belief (per belief its saved belief, the beliefs of
-    *kinds*): the mean score of the counted beliefs; None when no
+    """s_t of the belief states (one saved state per belief, the beliefs
+    of *kinds*): the mean score of the counted beliefs; None when no
     belief counts."""
     scores = [status_score(b) for b in counted(beliefs, kinds)]
     return sum(scores) / len(scores) if scores else None

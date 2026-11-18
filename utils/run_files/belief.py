@@ -231,7 +231,7 @@ the meta line's ``tokens``, the belief update and final scorer tokens of
 the sample (null when not counted; absent in earlier files).  A multi-clue
 query (BrowseComp-Plus, shape renamed from single_target; set renamed
 multi_member) lists its clues, then a target belief ("the <type> that
-meets c1 to c<k>", kind ``target``), then the asked answer when it is not
+meets B1 to B<k>", kind ``target``), then the asked answer when it is not
 the target.  The target takes no observation or update (issues
 ``derived_belief``, ``derived_update``); its candidates are derived
 after each call (the names listed on every clue, at the lowest of their
@@ -288,7 +288,7 @@ reference is asked once more (``belief_info.warnings`` "order: ...").
 
 schema_version 36 (was 35): a multi-hop belief names only its own hop
 and refers to the hop it depends on by its id ("the engineer who was born
-in the town of c1"); its hops before the answer are of kind ``hop``
+in the town of B1"); its hops before the answer are of kind ``hop``
 ("several answers": candidates do not compete), the answer ``closed``.
 The agent's reasoning only proposes names: a reasoning observation is a
 claim (``{candidate, claim}``: a status, or "rejected") on one candidate;

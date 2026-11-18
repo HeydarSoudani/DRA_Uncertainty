@@ -56,7 +56,7 @@ Per belief (a value is None where it does not apply):
 
 Each row of ``metrics.md`` is one of them twice: the mean over the queries
 of each query's mean over its beliefs (bootstrap CI over queries, n
-queries), and ``(c)``: the mean over every belief (n beliefs).  Below the
+queries), and ``(b)``: the mean over every belief (n beliefs).  Below the
 table, the final status of every belief with a Brier item, per status:
 how many, how many with a correct most probable candidate (the Brier's y,
 ``calibration``).
@@ -442,7 +442,7 @@ class BeliefUpdateEvaluator:
                 return mean([_mean_of(g, key) for g in gs])
             pooled = [v[key] for g in groups for v in g if v[key] is not None]
             rows.append((name, per_query(scored), *bootstrap_ci(scored, per_query), len(scored)))
-            rows.append((f"{name} (c)", mean(pooled), None, None, len(pooled)))
+            rows.append((f"{name} (b)", mean(pooled), None, None, len(pooled)))
         return rows
 
     @staticmethod

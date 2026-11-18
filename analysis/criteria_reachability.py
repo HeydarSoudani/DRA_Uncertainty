@@ -175,7 +175,7 @@ def belief_source(args, split: str) -> BeliefSource:
     and is left out.  Each has ``path``, ``lookup`` (stored criteria only) and ``get``."""
     from belief_model_component import build_belief_source
     return build_belief_source(args.dataset, split, belief_model=args.belief_model, max_beliefs=args.max_beliefs,
-                                 belief_source=args.belief_source, fallback=False)
+                               belief_source=args.belief_source, fallback=False)
 
 
 def bank_criteria(args, source: BeliefSource, queries: Dict[str, str]) -> Tuple[Dict[str, List[Dict]], Dict[str, int]]:
@@ -494,7 +494,7 @@ _BELIEF_REF_RE = re.compile(r"\bB(\d+)\b")
 
 
 def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> str:
-    """*text* with each reference to another criterion ("born in c1")
+    """*text* with each reference to another criterion ("born in B1")
     followed by that criterion's own text, resolved the same way, in
     brackets, so the text reads without the list."""
     def sub(m: "re.Match") -> str:

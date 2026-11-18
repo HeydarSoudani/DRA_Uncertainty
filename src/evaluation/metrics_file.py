@@ -99,8 +99,8 @@ def table(header: List[str], body: List[List[str]]) -> List[str]:
 
 
 #: The note under the main table when a row is reported per belief.
-BELIEF_NOTE = ("A row with (c) is the mean over every belief (n beliefs); the same row without it is the "
-                  "mean over the queries of each query's mean over its beliefs (CI over queries, n queries).")
+BELIEF_NOTE = ("A row with (b) is the mean over every belief (n beliefs); the same row without it is the "
+               "mean over the queries of each query's mean over its beliefs (CI over queries, n queries).")
 
 
 def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections: Sequence[Section] = ()) -> None:
@@ -111,7 +111,7 @@ def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections:
     body = [[r.group, r.metric, fmt(r.value), fmt(r.ci_low), fmt(r.ci_high), fmt(r.n)] for r in rows]
     lines = ["# Evaluation", ""] + [f"- {k}: {v}" for k, v in header.items()] + [""]
     lines += table(list(COLUMNS), body)
-    if any(r.metric.endswith(" (c)") for r in rows):
+    if any(r.metric.endswith(" (b)") for r in rows):
         lines += ["", BELIEF_NOTE]
     for title, columns, cells in sections:
         lines += ["", f"## {title}", ""] + table(columns, cells)
