@@ -17,7 +17,7 @@ Input:
 
 == Update Rules ==
 1. From the reasoning, find each candidate the agent gives as the answer to a belief, in the agent's own words, not passage text it repeats.
-2. From each passage, find the spans that state a part of a belief and the candidate they are about: + if they say the candidate meets the part, - if they say it fails. Read the passage alone, without the previous passages.
+2. From each passage, find the spans that state a part of a belief and the candidate they are about: + if they say the candidate meets the part, - if they say it fails. A passage that leaves a part out, such as a list without it, states nothing on it. Read the passage alone, without the previous passages.
 3. For each belief, choose the most probable candidate and its probability word from all its passages, previous and new. More passages, more parts and more direct spans raise the word; a - passage, a hedged span or another supported candidate lowers it.
 
 == Output ==
@@ -26,7 +26,7 @@ ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this or
   - "id": The belief id (for example "B1").
   - "candidate": The candidate, written exactly as in the belief state if it is already there.
   - "span": The span of the reasoning that states the agent claim.
-  - "agent_claim": How likely the reasoning says the candidate addresses the belief, as a word above, or "rejected".
+  - "agent_claim": How likely the reasoning says the candidate addresses the belief, as a word above other than "unknown", or "rejected" when the reasoning says the candidate fails a part, not that it is still unconfirmed.
 - "passage_observations": Update Rule 2, the passages on the beliefs; one object per passage, belief and candidate it names:
   - "id": The belief id.
   - "passage": The passage label (for example "d4").

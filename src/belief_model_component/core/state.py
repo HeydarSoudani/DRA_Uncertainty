@@ -10,11 +10,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..text.matching import alnum, contains_words, content_words, squash
 from .issues import (
     ISSUE_ANSWER_NOT_COMPUTED, ISSUE_BELIEF_MISSING, ISSUE_BELIEF_REPEATED, ISSUE_CANDIDATE_MISSING,
-    ISSUE_CANDIDATE_NEAR_DUPLICATE, ISSUE_CANDIDATE_NOT_IN_PASSAGES, ISSUE_CANDIDATE_READDED, ISSUE_CLAIM_INCOMPLETE,
-    ISSUE_FACT_MERGED, ISSUE_MOST_PROBABLE_WRONG, ISSUE_OBSERVATION_ON_TARGET, ISSUE_SPAN_OFF_FACT,
-    ISSUE_SPAN_UNVERIFIED, ISSUE_STANCE_INVALID, ISSUE_SUBJECT_CANDIDATE, ISSUE_TURN_SPAN_UNVERIFIED,
-    ISSUE_UNKNOWN_BELIEF, ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_COMPUTED,
-    ISSUE_UPDATE_ON_TARGET, ISSUE_UPDATE_WITHOUT_OBSERVATION, ISSUE_WEP_INVALID, ISSUE_WEP_WITHOUT_SUPPORT, NOTE_CODES,
+    ISSUE_CANDIDATE_NEAR_DUPLICATE, ISSUE_CANDIDATE_NOT_IN_PASSAGES, ISSUE_CANDIDATE_READDED,
+    ISSUE_CLAIM_INCOMPLETE, ISSUE_CLAIM_UNKNOWN, ISSUE_FACT_MERGED, ISSUE_MOST_PROBABLE_WRONG,
+    ISSUE_OBSERVATION_ON_TARGET, ISSUE_SPAN_OFF_BELIEF, ISSUE_SPAN_OFF_FACT, ISSUE_SPAN_UNVERIFIED,
+    ISSUE_STANCE_INVALID, ISSUE_SUBJECT_CANDIDATE, ISSUE_TURN_SPAN_UNVERIFIED, ISSUE_UNKNOWN_BELIEF,
+    ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_COMPUTED, ISSUE_UPDATE_ON_TARGET,
+    ISSUE_UPDATE_WITHOUT_OBSERVATION, ISSUE_WEP_INVALID, ISSUE_WEP_WITHOUT_SUPPORT, NOTE_CODES,
 )
 from .types import (
     AGGREGATE, ASPECT, CLOSED, DOC, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, STATUS_LEVEL, THINK,
@@ -274,6 +275,10 @@ class BeliefState:
             elif not o.grounded:
                 issues.append(_issue(o.belief, ISSUE_SPAN_UNVERIFIED, "no verified span", o) if o.source == DOC else
                               _issue(o.belief, ISSUE_TURN_SPAN_UNVERIFIED, "no span of the agent's turn", o))
+            elif (o.source == THINK and alnum(o.candidate or "") and o.claim is None
+                  and parse_status(o.claim_written) == UNKNOWN):
+                issues.append(_issue(o.belief, ISSUE_CLAIM_UNKNOWN,
+                                     f"{o.candidate!r}: claim 'unknown', a name the agent only checks; not taken", o))
             elif o.source == THINK and (not alnum(o.candidate or "") or o.claim is None):
                 why = (f"agent_claim {o.claim_written!r} is not a claim (a status above 'unknown', or "
                        f"'{REJECTED}')" if alnum(o.candidate or "") else "no candidate")
@@ -598,10 +603,15 @@ class BeliefState:
                                                     reason=f"more than {MAX_PROPOSALS} proposals: the least recently claimed dropped"))
 
     def _check_spans(self, k: int, name: str, x: Support, issues: List[Dict[str, Any]]) -> None:
-        """Flag (information only) a supporting span of an aspect's fact
-        *name* that shares no content word with it: support attached to
-        another fact."""
+        """Note a supporting span of an aspect's fact *name* that shares no
+        content word with it (support attached to another fact); flag a -
+        passage on a one-answer candidate whose spans share no content word
+        with the belief (a passage that leaves the part out states
+        nothing on it)."""
         if self.beliefs[k].kind != ASPECT:
+            if x.against and not content_words(self.beliefs[k].text) & content_words(" ".join(x.spans)):
+                issues.append(_issue(self.beliefs[k].id, ISSUE_SPAN_OFF_BELIEF,
+                                     f"{name!r}: the - spans of {x.label} share no content word with the belief"))
             return
         words = content_words(name)
         if not x.against and words and not words & content_words(" ".join(x.spans)):

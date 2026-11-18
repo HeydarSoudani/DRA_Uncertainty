@@ -60,6 +60,7 @@ ISSUE_BELIEF_MISSING = "belief_missing"
 ISSUE_CANDIDATE_NOT_IN_PASSAGES = "candidate_not_in_passages"
 ISSUE_CANDIDATE_NEAR_DUPLICATE = "candidate_near_duplicate"
 ISSUE_FACT_MERGED = "fact_merged"
+ISSUE_SPAN_OFF_BELIEF = "span_off_belief"
 # The most probable candidate and WEP of a belief item.
 ISSUE_MOST_PROBABLE_WRONG = "most_probable_wrong"
 ISSUE_WEP_INVALID = "wep_invalid"
@@ -68,6 +69,7 @@ ISSUE_UNKNOWN_WITH_SUPPORT = "unknown_with_support"
 # Notes (not errors).
 ISSUE_CANDIDATE_READDED = "candidate_readded"
 ISSUE_SPAN_OFF_FACT = "span_off_fact"
+ISSUE_CLAIM_UNKNOWN = "claim_unknown"
 
 ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_UNKNOWN_BELIEF, DROPPED, gate=True,
@@ -81,7 +83,8 @@ ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_TURN_SPAN_UNVERIFIED, DROPPED, unclean=True,
               meaning="a reasoning observation without a span of the agent's turn"),
     IssueCode(ISSUE_CLAIM_INCOMPLETE, DROPPED, gate=True, unclean=True,
-              meaning="a reasoning observation without a candidate, or whose claim is no word nor 'rejected'"),
+              meaning="a reasoning observation without a candidate, or whose claim is no word nor 'rejected' "
+                      "('unknown' is a note, claim_unknown)"),
     IssueCode(ISSUE_CANDIDATE_MISSING, DROPPED, gate=True,
               meaning="a passage observation without a candidate (allowed on a computed answer only)"),
     IssueCode(ISSUE_STANCE_INVALID, DROPPED, gate=True,
@@ -107,6 +110,8 @@ ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
               meaning="a new candidate whose name contains a listed one, or the reverse"),
     IssueCode(ISSUE_FACT_MERGED, FLAGGED,
               meaning="a new fact of an aspect whose words contain a listed one or the reverse: merged into it"),
+    IssueCode(ISSUE_SPAN_OFF_BELIEF, FLAGGED,
+              meaning="a - passage on a one-answer candidate whose spans share no content word with the belief"),
 
     IssueCode(ISSUE_MOST_PROBABLE_WRONG, CORRECTED, unclean=True,
               meaning="the most probable candidate written is no listed candidate with a + passage: "
@@ -121,6 +126,8 @@ ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_CANDIDATE_READDED, NOTE, meaning="a name the belief dropped before, written again"),
     IssueCode(ISSUE_SPAN_OFF_FACT, NOTE,
               meaning="a supporting span of an aspect's fact that shares no content word with it"),
+    IssueCode(ISSUE_CLAIM_UNKNOWN, NOTE,
+              meaning="a reasoning observation with claim 'unknown' (a name the agent only checks): not taken"),
 )}
 
 # A reply with one of these fails the format gate.
