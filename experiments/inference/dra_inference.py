@@ -66,7 +66,7 @@ logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
 from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import CRITERIA_SOURCES, DATASETS, DATASET_SPECS, OUTPUT_ROOT
+from indexing_corpus_dataset.layout import BELIEF_SOURCES, DATASETS, DATASET_SPECS, OUTPUT_ROOT
 
 from deep_research_agents.agents import ALL_AGENTS
 from utils.config import POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
@@ -201,8 +201,8 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
 
     stage = kwargs["stage"]
     if stage in BELIEVES:
-        from belief_model_component import check_criteria_inputs
-        check_criteria_inputs(dataset, kwargs["criteria_source"], kwargs["belief_model"], kwargs["max_criteria"])
+        from belief_model_component import check_belief_inputs
+        check_belief_inputs(dataset, kwargs["belief_source"], kwargs["belief_model"], kwargs["max_beliefs"])
 
     # ==================== Resume: skip already-generated queries ====================
     # Named and recorded by the CLI --policy-model name (oss_20b, not oss).
@@ -349,7 +349,7 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     again.  A belief file of an older schema is made again too.  With
     ``--limit`` (``--stage all``), the queries this call generated come
     first."""
-    from belief_model_component import build_criteria_source, prepare_criteria
+    from belief_model_component import build_belief_source, prepare_beliefs
     from orchestration import build_belief_model
     from orchestration.belief_stage import run_belief_stage
 
@@ -358,7 +358,7 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     max_passage_tokens = saved["agent"]["max_passage_tokens"]
     section = build_belief_config(
         plan.dataset, max_passage_tokens=max_passage_tokens,
-        **{k: kwargs[k] for k in ("belief_model", "max_criteria", "criteria_source")},
+        **{k: kwargs[k] for k in ("belief_model", "max_beliefs", "belief_source")},
     )
     diffs = belief_config_diffs(run_dir, section)
     if diffs:
@@ -384,15 +384,15 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
         print("[Belief] No finished trajectory without a belief file")
         return
 
-    # Criteria, made and banked before the workers start; the workers'
+    # Beliefs, made and banked before the workers start; the workers'
     # belief models share this source and read every query's from the bank.
-    source = build_criteria_source(plan.dataset, plan.split, belief_model=kwargs["belief_model"],
-                                   max_criteria=kwargs["max_criteria"], criteria_source=kwargs["criteria_source"])
-    prepare_criteria(source, {qid: plan.all_questions[qid] for qid in todo})
+    source = build_belief_source(plan.dataset, plan.split, belief_model=kwargs["belief_model"],
+                                   max_beliefs=kwargs["max_beliefs"], belief_source=kwargs["belief_source"])
+    prepare_beliefs(source, {qid: plan.all_questions[qid] for qid in todo})
 
     def build_model():
         return build_belief_model(
-            dataset=plan.dataset, belief_model=kwargs["belief_model"], criteria=source,
+            dataset=plan.dataset, belief_model=kwargs["belief_model"], beliefs=source,
             qrels=plan.qrels, max_passage_tokens=max_passage_tokens,
         )
 
@@ -635,15 +635,15 @@ def _resolve_args(args, extras):
 
     # ── Merge file-backed config (+ any CLI overrides) onto args ────────────
     cli_subset = args.subset
-    cli_criteria_source = args.criteria_source
+    cli_belief_source = args.belief_source
     cli_belief_model = args.belief_model
     config = load_run_config(args.config)
     overrides = parse_cli_overrides(extras)
     apply_config_to_args(args, config, overrides)
     if cli_subset is not None:
         args.subset = cli_subset
-    if cli_criteria_source is not None:
-        args.criteria_source = cli_criteria_source
+    if cli_belief_source is not None:
+        args.belief_source = cli_belief_source
     if cli_belief_model is not None:
         args.belief_model = cli_belief_model
 
@@ -838,11 +838,11 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Run deep research agents pipeline (unified)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        allow_abbrev=False,  # only full flag names, e.g. --criteria-source
+        allow_abbrev=False,  # only full flag names, e.g. --belief-source
     )
 
     # ── Stage ───────────────────────────────────────────────────────────────
-    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model over the finished trajectories without a belief file (belief/{qid}.jsonl and .md; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; belief settings (--belief-model, --criteria-source) other than the run's replace its beliefs. 'eval': the evaluation only, from the saved files (every evaluator of the dataset; judge verdicts reused from eval/generation/ and eval/belief/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same eval/metrics.md and eval/per_query.csv.")
+    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation. 'belief': the belief model over the finished trajectories without a belief file (belief/{qid}.jsonl and .md; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation; belief settings (--belief-model, --belief-source) other than the run's replace its beliefs. 'eval': the evaluation only, from the saved files (every evaluator of the dataset; judge verdicts reused from eval/generation/ and eval/belief/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation. Every stage writes the same eval/metrics.md and eval/per_query.csv.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
     # ── Generation (the belief and eval stages need the same values to find the run directory) ──
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
@@ -851,8 +851,8 @@ def parse_args():
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--workers", type=int, default=1, help="Query-level worker processes of the generate stage; each loads its own retriever and agent. On a GPU machine one worker per GPU (capped at the GPUs, or at --gpu-ids); on a CPU machine CPU processes (the retriever on CPU, one copy in RAM each). 0 = auto: the GPU count, 1 without GPU. Ignored by the belief and eval stages (no GPU; the belief stage runs --belief-workers threads).")
     # ── Belief ──────────────────────────────────────────────────────────────
-    parser.add_argument("--belief-model", type=str, default=None, help="Backbone LLM of the belief model, for its three calls: criteria init (banked under this model), belief update and final score. A vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE). Unset = belief_model in --config.")
-    parser.add_argument("--criteria-source", type=str, default=None, choices=list(CRITERIA_SOURCES), help="Criteria of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by --belief-model). A choice only on TRQA and trqa_validation; elsewhere the dataset's own source is used. Unset = criteria_source in --config.")
+    parser.add_argument("--belief-model", type=str, default=None, help="Backbone LLM of the belief model, for its three calls: belief init (banked under this model), belief update and final score. A vllm/<name> model is served at $BELIEF_VLLM_API_BASE (default $VLLM_API_BASE). Unset = belief_model in --config.")
+    parser.add_argument("--belief-source", type=str, default=None, choices=list(BELIEF_SOURCES), help="Beliefs of the belief model: gold (TRQA: made from the intermediate info; trqa_validation: the dataset rows) or silver (extracted by --belief-model). A choice only on TRQA and trqa_validation; elsewhere the dataset's own source is used. Unset = belief_source in --config.")
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap the queries each stage runs (for quick tests): the generate stage's queries left to generate, the belief stage's trajectories left without a belief file")
     parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")

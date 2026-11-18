@@ -8,13 +8,13 @@ Record (one JSON line per question)::
      "question": str, "answer": str,
      "gold": [{"key": str, "kind": "wiki", "lang": str, "title": str}
               | {"key": str, "kind": "web", "url": str}],
-     "annotation": {"query_shape": str, "criteria": [...], "entity_names": [...]},
+     "annotation": {"query_shape": str, "beliefs": [...], "entity_names": [...]},
      "meta": {"ignored_urls": int, "reasoning_types": [...]}}   (what the source has)
 
 ``gold`` holds the source's gold pages (InfoSeek: the Wikipedia page of every
 tree node; WebShaper: its URLs; FRAMES: its Wikipedia links), each with a
 ``key`` that identifies the page across questions.  ``annotation`` is the
-skeleton of the gold annotation (``gold/annotations.py``): the criteria the
+skeleton of the gold annotation (``gold/annotations.py``): the beliefs the
 source states (InfoSeek: the hops of its research tree; WebShaper: the
 variables of its formalization; FRAMES: none) with their relations, answers
 and the keys of their gold pages (``gold_keys``), resolved to documents by

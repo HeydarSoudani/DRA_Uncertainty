@@ -40,14 +40,14 @@ src/
 ├── searcher_component/       retrievers, rerankers, fusion
 ├── reasoner_component/       LLM generators (API, vLLM)
 ├── orchestration/            wiring of agent, searcher and belief model; multi-GPU workers
-├── belief_model_component/   criteria, belief state, signals, judges
+├── belief_model_component/   beliefs, belief state, signals, judges
 ├── evaluation/               answer, retrieval, trajectory and generation evaluators
 └── indexing_corpus_dataset/  dataset download and index building
 experiments/
 ├── inference/                dra_inference.py
 ├── training/                 build_training_dataset.py
 └── configs/                  YAML defaults of every script
-analysis/                     criteria reachability, final score ablation
+analysis/                     beliefs reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)
 data/                         belief banks, training datasets
 ```
@@ -59,7 +59,7 @@ pip install -e .
 ```
 
 This registers all packages so imports resolve from any working directory. Set `DRA_DATA_ROOT` (corpus + indices),
-`DRA_OUTPUT_ROOT` (run outputs) and `DRA_CRITERIA_ROOT` (belief banks, default the repo's `data/`) to control
+`DRA_OUTPUT_ROOT` (run outputs) and `DRA_BELIEF_ROOT` (belief banks, default the repo's `data/`) to control
 where data is read and written. On Slurm, `scripts/_activate.sh` loads the modules, activates the venv and exports
 these variables.
 

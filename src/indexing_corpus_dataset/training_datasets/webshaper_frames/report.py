@@ -1,6 +1,6 @@
 """The report stage of webshaper_frames: stats of the dataset as written
 (queries, qrels, corpus) per source, the hard negatives, the gold annotation
-(levels, criteria with answers and documents), consistency checks between
+(levels, beliefs with answers and documents), consistency checks between
 the files, and the duplicate documents of the corpus.
 """
 

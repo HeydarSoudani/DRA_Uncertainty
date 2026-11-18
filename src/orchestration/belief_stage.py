@@ -21,7 +21,7 @@ what the agent's turns showed:
 Each query's belief goes to ``belief/{qid}.jsonl`` (``utils.run_files.save_belief``)
 and its readable view to ``belief/{qid}.md`` (``belief_model_component.views.log_view``).
 A query whose belief file exists is done: the stage resumes.  A query
-whose criteria or a belief call failed before any reply (the API, not the
+whose beliefs or a belief call failed before any reply (the API, not the
 model) stops there and is not saved, so the next call runs it again; the
 stage lists these queries at its end.  The queries are split round-robin
 across parallel threads, each with its own belief model (its own client and
@@ -125,31 +125,31 @@ def read_saved_query(run_dir: Path, qid: str, policy_model: str) -> Optional[Sav
 
 def _belief_md(summary: Dict[str, Any], steps: List[Dict[str, Any]], final: Optional[Dict[str, Any]],
                qid: str, question: str) -> str:
-    """The readable belief of one query: its criteria, the belief after each
+    """The readable belief of one query: its beliefs, the belief after each
     search iteration, then the final belief."""
-    from belief_model_component import belief_md, criteria_md
-    criteria = summary.get("criteria") or []
-    parts = [f"# Belief · {qid}", "", question, "", criteria_md(summary)]
-    parts += [belief_md(step, criteria) for step in steps]
+    from belief_model_component import belief_md, init_md
+    beliefs = summary.get("beliefs") or []
+    parts = [f"# Belief · {qid}", "", question, "", init_md(summary)]
+    parts += [belief_md(step, beliefs) for step in steps]
     if final is not None:
-        parts.append(belief_md(final, criteria, final=True))
+        parts.append(belief_md(final, beliefs, final=True))
     return "\n\n".join(parts) + "\n"
 
 
-#: Criteria errors of a call that raised before any reply (nothing banked,
-#: so the next call makes them again): the criteria source itself, the
-#: extractor's call, TRQA's gold criterion writer (whose failure would
-#: otherwise leave the query on its silver criteria).
-CRITERIA_CALL_ERRORS = ("criteria_source:", "llm_call:", "gold criteria: writer:")
+#: Beliefs errors of a call that raised before any reply (nothing banked,
+#: so the next call makes them again): the belief source itself, the
+#: extractor's call, TRQA's gold belief writer (whose failure would
+#: otherwise leave the query on its silver beliefs).
+INIT_CALL_ERRORS = ("belief_source:", "llm_call:", "gold beliefs: writer:")
 
 
-def _criteria_failed(info: Dict[str, Any]) -> bool:
-    """The query's criteria (``criteria_info``) failed for the API or the
-    server, not for the model's reply: an error of ``CRITERIA_CALL_ERRORS``,
+def _init_failed(info: Dict[str, Any]) -> bool:
+    """The query's beliefs (``belief_info``) failed for the API or the
+    server, not for the model's reply: an error of ``INIT_CALL_ERRORS``,
     also behind a silver fallback (``gold_missing``, the gold errors joined
     by "; ")."""
     texts = [str(e) for e in info.get("errors") or []] + [str(info.get("gold_missing") or "")]
-    return any(part.startswith(CRITERIA_CALL_ERRORS) for text in texts for part in text.split("; "))
+    return any(part.startswith(INIT_CALL_ERRORS) for text in texts for part in text.split("; "))
 
 
 def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
@@ -162,15 +162,15 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
                      verbose: bool, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
     iteration, finish on the answer turn.  ``failed`` names what failed for
-    a reason other than the model's reply (the criteria, a call that raised
+    a reason other than the model's reply (the beliefs, a call that raised
     before any reply, an exception); the query then stops there, is not
     saved, and the next belief stage runs it again.  *progress* gets the
-    step being run: ``criteria``, ``step k/N`` (N: the search iterations
+    step being run: ``beliefs``, ``step k/N`` (N: the search iterations
     plus the final update), ``final``."""
-    from utils.text_utils import verbose_print_belief, verbose_print_criteria
+    from utils.text_utils import verbose_print_belief, verbose_print_init
 
     qid = saved.qid
-    summary: Dict[str, Any] = {"criteria": []}
+    summary: Dict[str, Any] = {"beliefs": []}
     n_steps = len(saved.iterations) + 1
 
     def tick(text: str) -> None:
@@ -181,18 +181,18 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
         return {"meta": belief_model.meta(), "steps": list(belief_model.steps), "final": belief_model.final,
                 "summary": summary, "failed": failed}
 
-    tick("criteria")
+    tick("beliefs")
     try:
         belief_model.reset(query_id=qid, query=saved.question)
-        summary = belief_model.criteria_summary()
+        summary = belief_model.init_summary()
     except Exception:
         logger.warning("Belief model reset failed for %s", qid, exc_info=True)
         return out("reset")
-    if _criteria_failed(summary.get("criteria_info") or {}):
-        return out("criteria")
+    if _init_failed(summary.get("belief_info") or {}):
+        return out("beliefs")
     if verbose:
-        verbose_print_criteria(summary, agent_name=f"Belief {qid}")
-    criteria = summary.get("criteria") or []
+        verbose_print_init(summary, agent_name=f"Belief {qid}")
+    beliefs = summary.get("beliefs") or []
     for k, it in enumerate(saved.iterations, 1):
         tick(f"step {k}/{n_steps}")
         try:
@@ -206,7 +206,7 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
         if _call_failed(record):
             return out(f"belief update call at iteration {it.agent_iteration}")
         if verbose:
-            verbose_print_belief(it.agent_iteration, record, criteria, agent_name=f"Belief {qid}")
+            verbose_print_belief(it.agent_iteration, record, beliefs, agent_name=f"Belief {qid}")
     tick(f"step {n_steps}/{n_steps}, final")
     try:
         belief_model.finish(saved.answer_turn)
@@ -216,7 +216,7 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
     if _call_failed(belief_model.final):
         return out("final call")
     if verbose and belief_model.final is not None:
-        verbose_print_belief(None, belief_model.final, criteria, agent_name=f"Belief {qid}", final=True)
+        verbose_print_belief(None, belief_model.final, beliefs, agent_name=f"Belief {qid}", final=True)
     return out()
 
 
@@ -238,7 +238,7 @@ def run_belief_stage(
         run_dir: The run directory (its ``trajectory/`` and ``generation/``).
         qids: The finished queries without a belief file.
         build_model: Builds one belief model (``orchestration.build_belief_model``,
-            on the run's shared criteria source); one per worker, built here
+            on the run's shared belief source); one per worker, built here
             before the workers start (only the first prints its settings).
         corpus_path: The run's corpus JSONL (the documents' text).
         retriever_name: The run's retriever (``corpus_doc``).

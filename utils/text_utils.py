@@ -223,25 +223,25 @@ def _print_rows(label: str, rows) -> None:
         print(f"{label if i == 0 else padding}{(family + ':') if family else '':<11}{row}")
 
 
-def verbose_print_criteria(summary: Dict[str, Any], *, agent_name: str = "") -> None:
-    """Print the query's criteria once, before the first iteration
-    (``BeliefModel.criteria_summary``; see ``belief_model_component.views.log_view``)."""
-    from belief_model_component import criteria_lines
+def verbose_print_init(summary: Dict[str, Any], *, agent_name: str = "") -> None:
+    """Print the query's beliefs once, before the first iteration
+    (``BeliefModel.init_summary``; see ``belief_model_component.views.log_view``)."""
+    from belief_model_component import init_lines
     prefix = f"[{agent_name}] " if agent_name else ""
-    _print_rows(f"{prefix}[criteria]: ", criteria_lines(summary))
+    _print_rows(f"{prefix}[beliefs]: ", init_lines(summary))
 
 
 def verbose_print_belief(
     iter_num: Optional[int],
     record: Dict[str, Any],
-    criteria: List[Dict[str, Any]],
+    beliefs: List[Dict[str, Any]],
     *,
     agent_name: str = "",
     final: bool = False,
 ) -> None:
     """Print the belief model's record for one search iteration: the belief
     row (certainty, new doc ids), the gold row (new-item precision, recall
-    so far), per criterion its statement row (status,
+    so far), per belief its statement row (status,
     selected candidate(s), the labels it rests on; ``*`` rewritten this
     iteration), the labels of the iteration's
     documents, then the reply's issues and any errors.  With *final*, the
@@ -249,7 +249,7 @@ def verbose_print_belief(
     from belief_model_component import belief_lines
     prefix = f"[{agent_name}] " if agent_name else ""
     label = f"{prefix}[final belief]: " if final else f"{prefix}[Iter {iter_num}] [belief]: "
-    _print_rows(label, belief_lines(record, criteria, final=final))
+    _print_rows(label, belief_lines(record, beliefs, final=final))
 
 
 # ===========================================================================

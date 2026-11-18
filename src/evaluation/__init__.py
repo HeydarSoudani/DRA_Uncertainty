@@ -16,7 +16,7 @@ uncertainty
     or against nugget coverage (``ReportUncertaintyEvaluator``).
 belief
     The belief update evaluation (``BeliefUpdateEvaluator``) with its
-    per-criterion gold, and the update's issues (``issue_summary``).
+    per-belief gold, and the update's issues (``issue_summary``).
 trajectory
     Per-query searches, tokens and forced answers (``TrajectoryEvaluator``).
 

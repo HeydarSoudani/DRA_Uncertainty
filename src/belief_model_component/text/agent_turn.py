@@ -5,7 +5,7 @@ written after it read the passages of iteration t-1; its search queries are
 not part of it (they stay in the trajectory).  The answer turn is the
 reasoning after the last iteration and the final answer.  The belief update
 of iteration t reads turn t, with the passages its queries returned, for
-what the turn says about each criterion (think observations, labelled
+what the turn says about each belief (think observations, labelled
 "t<t>"), and the final call the answer turn.
 
 The text is built the same way at inference (``BaseAgent`` passes the

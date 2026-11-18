@@ -10,10 +10,10 @@ passages assigned to its candidates and its proposals, and replies with
 three lists:
 
 - ``reasoning_observations``: per candidate the reasoning names, assesses
-  or rejects, its criterion, the span of the reasoning and the agent
+  or rejects, its belief, the span of the reasoning and the agent
   claim (``agent_claim``: a status, or "rejected"); its turn is the latest
   turn the span occurs in, and a span counts when it occurs in one;
-- ``passage_observations``: per passage, criterion and candidate, the
+- ``passage_observations``: per passage, belief and candidate, the
   stance (+ the candidate meets a part, - it fails one) and the spans of
   the passage that state it; a span counts when it occurs in the passage
   as the call showed it (``span_in_passage``);
@@ -34,7 +34,7 @@ from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import (
-    DOC, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, BeliefUpdate, Observation, criterion_id, parse_claim,
+    DOC, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, THINK, BeliefUpdate, Observation, belief_id, parse_claim,
 )
 from ..prompts import BELIEF_UPDATE_SYSTEMS, BELIEF_UPDATE_USER, NO_TEXT, PASSAGE_TEMPLATE, TURN_TEMPLATE
 from ..text.matching import alnum, alnum_index, squash
@@ -42,7 +42,7 @@ from ..text.passages import Passage, Turn, doc_label, span_in_passage, split_spa
 from ..views.belief_text import format_belief
 from .repair import complete_with_repair
 
-# Output tokens of one call; a multi-member query (up to ~50 member criteria, each
+# Output tokens of one call; a multi-member query (up to ~50 member beliefs, each
 # with its candidates) gets more, since a reply cut at the limit cannot be
 # parsed and the step's update is lost.
 DEFAULT_MAX_TOKENS = 12288
@@ -99,7 +99,7 @@ class LLMBeliefUpdater:
         return [
             {"role": "system", "content": self._system},
             {"role": "user", "content": BELIEF_UPDATE_USER.format(
-                query=query, criteria=format_belief(state), turns=turn_text or NO_TEXT, passages=shown or NO_TEXT)},
+                query=query, beliefs=format_belief(state), turns=turn_text or NO_TEXT, passages=shown or NO_TEXT)},
         ]
 
     def parse(self, raw: str, turns: List[Turn], passages: List[Passage], step: int,
@@ -110,7 +110,7 @@ class LLMBeliefUpdater:
         those of a document observation against its
         passage as the call showed it (``shown_text``: a span from past the
         cut is not verified; its step is *step*), the items of one
-        criterion, passage, candidate and stance merged; None unless the
+        belief, passage, candidate and stance merged; None unless the
         reply is a JSON object with the three lists (``REPLY_KEYS``)."""
         data = parse_json_object(raw or "")
         if data is None or not all(isinstance(data.get(key), list) for key in REPLY_KEYS):
@@ -129,7 +129,7 @@ class LLMBeliefUpdater:
             turn_step, text, index = next(
                 ((n, t, ix) for n, t, ix in turn_indexes if any(span_in_passage(t, p, ix) for p in pieces)),
                 turn_indexes[0] if turn_indexes else (step, "", None))
-            o = Observation(criterion=criterion_id(item.get("id")), source=THINK, label=f"t{turn_step}",
+            o = Observation(belief=belief_id(item.get("id")), source=THINK, label=f"t{turn_step}",
                             step=turn_step, candidate=squash(item.get("candidate")) or None,
                             claim=parse_claim(item.get("agent_claim")),
                             claim_written=squash(item.get("agent_claim")) or None)
@@ -145,7 +145,7 @@ class LLMBeliefUpdater:
             if not isinstance(item, dict):
                 continue
             label = doc_label(item.get("passage"))
-            cid = criterion_id(item.get("id"))
+            cid = belief_id(item.get("id"))
             # A label that is no passage of the call (or none): kept with no
             # document (doc_id None), so ``BeliefState.apply`` notes it.
             doc, text = by_label.get(label, (None, ""))
@@ -154,7 +154,7 @@ class LLMBeliefUpdater:
             key = (cid, label, alnum(candidate or ""), stance)
             o = docs.get(key)
             if o is None:
-                o = docs[key] = Observation(criterion=cid, source=DOC, label=label, step=step, doc_id=doc,
+                o = docs[key] = Observation(belief=cid, source=DOC, label=label, step=step, doc_id=doc,
                                             candidate=candidate, against=stance == "-",
                                             bad_stance=None if stance in ("+", "-") else stance)
             if doc is not None and label not in indexes:
@@ -183,7 +183,7 @@ class LLMBeliefUpdater:
 
 def _belief_update(item: Dict[str, Any]) -> BeliefUpdate:
     """One item of the reply's ``beliefs`` list as written."""
-    return BeliefUpdate(id=criterion_id(item.get("id")), reason=squash(item.get("reason")),
+    return BeliefUpdate(id=belief_id(item.get("id")), reason=squash(item.get("reason")),
                         most_probable=squash(item.get("most_probable")) or None, wep=squash(item.get("wep")))
 
 

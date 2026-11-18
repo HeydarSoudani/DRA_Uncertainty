@@ -133,7 +133,7 @@ class LLMFinalScorer:
         return [
             {"role": "system", "content": self._system},
             {"role": "user", "content": BELIEF_SCORE_USER.format(
-                query=query, criteria=format_belief(state),
+                query=query, beliefs=format_belief(state),
                 answer=scorer_answer_text(answer_turn, step))},
         ]
 

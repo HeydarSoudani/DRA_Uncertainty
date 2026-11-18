@@ -143,20 +143,20 @@ PASSAGE_TEMPLATE = "[{label}] {text}"
 
 # The initializer's instruction, the same for every shape: the cap on the
 # number of beliefs is a run setting (None: uncapped, as for gold
-# criteria, layout.DatasetSpec.max_criteria None), stated to a multi-hop
+# beliefs, layout.DatasetSpec.max_beliefs None), stated to a multi-hop
 # query only (a chain keeps the hops closest to the answer); a multi-clue,
 # multi-member or report query lists every clue, member or requirement the
 # query states (code still keeps a multi-member list within the cap,
-# ``criteria.parsing.member_layout``).
+# ``init.parsing.member_layout``).
 _BELIEF_INIT_INSTRUCTION = "List the beliefs of this query."
-_CAPPED_BELIEF_INIT_INSTRUCTION = "List the beliefs of this query, at most {max_criteria}."
+_CAPPED_BELIEF_INIT_INSTRUCTION = "List the beliefs of this query, at most {max_beliefs}."
 
 
-def belief_init_user(shape: str, query: str, max_criteria: Optional[int]) -> str:
+def belief_init_user(shape: str, query: str, max_beliefs: Optional[int]) -> str:
     """The initializer's user message for a *shape* query, within
-    *max_criteria* (None: uncapped; stated to a multi-hop query only)."""
-    if max_criteria is None or shape != MULTI_HOP:
+    *max_beliefs* (None: uncapped; stated to a multi-hop query only)."""
+    if max_beliefs is None or shape != MULTI_HOP:
         instruction = _BELIEF_INIT_INSTRUCTION
     else:
-        instruction = _CAPPED_BELIEF_INIT_INSTRUCTION.format(max_criteria=max_criteria)
+        instruction = _CAPPED_BELIEF_INIT_INSTRUCTION.format(max_beliefs=max_beliefs)
     return BELIEF_INIT_USER.format(query=query, instruction=instruction)

@@ -1,6 +1,6 @@
 """The rows of a training dataset: one per query, in its queries file
 (``queries/queries_all.jsonl``), with the query, its split and its gold
-annotation: its criteria with their gold answers and gold documents, as far
+annotation: its beliefs with their gold answers and gold documents, as far
 as the source states them.
 
 Every row has the same keys, whatever the source; what the source does not
@@ -14,7 +14,7 @@ Query row::
      "query_shape": "multi_hop" | "multi_member",
      "level": "full" | "partial" | "query",      (``level``)
      "doc_ids": [...],          the query's qrels
-     "criteria": [criterion],   [] when the source has no structure
+     "beliefs": [belief],   [] when the source has no structure
      "members": [{"entity", "value", "doc_ids"}],   multi-member queries; else []
      "entity_names": [...],     every entity name of the gold structure
                                 (InfoSeek's tree, TRQA's members;
@@ -24,44 +24,44 @@ Query row::
      "aggregation": str | None, how a multi-member query's answer follows from
                                 the members' values (TRQA, e.g.
                                 ``AVG_TOP_K``); else None
-     "texts_ok": bool | None,   the criterion texts (criterion_texts.py):
-                                true written (or no criteria), false
+     "texts_ok": bool | None,   the belief texts (belief_texts.py):
+                                true written (or no beliefs), false
                                 failed for good (a leak after the retry,
-                                no text for a criterion), None not written
+                                no text for a belief), None not written
                                 yet (retried next run)
      "errors": [...]}           why the texts failed
 
 The writer of the texts and the hash of its prompts are recorded once, in
 the ``annotations`` section of the dataset's ``stats.json`` (and per query in
-``criterion_texts.jsonl``, the writer's memory).
+``belief_texts.jsonl``, the writer's memory).
 
-Criterion::
+Belief::
 
-    {"id": "c1",
-     "text": str | None,        written by the writer (criterion_texts.py)
+    {"id": "B1",
+     "text": str | None,        written by the writer (belief_texts.py)
      "answers": [...], "doc_ids": [...],
      "kind": "closed" | "aggregate",
      "relations": [...]}        the source structure the writer
                                 reads (hop relations with placeholders E1,
-                                E2, ... for the criteria, by position)
+                                E2, ... for the beliefs, by position)
 
 What each source states:
 
-    infoseek     one criterion per entity of the research tree the question
+    infoseek     one belief per entity of the research tree the question
                  does not name, children before parents, the answer last;
                  answers = the entity, doc_ids = the first corpus chunk
                  (wiki-25-512) of its Wikipedia page and of the pages whose
                  claims link to it (the claim was written from the start of
                  the expanded node's page)
-    webshaper    one criterion per variable of the formalization, the
+    webshaper    one belief per variable of the formalization, the
                  farthest from the answer first, then the answer ("?");
                  only the answer has answers (the final answer); no doc_ids
                  (the URLs are the query's)
-    frames       no criteria (final answer and qrels only)
-    trqa_wiki2   multi_member: one criterion per member, "<member>: <property>"
+    frames       no beliefs (final answer and qrels only)
+    trqa_wiki2   multi_member: one belief per member, "<member>: <property>"
                  (answers = its value, doc_ids = its documents,
                  ``entity_values[].passage_ids``), then the aggregate
-                 criterion (how the
+                 belief (how the
                  answer follows from the values; answers = the final answer,
                  no doc_ids: it is computed); members = TRQA's
                  ``entity_values``, its documents as doc_ids, each named by
@@ -70,12 +70,12 @@ What each source states:
                  stays among ``entity_names``)
     trqa_wiki1   the same
 
-The loaders build the skeletons (criteria with the page keys of their
+The loaders build the skeletons (beliefs with the page keys of their
 documents, ``gold_keys``), the build resolves the keys to documents
 (``row``: webshaper_frames the fetched page, infoseek the first corpus
 chunk of the page); the trqa_validation build writes its rows directly
-(``multi_member_row``).  Each then has an LLM write the criterion texts
-(``criterion_texts.fill_texts``), and the split sets ``split``.
+(``multi_member_row``).  Each then has an LLM write the belief texts
+(``belief_texts.fill_texts``), and the split sets ``split``.
 """
 
 import re
@@ -85,11 +85,11 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from utils.io_utils import write_jsonl
 
-# The keys of a query row and of a criterion, in their order.
-QUERY_KEYS = ("id", "source", "split", "text", "answer", "query_shape", "level", "doc_ids", "criteria", "members",
+# The keys of a query row and of a belief, in their order.
+QUERY_KEYS = ("id", "source", "split", "text", "answer", "query_shape", "level", "doc_ids", "beliefs", "members",
               "entity_names", "property", "aggregation", "texts_ok", "errors")
-CRITERION_KEYS = ("id", "text", "answers", "doc_ids", "kind", "relations")
-# The kinds of criterion (belief_model_component.core.types): an aggregate
+BELIEF_KEYS = ("id", "text", "answers", "doc_ids", "kind", "relations")
+# The kinds of belief (belief_model_component.core.types): an aggregate
 # one has no documents (it is computed).
 CLOSED, AGGREGATE = "closed", "aggregate"
 KINDS = (CLOSED, AGGREGATE)
@@ -99,19 +99,19 @@ LEVELS = (FULL, "partial", "query")
 
 
 def has_gold(c: dict) -> bool:
-    """A criterion has its gold: answers and documents; an aggregate one
+    """A belief has its gold: answers and documents; an aggregate one
     answers only (no document states a computed value)."""
     if c["kind"] == AGGREGATE:
         return bool(c["answers"])
     return bool(c["answers"] and c["doc_ids"])
 
 
-def level(criteria: List[dict]) -> str:
-    """``full``: every criterion has its gold (``has_gold``); ``partial``:
-    some criterion lacks it; ``query``: no criteria."""
-    if not criteria:
+def level(beliefs: List[dict]) -> str:
+    """``full``: every belief has its gold (``has_gold``); ``partial``:
+    some belief lacks it; ``query``: no beliefs."""
+    if not beliefs:
         return "query"
-    return "full" if all(has_gold(c) for c in criteria) else "partial"
+    return "full" if all(has_gold(c) for c in beliefs) else "partial"
 
 
 def problems(row: dict) -> List[str]:
@@ -119,13 +119,13 @@ def problems(row: dict) -> List[str]:
     out = []
     if tuple(row) != QUERY_KEYS:
         out.append(f"query keys {sorted(row)}")
-    for c in row.get("criteria") or []:
-        if tuple(c) != CRITERION_KEYS:
-            out.append(f"criterion keys {sorted(c)}")
+    for c in row.get("beliefs") or []:
+        if tuple(c) != BELIEF_KEYS:
+            out.append(f"belief keys {sorted(c)}")
     for m in row.get("members") or []:
         if tuple(m) != MEMBER_KEYS:
             out.append(f"member keys {sorted(m)}")
-    if row.get("level") not in LEVELS or ("criteria" in row and row["level"] != level(row["criteria"])):
+    if row.get("level") not in LEVELS or ("beliefs" in row and row["level"] != level(row["beliefs"])):
         out.append(f"level {row.get('level')!r}")
     return out
 
@@ -148,14 +148,14 @@ def _dedup(items) -> list:
     return list(dict.fromkeys(items))
 
 
-def _criterion(cid: str, kind: str, relations: List[str], answers: List[str], doc_ids: List[str]) -> dict:
+def _belief(cid: str, kind: str, relations: List[str], answers: List[str], doc_ids: List[str]) -> dict:
     return {"id": cid, "text": None, "answers": answers, "doc_ids": doc_ids, "kind": kind, "relations": relations}
 
 
-def _row(qid: str, source: str, text: str, answer: str, shape: str, doc_ids: List[str], criteria: List[dict],
+def _row(qid: str, source: str, text: str, answer: str, shape: str, doc_ids: List[str], beliefs: List[dict],
          members: List[dict], names: List[str], prop: Optional[str], aggregation: Optional[str]) -> dict:
     return {"id": qid, "source": source, "split": None, "text": text, "answer": answer, "query_shape": shape,
-            "level": level(criteria), "doc_ids": doc_ids, "criteria": criteria, "members": members,
+            "level": level(beliefs), "doc_ids": doc_ids, "beliefs": beliefs, "members": members,
             "entity_names": names, "property": prop, "aggregation": aggregation, "texts_ok": None, "errors": []}
 
 
@@ -256,11 +256,11 @@ def infoseek_skeleton(question: str, root: dict, gold_key) -> dict:
     def keys(n: dict) -> List[str]:
         return _dedup(gold_key(m["href"]) for m in [n, *linked_from.get(n["id"], [])] if m.get("href"))
 
-    criteria = [{"id": f"c{k}", "kind": CLOSED, "relations": relations[n["id"]],
+    beliefs = [{"id": f"B{k}", "kind": CLOSED, "relations": relations[n["id"]],
                  "answers": entity_names(n["entity"]), "gold_keys": keys(n)}
                 for k, n in enumerate(hops, 1)]
     names = [name for n in nodes.values() if is_entity(n) for name in entity_names(n["entity"])]
-    return {"query_shape": "multi_hop", "criteria": criteria, "entity_names": names}
+    return {"query_shape": "multi_hop", "beliefs": beliefs, "entity_names": names}
 
 
 # ── WebShaper ────────────────────────────────────────────────────────────────
@@ -290,11 +290,11 @@ def _term_nodes(terms: List[str]) -> List[str]:
 
 
 def webshaper_skeleton(triples: List[list], answer: str) -> dict:
-    """One criterion per variable (``V@...``) of the formalization, then the
+    """One belief per variable (``V@...``) of the formalization, then the
     answer (``?``, its occurrences one node).  The variables are ordered
     farthest from the answer first (in the graph of the triples), ties by
     first occurrence; a variable not linked to the answer comes first.  Each
-    criterion's relations are the triples it occurs in, the variables and
+    belief's relations are the triples it occurs in, the variables and
     the answer as placeholders, the constants (``C@...``) as text."""
     triples = [t for triple in triples for t in _unpack(triple)]
     order: List[str] = []
@@ -332,15 +332,15 @@ def webshaper_skeleton(triples: List[list], answer: str) -> dict:
         for node in _term_nodes(terms):
             if text not in relations[node]:
                 relations[node].append(text)
-    criteria = [{"id": f"c{k}", "kind": CLOSED, "relations": relations[v],
+    beliefs = [{"id": f"B{k}", "kind": CLOSED, "relations": relations[v],
                  "answers": [answer] if v == _ANSWER and answer else [], "gold_keys": []}
                 for k, v in enumerate(hops, 1)]
-    return {"query_shape": "multi_hop", "criteria": criteria, "entity_names": []}
+    return {"query_shape": "multi_hop", "beliefs": beliefs, "entity_names": []}
 
 
 def no_skeleton() -> dict:
     """A source without structure (FRAMES): the query only."""
-    return {"query_shape": "multi_hop", "criteria": [], "entity_names": []}
+    return {"query_shape": "multi_hop", "beliefs": [], "entity_names": []}
 
 
 # ── Rows ─────────────────────────────────────────────────────────────────────
@@ -354,10 +354,10 @@ def row(record: dict, docs_of: Dict[str, List[str]]) -> dict:
         return _dedup(d for k in keys for d in docs_of.get(k, ()))
 
     skel = record["annotation"]
-    criteria = [_criterion(c["id"], c["kind"], c["relations"], c["answers"], docs(c["gold_keys"]))
-                for c in skel["criteria"]]
+    beliefs = [_belief(c["id"], c["kind"], c["relations"], c["answers"], docs(c["gold_keys"]))
+                for c in skel["beliefs"]]
     return _row(record["id"], record["source"], record["question"], record["answer"], skel["query_shape"],
-                docs(g["key"] for g in record["gold"]), criteria, [], skel["entity_names"], None, None)
+                docs(g["key"] for g in record["gold"]), beliefs, [], skel["entity_names"], None, None)
 
 
 def value_texts(value: Any) -> List[str]:
@@ -375,9 +375,9 @@ def value_texts(value: Any) -> List[str]:
 def multi_member_row(qid: str, source: str, query: str, answer: str, info: dict, qrels: List[str],
             titles: Dict[str, str]) -> dict:
     """The annotation row of a TRQA query from its intermediate info
-    (``entity_values``, ``property``, ``aggregation``): one criterion per
+    (``entity_values``, ``property``, ``aggregation``): one belief per
     member with its value and documents (``passage_ids``), then the
-    aggregate criterion with the final answer.  A member
+    aggregate belief with the final answer.  A member
     is named by the title of its first document (*titles*: doc id -> page
     title), or by TRQA's label when it has none."""
     labels, members = [], []
@@ -387,15 +387,15 @@ def multi_member_row(qid: str, source: str, query: str, answer: str, info: dict,
         labels.append(label)
         members.append({"entity": titles.get(doc_ids[0], label) if doc_ids else label, "value": v.get("value"),
                         "doc_ids": doc_ids})
-    criteria = []
+    beliefs = []
     if members:
-        criteria = [_criterion(f"c{k}", CLOSED, [], value_texts(m["value"]), m["doc_ids"])
+        beliefs = [_belief(f"B{k}", CLOSED, [], value_texts(m["value"]), m["doc_ids"])
                     for k, m in enumerate(members, 1)]
-        n = len(criteria)
+        n = len(beliefs)
         # The final answer as the query states it, and a whole float without its ".0".
         answers = _dedup([answer, *value_texts(info.get("answer"))]) if answer else value_texts(info.get("answer"))
-        criteria.append(_criterion(f"c{n + 1}", AGGREGATE, [], answers, []))
+        beliefs.append(_belief(f"B{n + 1}", AGGREGATE, [], answers, []))
     prop = (info.get("property") or {}).get("label") or None
     names = _dedup(n for m, label in zip(members, labels) for name in (m["entity"], label)
                    for n in entity_names(name))
-    return _row(qid, source, query, answer, "multi_member", qrels, criteria, members, names, prop, info.get("aggregation"))
+    return _row(qid, source, query, answer, "multi_member", qrels, beliefs, members, names, prop, info.get("aggregation"))

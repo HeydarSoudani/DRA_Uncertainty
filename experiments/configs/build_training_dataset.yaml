@@ -59,14 +59,14 @@ split:
   rl: 0.6                           # RL prompts (off mode)
   val: 0.1                          # validation of SFT and RL (monitor mode); plus the out-of-domain queries
 
-# ── Criterion texts of the gold annotation (end of every build) ─────────────
-# An LLM writes the criterion texts from the question and the criteria's
+# ── Belief texts of the gold annotation (end of every build) ─────────────
+# An LLM writes the belief texts from the question and the beliefs'
 # source structure; the gold answers, documents and level come from the
-# source.  Earlier texts are kept (criterion_texts.jsonl of the dataset);
+# source.  Earlier texts are kept (belief_texts.jsonl of the dataset);
 # writing new ones needs OPENROUTER_API_KEY.  model (and the prompts) must
-# stay those of the kept texts; to change them, remove criterion_texts.jsonl
+# stay those of the kept texts; to change them, remove belief_texts.jsonl
 # (every text is written again; every query keeps its split).
-gold_criteria:
+gold_beliefs:
   model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model of training)
   workers: 8                        # concurrent LLM calls
   max_tokens: 4096

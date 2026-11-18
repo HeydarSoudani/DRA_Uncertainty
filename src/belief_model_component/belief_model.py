@@ -1,6 +1,6 @@
 """BeliefModel: the per-sample belief of a deep research agent.
 
-``reset`` makes the criteria of a sample, ``observe`` updates the belief
+``reset`` makes the beliefs of a sample, ``observe`` updates the belief
 once per search iteration and stores the step record, ``finish`` reads the
 answer turn and stores the final record.  The flow and every field of the
 step and final records are described in ``README.md``."""
@@ -10,8 +10,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from utils.text_utils import doc_id as _doc_id, unique_docs
 
-from .core.types import Criterion
-from .criteria.sources import CriteriaSource
+from .core.types import Belief
+from .init.sources import BeliefSource
 from .eval_signals.retrieval_gain import RetrievalGainSignal
 from .update.final_score import LLMFinalScorer
 from .update.signal import BeliefUpdateSignal
@@ -28,7 +28,7 @@ class BeliefModel:
     """Computes and stores the per-step belief of one sample at a time.
 
     Args:
-        criteria_source: Produces the fixed criteria list at ``reset``.  None
+        belief_source: Produces the fixed belief list at ``reset``.  None
             disables the belief.
         belief_updater: The belief update call
             (``update.updater.LLMBeliefUpdater``).  None: b_t is null.
@@ -44,7 +44,7 @@ class BeliefModel:
 
     def __init__(
         self,
-        criteria_source: Optional[CriteriaSource] = None,
+        belief_source: Optional[BeliefSource] = None,
         belief_updater: Optional[LLMBeliefUpdater] = None,
         qrels: Optional[Dict[str, Dict[str, Any]]] = None,
         final_scorer: Optional[LLMFinalScorer] = None,
@@ -52,15 +52,15 @@ class BeliefModel:
     ) -> None:
         self._token_meter = token_meter
         self._tokens_at_reset: Optional[Dict[str, int]] = None
-        self._criteria_source = criteria_source
+        self._belief_source = belief_source
         self._final_scorer = final_scorer
 
         self._seen_ids: Set[str] = set()
         self._retrieval_gain = RetrievalGainSignal(qrels)
         self._belief = BeliefUpdateSignal(belief_updater) if belief_updater is not None else None
 
-        self._criteria: List[Criterion] = []
-        self._criteria_info: Dict[str, Any] = {}
+        self._beliefs: List[Belief] = []
+        self._belief_info: Dict[str, Any] = {}
         self._step = 0
         self.steps: List[Dict[str, Any]] = []
         self.final: Optional[Dict[str, Any]] = None
@@ -79,7 +79,7 @@ class BeliefModel:
         return self._belief is not None and self._belief.active
 
     def reset(self, query_id: Optional[str], query: str) -> None:
-        """Start a new sample: clear all state and create its criteria list."""
+        """Start a new sample: clear all state and create its belief list."""
         self._seen_ids.clear()
         self._tokens_at_reset = self._token_meter.snapshot() if self._token_meter is not None else None
         self._retrieval_gain.reset(query_id)
@@ -87,47 +87,47 @@ class BeliefModel:
         self.steps = []
         self.final = None
 
-        self._criteria, self._criteria_info = [], {}
-        if self._criteria_source is not None:
+        self._beliefs, self._belief_info = [], {}
+        if self._belief_source is not None:
             try:
-                self._criteria, self._criteria_info = self._criteria_source.get(query_id, query)
+                self._beliefs, self._belief_info = self._belief_source.get(query_id, query)
             except Exception as e:
-                logger.warning("BeliefModel: criteria source failed", exc_info=True)
-                self._criteria_info = {"errors": [f"criteria_source: {e}"]}
-            logger.info("BeliefModel: %d criteria: %s",
-                        len(self._criteria), [c.text for c in self._criteria])
+                logger.warning("BeliefModel: belief source failed", exc_info=True)
+                self._belief_info = {"errors": [f"belief_source: {e}"]}
+            logger.info("BeliefModel: %d beliefs: %s",
+                        len(self._beliefs), [c.text for c in self._beliefs])
         if self._belief is not None:
-            self._belief.reset(query, self._criteria)
+            self._belief.reset(query, self._beliefs)
 
-    def criteria_summary(self) -> Dict[str, Any]:
-        """The sample's criteria for the readable logs (``views.log_view``):
-        ``{criteria, criteria_info, num_relevant}``."""
+    def init_summary(self) -> Dict[str, Any]:
+        """The sample's beliefs for the readable logs (``views.log_view``):
+        ``{beliefs, belief_info, num_relevant}``."""
         return {
-            "criteria": [c.to_dict() for c in self._criteria],
-            "criteria_info": self._criteria_info,
+            "beliefs": [c.to_dict() for c in self._beliefs],
+            "belief_info": self._belief_info,
             "num_relevant": self._retrieval_gain.num_relevant,
         }
 
     def meta(self) -> Dict[str, Any]:
         """Per-sample information for the meta line of the saved file.  The
-        run settings (agent, models, mode, criteria cap) are in the run's
-        ``run_config.json``; ``criteria_info`` gives the model of this
-        query's criteria (and ``bank: hit`` when read from the bank), and
+        run settings (agent, models, mode, belief cap) are in the run's
+        ``run_config.json``; ``belief_info`` gives the model of this
+        query's beliefs (and ``bank: hit`` when read from the bank), and
         ``tokens`` the belief model's tokens on the sample (``tokens``)."""
         return {
-            "num_criteria": len(self._criteria),
+            "num_beliefs": len(self._beliefs),
             "num_iterations": len(self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
             "num_relevant": self._retrieval_gain.num_relevant,
-            "criteria": [c.to_dict() for c in self._criteria],
-            "criteria_info": self._criteria_info,
+            "beliefs": [c.to_dict() for c in self._beliefs],
+            "belief_info": self._belief_info,
             "tokens": self.tokens(),
         }
 
     def tokens(self) -> Optional[Dict[str, int]]:
         """The tokens of the belief update and final scorer calls since
         ``reset`` (``{input_tokens, output_tokens, total_tokens,
-        num_calls}``), None when not counted.  The criteria (banked, or
+        num_calls}``), None when not counted.  The beliefs (banked, or
         made by their own client) are not in it."""
         if self._token_meter is None or self._tokens_at_reset is None:
             return None

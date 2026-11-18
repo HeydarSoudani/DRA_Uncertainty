@@ -9,33 +9,33 @@ Training plan of the belief model, with the deep research agent frozen.
 
 The goal is to report an uncertainty score for the deep research agent (DRA), both during its search and for its
 final answer. The uncertainty is kept in a belief state, maintained by a separate belief model next to the agent:
-a fixed list of criteria that a complete answer must satisfy, and per criterion its candidates (possible answers),
+a fixed list of beliefs that a complete answer must satisfy, and per belief its candidates (possible answers),
 each with a status (how likely it is an answer, Agent-BRACE's verbal scale) and its support: the passage observations
 (documents [dN], the retriever side) that support it or speak against it. The agent's turns ([tN], the reasoner side)
 only propose names (proposals, no status, not rivals) and make claims, saved but never shown to the update; a
 passage that supports a proposal makes it a candidate. The model writes the status from the support and, for a
-one-answer criterion, from the other candidates' support (per criterion type in
+one-answer belief, from the other candidates' support (per belief type in
 `prompts/shared/wep_definitions.txt`); code enforces only hard limits (no support: at most "possible",
 `status_without_support`; no new support: the status kept, `status_without_new_support`). The candidates with their support (quoted spans
 and passage titles) and the proposals are shown to the next update; the agent sees the candidates and proposals. A
 candidate the update does not name keeps its status; one a passage states fails a part is removed. A step makes a call
 when its search returned a passage (new or shown before, with the same label); otherwise the belief is carried forward. A
-criterion's status is the highest of its candidates. Each criterion is its own sequence of beliefs over the steps, and is scored on its own.
+belief's status is the highest of its candidates. Each belief is its own sequence of beliefs over the steps, and is scored on its own.
 
 The belief is turned into one number, the certainty score $s_t \in [0, 1]$ (`belief_model_component/core/certainty.py`),
 a fixed function of the statuses:
 
 1. each status becomes a probability $p$ (`core.types.STATUS_PROBABILITY`: unlikely 0.10, unknown 0.25, possible
-   0.50, probable 0.70, almost certain 0.90, confirmed 0.97); $q_k$ is the criterion status's $p$ (a one-answer status
+   0.50, probable 0.70, almost certain 0.90, confirmed 0.97); $q_k$ is the belief status's $p$ (a one-answer status
    already counts the competing candidates);
-2. $s_t$ is the mean of the $q_k$ over the criteria the updater judges, $\mathcal{C}'$ (every criterion but an
+2. $s_t$ is the mean of the $q_k$ over the beliefs the updater judges, $\mathcal{C}'$ (every belief but an
    aggregate, whose status is derived from its inputs), on every query shape.
 
 $$
 s_t = \frac{1}{|\mathcal{C}'|} \sum_{k \in \mathcal{C}'} q_k
 $$
 
-It is the expected share of criteria that hold, so a change on any criterion moves it. How much each criterion counts
+It is the expected share of beliefs that hold, so a change on any belief moves it. How much each belief counts
 for the final answer is left to the final scorer ($s_T$ below). The same table turns every status into a number (the final scorer's
 $s_T$, the status calibration, the rewards). The final score $s_T$ is compared with the
 correctness $y \in \{0, 1\}$ of the agent's final answer. On a short-answer query it is the final scorer's
@@ -46,9 +46,9 @@ belief.
 
 The belief model is trained on two tasks (two prompts, one model):
 
-- **belief update**, rewarded per criterion over whole trajectories: **source assignment** (which documents and
-  which agent turns bear on each criterion, and what they state) and **WEP labelling** (the status of each
-  criterion from its sources, calibrated at every step);
+- **belief update**, rewarded per belief over whole trajectories: **source assignment** (which documents and
+  which agent turns bear on each belief, and what they state) and **WEP labelling** (the status of each
+  belief from its sources, calibrated at every step);
 - **final scoring**: the status of the agent's answer (how likely it is correct), from the belief, so that $s_T$ predicts $y$.
 
 Only the belief model is trained; the agent stays frozen.
@@ -61,15 +61,15 @@ the prompted teacher and the trained student (`belief_model_component/prompts/be
 
 | Call | Input | Output |
 |---|---|---|
-| update (a search step $t$ with a passage) | $q$, the criteria with $b_{t-1}$ (their candidates, each with status and support, and their proposals), the agent's turns since the last call (its reasoning), the passages of step $t$ (new or shown before, with the same label) | `reasoning_observations` (claims: `{id, turn, candidate, span, claim}`), `passage_observations` (spans of each passage per criterion), `candidates` (`{id, candidate, support, against, reason, status}`, every candidate whose support or status changes) |
-| final scorer (answer turn, short-answer query) | $q$, the criteria with $b_{T-1}$ (as above, plus the names a passage ruled out), the answer turn (last 2000 characters of reasoning, final answer) | `candidates` (`{id, candidate}` per criterion, the answer's candidate), `reason`, `status` (one of the five statuses) |
+| update (a search step $t$ with a passage) | $q$, the beliefs with $b_{t-1}$ (their candidates, each with status and support, and their proposals), the agent's turns since the last call (its reasoning), the passages of step $t$ (new or shown before, with the same label) | `reasoning_observations` (claims: `{id, turn, candidate, span, claim}`), `passage_observations` (spans of each passage per belief), `candidates` (`{id, candidate, support, against, reason, status}`, every candidate whose support or status changes) |
+| final scorer (answer turn, short-answer query) | $q$, the beliefs with $b_{T-1}$ (as above, plus the names a passage ruled out), the answer turn (last 2000 characters of reasoning, final answer) | `candidates` (`{id, candidate}` per belief, the answer's candidate), `reason`, `status` (one of the five statuses) |
 | final update (answer turn, report) | the update's input, with the answer turn and no passage | the update's output |
 
 A claim needs a span that occurs in its turn, and a document observation one that occurs in its passage (checked in
 code); other observations do not enter the belief. Passage observations have no stance and no candidate; the
 candidate updates say which passages support or speak against which candidate. Code checks each reason's opening against the candidate's current status and flags a
-cited source without an observation on the criterion. The criteria are the dataset's
-gold criteria; the criteria init call is not trained.
+cited source without an observation on the belief. The beliefs are the dataset's
+gold beliefs; the belief init call is not trained.
 
 Each status has a signed level $\ell$:
 
@@ -77,10 +77,10 @@ Each status has a signed level $\ell$:
 |---|---|---|---|---|---|---|
 | $\ell$ | −1 | 0 | 1 | 2 | 3 | 4 |
 
-The criteria follow the query shape of the dataset: `multi_hop` for infoseek and webshaper_frames (one criterion per entity on the chain
-to the answer, the answer last), `multi_member` for trqa_validation (one criterion per member, "<member>: <property>",
+The beliefs follow the query shape of the dataset: `multi_hop` for infoseek and webshaper_frames (one belief per entity on the chain
+to the answer, the answer last), `multi_member` for trqa_validation (one belief per member, "<member>: <property>",
 then the aggregation, how the answer follows from the members' values).
-Training uses the queries with the full gold annotation (InfoSeek and TRQA): per criterion its gold answers and
+Training uses the queries with the full gold annotation (InfoSeek and TRQA): per belief its gold answers and
 gold documents.
 
 ## Phases
@@ -93,8 +93,8 @@ gold documents.
 
 | Phase | Script | Does | Output |
 |---|---|---|---|
-| 0 | `build_training_dataset.py --dataset D` | builds a training dataset, infoseek (InfoSeek-Hard over the original wiki-25-512 corpus), webshaper_frames (fetched gold pages and hard negatives, val only) or trqa_validation (merged TRQA validation files), with its gold annotation and criterion texts, and splits it into `sft` / `rl` / `val` | `data/training_datasets/{dataset}/` |
-| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the dataset's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the criteria of `shared.criteria_source` (default gold; a query without gold criteria: on its own silver ones), `rl` in off mode. infoseek and webshaper_frames runs go to `belief-monitor/`, trqa_validation runs to `belief-monitor-{source}/`; phases 2 and 3 need gold | `run_outputs/` (dra_inference layout) |
+| 0 | `build_training_dataset.py --dataset D` | builds a training dataset, infoseek (InfoSeek-Hard over the original wiki-25-512 corpus), webshaper_frames (fetched gold pages and hard negatives, val only) or trqa_validation (merged TRQA validation files), with its gold annotation and belief texts, and splits it into `sft` / `rl` / `val` | `data/training_datasets/{dataset}/` |
+| 1 | `belief_model_training.py --phase 1 --split S` | runs dra_inference with the frozen agent on the queries of one split (`--subset S`: the dataset's rows with that `split`): `sft` and `val` in monitor mode with the teacher belief model on the beliefs of `shared.belief_source` (default gold; a query without gold beliefs: on its own silver ones), `rl` in off mode. infoseek and webshaper_frames runs go to `belief-monitor/`, trqa_validation runs to `belief-monitor-{source}/`; phases 2 and 3 need gold | `run_outputs/` (dra_inference layout) |
 | 2 | `belief_model_training.py --phase 2` | teacher scores, then SFT of the student on the teacher's belief update replies of the `sft` run (LoRA, then merged), validated on the `val` run | `phase2_sft/merged/` |
 | 3 | `belief_model_training.py --phase 3` | RL of the student (GRPO on whole belief chains) on the `rl` run, validated on the `val` run | `phase3_rl/final/` |
 
@@ -122,7 +122,7 @@ query:
 |---|---|
 | `queries/queries_all.jsonl` | one row per query: the question and answer, its source, its split, its gold annotation (see [Gold annotation](#gold-annotation)) |
 | `qrels/qrels_all.txt` | the gold documents of each query (TREC qrels, binary) |
-| `criterion_texts.jsonl`, `stats.json`, `dropped.jsonl` | build files: the writer's saved criterion texts, the counts and settings of each build stage, the dropped questions with their stage and reasons |
+| `belief_texts.jsonl`, `stats.json`, `dropped.jsonl` | build files: the writer's saved belief texts, the counts and settings of each build stage, the dropped questions with their stage and reasons |
 
 | Dataset | Questions | Corpus | Splits |
 |---|---|---|---|
@@ -143,19 +143,19 @@ python experiments/training/build_training_dataset.py --dataset trqa_validation
 The splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
 `split` `sft` and their qrels (`layout.is_split_view`), so dra_inference runs a split as on any dataset and its run
 folders are named by the split. Every build sets each row's `split`. SFT and RL need the full gold annotation
-(`level` `full`: every criterion with gold answers and gold documents, for $r_{\mathrm{ret}}$ and
+(`level` `full`: every belief with gold answers and gold documents, for $r_{\mathrm{ret}}$ and
 $r_{\mathrm{reas}}$), so the full queries of `infoseek` and `trqa_validation` are split with the shares of the
 `split` section of `experiments/configs/build_training_dataset.yaml`, and every other query goes to `val` as its
 out-of-domain (OOD) part; `webshaper_frames` is validation only:
 
 | Split | Queries | Phase 1 mode | Used by |
 |---|---|---|---|
-| `sft` | 30% of the full ones | monitor (teacher, gold criteria) | phase 2: SFT samples |
+| `sft` | 30% of the full ones | monitor (teacher, gold beliefs) | phase 2: SFT samples |
 | `rl` | 60% of the full ones | off | phase 3: RL prompts |
-| `val` | in domain: 10% of the full ones | monitor (teacher, gold criteria) | phase 2: validation loss; phase 3: validation |
-| `val` | OOD: `webshaper_frames` (every query) | monitor (teacher; WebShaper on its gold criteria, FRAMES on silver ones) | evaluation only |
+| `val` | in domain: 10% of the full ones | monitor (teacher, gold beliefs) | phase 2: validation loss; phase 3: validation |
+| `val` | OOD: `webshaper_frames` (every query) | monitor (teacher; WebShaper on its gold beliefs, FRAMES on silver ones) | evaluation only |
 
-A full query without criterion texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
+A full query without belief texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
 split until a later build writes its texts. A query keeps the split it has in the queries file, so no query moves
 when the dataset grows, and `--limit` on one split never reaches the queries of another. The new full queries of a
 build are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below
@@ -214,9 +214,9 @@ pages get none. `corpus/corpus.jsonl` holds gold pages and hard negatives with t
 other negatives settings too (remove `negatives/index.jsonl` and the `negatives` section of `stats.json`). The
 User-Agent contact comes from `DRA_CONTACT` in `.env`.
 
-Every query goes to `val`: WebShaper keeps its gold criteria (they have texts, but no gold intermediate answers:
-`level` partial), and FRAMES, which has no structure, gets silver criteria from the belief model's init call (the
-multi-hop prompt, at most 8 criteria), as on any new dataset; its queries have qrels and a judged final answer, so
+Every query goes to `val`: WebShaper keeps its gold beliefs (they have texts, but no gold intermediate answers:
+`level` partial), and FRAMES, which has no structure, gets silver beliefs from the belief model's init call (the
+multi-hop prompt, at most 8 beliefs), as on any new dataset; its queries have qrels and a judged final answer, so
 the certainty score against correctness can be measured, but not the observations and beliefs.
 
 ### trqa_validation
@@ -235,11 +235,11 @@ Its rows have the keys of the other training datasets' (source `trqa_wiki1` / `t
 
 ### Gold annotation
 
-Each training dataset has a gold annotation per query: its criteria, each with its gold answers and gold documents,
+Each training dataset has a gold annotation per query: its beliefs, each with its gold answers and gold documents,
 as far as the source states them (`training_datasets/gold/annotations.py`). Every row has the same keys whatever the
 source; what the source does not state is an empty value (`[]` or `null`), never a missing key.
 
-| Source | Criteria | `answers` | `doc_ids` |
+| Source | Beliefs | `answers` | `doc_ids` |
 |---|---|---|---|
 | InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | the first corpus chunk of its Wikipedia page and of the pages whose claims link to it |
 | WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the answer only (final answer) | none (the URLs are the query's) |
@@ -247,60 +247,60 @@ source; what the source does not state is an empty value (`[]` or `null`), never
 | TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); aggregate: none |
 | TRQA wiki1 | the same | the same | the same |
 
-Every TRQA member has its own criterion. The aggregate criterion has no documents since no document states the
+Every TRQA member has its own belief. The aggregate belief has no documents since no document states the
 computed value; a member the extractor did not list reaches the belief as a passage observation on the aggregate.
 
 `level` follows from the row and selects a group of queries:
 
 | `level` | The row has | Training can use |
 |---|---|---|
-| `full` | criteria, each with its gold: gold answers and gold documents (an `aggregate` one answers only) | per criterion: its answers and its documents; the final answer and the qrels |
-| `partial` | criteria, some without answers or without documents | the criteria that have them; the final answer and the qrels |
-| `query` | no criteria | the final answer and the qrels only |
+| `full` | beliefs, each with its gold: gold answers and gold documents (an `aggregate` one answers only) | per belief: its answers and its documents; the final answer and the qrels |
+| `partial` | beliefs, some without answers or without documents | the beliefs that have them; the final answer and the qrels |
+| `query` | no beliefs | the final answer and the qrels only |
 
-An InfoSeek query is `partial` when an entity of its criteria has no Wikipedia page in the tree (a question with a
-page missing from the corpus is dropped). A WebShaper criterion has no documents, and only the answer criterion has
+An InfoSeek query is `partial` when an entity of its beliefs has no Wikipedia page in the tree (a question with a
+page missing from the corpus is dropped). A WebShaper belief has no documents, and only the answer belief has
 answers. The `annotations` section of `stats.json`, the same in every dataset, counts the rows per source and level,
-the criteria per kind and with their answers, documents and gold, the texts per source (ok, failed, retry), and
-records the writer of the texts. The loaders build the criteria from the source (with the page keys of their
+the beliefs per kind and with their answers, documents and gold, the texts per source (ok, failed, retry), and
+records the writer of the texts. The loaders build the beliefs from the source (with the page keys of their
 documents); the build resolves the keys to documents (webshaper_frames: the fetched page, a page not fetched gives
 none; infoseek: the first chunk of the page) and writes the rows to `queries/queries_all.jsonl`. The trqa_validation build
 writes the same rows from the intermediate info. Query row: `id`, `source`, `split`, `text` (the question),
-`answer`, `query_shape`, `level`, `doc_ids` (the qrels), `criteria`, `members` (multi-member queries: `entity`,
+`answer`, `query_shape`, `level`, `doc_ids` (the qrels), `beliefs`, `members` (multi-member queries: `entity`,
 `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the members), `property` and
-`aggregation` (multi-member queries); criterion: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`,
+`aggregation` (multi-member queries); belief: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`,
 `aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer
-and its prompt hash are in `stats.json` and `criterion_texts.jsonl`, not per row).
+and its prompt hash are in `stats.json` and `belief_texts.jsonl`, not per row).
 
-### Criterion texts (end of every build)
+### Belief texts (end of every build)
 
-An LLM (`gold_criteria.model`, the teacher) writes the criterion texts in the question's words, one call per query;
-answers, documents and level come from the source (`training_datasets/gold/criterion_texts.py`). The prompts are the files
+An LLM (`gold_beliefs.model`, the teacher) writes the belief texts in the question's words, one call per query;
+answers, documents and level come from the source (`training_datasets/gold/belief_texts.py`). The prompts are the files
 of `training_datasets/gold/prompts/`, one system and one user prompt per query shape:
 
-- multi-hop (InfoSeek, WebShaper): one text per criterion, from its relations, with only the details the question
-  states (a relation may hold more, such as a year). The writer orders the criteria so that each refers only to
-  criteria before it ("the town of c1"), the answer last; the row's criteria are reordered and renumbered in that
-  order (saved as `order` in `criterion_texts.jsonl`). An invalid order is asked once more with the problem named.
+- multi-hop (InfoSeek, WebShaper): one text per belief, from its relations, with only the details the question
+  states (a relation may hold more, such as a year). The writer orders the beliefs so that each refers only to
+  beliefs before it ("the town of B1"), the answer last; the row's beliefs are reordered and renumbered in that
+  order (saved as `order` in `belief_texts.jsonl`). An invalid order is asked once more with the problem named.
 - set (TRQA): the property phrase (what is looked up per member, with its year and unit, no condition) and the
   aggregation (what the answer computes over "the members": the property, the conditions on its values and how many
-  members it takes, not what selects the members, which the member criteria carry), from the question, TRQA's property label
-  and its computation code. The member criteria "<member>: <phrase>" are built from the phrase; the aggregate
-  criterion is the aggregation.
+  members it takes, not what selects the members, which the member beliefs carry), from the question, TRQA's property label
+  and its computation code. The member beliefs "<member>: <phrase>" are built from the phrase; the aggregate
+  belief is the aggregation.
 
 The writer runs before the split, so the rows are written with their texts; a build with texts to write needs
 `OPENROUTER_API_KEY`. `texts_ok` is true when every text names none of the gold answers (a name inside a longer
 entity name, such as Groningen in "University of Groningen", does not count; multi-member queries: neither the phrase
 nor the aggregation names a member, a value or the final answer that the question does not name; multi-hop queries:
-no number or capitalized word the question does not state), or when the query has no criteria (FRAMES, no LLM
+no number or capitalized word the question does not state), or when the query has no beliefs (FRAMES, no LLM
 call); false when the texts failed for good (a leak, an unstated word or an invalid order after one retry with them
-given, no text for a criterion); null when the writer call failed (an error, a reply that is not JSON), and the next
-build asks again. The number of criteria is the source's (no cap). Final texts are appended to
-`criterion_texts.jsonl` as they are written, so a stopped build keeps them; a build reuses them for unchanged
-criteria (the texts do not depend on the documents) and writes only the new queries' texts. Another
-`gold_criteria.model` or other prompts than those of `criterion_texts.jsonl` are refused (remove the file to write
+given, no text for a belief); null when the writer call failed (an error, a reply that is not JSON), and the next
+build asks again. The number of beliefs is the source's (no cap). Final texts are appended to
+`belief_texts.jsonl` as they are written, so a stopped build keeps them; a build reuses them for unchanged
+beliefs (the texts do not depend on the documents) and writes only the new queries' texts. Another
+`gold_beliefs.model` or other prompts than those of `belief_texts.jsonl` are refused (remove the file to write
 every text again). The prompts are hashed per query shape, so editing the set prompts leaves the multi-hop texts
-valid. The queries of a split (its phase 1 run) are the full ones with `texts_ok` and at least one criterion, and in
+valid. The queries of a split (its phase 1 run) are the full ones with `texts_ok` and at least one belief, and in
 `val` also the OOD ones. The `split` section of `stats.json` counts the queries per split, source and level, and the
 full ones in no split (`no_split`).
 
@@ -312,7 +312,7 @@ follows the split:
 
 | Split | Mode | Belief model |
 |---|---|---|
-| `sft`, `val` | monitor: the agent never sees the belief | the query's gold criteria (`--criteria-source`, `shared.criteria_source`: gold, or silver on trqa_validation; a query without gold criteria: the teacher's silver ones, through the belief bank, `gold_missing` in its `criteria_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates |
+| `sft`, `val` | monitor: the agent never sees the belief | the query's gold beliefs (`--belief-source`, `shared.belief_source`: gold, or silver on trqa_validation; a query without gold beliefs: the teacher's silver ones, through the belief bank, `gold_missing` in its `belief_info`) and the teacher (`openrouter/qwen/qwen3.6-27b`) for the belief updates |
 | `rl` | off | none |
 
 The belief does not change what the agent does, so the documents and agent turns of every step are fixed, and
@@ -321,7 +321,7 @@ usual layout (`run_outputs/{dataset}_{split}_{retriever}/{agent}/belief-monitor/
 `belief-off/` for `rl`), and phase 1 writes nothing else.
 
 **Episodes.** Phases 2 and 3 read a split's run at their start (`belief_model_training/runs.py`), one episode per
-finished in-domain query (`level` full, `texts_ok`, at least one criterion; the OOD queries of `val` are counted as
+finished in-domain query (`level` full, `texts_ok`, at least one belief; the OOD queries of `val` are counted as
 `out_of_domain` and left out):
 
 | Level | Field | Source | Used by |
@@ -329,18 +329,18 @@ finished in-domain query (`level` full, `texts_ok`, at least one criterion; the 
 | step | `doc_ids`: documents shown in the search iteration (all its searches; none when they returned nothing); `iteration`, the belief model's step number (from 1), and `agent_iteration`, the agent's own (`iter`) | `trajectory/{qid}.jsonl` (`seen_docs`) | SFT replay, RL chains |
 | step | `agent_turn`: the agent's reasoning and queries of the iteration (as the teacher read it in monitor runs) | `trajectory/{qid}.jsonl`, `belief/{qid}.jsonl` | the update prompt |
 | step | `new_gold_ids`, `recall_so_far`: relevant documents first seen in the step, share seen so far | qrels | statistics, check of the saved run |
-| step | `stated`: the criteria whose gold answer the step's agent turn states | gold criteria, `nugget_gold.py` | assign (expected claims) |
-| step | `teacher_output`, `teacher_records`: the teacher's reply and its saved observations, candidate updates, changed criteria, issues and beliefs (monitor runs) | `belief/{qid}.jsonl` | SFT, replay check |
+| step | `stated`: the beliefs whose gold answer the step's agent turn states | gold beliefs, `nugget_gold.py` | assign (expected claims) |
+| step | `teacher_output`, `teacher_records`: the teacher's reply and its saved observations, candidate updates, changed beliefs, issues and beliefs (monitor runs) | `belief/{qid}.jsonl` | SFT, replay check |
 | episode | `answer_turn`: reasoning after the last search and the final answer; the teacher's final call on it (monitor runs, the `final` line) | `trajectory/{qid}.jsonl`, `generation/{qid}.md`, `belief/{qid}.jsonl` | final call |
 | episode | `correct` ($y$; null when the judge failed) | `eval/generation/accuracy.jsonl` | $r_{\mathrm{final}}$ |
-| episode | `gold_criteria`: criteria with `answers` and `doc_ids` | `queries/queries_all.jsonl` of the dataset | the criteria of the chains, all rewards |
+| episode | `gold_beliefs`: beliefs with `answers` and `doc_ids` | `queries/queries_all.jsonl` of the dataset | the beliefs of the chains, all rewards |
 
 **Gold of a candidate or spans.** A selected candidate is correct ($g = 1$), and an observation's spans state the
-gold, when one of the criterion's gold answers occurs in it as whole words (case, accents and punctuation ignored; not
+gold, when one of the belief's gold answers occurs in it as whole words (case, accents and punctuation ignored; not
 inside a longer entity name of the query's gold structure) or, for a number, when a number of the text equals it. A
 text without a match is asked of the correctness judge (`rl.answer_judge_model`, YES/NO: is the candidate the gold
 answer? / does the text state it?). A turn states a
-criterion's gold answer by the same match; a (turn, criterion) pair without a match, whose gold documents were
+belief's gold answer by the same match; a (turn, belief) pair without a match, whose gold documents were
 shown before the turn, is asked of the same judge. The verdicts are cached in
 `{output_root}/{training_data}/{policy_model}/answer_gold.jsonl`; `rl.answer_judge_model: null` uses the match only.
 
@@ -349,8 +349,8 @@ monitor run, the belief file exists. The qrels are read with the run's `dataset.
 their agent and searcher settings (`run_config.json`, the temperature included): phase 2 checks the sft
 and val runs, phase 3 the rl and val runs, and either stops with the keys that differ. All runs take these
 settings from the same inference config (`shared.inference_config`), so keep it unchanged across the phase 1
-runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold criteria (and
-that the run's criteria are the dataset's), that the belief file (schema 45, `SCHEMA_VERSION`) has one step per search iteration of the
+runs. For monitor runs, the loader also checks that the run's updater is the teacher on the gold beliefs (and
+that the run's beliefs are the dataset's), that the belief file (schema 45, `SCHEMA_VERSION`) has one step per search iteration of the
 trajectory, joined on `agent_iteration`, with the same step number and documents, and that the saved
 `recall_so_far` matches the qrels. Episodes without a verdict in `eval/generation/accuracy.jsonl` (a run that stopped before its
 evaluation) are counted and reported; `--eval-only` judges them.
@@ -358,36 +358,36 @@ evaluation) are counted and reported; `--eval-only` judges them.
 ## Scores and rewards
 
 The same scores rate the teacher (phase 2), reward the student's chains (phase 3) and validate them
-(`belief_model_training/scoring.py`, `chain_score`). Each criterion $k$ with gold answers
+(`belief_model_training/scoring.py`, `chain_score`). Each belief $k$ with gold answers
 is its own sequence of beliefs, one per step of the episode: a step without a call, or whose call failed, keeps
-the belief of the step before, and the answer turn is the last step. Each criterion is scored on its own, then
-the scores are averaged over the criteria, so neither a long episode nor a criterion with many updates weighs more.
+the belief of the step before, and the answer turn is the last step. Each belief is scored on its own, then
+the scores are averaged over the beliefs, so neither a long episode nor a belief with many updates weighs more.
 
-**Gate** $f \in \{0, 1\}$ per call: 1 if the reply is not cut off and parses, names known criteria and passages of the call
-only, and gives each candidate update a name and a candidate status, once per candidate (`criteria.GATE_ISSUES`). The chain's `format` is the share of its
+**Gate** $f \in \{0, 1\}$ per call: 1 if the reply is not cut off and parses, names known beliefs and passages of the call
+only, and gives each candidate update a name and a candidate status, once per candidate (`beliefs.GATE_ISSUES`). The chain's `format` is the share of its
 update calls that pass. The final scorer's gate: not cut off, and a status parses.
 
-**Source assignment** $\mathrm{assign}_k$: an F1, $2\,TP / (2\,TP + FP + FN)$, of criterion $k$'s observations
+**Source assignment** $\mathrm{assign}_k$: an F1, $2\,TP / (2\,TP + FP + FN)$, of belief $k$'s observations
 over the chain's calls, documents and turns together:
 
 | Case | TP | FN | FP |
 |---|---|---|---|
 | passage $d$ in the call (a passage retrieved again is shown again, and scored in each call that shows it), $d$ a gold document of $k$ (not the aggregate) whose text as the call showed it (cut at the run's `max_passage_tokens`; training needs runs made with the token cut, the evaluation also reads older runs' `max_passage_chars`, and 3000 characters, reports whole, before either was recorded) has a gold answer of $k$ | an observation whose spans state it | none | |
 | a turn of the call states the gold answer of $k$ (a call reads the turns of the steps before it that made none) | a claim whose span states it | none | |
-| an observation that did not enter the belief (no verified span of its passage or turn, a claim without a candidate or valid claim, a document observation on a computed criterion) | | | yes |
+| an observation that did not enter the belief (no verified span of its passage or turn, a claim without a candidate or valid claim, a document observation on a computed belief) | | | yes |
 | any other observation | neutral | | |
 
 **WEP calibration** $\mathrm{cal}_k$: the mean over the steps of $1 - (p_{k,t} - y_{k,t})^2$, $p_{k,t}$ the
-probability of the criterion's status and $y_{k,t}$ whether its selected candidate is a gold answer (0 without one).
-Every scored criterion has one answer (a hop, a member's value, an aggregate).
+probability of the belief's status and $y_{k,t}$ whether its selected candidate is a gold answer (0 without one).
+Every scored belief has one answer (a hop, a member's value, an aggregate).
 
 **Final** $r_{\mathrm{final}} = 1 - (s_T - y)^2$, $s_T$ against the correctness of the agent's final answer; 0
 when the final call fails its gate. On a short-answer query $s_T$ is the final scorer's, so $r_{\mathrm{final}}$
 rewards the scorer's reply only (its own GRPO stream, phase 3).
 
-A part with nothing to score (no gold criterion, no expected or written observation, $y$ unknown) is None, not 1.
+A part with nothing to score (no gold belief, no expected or written observation, $y$ unknown) is None, not 1.
 
-Two more per-criterion measures are reported, not rewarded: the recall of $k$'s gold documents (those that should
+Two more per-belief measures are reported, not rewarded: the recall of $k$'s gold documents (those that should
 give an observation) among its document observations (`doc_recall_obs`); and the share of steps whose selected candidate is correct
 (`value_accuracy`).
 
@@ -399,10 +399,10 @@ SFT copies the teacher, errors included, so phase 2 scores the teacher on the sf
 | Part | Measures |
 |---|---|
 | gate | share of calls that pass; the rate of each issue code per call |
-| per criterion | mean over the chains of the mean over their criteria: `crit_assign_f1`, `crit_doc_recall_obs`, `crit_value_accuracy`, `crit_cal` |
+| per belief | mean over the chains of the mean over their beliefs: `crit_assign_f1`, `crit_doc_recall_obs`, `crit_value_accuracy`, `crit_cal` |
 | observation | precision, recall and F1 of document observations and claims, pooled |
-| calibration | Brier score, ECE and AUROC (on the items with a binary $y$) of the statuses of every (criterion, step) against $y_{k,t}$; gold rate and count per status (reliability) |
-| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`: the mean over the counted criteria; and each aggregator, `certainty_{min,mean,geometric_mean,product}_*`) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
+| calibration | Brier score, ECE and AUROC (on the items with a binary $y$) of the statuses of every (belief, step) against $y_{k,t}$; gold rate and count per status (reliability) |
+| final | $s_T$ against $y$: AUROC, Kendall τ-b, Brier score, ECE (10 bins): the final scorer's (`certainty_scorer_*`), the fixed function of the final beliefs (`certainty_*`: the mean over the counted beliefs; and each aggregator, `certainty_{min,mean,geometric_mean,product}_*`) and its form anchored on the scorer's answer's candidates (`certainty_answer_*`), the last two baselines |
 | rewards | mean `format`, `assign`, `cal`, $r_{\mathrm{final}}$ |
 
 ## Phase 2: SFT
@@ -439,7 +439,7 @@ $$
 
 ## Phase 3: RL (GRPO)
 
-**Chains.** A chain is the student's belief update run over a whole `rl` episode from its gold criteria: one call
+**Chains.** A chain is the student's belief update run over a whole `rl` episode from its gold beliefs: one call
 per step with a document, then the final call on the answer turn, each prompt built
 from the chain's own $b_{t-1}$, as at inference. On a short-answer query the final call is the scorer's: it gets
 $G$ replies on the chain's own $b_{T-1}$, the first one the chain's $s_T$; each reply takes its own advantage from
@@ -460,7 +460,7 @@ R = w_{\mathrm{format}}\,\mathrm{format} + w_{\mathrm{assign}}\,\overline{\mathr
   + w_{\mathrm{cal}}\,\overline{\mathrm{cal}_k} + w_{\mathrm{final}}\, r_{\mathrm{final}},
 $$
 
-where $\overline{x_k}$ is the mean over the chain's criteria that have the part. All weights are 1
+where $\overline{x_k}$ is the mean over the chain's beliefs that have the part. All weights are 1
 (`rl.reward_weight_{format,assign,cal,final}`). $R$ is the logged reward and the validation measure. On a
 short-answer query $r_{\mathrm{final}}$ is the final scorer's, trained as its own stream (below).
 
@@ -534,7 +534,7 @@ cp -r <run dir>/belief <run dir>/belief_teacher          # a belief stage with a
 python experiments/inference/dra_inference.py $COMMON --stage belief --belief-model vllm/belief-student
 ```
 
-- One backbone (`--belief-model`) makes the criteria init, the belief updates and the final score, so the student
-  run also makes its own criteria (banked under its checkpoint, `{model}@{path}`).
+- One backbone (`--belief-model`) makes the belief init, the belief updates and the final score, so the student
+  run also makes its own beliefs (banked under its checkpoint, `{model}@{path}`).
 - A belief stage with other belief settings than the run's removes the run's `belief/` and `eval/belief/`; copy them
   first to keep the teacher's.

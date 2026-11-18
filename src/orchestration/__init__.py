@@ -73,7 +73,7 @@ def build_belief_model(
     *,
     dataset: str,
     belief_model: str,
-    criteria,
+    beliefs,
     qrels=None,
     max_passage_tokens: int = MAX_PASSAGE_TOKENS,
 ):
@@ -82,11 +82,11 @@ def build_belief_model(
     Args:
         dataset: Dataset name (its query shape).
         belief_model: The belief model's backbone LLM, for the belief update
-            and the final score (its criteria init is *criteria*'s).  A
-            ``vllm/`` model is served locally (``criteria.factory.belief_llm``),
+            and the final score (its belief init is *beliefs*'s).  A
+            ``vllm/`` model is served locally (``init.factory.belief_llm``),
             e.g. a trained belief model.
-        criteria: The criteria source of the run's split
-            (``belief_model_component.build_criteria_source``, on the same
+        beliefs: The belief source of the run's split
+            (``belief_model_component.build_belief_source``, on the same
             *belief_model*); built once and shared by the stage's workers.
         qrels: Thresholded relevance judgements, for the new-item precision
             and the recall so far.
@@ -106,7 +106,7 @@ def build_belief_model(
     print(f"Belief model: final scorer {final_scorer.name if final_scorer else 'none (report: s_T from the belief)'}")
 
     return BeliefModel(
-        criteria_source=criteria,
+        belief_source=beliefs,
         belief_updater=belief_updater,
         qrels=qrels or {},
         final_scorer=final_scorer,

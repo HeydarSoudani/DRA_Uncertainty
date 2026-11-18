@@ -41,20 +41,20 @@ the dataset's ``reachability`` (``layout.DATASET_SPECS``):
 
 Per request:
 
-1. Criteria: as ``dra_inference`` reads them with ``criteria_source``
-   (``--criteria-source``, default the config's).  The extractor's
+1. Criteria: as ``dra_inference`` reads them with ``belief_source``
+   (``--belief-source``, default the config's).  The extractor's
    criteria come from the bank of their kind
    (:func:`indexing_corpus_dataset.layout.belief_bank_path`, shared with
    ``dra_inference``; gold for BrowseComp-Plus, NeuCLIR and RAGTIME, whose
    criteria are the question's own, silver for TRQA); a request missing
    from it gets its criteria from
-   :class:`belief_model_component.criteria.sources.LLMCriteriaSource` with the
-   dataset's init prompt and ``max_criteria``, and they are added to it.
+   :class:`belief_model_component.init.sources.LLMBeliefSource` with the
+   dataset's init prompt and ``max_beliefs``, and they are added to it.
    TRQA with gold reads its gold bank, made on demand from the
    intermediate info (:mod:`indexing_corpus_dataset.training_datasets.gold.trqa`);
    its criteria name every member, so its entity reachability is near 1 by
-   construction, a check of the gold.  ``belief_model``, ``max_criteria`` and
-   ``criteria_source`` default to the run config
+   construction, a check of the gold.  ``belief_model``, ``max_beliefs`` and
+   ``belief_source`` default to the run config
    (``--config``, ``dra_inference.yaml``), so the analysis reads the
    criteria the runs use.  A request whose extraction failed (a reply
    truncated twice included), or without gold criteria, is left out, so
@@ -105,7 +105,7 @@ Usage::
     python analysis/criteria_reachability.py --dataset neuclir --limit 2
     python analysis/criteria_reachability.py --dataset ragtime --grades 2 3
     python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test
-    python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test --criteria-source silver
+    python analysis/criteria_reachability.py --dataset trqa --subset wiki2 --dataset-year test --belief-source silver
     python analysis/criteria_reachability.py --dataset browsecomp_plus
 """
 
@@ -137,11 +137,11 @@ from gold_entities import (ENTITY_MATCH_PROMPT_HASH, LLMEntityMatcher, load_gold
 from indexing_corpus_dataset.dataset_loaders import load_split
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import (
-    CRITERIA_SOURCES, DATASET_SPECS, DATASETS, dataset_root, apply_dataset_defaults, criteria_reachability_dir,
-    criteria_run_tag, default_corpus_path, effective_criteria_source, resolve_split_id,
+    BELIEF_SOURCES, DATASET_SPECS, DATASETS, dataset_root, apply_dataset_defaults, criteria_reachability_dir,
+    belief_run_tag, default_corpus_path, effective_belief_source, resolve_split_id,
 )
 from reasoner_component.factory import create_generator, disable_native_thinking
-from belief_model_component import CLOSED, CriteriaSource, check_max_criteria, span_in_passage, split_span
+from belief_model_component import CLOSED, BeliefSource, check_max_beliefs, span_in_passage, split_span
 from utils.cli_setup import load_run_config
 from utils.text_utils import doc_text, doc_title, parse_json_object
 
@@ -166,19 +166,19 @@ LEVELS = ("support", "related")
 # Criteria
 # ---------------------------------------------------------------------------
 
-def criteria_source(args, split: str) -> CriteriaSource:
+def belief_source(args, split: str) -> BeliefSource:
     """The criteria of the split's requests, as the belief model reads them
-    in dra_inference (``belief_model_component.criteria.factory``, ``criteria_source``): the
+    in dra_inference (``belief_model_component.init.factory``, ``belief_source``): the
     bank of the extractor's criteria (gold or silver), or the gold
     criteria of an annotation dataset (TRQA: its gold bank, made on demand
     from the intermediate info); a request without gold criteria gets none
     and is left out.  Each has ``path``, ``lookup`` (stored criteria only) and ``get``."""
-    from belief_model_component import build_criteria_source
-    return build_criteria_source(args.dataset, split, belief_model=args.belief_model, max_criteria=args.max_criteria,
-                                 criteria_source=args.criteria_source, fallback=False)
+    from belief_model_component import build_belief_source
+    return build_belief_source(args.dataset, split, belief_model=args.belief_model, max_beliefs=args.max_beliefs,
+                                 belief_source=args.belief_source, fallback=False)
 
 
-def bank_criteria(args, source: CriteriaSource, queries: Dict[str, str]) -> Tuple[Dict[str, List[Dict]], Dict[str, int]]:
+def bank_criteria(args, source: BeliefSource, queries: Dict[str, str]) -> Tuple[Dict[str, List[Dict]], Dict[str, int]]:
     """``({qid: criteria}, {bank outcome: count})``, the criteria read from
     the bank or extracted and added to it; a failed extraction gives none."""
     def one(qid: str):
@@ -197,7 +197,7 @@ def bank_criteria(args, source: CriteriaSource, queries: Dict[str, str]) -> Tupl
     return criteria, outcomes
 
 
-def criteria_step(args, source: CriteriaSource, queries: Dict[str, str], qids: List[str],
+def criteria_step(args, source: BeliefSource, queries: Dict[str, str], qids: List[str],
                   done: Callable[[str, List[Dict]], bool]) -> Dict:
     """Banked criteria of the requests: a request *done* with its banked
     criteria keeps them, the first ``--limit`` of the others get theirs
@@ -244,8 +244,8 @@ def this_run_counts(step: Dict) -> Dict[str, int]:
 def run_folder(args, spec, prefix: str) -> Path:
     """``{split folder}/{prefix}_{judge}[_{tag}]``, created."""
     tag = args.tag
-    if tag is None and args.max_criteria != spec.max_criteria:
-        tag = f"maxc{args.max_criteria}"
+    if tag is None and args.max_beliefs != spec.max_beliefs:
+        tag = f"maxc{args.max_beliefs}"
     name = f"{prefix}_{args.judge_model.rstrip('/').split('/')[-1]}" + (f"_{tag}" if tag else "")
     out_dir = args.split_dir / name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -339,7 +339,7 @@ def rate(labels: List[str], level: str) -> Optional[float]:
 # Documents: run
 # ---------------------------------------------------------------------------
 
-def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
+def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, source: BeliefSource) -> None:
     corpus_path = Path(args.corpus_path or default_corpus_path(args.dataset, args.subset))
     grades = sorted(set(args.grades or [max(spec.relevance_gains)]))
     out_dir = run_folder(args, spec, f"grades-{'-'.join(map(str, grades))}")
@@ -446,8 +446,8 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
     summary = {
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "grades": grades,
-            "config": args.config, "belief_model": args.belief_model, "max_criteria": args.max_criteria,
-            "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
+            "config": args.config, "belief_model": args.belief_model, "max_beliefs": args.max_beliefs,
+            "belief_source": effective_belief_source(args.belief_source, args.dataset),
             "belief_bank": str(source.path), "judge_model": args.judge_model, "judge_prompt": PROMPT_HASH,
             "topic_key": spec.title_key, "passage": "full document",
         },
@@ -490,7 +490,7 @@ def run_documents(args: argparse.Namespace, spec, split: str, data_path: Path, s
 # Entities
 # ---------------------------------------------------------------------------
 
-_CRITERION_REF_RE = re.compile(r"\bc(\d+)\b")
+_BELIEF_REF_RE = re.compile(r"\bB(\d+)\b")
 
 
 def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> str:
@@ -502,7 +502,7 @@ def _resolved(text: str, by_id: Dict[str, str], seen: Tuple[str, ...] = ()) -> s
         if cid not in by_id or cid in seen:
             return cid
         return f"{cid} [{_resolved(by_id[cid], by_id, seen + (cid,))}]"
-    return _CRITERION_REF_RE.sub(sub, text)
+    return _BELIEF_REF_RE.sub(sub, text)
 
 
 def members_of(criteria: List[Dict]) -> List[Dict]:
@@ -543,7 +543,7 @@ def match_one(matcher: LLMEntityMatcher, entities: List[str], members: List[Dict
             for i, (j, by) in sorted(matches.items())], None
 
 
-def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
+def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, source: BeliefSource) -> None:
     out_dir = run_folder(args, spec, "entities")
     queries, _, _ = load_split(data_path, split, query_key=args.query_key,
                                min_relevance_score=spec.min_relevance_score, only_with_qrels=True)
@@ -610,7 +610,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
             "query_id": q,
             "entities": entities,
             "unmatched_members": [c for c in members if c["id"] not in matched],
-            "num_criteria": len(criteria[q]),
+            "num_beliefs": len(criteria[q]),
             "num_members": len(members),
             "num_gold": len(gold[q]),
             "num_reachable": len(rec["matches"]),
@@ -627,8 +627,8 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
     summary = {
         "settings": {
             "dataset": args.dataset, "split": split, "reachability": spec.reachability, "config": args.config,
-            "belief_model": args.belief_model, "max_criteria": args.max_criteria,
-            "criteria_source": effective_criteria_source(args.criteria_source, args.dataset),
+            "belief_model": args.belief_model, "max_beliefs": args.max_beliefs,
+            "belief_source": effective_belief_source(args.belief_source, args.dataset),
             "belief_bank": str(source.path),
             "judge_model": args.judge_model, "judge_prompt": ENTITY_MATCH_PROMPT_HASH,
             "criteria_matched": "member criteria (not the rest and aggregate criteria)",
@@ -639,7 +639,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
             "requests_without_criteria": len(step["no_criteria"]),
             "requests_without_gold": len(no_gold),
             "this_run": this_run_counts(step),
-            "criteria": sum(r["num_criteria"] for r in records),
+            "criteria": sum(r["num_beliefs"] for r in records),
             "member_criteria": num_members,
             "gold_entities": num_gold,
             "reachable_entities": num_reachable,
@@ -679,7 +679,7 @@ def run_entities(args: argparse.Namespace, spec, split: str, data_path: Path, so
 # Bank only
 # ---------------------------------------------------------------------------
 
-def run_bank_only(args: argparse.Namespace, spec, split: str, data_path: Path, source: CriteriaSource) -> None:
+def run_bank_only(args: argparse.Namespace, spec, split: str, data_path: Path, source: BeliefSource) -> None:
     queries, _, _ = load_split(data_path, split, query_key=args.query_key,
                                min_relevance_score=spec.min_relevance_score, only_with_qrels=True)
     print(f"{args.dataset} {split}: {len(queries)} requests; no reachability, belief bank only")
@@ -700,17 +700,17 @@ def run(args: argparse.Namespace) -> None:
     if args.grades and spec.reachability != "documents":
         raise SystemExit(f"--grades is for document reachability; {args.dataset} has reachability {spec.reachability}")
     config = load_run_config(args.config)
-    for field in ("belief_model", "max_criteria", "criteria_source"):
+    for field in ("belief_model", "max_beliefs", "belief_source"):
         if getattr(args, field) is None:
             setattr(args, field, config[field])
     args.judge_model = args.judge_model or args.belief_model
-    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_criteria"))
-    check_max_criteria(args.dataset, args.max_criteria)
+    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "max_beliefs"))
+    check_max_beliefs(args.dataset, args.max_beliefs)
     split = resolve_split_id(args.dataset, args.dataset_year, args.subset)
     data_path = Path(args.data_path or dataset_root(args.dataset))
     args.split_dir = Path(args.output or criteria_reachability_dir(
-        args.dataset, split, criteria_run_tag(args.criteria_source, args.dataset)))
-    source = criteria_source(args, split)
+        args.dataset, split, belief_run_tag(args.belief_source, args.dataset)))
+    source = belief_source(args, split)
     RUNNERS[spec.reachability](args, spec, split, data_path, source)
 
 
@@ -718,7 +718,7 @@ def parse_args() -> argparse.Namespace:
     """Build and parse the CLI arguments.
 
     A default of None is resolved at run time: the dataset fields from
-    ``layout.DATASET_SPECS``, ``belief_model`` and ``max_criteria`` from the
+    ``layout.DATASET_SPECS``, ``belief_model`` and ``max_beliefs`` from the
     run config (``--config``), so the analysis reads the criteria the runs
     use.
     """
@@ -738,10 +738,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--corpus-path", type=str, default=None, help="Corpus JSONL, document reachability only (None = the dataset's corpus, layout.default_corpus_path).")
 
     # ── Criteria and judge ──────────────────────────────────────────────────
-    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that belief_model, max_criteria and criteria_source are read from.")
-    parser.add_argument("--criteria-source", type=str, default=None, choices=CRITERIA_SOURCES, help="gold | silver (None = the config's criteria_source); a choice on TRQA only (output folder {dataset}_{split}-{source}), elsewhere the dataset's criteria.")
+    parser.add_argument("--config", type=str, default=str(CONFIG_DEFAULT), help="Run config that belief_model, max_beliefs and belief_source are read from.")
+    parser.add_argument("--belief-source", type=str, default=None, choices=BELIEF_SOURCES, help="gold | silver (None = the config's belief_source); a choice on TRQA only (output folder {dataset}_{split}-{source}), elsewhere the dataset's criteria.")
     parser.add_argument("--belief-model", type=str, default=None, help="Belief model LLM, which extracts the criteria (None = the config's belief_model).")
-    parser.add_argument("--max-criteria", type=int, default=None, help="Cap on silver criteria only: TRQA with --criteria-source silver (None = the config's max_criteria, else the dataset's; refused on a dataset whose criteria are gold).")
+    parser.add_argument("--max-criteria", type=int, default=None, help="Cap on silver criteria only: TRQA with --belief-source silver (None = the config's max_beliefs, else the dataset's; refused on a dataset whose criteria are gold).")
     parser.add_argument("--judge-model", type=str, default=None, help="Reachability judge LLM (None = the criteria-extraction LLM).")
 
     # ── Run control ─────────────────────────────────────────────────────────

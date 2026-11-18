@@ -1,17 +1,17 @@
-"""Readable views of the belief: the criteria, one iteration's belief and
+"""Readable views of the belief: the beliefs, one iteration's belief and
 the final belief.
 
 One renderer feeds the console (``utils.text_utils.verbose_print_*``) and
 the belief markdown (``belief/{qid}.md``, written by the belief stage), so
 the two never drift apart.  It reads the saved shapes only: the step and final
-records of ``BeliefModel`` and ``BeliefModel.criteria_summary``.
+records of ``BeliefModel`` and ``BeliefModel.init_summary``.
 
-Per criterion, one row with its status, its selected candidate(s) and
+Per belief, one row with its status, its selected candidate(s) and
 the number of its candidates and proposals (a removed candidate leaves the
 list).  The row shows at most ``SELECTED_SHOWN`` selected candidates, then
-``+N more``; the md lists every selected candidate of such a criterion
-(with its status) under the table when the criterion changed in the
-iteration, and always in the final belief.  ``*`` marks a criterion whose candidates or proposals changed this
+``+N more``; the md lists every selected candidate of such a belief
+(with its status) under the table when the belief changed in the
+iteration, and always in the final belief.  ``*`` marks a belief whose candidates or proposals changed this
 iteration.  A step without a belief update call says so.  The md also
 gives every belief item of the iteration (previous status -> status, the
 most probable candidate, what the reply wrote when code set otherwise, the
@@ -27,14 +27,14 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..core.issues import EFFECTS, NOTE, issue_effect
 
-# Selected candidates shown in a criterion's row; the rest as "+N more".
+# Selected candidates shown in a belief's row; the rest as "+N more".
 SELECTED_SHOWN = 2
 # Candidates are cut to this length in a row (console, md table); the md
 # list under the table shows them in full.
 CONSOLE_VALUE_CHARS = 40
 MD_VALUE_CHARS = 60
 
-Row = Tuple[str, str, str, str, str]  # criterion id, mark, status, selected, number of candidates
+Row = Tuple[str, str, str, str, str]  # belief id, mark, status, selected, number of candidates
 
 
 def _num(val: Any, fmt: str = ".3f") -> str:
@@ -46,18 +46,18 @@ def _value(text: Any, limit: Optional[int]) -> str:
     return text if limit is None or len(text) <= limit else text[:limit - 1] + "…"
 
 
-def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
+def belief_rows(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]],
                 value_chars: Optional[int] = None) -> List[Row]:
-    """Per criterion its row: status, selected candidate(s), number of
+    """Per belief its row: status, selected candidate(s), number of
     candidates.  Empty when the record has no belief (``beliefs`` null)."""
-    beliefs = record.get("beliefs")
-    if beliefs is None:
+    states = record.get("beliefs")
+    if states is None:
         return []
     changed = set(record.get("changed") or [])
     rows: List[Row] = []
-    for i, c in enumerate(criteria):
-        cid = c.get("id", f"c{i + 1}")
-        b = beliefs[i] if i < len(beliefs) else {}
+    for i, c in enumerate(beliefs):
+        cid = c.get("id", f"B{i + 1}")
+        b = states[i] if i < len(states) else {}
         chosen = b.get("selected") or []
         selected = ", ".join(f'"{_value(v, value_chars)}"' for v in chosen[:SELECTED_SHOWN]) or "—"
         if len(chosen) > SELECTED_SHOWN:
@@ -70,19 +70,19 @@ def belief_rows(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
     return rows
 
 
-def selected_lists(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
+def selected_lists(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]],
                    final: bool = False) -> List[Tuple[str, List[Tuple[str, str]]]]:
-    """``(criterion id, [(candidate, status), ...])`` of each criterion
+    """``(belief id, [(candidate, status), ...])`` of each belief
     whose row cut its selected candidates (more than ``SELECTED_SHOWN``),
     those changed this iteration only unless *final*."""
-    beliefs = record.get("beliefs")
-    if beliefs is None:
+    states = record.get("beliefs")
+    if states is None:
         return []
     changed = set(record.get("changed") or [])
     out = []
-    for i, c in enumerate(criteria):
-        cid = c.get("id", f"c{i + 1}")
-        b = beliefs[i] if i < len(beliefs) else {}
+    for i, c in enumerate(beliefs):
+        cid = c.get("id", f"B{i + 1}")
+        b = states[i] if i < len(states) else {}
         chosen = b.get("selected") or []
         if len(chosen) <= SELECTED_SHOWN or not (final or cid in changed):
             continue
@@ -92,7 +92,7 @@ def selected_lists(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
 
 
 def _updates(record: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """``(criterion id, text)`` of each belief item of the reply:
+    """``(belief id, text)`` of each belief item of the reply:
     ``<previous> -> <status>, "<most probable>"`` (the most probable
     candidate or WEP written in parentheses where code differs), then the
     passage observations attached on the belief ``+<candidate> d4`` and the
@@ -188,11 +188,11 @@ def _labels(record: Dict[str, Any]) -> str:
 # Console (plain text): (family, row) pairs, printed under one prefix
 # ---------------------------------------------------------------------------
 
-def criteria_header(summary: Dict[str, Any]) -> str:
-    """``n criteria · gold · level full · multi_hop · 4 relevant docs``."""
-    criteria, info = summary.get("criteria") or [], summary.get("criteria_info") or {}
-    parts = [f"{len(criteria)} criteria"]
-    kind = info.get("criteria_kind") or info.get("model")
+def init_header(summary: Dict[str, Any]) -> str:
+    """``n beliefs · gold · level full · multi_hop · 4 relevant docs``."""
+    beliefs, info = summary.get("beliefs") or [], summary.get("belief_info") or {}
+    parts = [f"{len(beliefs)} beliefs"]
+    kind = info.get("belief_source") or info.get("model")
     if kind:
         parts.append(str(kind))
     if info.get("gold_level"):
@@ -206,21 +206,21 @@ def criteria_header(summary: Dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
-def criteria_lines(summary: Dict[str, Any]) -> List[Tuple[str, str]]:
-    rows = [("criteria", criteria_header(summary))]
-    rows += [(c.get("id", ""), f"[{c.get('kind', '')}] {c.get('text', '')}") for c in summary.get("criteria") or []]
-    errors = (summary.get("criteria_info") or {}).get("errors")
+def init_lines(summary: Dict[str, Any]) -> List[Tuple[str, str]]:
+    rows = [("beliefs", init_header(summary))]
+    rows += [(c.get("id", ""), f"[{c.get('kind', '')}] {c.get('text', '')}") for c in summary.get("beliefs") or []]
+    errors = (summary.get("belief_info") or {}).get("errors")
     if errors:
         rows.append(("errors", "; ".join(map(str, errors))))
     return rows
 
 
-def belief_lines(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]],
+def belief_lines(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]],
                  final: bool = False) -> List[Tuple[str, str]]:
     rows: List[Tuple[str, str]] = [("belief", _summary(record, final))]
     if not final:
         rows.append(("gold", gold_summary(record)))
-    table = belief_rows(record, criteria, CONSOLE_VALUE_CHARS)
+    table = belief_rows(record, beliefs, CONSOLE_VALUE_CHARS)
     status_w = max((len(r[2]) for r in table), default=0)
     value_w = max((len(r[3]) for r in table), default=0)
     for cid, mark, status, value, count in table:
@@ -253,29 +253,29 @@ def _md_table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> List[str]
     return [line(header), "|" + "|".join("-" * (w + 2) for w in widths) + "|", *map(line, rows)]
 
 
-def criteria_md(summary: Dict[str, Any]) -> str:
-    lines = ["## Criteria", "", criteria_header(summary), ""]
+def init_md(summary: Dict[str, Any]) -> str:
+    lines = ["## Beliefs", "", init_header(summary), ""]
     lines += [f"- **{c.get('id', '')}** [{c.get('kind', '')}] {c.get('text', '')}"
-              for c in summary.get("criteria") or []]
-    errors = (summary.get("criteria_info") or {}).get("errors")
+              for c in summary.get("beliefs") or []]
+    errors = (summary.get("belief_info") or {}).get("errors")
     if errors:
         lines += ["", f"*errors: {'; '.join(map(str, errors))}*"]
     return "\n".join(lines) + "\n\n---"
 
 
-def belief_md(record: Dict[str, Any], criteria: Sequence[Dict[str, Any]], final: bool = False) -> str:
+def belief_md(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]], final: bool = False) -> str:
     heading = "## Final belief" if final else f"### Belief · iter {record.get('agent_iteration', record.get('iteration'))}"
     lines = [heading, "", _summary(record, final).replace(" | ", " · ")]
     if not final:
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
         if _step_labels(record):
             lines += ["", f"docs: {_labels(record)}"]
-    table = belief_rows(record, criteria, MD_VALUE_CHARS)
+    table = belief_rows(record, beliefs, MD_VALUE_CHARS)
     if table:
-        lines += [""] + _md_table(("criterion", "status", "selected", "candidates"),
+        lines += [""] + _md_table(("belief", "status", "selected", "candidates"),
                                   [(f"{cid} {mark}".strip(), status, _cell(value), count)
                                    for cid, mark, status, value, count in table])
-    for cid, chosen in selected_lists(record, criteria, final):
+    for cid, chosen in selected_lists(record, beliefs, final):
         lines += ["", f"- **{cid}** selected ({len(chosen)}):"]
         lines += [f'  - "{_cell(_value(v, None))}"' + (f": {st}" if st else "") for v, st in chosen]
     updates = _updates(record)

@@ -16,8 +16,8 @@ The groups, in the order of the files and the log:
     belief       the finished queries with a belief file of the current
                  schema (belief files); the belief's change at gold and
                  control events, and per
-                 criterion its recall, answer reached and status calibration
-                 (datasets with gold per criterion, belief files); the
+                 belief its recall, answer reached and status calibration
+                 (datasets with gold per belief, belief files); the
                  share of update calls with issues, and every issue code
                  that occurs (belief files, ``belief.issues``)
     trajectory   searches, agent and belief model tokens, forced answers
@@ -61,7 +61,7 @@ class Evaluators:
     without ``answer_eval``; ``report`` is None for a dataset without
     ``report_eval`` (``layout.DATASET_SPECS``); ``uncertainty`` is None for
     a report dataset, ``report_uncertainty`` for any other; ``belief`` is None for a dataset without
-    per-criterion gold (``evaluation.belief.gold_rows``).  The last two score
+    per-belief gold (``evaluation.belief.gold_rows``).  The last two score
     a run only when its belief files exist.
     """
     seen: SeenDocEvaluator
@@ -100,7 +100,7 @@ def build_evaluators(
         data_path:    Dataset directory and *split*: the nuggets of a dataset
                       whose ``report_eval`` is ``"argue"``
                       (:class:`ArgueReportEvaluator`); *split* also locates
-                      TRQA's gold criteria (the belief update evaluation).
+                      TRQA's gold beliefs (the belief update evaluation).
     """
     evaluators = Evaluators(seen=SeenDocEvaluator(qrels), trajectory=TrajectoryEvaluator(), dataset=dataset)
 
@@ -154,7 +154,7 @@ def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int,
         "run": str(run_dir) if run_dir else "-",
         "dataset": f"{data.get('dataset') or dataset} / {data.get('split') or '-'}",
         "agent": agent.get("policy_model") or "-",
-        "belief": (f"{belief_model_of(belief) or '-'} ({belief.get('criteria_source_effective')} criteria)"
+        "belief": (f"{belief_model_of(belief) or '-'} ({belief.get('belief_source_effective')} beliefs)"
                    if belief else "-"),
         "queries": num_queries,
         **({"unfinished": num_unfinished} if num_unfinished is not None else {}),

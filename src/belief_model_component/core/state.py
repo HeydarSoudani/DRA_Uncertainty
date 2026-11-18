@@ -13,16 +13,16 @@ from .issues import (
     ISSUE_CANDIDATE_NEAR_DUPLICATE, ISSUE_CANDIDATE_NOT_IN_PASSAGES, ISSUE_CANDIDATE_READDED, ISSUE_CLAIM_INCOMPLETE,
     ISSUE_FACT_MERGED, ISSUE_MOST_PROBABLE_WRONG, ISSUE_OBSERVATION_ON_TARGET, ISSUE_SPAN_OFF_FACT,
     ISSUE_SPAN_UNVERIFIED, ISSUE_STANCE_INVALID, ISSUE_SUBJECT_CANDIDATE, ISSUE_TURN_SPAN_UNVERIFIED,
-    ISSUE_UNKNOWN_CRITERION, ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_COMPUTED,
+    ISSUE_UNKNOWN_BELIEF, ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_COMPUTED,
     ISSUE_UPDATE_ON_TARGET, ISSUE_UPDATE_WITHOUT_OBSERVATION, ISSUE_WEP_INVALID, ISSUE_WEP_WITHOUT_SUPPORT, NOTE_CODES,
 )
 from .types import (
     AGGREGATE, ASPECT, CLOSED, DOC, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, STATUS_LEVEL, THINK,
-    UNKNOWN, UNLIKELY, BeliefUpdate, Candidate, Criterion, Observation, Proposal, RemovedCandidate, Support,
+    UNKNOWN, UNLIKELY, BeliefUpdate, Candidate, Belief, Observation, Proposal, RemovedCandidate, Support,
     is_computed, is_target, member_subject, parse_status, subject_names,
 )
 
-# Proposals kept per criterion (beyond it the least recently claimed is dropped).
+# Proposals kept per belief (beyond it the least recently claimed is dropped).
 MAX_PROPOSALS = 8
 
 # A figure candidate (``BeliefState._unknown_candidate``): its numbers, and
@@ -56,12 +56,12 @@ def _label_number(label: str) -> int:
 @dataclass
 class _CallContext:
     """What the phases of one ``BeliefState.apply`` share: the call's step,
-    per criterion the passages of the call observed on it (label -> its
+    per belief the passages of the call observed on it (label -> its
     observation in the trace), the passage observations that entered (in
     reply order, attached to their candidates after the claims) and, per
-    criterion, the ones attached (``{candidate, stance, passage}``), and
+    belief, the ones attached (``{candidate, stance, passage}``), and
     what the phases produce (issues, the observations that entered, the
-    changed criteria, the records of the belief items)."""
+    changed beliefs, the records of the belief items)."""
     step: int
     call_docs: List[Dict[str, Observation]]
     attached: List[List[Dict[str, Any]]]
@@ -81,7 +81,7 @@ class BeliefState:
     agent's reasoning proposed that no passage is on).  The agent's claims
     are kept but never shown to the update.
 
-    Saved: per criterion the trace of the observations that entered it
+    Saved: per belief the trace of the observations that entered it
     (``trace``), its references (``reference_lists``), the records of the
     belief items (``apply``) and the candidates and proposals it dropped
     (``removed``).
@@ -93,7 +93,7 @@ class BeliefState:
     ``apply`` keeps what is valid:
 
     - an observation enters only when it is grounded (a verified span of
-      its passage or turn) and names a known criterion that is not a
+      its passage or turn) and names a known belief that is not a
       target; a reasoning observation also needs a candidate and a claim,
       a passage observation a candidate (but on a computed answer) and a
       stance "+" or "-";
@@ -120,22 +120,22 @@ class BeliefState:
     (``label_doc``).
     """
 
-    def __init__(self, criteria: List[Criterion]) -> None:
-        self.criteria = list(criteria)
-        self._index = {c.id: k for k, c in enumerate(self.criteria)}
-        # Per criterion its candidates, in the order they were added, and its proposals.
-        self.candidates: List[List[Candidate]] = [[] for _ in self.criteria]
-        self.proposals: List[List[Proposal]] = [[] for _ in self.criteria]
-        # The trace: per criterion, the observations that entered it.
-        self.trace: List[List[Observation]] = [[] for _ in self.criteria]
-        # Per criterion the candidates and proposals dropped, in order.
-        self.removed: List[List[RemovedCandidate]] = [[] for _ in self.criteria]
-        # Per criterion its WEP (one answer, aspect) and its most probable
+    def __init__(self, beliefs: List[Belief]) -> None:
+        self.beliefs = list(beliefs)
+        self._index = {c.id: k for k, c in enumerate(self.beliefs)}
+        # Per belief its candidates, in the order they were added, and its proposals.
+        self.candidates: List[List[Candidate]] = [[] for _ in self.beliefs]
+        self.proposals: List[List[Proposal]] = [[] for _ in self.beliefs]
+        # The trace: per belief, the observations that entered it.
+        self.trace: List[List[Observation]] = [[] for _ in self.beliefs]
+        # Per belief the candidates and proposals dropped, in order.
+        self.removed: List[List[RemovedCandidate]] = [[] for _ in self.beliefs]
+        # Per belief its WEP (one answer, aspect) and its most probable
         # candidate (one answer).
-        self.wep: List[str] = [UNKNOWN for _ in self.criteria]
-        self._most_probable: List[Optional[str]] = [None for _ in self.criteria]
-        # Per criterion the member it is about (a member criterion), or None.
-        self._subjects: List[Optional[str]] = [member_subject(self.criteria, k) for k in range(len(self.criteria))]
+        self.wep: List[str] = [UNKNOWN for _ in self.beliefs]
+        self._most_probable: List[Optional[str]] = [None for _ in self.beliefs]
+        # Per belief the member it is about (a member belief), or None.
+        self._subjects: List[Optional[str]] = [member_subject(self.beliefs, k) for k in range(len(self.beliefs))]
         self._doc_labels: Dict[str, str] = {}
         self._titles: Dict[str, str] = {}
 
@@ -158,22 +158,22 @@ class BeliefState:
         return self._titles.get(label) or ""
 
     # ------------------------------------------------------------------
-    # Derived per criterion
+    # Derived per belief
     # ------------------------------------------------------------------
 
     def most_probable(self, k: int) -> Optional[Candidate]:
-        """The most probable candidate of one-answer criterion *k* (the
+        """The most probable candidate of one-answer belief *k* (the
         update's pick), None without one (an aspect, an aggregate)."""
         name = self._most_probable[k]
         return self._listed(k, name) if name else None
 
     def ordered(self, k: int) -> List[Candidate]:
-        """The candidates of criterion *k* as shown: an aspect's facts in the
-        order they were added; a one-answer criterion's most probable
+        """The candidates of belief *k* as shown: an aspect's facts in the
+        order they were added; a one-answer belief's most probable
         candidate first, then by their + passages, then in the order they
         were added; an aggregate's highest status first."""
         cands = self.candidates[k]
-        kind = self.criteria[k].kind
+        kind = self.beliefs[k].kind
         if kind == ASPECT:
             return list(cands)
         if kind == AGGREGATE:
@@ -182,29 +182,29 @@ class BeliefState:
         return sorted(cands, key=lambda c: (c is not top, -len(c.supports())))
 
     def status(self, k: int) -> str:
-        """The status of criterion *k*: its WEP (one answer, aspect); an
+        """The status of belief *k*: its WEP (one answer, aspect); an
         aggregate's the highest of its candidates ("unknown" without)."""
-        if self.criteria[k].kind != AGGREGATE:
+        if self.beliefs[k].kind != AGGREGATE:
             return self.wep[k]
         return max((c.status or UNKNOWN for c in self.candidates[k]), key=_level, default=UNKNOWN)
 
     def selected(self, k: int) -> List[str]:
-        """The selected candidate(s) of criterion *k*: for a one-answer
-        criterion its most probable candidate at "possible" or above (an
+        """The selected candidate(s) of belief *k*: for a one-answer
+        belief its most probable candidate at "possible" or above (an
         aggregate's first one shown), for an aspect every fact."""
-        if self.criteria[k].kind == ASPECT:
+        if self.beliefs[k].kind == ASPECT:
             return [c.name for c in self.candidates[k]]
-        if self.criteria[k].kind == CLOSED:
+        if self.beliefs[k].kind == CLOSED:
             top = self.most_probable(k)
             return [top.name] if top is not None and _level(self.wep[k]) >= _level(NO_SUPPORT_MAX_STATUS) else []
         kept = [c.name for c in self.ordered(k) if _level(c.status) >= _level(NO_SUPPORT_MAX_STATUS)]
         return kept[:1]
 
     def _target(self, k: int) -> bool:
-        return is_target(self.criteria[k].kind, self.criteria[k].text)
+        return is_target(self.beliefs[k].kind, self.beliefs[k].text)
 
     def _computed(self, k: int) -> bool:
-        return is_computed(self.criteria[k].kind, self.criteria[k].text)
+        return is_computed(self.beliefs[k].kind, self.beliefs[k].text)
 
     # ------------------------------------------------------------------
     # The update
@@ -224,14 +224,14 @@ class BeliefState:
         passage}``), ``written`` the item's most probable candidate and WEP
         as written, ``previous`` the belief's status before, then the most
         probable candidate and the status kept; null when the item was not
-        taken), the ids of the criteria whose belief changed, one issue
+        taken), the ids of the beliefs whose belief changed, one issue
         record per thing the reply got wrong, and one note record per thing
         worth knowing that is no error (``core.issues``).
 
         Phases, in order: admit the observations, apply the claims, attach
         the passage observations to their candidates, apply the belief
         items, derive the aggregates from their inputs."""
-        n = len(self.criteria)
+        n = len(self.beliefs)
         call = _CallContext(step=step, call_docs=[{} for _ in range(n)], attached=[[] for _ in range(n)])
         self._admit_observations([*claims, *docs], call)
         self._apply_claims(call)
@@ -241,7 +241,7 @@ class BeliefState:
         done: Set[int] = set()
         for u in updates:
             self._apply_belief(u, call, done)
-        for k, c in enumerate(self.criteria):
+        for k, c in enumerate(self.beliefs):
             if call.attached[k] and k not in done and c.kind != AGGREGATE:
                 call.issues.append(_issue(c.id, ISSUE_BELIEF_MISSING,
                                           f"new passage observations, no belief item; WEP {self.wep[k]!r} kept"))
@@ -249,52 +249,52 @@ class BeliefState:
                 self._refresh_statuses(k)
         self._derive_aggregates(call)
         return {"observations": [o.to_dict() for o in call.entered], "updates": call.records,
-                "changed": [self.criteria[k].id for k in sorted(call.changed)],
+                "changed": [self.beliefs[k].id for k in sorted(call.changed)],
                 "issues": [i for i in call.issues if i["code"] not in NOTE_CODES],
                 "notes": [i for i in call.issues if i["code"] in NOTE_CODES]}
 
     def _admit_observations(self, observations: List[Observation], call: "_CallContext") -> None:
         """Phase 1: each observation enters the trace when it passes the
-        gates (a known criterion that is not a target, a passage of the
+        gates (a known belief that is not a target, a passage of the
         call, a verified span; a claim with a candidate and a status; a
         passage observation with a stance, a candidate unless on a computed
-        answer, and not the member of a member criterion); otherwise one
-        issue.  A second observation of a passage on one criterion adds its
+        answer, and not the member of a member belief); otherwise one
+        issue.  A second observation of a passage on one belief adds its
         new spans to the first in the trace."""
         issues = call.issues
         for o in observations:
-            k = self._index.get(o.criterion)
+            k = self._index.get(o.belief)
             if k is None:
-                issues.append(_issue(o.criterion, ISSUE_UNKNOWN_CRITERION, "unknown criterion id", o))
+                issues.append(_issue(o.belief, ISSUE_UNKNOWN_BELIEF, "unknown belief id", o))
             elif self._target(k):
-                issues.append(_issue(o.criterion, ISSUE_OBSERVATION_ON_TARGET,
-                                     "the criterion is derived from its clues: no observation", o))
+                issues.append(_issue(o.belief, ISSUE_OBSERVATION_ON_TARGET,
+                                     "the belief is derived from its clues: no observation", o))
             elif o.source == DOC and o.doc_id is None:
-                issues.append(_issue(o.criterion, ISSUE_UNKNOWN_PASSAGE, "no passage of the call has this label", o))
+                issues.append(_issue(o.belief, ISSUE_UNKNOWN_PASSAGE, "no passage of the call has this label", o))
             elif not o.grounded:
-                issues.append(_issue(o.criterion, ISSUE_SPAN_UNVERIFIED, "no verified span", o) if o.source == DOC else
-                              _issue(o.criterion, ISSUE_TURN_SPAN_UNVERIFIED, "no span of the agent's turn", o))
+                issues.append(_issue(o.belief, ISSUE_SPAN_UNVERIFIED, "no verified span", o) if o.source == DOC else
+                              _issue(o.belief, ISSUE_TURN_SPAN_UNVERIFIED, "no span of the agent's turn", o))
             elif o.source == THINK and (not alnum(o.candidate or "") or o.claim is None):
                 why = (f"agent_claim {o.claim_written!r} is not a claim (a status above 'unknown', or "
                        f"'{REJECTED}')" if alnum(o.candidate or "") else "no candidate")
-                issues.append(_issue(o.criterion, ISSUE_CLAIM_INCOMPLETE,
+                issues.append(_issue(o.belief, ISSUE_CLAIM_INCOMPLETE,
                                      f"{o.candidate!r}: {why}" if o.candidate else why, o))
             elif o.source == DOC and o.bad_stance is not None:
-                issues.append(_issue(o.criterion, ISSUE_STANCE_INVALID,
+                issues.append(_issue(o.belief, ISSUE_STANCE_INVALID,
                                      f"stance {o.bad_stance!r} is neither '+' nor '-'", o))
             elif o.source == DOC and not alnum(o.candidate or "") and not self._computed(k):
-                issues.append(_issue(o.criterion, ISSUE_CANDIDATE_MISSING, "a passage observation without a candidate",
+                issues.append(_issue(o.belief, ISSUE_CANDIDATE_MISSING, "a passage observation without a candidate",
                                      o))
             elif o.source == DOC and (problem := self._subject_problem(k, o.candidate or "")):
-                issues.append(_issue(o.criterion, ISSUE_SUBJECT_CANDIDATE, f"{problem}; not added", o))
+                issues.append(_issue(o.belief, ISSUE_SUBJECT_CANDIDATE, f"{problem}; not added", o))
             elif o.source == DOC:
                 known = next((x for x in self.trace[k] if x.source == DOC and x.label == o.label), None)
                 if known is None:
-                    known = Observation(criterion=o.criterion, source=DOC, label=o.label, step=o.step,
+                    known = Observation(belief=o.belief, source=DOC, label=o.label, step=o.step,
                                         doc_id=o.doc_id, grounded=True, candidate=o.candidate, against=o.against)
                     self.trace[k].append(known)
                 # The trace keeps one observation per passage: its spans on
-                # the criterion, for any candidate.
+                # the belief, for any candidate.
                 for span in o.verified_spans:
                     if span not in known.spans:
                         known.spans.append(span)
@@ -310,8 +310,8 @@ class BeliefState:
         """Phase 2: the claims that entered, in the order of their turns
         (the latest one stands)."""
         for o in sorted((o for o in call.entered if o.source == THINK), key=lambda o: _label_number(o.label)):
-            if self._claim(self._index[o.criterion], o, call):
-                call.changed.add(self._index[o.criterion])
+            if self._claim(self._index[o.belief], o, call):
+                call.changed.add(self._index[o.belief])
 
     def _attach(self, k: int, o: Observation, call: "_CallContext") -> bool:
         """Phase 3, one passage observation *o* on belief *k*: it joins the
@@ -323,7 +323,7 @@ class BeliefState:
         same stance is not added twice; a - on an aspect's fact removes it
         (only the fact or proposal it names, never a near one).  Returns
         whether the belief changed."""
-        c, issues, step = self.criteria[k], call.issues, call.step
+        c, issues, step = self.beliefs[k], call.issues, call.step
         name = squash(o.candidate)
         existing = self._listed(k, name) if alnum(name) else None
         if self._computed(k):
@@ -378,7 +378,7 @@ class BeliefState:
 
     def _apply_belief(self, u: BeliefUpdate, call: "_CallContext", done: Set[int]) -> None:
         """Phase 4, one belief item: its record, the gates (a known
-        criterion that is not an aggregate, once per belief, a passage
+        belief that is not an aggregate, once per belief, a passage
         observation on it in the call), then its most probable candidate and
         WEP (``_set_wep``)."""
         issues = call.issues
@@ -388,7 +388,7 @@ class BeliefState:
         call.records.append(rec)
         k = self._index.get(u.id)
         if k is None:
-            issues.append(_issue(u.id, ISSUE_UNKNOWN_CRITERION, "a belief item of an unknown criterion id"))
+            issues.append(_issue(u.id, ISSUE_UNKNOWN_BELIEF, "a belief item of an unknown belief id"))
             return
         rec["passages"] = list(call.attached[k])
         if self._target(k):
@@ -420,7 +420,7 @@ class BeliefState:
         (``wep_without_support``); "unknown" with one is kept
         (``unknown_with_support``).  Returns whether the belief's most
         probable candidate or status changed."""
-        c, issues = self.criteria[k], call.issues
+        c, issues = self.beliefs[k], call.issues
         before = (self._most_probable[k], self.wep[k])
         supported = [x for x in self.candidates[k] if x.supports()]
         if c.kind != ASPECT:
@@ -457,11 +457,11 @@ class BeliefState:
         (a belief has one WEP)."""
         top = self.most_probable(k)
         for x in self.candidates[k]:
-            x.status = self.wep[k] if self.criteria[k].kind == ASPECT or x is top else None
+            x.status = self.wep[k] if self.beliefs[k].kind == ASPECT or x is top else None
 
     def _derive_aggregates(self, call: "_CallContext") -> None:
         """Phase 5: the statuses of every aggregate, from its inputs (the
-        closed criteria before it).
+        closed beliefs before it).
 
         A target's candidate is the name that is the most probable
         candidate of every clue, at the lowest of the clues' WEPs, with the
@@ -474,10 +474,10 @@ class BeliefState:
         without candidates is "unknown"), "unlikely" when a passage speaks
         against it, at most "possible" when the reasoning computed another
         answer later or rejects it.  Saved, never shown to the update."""
-        for k, c in enumerate(self.criteria):
+        for k, c in enumerate(self.beliefs):
             if c.kind != AGGREGATE:
                 continue
-            inputs = [j for j in range(k) if self.criteria[j].kind == CLOSED]
+            inputs = [j for j in range(k) if self.beliefs[j].kind == CLOSED]
             if self._target(k):
                 self._derive_target(k, inputs, call)
                 continue
@@ -508,7 +508,7 @@ class BeliefState:
             call.changed.add(k)
 
     def _listed(self, k: int, name: str) -> Optional[Candidate]:
-        """The listed candidate of criterion *k* named *name* (letters and
+        """The listed candidate of belief *k* named *name* (letters and
         digits compared), or None."""
         key = alnum(name)
         return next((x for x in self.candidates[k] if alnum(x.name) == key), None)
@@ -522,7 +522,7 @@ class BeliefState:
         return any(alnum(x.name) == key for x in self.removed[k])
 
     def _claim(self, k: int, o: Observation, call: _CallContext) -> bool:
-        """Apply the claim *o* on criterion *k*: a listed candidate keeps
+        """Apply the claim *o* on belief *k*: a listed candidate keeps
         it as its claim (a rejection removes no candidate); a proposal the
         claim rejects leaves the proposals (kept in the removal log), any
         other claim updates or adds one.  Returns whether the proposals or
@@ -548,7 +548,7 @@ class BeliefState:
             return False
         problem = self._subject_problem(k, o.candidate or "")
         if problem:
-            issues.append(_issue(self.criteria[k].id, ISSUE_SUBJECT_CANDIDATE, f"claim: {problem}; not proposed", o))
+            issues.append(_issue(self.beliefs[k].id, ISSUE_SUBJECT_CANDIDATE, f"claim: {problem}; not proposed", o))
             return False
         self._add_proposal(k, squash(o.candidate), o.claim, step, issues, o)
         return True
@@ -566,28 +566,28 @@ class BeliefState:
         if o.claim == REJECTED:
             return False
         if self._dropped(k, o.candidate or ""):
-            call.issues.append(_issue(self.criteria[k].id, ISSUE_CANDIDATE_READDED,
+            call.issues.append(_issue(self.beliefs[k].id, ISSUE_CANDIDATE_READDED,
                                       f"{squash(o.candidate)!r}: dropped before, written again", o))
         self.candidates[k].append(Candidate(name=squash(o.candidate), status=UNKNOWN, added_step=step,
                                             claim=o.claim, claim_step=step))
         return True
 
     def _subject_problem(self, k: int, name: str) -> Optional[str]:
-        """Why *name* cannot be a candidate of criterion *k* (None when it
-        can): it is the member the member criterion is about."""
+        """Why *name* cannot be a candidate of belief *k* (None when it
+        can): it is the member the member belief is about."""
         subject = self._subjects[k]
         if subject is not None and alnum(name) in {alnum(n) for n in subject_names(subject)}:
-            return f"{name!r} is the member the criterion is about, not its {self.criteria[k].text.strip()[len(subject):].lstrip(':').strip()}"
+            return f"{name!r} is the member the belief is about, not its {self.beliefs[k].text.strip()[len(subject):].lstrip(':').strip()}"
         return None
 
     def _add_proposal(self, k: int, name: str, claim: Optional[str], step: int, issues: List[Dict[str, Any]],
                       o: Optional[Observation] = None) -> None:
-        """Propose *name* for criterion *k* (from a claim *o*): noted when
+        """Propose *name* for belief *k* (from a claim *o*): noted when
         it was dropped before; past
         ``MAX_PROPOSALS`` the least recently claimed proposal is dropped
         (the agent's current names stay)."""
         if self._dropped(k, name):
-            issues.append(_issue(self.criteria[k].id, ISSUE_CANDIDATE_READDED,
+            issues.append(_issue(self.beliefs[k].id, ISSUE_CANDIDATE_READDED,
                     f"{name!r}: dropped before, written again", o))
         self.proposals[k].append(Proposal(name=name, claim=claim, step=step, added_step=step))
         if len(self.proposals[k]) > MAX_PROPOSALS:
@@ -601,15 +601,15 @@ class BeliefState:
         """Flag (information only) a supporting span of an aspect's fact
         *name* that shares no content word with it: support attached to
         another fact."""
-        if self.criteria[k].kind != ASPECT:
+        if self.beliefs[k].kind != ASPECT:
             return
         words = content_words(name)
         if not x.against and words and not words & content_words(" ".join(x.spans)):
-            issues.append(_issue(self.criteria[k].id, ISSUE_SPAN_OFF_FACT,
+            issues.append(_issue(self.beliefs[k].id, ISSUE_SPAN_OFF_FACT,
                                  f"{name!r}: the spans of {x.label} share no content word with it"))
 
     def _passage_texts(self, k: int) -> List[str]:
-        """The verified spans of the passage observations on criterion *k*
+        """The verified spans of the passage observations on belief *k*
         and the titles of their passages (a passage may name its subject in
         its title only)."""
         out: List[str] = []
@@ -620,7 +620,7 @@ class BeliefState:
 
     def _unknown_candidate(self, k: int, name: str) -> bool:
         """Whether candidate *name* occurs in none of the spans of the
-        passage observations on criterion *k* (its support among them) nor
+        passage observations on belief *k* (its support among them) nor
         in their passages' titles (a candidate a passage names in its title
         only, or a hop's candidate named by the passage of another span).
         Checked for the kinds whose answer is a name or figure a source
@@ -640,13 +640,13 @@ class BeliefState:
     # ------------------------------------------------------------------
 
     def belief_lists(self) -> List[Dict[str, Any]]:
-        """Per criterion ``{id, status, most_probable, selected, candidates,
+        """Per belief ``{id, status, most_probable, selected, candidates,
         proposals}``: its status (``status``), its most probable candidate
         (null for an aspect or aggregate), its selection, its candidates as
         shown (``Candidate.to_dict``, ``ordered``) and its proposals
         (``Proposal.to_dict``)."""
         out = []
-        for k, c in enumerate(self.criteria):
+        for k, c in enumerate(self.beliefs):
             out.append({"id": c.id, "status": self.status(k), "most_probable": self._most_probable[k],
                         "selected": self.selected(k),
                         "candidates": [x.to_dict() for x in self.ordered(k)],
@@ -654,13 +654,13 @@ class BeliefState:
         return out
 
     def reference_lists(self) -> List[Dict[str, Any]]:
-        """Per criterion ``{id, references, removed}``: every source assigned
+        """Per belief ``{id, references, removed}``: every source assigned
         to it so far, in the order it came in, as ``{label, step, spans}``
         plus ``doc_id`` and ``title`` for a document, ``candidate`` and
         ``claim`` for a claim; and the candidates and proposals dropped
         (``RemovedCandidate.to_dict``)."""
         out = []
-        for k, (c, obs) in enumerate(zip(self.criteria, self.trace)):
+        for k, (c, obs) in enumerate(zip(self.beliefs, self.trace)):
             refs = []
             for o in obs:
                 r: Dict[str, Any] = {"label": o.label, "step": o.step}

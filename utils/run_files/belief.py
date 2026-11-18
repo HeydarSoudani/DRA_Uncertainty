@@ -6,18 +6,18 @@ iteration, then one ``final`` line (the final scorer on the agent's
 answer turn, or on a report one more update, when it has one).  The files are the input of the offline analysis
 and of belief model training.  Every line carries ``query_id``;
 correctness labels stay in the accuracy output (``eval/generation/accuracy.jsonl``, same
-``query_id`` key).  The run settings (agent, criteria and belief update
-models, criteria cap, retriever) are in the run's ``run_config.json``; the
+``query_id`` key).  The run settings (agent, beliefs and belief update
+models, belief cap, retriever) are in the run's ``run_config.json``; the
 per-iteration seen doc ids and queries in the trajectory file
 (``trajectory/{query_id}.jsonl``), which the belief stage reads
 (``orchestration.belief_stage``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 54::
 
-    line 1  {"record": "meta", "schema_version": 53, "query_id": "q1", "question": "...",
-             "num_criteria": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
-             "criteria": [{"id": "c1", "text": "...", "kind": "closed"}, ...],
-             "criteria_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
+    line 1  {"record": "meta", "schema_version": 54, "query_id": "q1", "question": "...",
+             "num_beliefs": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
+             "beliefs": [{"id": "B1", "text": "...", "kind": "closed"}, ...],
+             "belief_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
              "tokens": {"input_tokens": 51234, "output_tokens": 8120, "total_tokens": 59354, "num_calls": 9}}
 
     line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
@@ -27,7 +27,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
              "recall_so_far": 0.3333, "num_relevant_seen": 2, "num_relevant": 6,
              "certainty": 0.4807, "called": true,
              "docs": [{"doc_id": "doc17", "new": true, "label": "d1"}, ...],
-             "beliefs": [{"id": "c1", "status": "almost certain", "most_probable": "Osby", "selected": ["Osby"],
+             "beliefs": [{"id": "B1", "status": "almost certain", "most_probable": "Osby", "selected": ["Osby"],
                           "candidates": [{"name": "Osby", "status": "almost certain", "basis": "passage",
                                           "added_step": 1,
                                           "support": [{"label": "d1", "doc_id": "doc17", "title": "Osby",
@@ -35,17 +35,17 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
                                           "claim": "probable", "claim_step": 1}, ...],
                           "proposals": [{"name": "Varby", "claim": "possible", "step": 1,
                                          "added_step": 1}]}, ...],
-             "updates": [{"id": "c1", "reason": "d1 states directly ...",
+             "updates": [{"id": "B1", "reason": "d1 states directly ...",
                           "passages": [{"candidate": "Osby", "stance": "+", "passage": "d1"}],
                           "written": {"most_probable": "Osby", "wep": "almost certain"},
                           "previous": "unknown", "most_probable": "Osby", "status": "almost certain"}, ...],
-             "changed": ["c1"],
-             "observations": [{"id": "c1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
+             "changed": ["B1"],
+             "observations": [{"id": "B1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
                                "spans": ["..."]},
-                              {"id": "c1", "label": "d1", "step": 1, "doc_id": "doc17", "candidate": "Osby",
+                              {"id": "B1", "label": "d1", "step": 1, "doc_id": "doc17", "candidate": "Osby",
                                "stance": "+", "spans": ["..."]}],
-             "issues": [{"id": "c2", "code": "span_unverified", "detail": "no verified span", "label": "d3"}],
-             "notes": [{"id": "c1", "code": "candidate_readded", "detail": "'Varby': dropped before, written again"}],
+             "issues": [{"id": "B2", "code": "span_unverified", "detail": "no verified span", "label": "d3"}],
+             "notes": [{"id": "B1", "code": "candidate_readded", "detail": "'Varby': dropped before, written again"}],
              "agent_turn": "...",
              "reply": "...", "errors": []}
     ...
@@ -54,7 +54,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
              "called": true,
              "final_score": {"status": "probable", "reason": "..."},
              "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [], "notes": [],
-             "references": [{"id": "c1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
+             "references": [{"id": "B1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": null, "basis": "reasoning",
                                           "added_step": 1, "removed_step": 2,
@@ -62,23 +62,30 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 53::
              "agent_turn": "... Final answer: ...", "reply": "...", "errors": []}
 
 The fields are described in ``belief_model_component/README.md``
-(step and final records, meta line) and ``belief_model_component.criteria.sources``
-(``BeliefState.apply``: the issue codes).  A criterion's ``kind`` is
+(step and final records, meta line) and ``belief_model_component.init.sources``
+(``BeliefState.apply``: the issue codes).  A belief's ``kind`` is
 ``closed`` (one fact with one answer: a clue, a hop, a member's value),
-``aggregate`` (it combines the criteria before it: a multi-clue query's
-target, "the <type> that meets c1 to c<k>", or how a multi-member query's
+``aggregate`` (it combines the beliefs before it: a multi-clue query's
+target, "the <type> that meets B1 to B<k>", or how a multi-member query's
 answer follows from the members' values) or ``aspect`` (one aspect of a
 report topic).  A step line is the iteration's update plus the light
-state: ``beliefs`` is every criterion's belief after the step (an
+state: ``beliefs`` is every belief's state after the step (an
 aspect's ``status`` is its own, its facts' ``status`` "kept"),
 ``updates`` the reply's candidate updates with their reasons (an
 aspect's status item has ``candidate`` null), ``observations`` the
 observations that entered in the step (with their verified spans; on a
 computed aggregate, a passage states an input it needs).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
-criterion's observations over the sample, and the candidates the update
+belief's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in
 ``belief/{query_id}.md`` (``belief_model_component.views.log_view``).
+
+schema_version 54 (was 53): "criteria" is renamed "beliefs" everywhere,
+same content: the meta line's ``criteria``, ``criteria_info`` and
+``num_criteria`` are ``beliefs``, ``belief_info`` and ``num_beliefs``;
+``criteria_kind`` (gold|silver) in it is ``belief_source``; belief ids
+are "B<k>" (were saved "c<k>"); the issue code ``unknown_criterion`` is
+``unknown_belief``.
 
 schema_version 53 (was 52): the belief update and final scorer follow the
 finalized prompts (``prompts/belief_*``).  The update's passage
@@ -113,7 +120,7 @@ schema_version 51 (was 50): the issue codes are one table
 dropped / corrected / flagged / note, and its training role) and renamed.  A new ``notes`` list per step and final record holds the
 codes that are no error (``candidate_readded``, ``update_unchanged``,
 ``span_off_fact``; before: in ``issues``).  One issue per update for its
-labels and its reason's sources with no observation on the criterion
+labels and its reason's sources with no observation on the belief
 (before: two); ``aspect_one_source`` is ``confirmed_one_source``,
 ``aspect_no_passage`` is ``status_without_new_support`` and ``not_listed``
 is ``reason_previous_wrong``.  The final scorer's ``final_score.issues``
@@ -140,9 +147,7 @@ aspect's status needs its support to move (``aspect_no_passage``).
 schema_version 49 (was 48): same record fields, prompt changes only.
 The status definitions have their own section ("== Belief Statuses ==")
 in the belief update and final scorer prompts; each user prompt closes
-with one general sentence ("List the criteria of this query.", "Update
-the belief about each criterion of the query.", "Score the agent's final
-answer."; the criteria init's "FIXED" sentence and its report variant
+with one general sentence (one per call: init, update, final score; the belief init's "FIXED" sentence and its report variant
 dropped, so the belief bank's prompt key changes); the final scorer
 reads the agent's final response without citations or confidence line
 (the end of the reasoning only when the response is the answer alone)
@@ -151,7 +156,7 @@ and has no "judge from the belief only" rule.
 schema_version 48 (was 47): same record fields, new numbers.  The
 certainty formula (``certainty_formula``, and s_t of every step) is the
 mean of the status probabilities on every query shape (was the min on a
-short-answer query), over the criteria the updater judges: an aggregate
+short-answer query), over the beliefs the updater judges: an aggregate
 is left out (its status is derived from its inputs).  The answer formula
 (``certainty_answer_formula``) is the same mean on the answer's
 candidates, a computed aggregate kept, a target left out.  The final
@@ -164,7 +169,7 @@ status is the lowest belief status of the answer's candidates, a name
 only proposed or absent counting as one no passage supports ("unknown",
 or "unlikely" when another candidate has support), a removed one as
 "unlikely", and an answer the query computes is judged as a candidate
-of the computed aggregate (was: own ladder, weighted by the criteria
+of the computed aggregate (was: own ladder, weighted by the beliefs
 that identify the answer).  ``certainty_answer_formula`` scores an
 unlisted or proposed name so (was: always "unknown"), and an unlisted
 answer on a computed aggregate at the lowest score of its inputs.  An update writing "unknown" on a name
@@ -181,14 +186,14 @@ rival has weaker support, "certain" when every part is stated directly
 and no rival has support.  An aspect's status counts the sides its facts
 cover (one, several, every) and whether every fact rests on several
 passages.  The final status ladder is exclusive too.  Prompt files:
-``belief_update/statuses.txt`` (by criterion type: one_answer, target,
+``belief_update/statuses.txt`` (by belief type: one_answer, target,
 computed, aspect) and ``belief_update/<shape>.txt`` (terms, rules, output
-notes, example) replace ``criterion_statuses.txt``, ``query_criteria.txt``
+notes, example) replace ``belief_statuses.txt``, ``query_beliefs.txt``
 and ``examples.txt``.
 
 schema_version 45 (was 44): two status sets.  Kinds ``hop``, ``rest`` and
 ``target`` are gone: a hop is ``closed`` (one answer), a multi-member
-query has no rest criterion, a target is an ``aggregate``.  An
+query has no rest belief, a target is an ``aggregate``.  An
 aggregate's statuses are derived by code: the lowest status of its
 inputs, "unlikely" when a passage speaks against it (issue
 ``aggregate_status`` when the reply wrote another).  A report's aspect
@@ -196,7 +201,7 @@ has one status of the scale (``unknown`` with no fact; ``certain`` needs
 every fact supported by two documents), written by the reply's item
 without a candidate; its facts are ``kept`` or removed.  The
 ``coverage`` field of step and final lines is gone, and the certainty
-formula counts every criterion (the target was left out).  Issues
+formula counts every belief (the target was left out).  Issues
 ``bad_coverage``, ``coverage_no_passage``, ``coverage_no_fact`` become
 ``bad_aspect_status``, ``aspect_no_passage``, ``aspect_no_fact``, with
 ``aspect_one_source``, ``bad_fact_status`` (a fact neither "kept" nor
@@ -210,13 +215,13 @@ becomes a probability by the table ``core.types.STATUS_PROBABILITY``
 certain 0.90, certain 0.97; was (level + 2) / 6) in every number read
 from a status (``certainty`` of the final scorer, ``certainty_formula``,
 ``certainty_answer_formula``, a step's ``certainty``).  The certainty
-formula of a short-answer query is the lowest criterion probability (was
+formula of a short-answer query is the lowest belief probability (was
 the geometric mean); of a report, their mean.
 
 schema_version 43 (was 42): step and final lines add ``coverage``, the
-coverage updates of a report's aspects (criterion kind ``aspect``; an
+coverage updates of a report's aspects (belief kind ``aspect``; an
 aspect's status is its coverage, "unknown" while no passage supports a
-fact of it); a multi-member criterion's subject is never its candidate
+fact of it); a multi-member belief's subject is never its candidate
 (issue ``subject_candidate``), and an aggregate takes passage
 observations (a member's conditions); the document cut is
 ``max_passage_tokens`` (the first tokens, was ``max_passage_chars``).
@@ -225,14 +230,14 @@ Added within schema 42 (no new version, so earlier runs stay readable):
 the meta line's ``tokens``, the belief update and final scorer tokens of
 the sample (null when not counted; absent in earlier files).  A multi-clue
 query (BrowseComp-Plus, shape renamed from single_target; set renamed
-multi_member) lists its clues, then a target criterion ("the <type> that
+multi_member) lists its clues, then a target belief ("the <type> that
 meets c1 to c<k>", kind ``target``), then the asked answer when it is not
 the target.  The target takes no observation or update (issues
-``derived_criterion``, ``derived_update``); its candidates are derived
+``derived_belief``, ``derived_update``); its candidates are derived
 after each call (the names listed on every clue, at the lowest of their
 statuses there, with their support), and it is left out of s_t and
 ``certainty_answer_formula``.  Only multi-clue files change; earlier
-BrowseComp-Plus files have no target criterion.
+BrowseComp-Plus files have no target belief.
 
 schema_version 40 (was 39): a proposal records the step it was proposed
 in (``added_step``; ``step`` is its latest claim's), so a dropped
@@ -241,20 +246,20 @@ recently claimed proposal is dropped (as before), and an update without
 a passage is now held to the same cap.  ``certainty_answer_formula`` scores an answer's candidate a
 passage ruled out as "unlikely" (was "unknown").  New issues: "New:" on a
 proposed name (``wrong_previous``), ``unknown_candidate`` on a rest
-criterion.  Criterion ids in a reply are read case-insensitively ("C1"),
+belief.  Belief ids in a reply are read case-insensitively ("C1"),
 and a label string with several labels ("d1, d2") is split.
 
 schema_version 39 (was 38): the final scorer writes the status of the
 final answer on the belief's scale (unlikely, possible, probable, almost
 certain, certain: ``certainty_label``; ``certainty`` its
 ``core.types.status_probability``) in place of an ICD 203 likelihood, and per
-criterion only the answer's candidate (``final_score``: ``{status,
+belief only the answer's candidate (``final_score``: ``{status,
 candidates, reason, issues}``, no check).  Its prompt shares the belief
 update's definitions and status definitions.
 
 schema_version 38 (was 37): s_T of a short-answer query is the final
 scorer's (``belief_model_component.update.final_score``): one call reads b_{T-1}
-and the answer turn (no final update) and writes, per criterion, the
+and the answer turn (no final update) and writes, per belief, the
 answer's candidate and its check, a reason and a likelihood (a word of
 ICD 203, ``certainty_label``; ``certainty`` its probability, null when
 the call failed).  The final line adds ``certainty_label``,
@@ -269,25 +274,25 @@ update (the run's ``max_passage_tokens``, recorded in run_config's
 ``belief_model``): report documents are cut too.  A passage's title is
 its metadata title, else its front matter's, else its first line.
 
-schema_version 37 (was 36): a criterion is judged on its own parts: a part
-that refers to another criterion is met when a passage links the candidate
-to a candidate of that criterion, whatever that candidate's status, so a
-change of the referenced criterion no longer lets a status move without
+schema_version 37 (was 36): a belief is judged on its own parts: a part
+that refers to another belief is met when a passage links the candidate
+to a candidate of that belief, whatever that candidate's status, so a
+change of the referenced belief no longer lets a status move without
 new support (``no_new_support`` again only for one answer, another
 candidate's support changed).  A call is made only for a passage new to
 the belief or on the final turn: no "cited again" passages
-(``passages[]`` drops ``again``).  Criteria refer only to criteria before
+(``passages[]`` drops ``again``).  Beliefs refer only to beliefs before
 them: gold multi-hop texts are written in a chain order (the row's
-criteria reordered and renumbered), and an extraction with a forward
-reference is asked once more (``criteria_info.warnings`` "order: ...").
+beliefs reordered and renumbered), and an extraction with a forward
+reference is asked once more (``belief_info.warnings`` "order: ...").
 
-schema_version 36 (was 35): a multi-hop criterion names only its own hop
+schema_version 36 (was 35): a multi-hop belief names only its own hop
 and refers to the hop it depends on by its id ("the engineer who was born
 in the town of c1"); its hops before the answer are of kind ``hop``
 ("several answers": candidates do not compete), the answer ``closed``.
 The agent's reasoning only proposes names: a reasoning observation is a
 claim (``{candidate, claim}``: a status, or "rejected") on one candidate;
-a claimed name no passage supports is a proposal of its criterion
+a claimed name no passage supports is a proposal of its belief
 (``beliefs[].proposals``, no status, not a rival), a passage that
 supports it makes it a candidate, a rejected claim drops it.  A
 candidate's support is saved with it (``support``: the passage
@@ -300,8 +305,8 @@ against it.  A name that passages only speak against is not added (a
 proposal stays one: ``against_only``).  Hard limits (code): a candidate
 without support is at most "possible" (``no_support``, replaces
 ``turn_only``); a candidate whose update adds no support keeps its status
-unless, for a one-answer criterion, another candidate's support changed
-in the call (a proposal added or dropped does not count), or a criterion
+unless, for a one-answer belief, another candidate's support changed
+in the call (a proposal added or dropped does not count), or a belief
 its text refers to changed (``no_new_support``, replaces
 ``turn_only_change``).  New flags: ``certain_with_rival`` and
 ``unequal_tie`` (replace ``competing_candidates``), ``bad_claim``;
@@ -314,8 +319,8 @@ is read by the next call (the reply's claims carry their turn label, its
 passage observations the step of the call), the final call always made.
 
 schema_version 35 (was 34): the status of a candidate is defined per
-criterion type, in the prompt of the dataset's query shape
-(``prompts/belief_update/criterion_statuses.txt``): "one answer" (its
+belief type, in the prompt of the dataset's query shape
+(``prompts/belief_update/belief_statuses.txt``): "one answer" (its
 candidates compete: the status counts the other candidates, "certain" only
 when no other meets a part), "several answers" (the passages on the
 candidate only) and "computed" (the agent's computation).  Prompt Rule 5
@@ -326,14 +331,14 @@ reasoning-only one the turn rejects, is removed (the update writes
 line's ``references[].removed``; a removal without the observation that
 can make it is kept and flagged (``bad_removal``, ``remove_unlisted``), a
 removed candidate added again is flagged (``readded``).  A listed passage
-candidate of a one-answer criterion may change without a new passage when
+candidate of a one-answer belief may change without a new passage when
 another of its "passage" candidates changes in the step.  ``competing_candidates``
 flags more than one candidate above "possible".  The certainty score's q_k
-is the criterion's status probability (no share between candidates).
+is the belief's status probability (no share between candidates).
 
-schema_version 34 (was 33): the candidates of a one-answer criterion
+schema_version 34 (was 33): the candidates of a one-answer belief
 compete (prompt Rule 5: a candidate is at most "possible" when another
-meets as many parts of the criterion, at most "unlikely" when another
+meets as many parts of the belief, at most "unlikely" when another
 meets more).  A reasoning-only candidate, and a new one in a step with
 no new passage, is moved into "unlikely" .. "possible" (``turn_only``;
 was: set to "possible"), so a reasoning rejection is kept; a listed
@@ -341,25 +346,25 @@ reasoning-only candidate may move in that range, a listed passage one
 still keeps its status without a new passage (``turn_only_change``).
 ``competing_candidates`` flags a candidate above "possible" with another
 at "possible" or above (was: two above "possible").  The certainty score
-divides a one-answer criterion's q_k by max(1, the summed probability of
+divides a one-answer belief's q_k by max(1, the summed probability of
 its candidates at "possible" or above).  Same record fields.
 
-schema_version 33 (was 32) replaces the statement of a criterion by its
-candidates: per criterion a list of candidates, each with its status, its
+schema_version 33 (was 32) replaces the statement of a belief by its
+candidates: per belief a list of candidates, each with its status, its
 basis ("passage" or "reasoning", set by code) and the step it was added
 in; the update writes, per candidate that is new or whose status changes,
 a reason ("Was <status>: ..." or "New: ...", saved in ``updates``, never
 shown) and the new status, and code keeps every other candidate, so the
 list only grows.  ``statements`` becomes ``beliefs`` (``{id, status,
-selected, candidates}``: the criterion's status is the highest of its
+selected, candidates}``: the belief's status is the highest of its
 candidates, "unknown" without one; candidates are listed highest status
 first, then "passage" before "reasoning", then in the order added; the
 selected candidates are those at "possible" or above, for a one-answer
-criterion only the first listed); new ``updates``; ``changed`` the
-criteria with a candidate added or whose status changed.  The agent's tag
+belief only the first listed); new ``updates``; ``changed`` the
+beliefs with a candidate added or whose status changed.  The agent's tag
 shows the candidates, no ``<sources>``.  Reasoning only names candidates: a
 reasoning-only candidate is "possible" (``turn_only``); in a step with no
-new passage on the criterion, a new candidate is "possible" too
+new passage on the belief, a new candidate is "possible" too
 (``turn_only``) and a listed one keeps its status, up or down, whatever
 its basis (``turn_only_change``, replaces ``turn_only_drop``).  A
 candidate's name is matched in spans and titles as whole words.  New issue codes: ``empty_candidate``, ``bad_status``,
@@ -370,22 +375,22 @@ candidate's name is matched in spans and titles as whole words.  New issue codes
 ``unexpected_statement`` dropped.
 
 schema_version 32 (was 31): passages set the status.  The update writes
-a statement only for a criterion whose belief changes, so a criterion
+a statement only for a belief whose belief changes, so a belief
 with a new observation and no statement keeps its own (``missing_statement``
-dropped), and ``changed`` lists the criteria whose statement the reply
+dropped), and ``changed`` lists the beliefs whose statement the reply
 rewrote (was: those with a new observation).  New issue code
 ``turn_only_drop``: a status that rested on a passage, lowered in a step
-with no new passage observation on the criterion, is not taken (the old
+with no new passage observation on the belief, is not taken (the old
 statement is kept).  ``unknown_candidate`` also accepts the title of a
-passage observed on the criterion.
+passage observed on the belief.
 
 schema_version 31 (was 30) keeps the belief at two levels.  Shown: the
-statement of a criterion is free text with a fixed opening (status,
+statement of a belief is free text with a fixed opening (status,
 selected candidates), written by the update and read back verbatim by the
 next update (no quotes added) and by the agent; a statement record is
 ``{id, status, selected, text, cited, support_cited}`` (no ``by``,
 ``rivals``, ``reason``).  Saved: an observation is the spans of its source
-on the criterion, with no value (``{id, label, step, [doc_id], spans}``),
+on the belief, with no value (``{id, label, step, [doc_id], spans}``),
 a think observation's spans verified against the turn; the final line adds
 ``references``.  The agent's turn no longer lists its search queries
 (``query_value`` dropped).  New issue codes: ``no_opening`` (replaces
@@ -394,28 +399,28 @@ a think observation's spans verified against the turn; the final line adds
 
 schema_version 30 (was 29) drops the stance of an observation: the
 update prompt is split into two subtasks, observations (which values each
-source states for each criterion, no label) and statements (which sources
+source states for each belief, no label) and statements (which sources
 support a value, "given", and which contradict it, "against"); code checks
-that a cited source has an observation on the criterion.  An observation
+that a cited source has an observation on the belief.  An observation
 record has no ``stance`` field; the other saved fields are those of 29.
 
 schema_version 29 (was 28) grounds the status in the passages: the
 update prompt is rewritten (a passage supports a value only when it states
-a condition of the criterion, another entity never contradicts one, a
-search query is no value, settled criteria still take new passages), each
+a condition of the belief, another entity never contradicts one, a
+search query is no value, settled beliefs still take new passages), each
 cited document in the current statement comes with a quote of its span,
 code lowers a status above "possible" that no passage supports
 (``turn_only``) and drops a think value that is a search query
 (``query_value``), and "doubtful" scores 1/12 instead of 0 in the
 certainty.  The saved fields are those of 28.
 
-schema_version 28 (was 27) replaces the belief of a criterion (status,
+schema_version 28 (was 27) replaces the state of a belief (status,
 covered_by, candidates with evidence) by one statement (status, the values
 it is covered by and its rivals, each with its sources, reason), weighs
 the agent's turns as well as the documents in the status, reads the answer
 turn as an ordinary update in the ``final`` line (no answer ratings; meta
 ``final_*`` dropped), scores certainty from the statuses only (aggregate
-criteria now count), and saves one ``issues`` list per step in place of
+beliefs now count), and saves one ``issues`` list per step in place of
 the per-record notes (``think_observations`` / ``passage_observations`` become
 ``observations``, ``beliefs_after`` ``statements``, ``belief_updates``
 ``changed``, ``belief_output`` ``reply``, ``passages`` the ``label`` of
@@ -441,7 +446,7 @@ from utils.io_utils import read_jsonl
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 53
+SCHEMA_VERSION = 54
 BELIEF_DIR = "belief"
 
 

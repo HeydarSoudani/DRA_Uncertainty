@@ -26,7 +26,7 @@ each chunk).  One call (``build``):
                chunks of its page and of the pages linking to it
                (``annotations.infoseek_skeleton``); the qrels (binary) the
                first chunk of every gold page
-    texts      the criterion texts (``criterion_texts.fill_texts``) and the
+    texts      the belief texts (``belief_texts.fill_texts``) and the
                split (``splits.split_rows``: sft / rl / val with the shares)
 
 The build is incremental, like ``dra_inference.py``: with a *limit* it
@@ -50,7 +50,7 @@ from utils.io_utils import atomic_write_text, drop_partial_line, iter_jsonl, rea
 
 from .gold import annotations
 from .config import BuildConfig, DatasetPaths
-from .gold.criterion_texts import check_writer, fill_texts, require_api_key
+from .gold.belief_texts import check_writer, fill_texts, require_api_key
 from .sources import load_infoseek
 from .splits import check_shares, split_rows
 from .stats import (drop_stats, format_annotation_table, question_stats, read_stats, write_annotation_stats,
@@ -124,7 +124,7 @@ def _check_corpus(paths: DatasetPaths) -> None:
     recorded = read_stats(paths.stats).get("corpus", {}).get("revision")
     if recorded is not None and recorded != CORPUS[2]:
         raise SystemExit(f"{paths.root} was built from {CORPUS[0]} at {recorded}, the code pins {CORPUS[2]}; "
-                         f"remove the built files in {paths.root} (keep belief_bank/, the silver criteria) "
+                         f"remove the built files in {paths.root} (keep belief_bank/, the silver beliefs) "
                          "and build the dataset again")
 
 
@@ -183,7 +183,7 @@ def _processed(paths: DatasetPaths) -> Set[str]:
 
 
 def build(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None) -> None:
-    check_writer(cfg.gold_criteria, paths)
+    check_writer(cfg.gold_beliefs, paths)
     check_shares(paths, cfg.split)
     _check_corpus(paths)
     records, duplicates = _questions()
@@ -194,7 +194,7 @@ def build(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None) ->
           f"{len(records) - len(remaining)} already processed, {len(todo)} to process"
           + (f" (--limit {limit})" if limit is not None else ""))
     if todo:
-        require_api_key(cfg.gold_criteria, "the criterion texts of the new questions")
+        require_api_key(cfg.gold_beliefs, "the belief texts of the new questions")
     ensure_corpus()
 
     done |= {r["id"] for r in todo}
@@ -214,13 +214,13 @@ def build(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None) ->
     annotations.check(rows)
 
     # The texts first: a stopped build leaves the files of the last full one.
-    rows = split_rows(paths, cfg.split, fill_texts(cfg.gold_criteria, paths, rows))
+    rows = split_rows(paths, cfg.split, fill_texts(cfg.gold_beliefs, paths, rows))
     annotations.write(paths.queries, rows)
     atomic_write_text(paths.qrels, "".join(f"{row['id']} 0 {doc_id} 1\n" for row in rows for doc_id in row["doc_ids"]))
     write_dropped(paths.dropped, GOLD_STAGE, dropped)
     write_dropped(paths.dropped, "questions", duplicates)
 
-    stats = write_annotation_stats(paths, cfg.gold_criteria, rows)
+    stats = write_annotation_stats(paths, cfg.gold_beliefs, rows)
     looked_up = {t for r in processed for t in _gold_titles(r).values()}
     write_stats(paths.stats, "questions", {"available": len(records), "processed": len(processed),
                                            "remaining": len(records) - len(processed), "kept": question_stats(kept),

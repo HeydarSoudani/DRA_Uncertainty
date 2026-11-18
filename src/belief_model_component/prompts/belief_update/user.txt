@@ -1,7 +1,7 @@
 Query: {query}
 
 Previous belief state:
-{criteria}
+{beliefs}
 
 Current observation:
 {turns}

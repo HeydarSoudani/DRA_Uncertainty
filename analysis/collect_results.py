@@ -62,7 +62,7 @@ def run_identity(run_dir: Path) -> Dict[str, str]:
         "split": data.get("split") or "-",
         "agent": agent.get("policy_model") or "?",
         "belief": belief.get("mode") or "?",
-        "criteria": belief.get("criteria_source_effective") or "-",
+        "criteria": belief.get("belief_source_effective") or "-",
     }
 
 

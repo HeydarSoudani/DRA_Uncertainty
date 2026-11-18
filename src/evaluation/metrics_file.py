@@ -98,9 +98,9 @@ def table(header: List[str], body: List[List[str]]) -> List[str]:
     return [line(header), "|" + "|".join("-" * (w + 2) for w in widths) + "|"] + [line(r) for r in body]
 
 
-#: The note under the main table when a row is reported per criterion.
-CRITERION_NOTE = ("A row with (c) is the mean over every criterion (n criteria); the same row without it is the "
-                  "mean over the queries of each query's mean over its criteria (CI over queries, n queries).")
+#: The note under the main table when a row is reported per belief.
+BELIEF_NOTE = ("A row with (c) is the mean over every belief (n beliefs); the same row without it is the "
+                  "mean over the queries of each query's mean over its beliefs (CI over queries, n queries).")
 
 
 def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections: Sequence[Section] = ()) -> None:
@@ -112,7 +112,7 @@ def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections:
     lines = ["# Evaluation", ""] + [f"- {k}: {v}" for k, v in header.items()] + [""]
     lines += table(list(COLUMNS), body)
     if any(r.metric.endswith(" (c)") for r in rows):
-        lines += ["", CRITERION_NOTE]
+        lines += ["", BELIEF_NOTE]
     for title, columns, cells in sections:
         lines += ["", f"## {title}", ""] + table(columns, cells)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -191,7 +191,7 @@ def _ci(rows: List[Row], group: str, metric: str) -> str:
 def log_lines(title: str, rows: List[Row]) -> List[str]:
     """The terminal block: one line per group present in *rows* (the belief
     group: its files and update calls, then its gold measures when the
-    dataset has gold per criterion)."""
+    dataset has gold per belief)."""
     out = [title]
     out.append(f"retrieval    Recall@N {_val(rows, 'retrieval', 'Recall@N')}"
                f" | Precision@N {_val(rows, 'retrieval', 'Precision@N')}"
@@ -223,7 +223,7 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
     if _get(rows, "belief", "reached answer"):
         out.append(f"belief gold  gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
                    f" | control change {_val(rows, 'belief', 'control event: gold candidate change')}"
-                   f" | recall {_val(rows, 'belief', 'criterion recall')}"
+                   f" | recall {_val(rows, 'belief', 'belief recall')}"
                    f" | reached {_val(rows, 'belief', 'reached answer')}"
                    f" (gold seen {_val(rows, 'belief', 'reached answer, gold seen')})"
                    f" | status Brier {_val(rows, 'belief', 'status Brier')}"

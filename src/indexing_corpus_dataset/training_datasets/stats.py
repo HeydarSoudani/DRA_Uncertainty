@@ -13,7 +13,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from utils.io_utils import atomic_write_text, read_jsonl, write_jsonl
 
 from .gold.annotations import CLOSED, KINDS, LEVELS, has_gold, problems
-from .gold.criterion_texts import PROMPTS, prompt_hash
+from .gold.belief_texts import PROMPTS, prompt_hash
 
 
 def distribution(values: List[float]) -> dict:
@@ -186,8 +186,8 @@ def dataset_stats(candidates: List[dict], queries: List[dict], qrels: Dict[str, 
 
 def annotation_stats(rows: List[dict]) -> dict:
     """The gold annotation (``gold/annotations.py``) per source (and ``all``):
-    queries per level and per state of the criterion texts (``texts_ok``),
-    criteria per query and per kind, the criteria with answers (all but
+    queries per level and per state of the belief texts (``texts_ok``),
+    beliefs per query and per kind, the beliefs with answers (all but
     the rest), with documents (the closed ones) and with their gold
     (``annotations.has_gold``); the rows that break the row format
     (``annotations.problems``) and the duplicate ids."""
@@ -197,19 +197,19 @@ def annotation_stats(rows: List[dict]) -> dict:
         groups["all"].append(row)
     per_source = {}
     for source, group in sorted(groups.items()):
-        criteria = [c for r in group for c in r["criteria"]]
+        beliefs = [c for r in group for c in r["beliefs"]]
         levels = Counter(r["level"] for r in group)
         per_source[source] = {
             "queries": len(group),
             "levels": {lv: levels[lv] for lv in LEVELS},
             "texts": {k: sum(r["texts_ok"] is v for r in group)
                       for k, v in (("ok", True), ("failed", False), ("retry", None))},
-            "criteria_per_query": distribution([len(r["criteria"]) for r in group]),
-            "criteria": len(criteria),
-            "kinds": {k: sum(c["kind"] == k for c in criteria) for k in KINDS},
-            "with_answers": sum(bool(c["answers"]) for c in criteria),
-            "with_docs": sum(bool(c["doc_ids"]) for c in criteria if c["kind"] == CLOSED),
-            "with_gold": sum(has_gold(c) for c in criteria),
+            "beliefs_per_query": distribution([len(r["beliefs"]) for r in group]),
+            "beliefs": len(beliefs),
+            "kinds": {k: sum(c["kind"] == k for c in beliefs) for k in KINDS},
+            "with_answers": sum(bool(c["answers"]) for c in beliefs),
+            "with_docs": sum(bool(c["doc_ids"]) for c in beliefs if c["kind"] == CLOSED),
+            "with_gold": sum(has_gold(c) for c in beliefs),
         }
     checks = {"rows_breaking_format": sum(bool(problems(r)) for r in rows),
               "duplicate_ids": len(rows) - len({r["id"] for r in rows})}
@@ -229,14 +229,14 @@ def format_annotation_table(stats: dict) -> str:
     rows += [(f"  level {lv}", lambda s, lv=lv: s["levels"][lv]) for lv in ("full", "partial", "query")]
     rows += [(f"  texts {k}", lambda s, k=k: s["texts"][k]) for k in ("ok", "failed", "retry")]
     rows += [
-        ("criteria/query mean/med/max", lambda s: _dist(s["criteria_per_query"], ("mean", "median", "max"))),
-        ("criteria", lambda s: s["criteria"]),
+        ("beliefs/query mean/med/max", lambda s: _dist(s["beliefs_per_query"], ("mean", "median", "max"))),
+        ("beliefs", lambda s: s["beliefs"]),
     ]
     rows += [(f"  {k}", lambda s, k=k: s["kinds"][k]) for k in KINDS]
     rows += [
-        ("  with answers", lambda s: share(s["with_answers"], s["criteria"])),
+        ("  with answers", lambda s: share(s["with_answers"], s["beliefs"])),
         ("  with docs (closed)", lambda s: share(s["with_docs"], s["kinds"][CLOSED])),
-        ("  with their gold", lambda s: share(s["with_gold"], s["criteria"])),
+        ("  with their gold", lambda s: share(s["with_gold"], s["beliefs"])),
     ]
     lines = _table(sources, per_source, rows)
     lines.append("")
@@ -301,7 +301,7 @@ def format_dataset_table(stats: dict) -> str:
 def write_annotation_stats(paths, gc, rows: List[dict]) -> dict:
     """The ``annotations`` section of ``stats.json``, the same in every
     dataset: ``annotation_stats`` of the rows of split ``all`` and the writer of
-    their criterion texts (``gold_criteria.model`` and the hash of its
+    their belief texts (``gold_beliefs.model`` and the hash of its
     prompts per query shape)."""
     stats = {"writer": {"model": gc.model, "prompt": {shape: prompt_hash(shape) for shape in PROMPTS}},
              **annotation_stats(rows)}

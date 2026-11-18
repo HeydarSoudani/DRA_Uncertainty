@@ -12,8 +12,8 @@ order:
                was fetched or, with web gold pages, at least
                ``pages.min_page_share`` of them; write the kept questions, one
                row each with its gold annotation (``gold/annotations.py``: the
-               skeletons with the fetched documents, the criterion texts by
-               an LLM, ``gold/criterion_texts.py``) and its split (every query in
+               skeletons with the fetched documents, the belief texts by
+               an LLM, ``gold/belief_texts.py``) and its split (every query in
                ``val``: the dataset is validation only, ``splits.py``), the
                qrels of their fetched gold pages in the canonical layout, and
                the corpus (``corpus.py``: those pages and their hard negatives)
@@ -21,7 +21,7 @@ order:
                (``negatives.py``), then the corpus again
     report     stats of the dataset as written (queries, qrels, corpus) per
                source, the hard negatives, the gold annotation (levels,
-               criteria with answers and documents), consistency checks
+               beliefs with answers and documents), consistency checks
                between the files, and the duplicate documents of the corpus
 
 The build is incremental, like ``dra_inference.py``: a question is processed

@@ -4,7 +4,7 @@ Machine), then Filter A (``filters.py``): keep a question when every gold
 page was fetched or, with web gold pages, at least ``pages.min_page_share``
 of them; write the kept questions, one row each with its gold annotation
 (``gold/annotations.py``: the skeletons with the fetched documents, the
-criterion texts by an LLM, ``gold/criterion_texts.py``) and its split (every
+belief texts by an LLM, ``gold/belief_texts.py``) and its split (every
 query in ``val``: the dataset is validation only, ``splits.py``), the qrels
 of their fetched gold pages in the canonical layout, and the corpus
 (``corpus.py``: those pages and their hard negatives).
@@ -30,7 +30,7 @@ from utils.io_utils import atomic_write_text, drop_partial_line, iter_jsonl, rea
 
 from ..config import BuildConfig, DatasetPaths
 from ..gold import annotations
-from ..gold.criterion_texts import check_writer, fill_texts, require_api_key
+from ..gold.belief_texts import check_writer, fill_texts, require_api_key
 from ..splits import split_rows
 from ..stats import drop_stats, page_stats, question_stats, read_stats, write_annotation_stats, write_dropped, write_stats
 from .corpus import write_corpus
@@ -325,7 +325,7 @@ def _fetch(todo: List[dict], golds: Dict[str, dict], store: PageStore, cfg: Buil
 def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: DatasetPaths,
                    cfg: BuildConfig) -> Tuple[List[dict], int, int]:
     """The rows of the kept questions (``annotations.row``) with their
-    criterion texts (``criterion_texts.fill_texts``) and split
+    belief texts (``belief_texts.fill_texts``) and split
     (``splits.split_rows``: every query in ``val``) first, then the files, each replaced
     atomically: the rows (queries), their fetched gold pages (binary qrels)
     in the canonical layout, and the corpus (``corpus.write_corpus``: those
@@ -334,7 +334,7 @@ def _write_dataset(records: List[dict], pages: Dict[str, dict], paths: DatasetPa
     docs_of = {key: [row["doc_id"]] for key, row in pages.items() if row["status"] == "ok"}
     rows = [annotations.row(r, docs_of) for r in records]
     annotations.check(rows)
-    rows = split_rows(paths, cfg.split, fill_texts(cfg.gold_criteria, paths, rows), val_only=True)
+    rows = split_rows(paths, cfg.split, fill_texts(cfg.gold_beliefs, paths, rows), val_only=True)
     annotations.write(paths.queries, rows)
     atomic_write_text(paths.qrels, "".join(f"{row['id']} 0 {doc_id} 1\n" for row in rows for doc_id in row["doc_ids"]))
     gold_urls: Dict[str, str] = {}
@@ -356,12 +356,12 @@ def _check_settings(cfg: BuildConfig, paths: DatasetPaths) -> None:
         raise SystemExit(f"{paths.root}: the earlier builds used other page settings ({'; '.join(diffs)}); "
                          "their pages and verdicts would mix with this build's. "
                          f"Restore the settings, or remove the built files in {paths.root} (keep "
-                         "belief_bank/, the silver criteria) and build the dataset again")
+                         "belief_bank/, the silver beliefs) and build the dataset again")
 
 
 def run_pages(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None,
            sources: Optional[List[str]] = None) -> None:
-    check_writer(cfg.gold_criteria, paths)
+    check_writer(cfg.gold_beliefs, paths)
     _check_settings(cfg, paths)
     records = read_jsonl(paths.questions)
     config = {k: v for k, v in cfg.to_dict().items() if k in ("shared", "pages")}
@@ -386,7 +386,7 @@ def run_pages(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None
               + ("; no fetch, the dataset files are rewritten" if not todo else ""))
     if todo:
         # Before the fetch: the new questions get their texts at the end of the build.
-        require_api_key(cfg.gold_criteria, "the criterion texts of the new questions")
+        require_api_key(cfg.gold_beliefs, "the belief texts of the new questions")
     golds: Dict[str, dict] = {}
     for record in todo:
         for gold in record["gold"]:
@@ -408,7 +408,7 @@ def run_pages(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None
     partial = [p for p in partial if p["reasons"]]
     rows, n_docs, n_negatives = _write_dataset(kept, pages, paths, cfg)
     write_dropped(paths.dropped, "pages", dropped)
-    write_annotation_stats(paths, cfg.gold_criteria, rows)
+    write_annotation_stats(paths, cfg.gold_beliefs, rows)
     write_stats(paths.stats, "pages", {
         "config": config,
         "questions": {"candidates": len(records), "processed": len(done),

@@ -67,8 +67,8 @@ FILE_BACKED_DEFAULTS = {
     "max_passage_tokens": MAX_PASSAGE_TOKENS,
     # Belief model (the belief stage)
     "belief_model": "openrouter/qwen/qwen3.6-27b",
-    "max_criteria": None,
-    "criteria_source": "gold",
+    "max_beliefs": None,
+    "belief_source": "gold",
     "belief_workers": 8,
     # Evaluation
     "judge_model": "openrouter/qwen/qwen3-32b",
@@ -90,7 +90,7 @@ _FILE_BACKED_CHOICES = {
     "retrieval_input": ["subquery", "original_query+subquery", "reasoning+subquery"],
     "post_fusion_reranker_input": ["original_query", "original_query+subqueries",
                                    "original_query+reasoning", "reasoning+subqueries"],
-    "criteria_source": ["gold", "silver"],
+    "belief_source": ["gold", "silver"],
 }
 
 
@@ -101,7 +101,7 @@ _FILE_BACKED_CHOICES = {
 _FILE_BACKED_TYPES = {
     "llm_temperature": float,
     "min_relevance_score": int,
-    "max_criteria": int,
+    "max_beliefs": int,
     "max_passage_tokens": int,
     "max_length": int,  # index build
 }
@@ -231,14 +231,14 @@ def apply_config_to_args(args, config: dict, overrides: dict) -> None:
 def resolve_dataset_defaults(args) -> None:
     """Auto-select dataset-related CLI arguments that were left as None.
 
-    Split, query key, relevance threshold and criteria cap come from the
+    Split, query key, relevance threshold and belief cap come from the
     dataset's :data:`~indexing_corpus_dataset.layout.DATASET_SPECS` entry.
     """
     if args.data_path is None:
         args.data_path = str(dataset_root(args.dataset))
         print(f"Auto-selected data path: {args.data_path}")
 
-    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score", "max_criteria"))
+    apply_dataset_defaults(args, ("dataset_year", "subset", "query_key", "min_relevance_score", "max_beliefs"))
 
     if args.index_dir is None:
         args.index_dir = str(default_index_dir(args.dataset))
@@ -300,8 +300,8 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, workers: int, verbose:
     pipeline_kwargs["max_passage_tokens"] = args.max_passage_tokens
 
     pipeline_kwargs["belief_model"] = args.belief_model
-    pipeline_kwargs["max_criteria"] = args.max_criteria
-    pipeline_kwargs["criteria_source"] = args.criteria_source
+    pipeline_kwargs["max_beliefs"] = args.max_beliefs
+    pipeline_kwargs["belief_source"] = args.belief_source
     pipeline_kwargs["belief_workers"] = args.belief_workers
 
     # Keys named as the CLI args: a worker rebuilds its LLM client and

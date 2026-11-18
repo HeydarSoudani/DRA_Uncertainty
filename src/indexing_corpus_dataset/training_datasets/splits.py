@@ -1,27 +1,27 @@
 """The split of a training dataset for belief model training: the
 ``split`` field of each row of the dataset's queries file
 (``gold/annotations.py``).  SFT and RL need the full gold annotation (every
-criterion with gold answers and documents: r_ret and r_reas), so the queries
+belief with gold answers and documents: r_ret and r_reas), so the queries
 of infoseek and trqa_validation whose annotation ``level`` is ``full`` are
 split into ``sft``, ``rl`` and ``val`` with the shares of the ``split``
 config section, and every other query goes to ``val`` as the out-of-domain
-part (OOD: the belief model writes its own criteria there).  webshaper_frames
+part (OOD: the belief model writes its own beliefs there).  webshaper_frames
 is validation only (``val_only``): every query in ``val`` (WebShaper
 ``partial``, FRAMES ``query``).
 
     sft   SFT samples (dra_inference in monitor mode, the teacher's replies)
     rl    RL prompts (dra_inference in off mode)
-    val   in-domain: validation of SFT and RL (monitor mode, gold criteria);
-          OOD: evaluation only (monitor mode, the teacher's own criteria)
+    val   in-domain: validation of SFT and RL (monitor mode, gold beliefs);
+          OOD: evaluation only (monitor mode, the teacher's own beliefs)
 
 A query keeps the split it has in the queries file, so a build after the
-dataset has grown (``--limit``) moves no query, even when its criterion texts are written again (removed
-``criterion_texts.jsonl``) and fail: training skips a query without texts
+dataset has grown (``--limit``) moves no query, even when its belief texts are written again (removed
+``belief_texts.jsonl``) and fail: training skips a query without texts
 (``texts_ok`` not true).  The new full queries are taken in the order of a
 hash of their id (not the source order) and each goes to the split
 furthest below its share of the full queries, so the shares hold at every
 dataset size (20 queries: 6 sft, 12 rl, 2 val).  A new full query without
-criterion texts is in no split (``None``): one not written yet (writer
+belief texts is in no split (``None``): one not written yet (writer
 error) gets its split when a later build writes them, one whose texts
 failed for good (``texts_ok`` false) never does.  The splits are views of the one queries file:
 ``dataset_loaders`` reads split ``sft`` of a dataset as the rows with that
@@ -120,14 +120,14 @@ def split_rows(paths: DatasetPaths, cfg: SplitConfig, rows: List[dict], val_only
     by_source = counts_by(lambda r: r["source"])
     by_level = counts_by(lambda r: r["level"])
     n_full = sum(counts.values())
-    # Full queries that kept their split without criterion texts (skipped by training).
+    # Full queries that kept their split without belief texts (skipped by training).
     no_texts = Counter(r["split"] for r in rows if r["level"] == FULL and r["split"] and not r["texts_ok"])
     write_stats(paths.stats, "split", {"shares": shares, "queries": {name: total[name] for name in TRAINING_SPLITS},
                                        "full": {name: counts[name] for name in TRAINING_SPLITS},
                                        "full_without_texts": {name: no_texts[name] for name in TRAINING_SPLITS},
                                        "no_split": total[None], "by_source": by_source, "by_level": by_level})
     print(f"[split] {len(rows)} queries: {n_full} {FULL} ones split with the shares {shares} ({len(new)} new), "
-          f"the others to {OOD_SPLIT} (out of domain); {total[None]} {FULL} ones without criterion texts in no split")
+          f"the others to {OOD_SPLIT} (out of domain); {total[None]} {FULL} ones without belief texts in no split")
     for name in TRAINING_SPLITS:
         detail = ", ".join(f"{s} {n}" for s, n in by_source[name].items())
         levels = ", ".join(f"{lv} {n}" for lv, n in by_level[name].items())

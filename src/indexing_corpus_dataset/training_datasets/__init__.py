@@ -27,8 +27,8 @@ Wikipedia gold pages, in stages:
                (Wikipedia-only questions: every gold page; with web gold
                pages: >= min_page_share of all of them); the kept questions
                in the canonical layout: queries/queries_all.jsonl (one row
-               per question with its gold annotation, the criterion texts by
-               an LLM, gold/criterion_texts.py, kept in criterion_texts.jsonl, and
+               per question with its gold annotation, the belief texts by
+               an LLM, gold/belief_texts.py, kept in belief_texts.jsonl, and
                its split: every query in val), qrels/qrels_all.txt (binary,
                one line per fetched gold page), corpus/corpus.jsonl (those
                pages and their hard negatives, webshaper_frames/corpus.py)
@@ -43,7 +43,7 @@ Wikipedia gold pages, in stages:
                corpus and id files, and the duplicate documents of the corpus
 
 trqa_validation (``trqa_validation.py``): the TRQA wiki1 + wiki2 validation
-files merged with their gold annotation, its criterion texts and the split
+files merged with their gold annotation, its belief texts and the split
 sft / rl / val; it searches TRQA's corpus.
 
 Every build writes its sections of ``stats.json`` (its stages with their
@@ -51,7 +51,7 @@ settings, ``annotations``, the split's shares and counts in ``split``) and
 its dropped questions with their stage and reasons to ``dropped.jsonl``.
 
 Modules:
-    config            settings (shared, pages, negatives, split, gold_criteria)
+    config            settings (shared, pages, negatives, split, gold_beliefs)
                       and the build paths
     infoseek          the infoseek build (corpus download, title -> chunks)
     trqa_validation   the trqa_validation build (merged TRQA validation files)
@@ -62,7 +62,7 @@ Modules:
     splits            the sft / rl / val split of a dataset (the rows' ``split``)
     stats             the build statistics
     gold/             the gold annotation: row format, level and skeletons
-                      (annotations), the criterion texts by an LLM
-                      (criterion_texts, prompts/), the TRQA gold criteria
+                      (annotations), the belief texts by an LLM
+                      (belief_texts, prompts/), the TRQA gold beliefs
                       for the belief model (trqa)
 """

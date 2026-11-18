@@ -1,37 +1,36 @@
-"""The criteria sources of the belief model: the fixed per-query criteria
+"""The belief sources of the belief model: the fixed per-query beliefs
 list C = {c_1, ..., c_K}, produced once at the start of each sample.
 
-``LLMCriteriaSource`` derives the criteria from the query;
-``BankedCriteriaSource`` reads them from a bank file and has its producer
-(the extractor, or TRQA's gold criteria built from the intermediate info,
+``LLMBeliefSource`` derives the beliefs from the query;
+``BankedBeliefSource`` reads them from a bank file and has its producer
+(the extractor, or TRQA's gold beliefs built from the intermediate info,
 ``indexing_corpus_dataset.training_datasets.gold.trqa``) make and add only the
 missing ones, so runs and analyses share one list per query;
-``GoldCriteriaSource`` reads a training dataset's gold criteria (the dataset's
+``GoldBeliefSource`` reads a training dataset's gold beliefs (the dataset's
 queries file is their bank, written by the dataset build only);
-``FallbackCriteriaSource`` gives a query without gold criteria silver
-ones.  Which source a dataset and ``criteria_source`` get is decided in
-``criteria.factory``.
+``FallbackBeliefSource`` gives a query without gold beliefs silver
+ones.  Which source a dataset and ``belief_source`` get is decided in
+``init.factory``.
 
-Criteria are gold or silver (``layout.CRITERIA_SOURCES``): gold when they
-come from the question (the extractor's criteria of a BrowseComp-Plus
+Beliefs are gold or silver (``layout.BELIEF_SOURCES``): gold when they
+come from the question (the extractor's beliefs of a BrowseComp-Plus
 question or a report request, ``layout.extraction_kind``) or from the
 dataset's annotation; silver when an LLM extracts structure the question
-does not state (TRQA's members, FRAMES' hops).  Each query's criteria info
-records the kind as ``criteria_kind``.
+does not state (TRQA's members, FRAMES' hops).  Each query's beliefs info
+records the kind as ``belief_source``.
 
-Each criterion is closed (one fact with one answer: a clue, a hop, a
+Each belief is closed (one fact with one answer: a clue, a hop, a
 member's value), an aggregate (the target of a multi-clue query, the
 entity that meets the clues before it, or the computation of a
-multi-member query), or, in a report request, an aspect of the topic.  A criterion refers to criteria before it by their
-ids ("born in B1", "the composer that meets B1 to B3"; "c1" in banks
-before the B ids; the criteria keep the ids "c<k>"), never to a
+multi-member query), or, in a report request, an aspect of the topic.  A belief refers to beliefs before it by their
+ids ("born in B1", "the composer that meets B1 to B3"), never to a
 later one (``parsing.forward_refs``).  A capped list keeps the answer and
-the criteria closest to it (``parsing.cap_chain``); a multi-clue list is
+the beliefs closest to it (``parsing.cap_chain``); a multi-clue list is
 checked against its layout (``parsing.clue_layout``).  A multi-member query lists its members as
-closed criteria, then an aggregate criterion, how the answer follows from
-the members' values, as in the gold criteria of the training datasets.  The kind follows from the dataset's query shape
-and the criterion's position (``parsing.criterion_kinds``); the extractor
-only lists the criteria.
+closed beliefs, then an aggregate belief, how the answer follows from
+the members' values, as in the gold beliefs of the training datasets.  The kind follows from the dataset's query shape
+and the belief's position (``parsing.belief_kinds``); the extractor
+only lists the beliefs.
 """
 
 import fcntl
@@ -45,12 +44,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.layout import CRITERIA_SOURCES, GOLD_CRITERIA, SILVER_CRITERIA
+from indexing_corpus_dataset.layout import BELIEF_SOURCES, GOLD_BELIEFS, SILVER_BELIEFS
 from utils.text_utils import parse_json_object
 
-from ..core.types import CRITERION_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Criterion
+from ..core.types import BELIEF_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Belief
 from ..prompts import BELIEF_INIT_SYSTEMS, belief_init_user
-from .parsing import cap_chain, clue_layout, criterion_kinds, forward_refs, member_layout, salvage_items
+from .parsing import cap_chain, clue_layout, belief_kinds, forward_refs, member_layout, salvage_items
 
 logger = logging.getLogger(__name__)
 
@@ -59,97 +58,97 @@ _REPLY_KEY = "beliefs"
 
 
 # ---------------------------------------------------------------------------
-# Criteria source
+# Belief source
 # ---------------------------------------------------------------------------
 
-class CriteriaSource(ABC):
-    """Produces the fixed criteria list of one query."""
+class BeliefSource(ABC):
+    """Produces the fixed belief list of one query."""
 
     @abstractmethod
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        """Return ``(criteria, info)``; *info* is saved in the meta line.
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
+        """Return ``(beliefs, info)``; *info* is saved in the meta line.
 
         *info* carries at least ``errors`` (a list of strings); an empty
-        criteria list with a non-empty ``errors`` means the source failed.
+        belief list with a non-empty ``errors`` means the source failed.
         """
 
     def prepare(self) -> None:
         """Set up what ``get`` needs before it is called from several
         threads (e.g. a corpus index); nothing by default."""
 
-    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
-        """The query's stored criteria (banked or gold) without extracting
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Belief]]:
+        """The query's stored beliefs (banked or gold) without extracting
         any, or None when none are stored; None by default."""
         return None
 
 
-class LLMCriteriaSource(CriteriaSource):
-    """Derives the criteria of the query with one LLM call.
+class LLMBeliefSource(BeliefSource):
+    """Derives the beliefs of the query with one LLM call.
 
     The dataset's query shape (multi-clue, multi-hop, multi-member or
-    multi-aspect) picks the prompt and the kind of each criterion; the
-    model only lists the criteria (``{id, text}`` each; the ids are code's).  The shape is saved in
+    multi-aspect) picks the prompt and the kind of each belief; the
+    model only lists the beliefs (``{id, text}`` each; the ids are code's).  The shape is saved in
     *info* as ``query_shape``.
 
     Args:
         llm_client: Object with ``complete(messages, **kwargs) -> str``.
-        max_criteria: Cap on the number of criteria kept (the dataset's
-            ``max_criteria`` in layout.DATASET_SPECS), or None (uncapped:
-            gold criteria); at least 2 for a multi-member query (a member and
+        max_beliefs: Cap on the number of beliefs kept (the dataset's
+            ``max_beliefs`` in layout.DATASET_SPECS), or None (uncapped:
+            gold beliefs); at least 2 for a multi-member query (a member and
             the aggregate).  A multi-aspect query lists every
-            criterion the request states and is never capped (must be None).
+            belief the request states and is never capped (must be None).
         model_name: Saved in the meta line and in the bank key
-            (``criteria.factory.bank_model_id``: a served checkpoint's path
+            (``init.factory.bank_model_id``: a served checkpoint's path
             included).
         max_tokens: Max tokens for the LLM call.
         temperature: LLM temperature.
         query_shape: ``"multi_clue"``, ``"multi_hop"``, ``"multi_member"`` or
             ``"multi_aspect"`` (the dataset's ``query_shape`` in
             layout.DATASET_SPECS).
-        kind: ``"gold"`` or ``"silver"``, the kind of the criteria it lists
+        kind: ``"gold"`` or ``"silver"``, the kind of the beliefs it lists
             (``layout.extraction_kind``), saved in *info* as
-            ``criteria_kind``.
+            ``belief_source``.
     """
 
     def __init__(
         self,
         llm_client: Any,
-        max_criteria: Optional[int],
+        max_beliefs: Optional[int],
         model_name: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.0,
         query_shape: str = MULTI_CLUE,
-        kind: str = SILVER_CRITERIA,
+        kind: str = SILVER_BELIEFS,
     ) -> None:
         if query_shape not in QUERY_SHAPES:
             raise ValueError(f"unknown query shape {query_shape!r}; expected one of {QUERY_SHAPES}")
-        if kind not in CRITERIA_SOURCES:
-            raise ValueError(f"unknown criteria kind {kind!r}; expected one of {CRITERIA_SOURCES}")
-        if query_shape == MULTI_ASPECT and max_criteria is not None:
-            raise ValueError(f"max_criteria={max_criteria} for a report request; its criteria are every "
-                             "criterion the request states, uncapped (max_criteria null)")
-        if query_shape == MULTI_MEMBER and max_criteria is not None and max_criteria < 2:
-            raise ValueError(f"max_criteria={max_criteria} for a multi-member query; it needs at least 2 "
+        if kind not in BELIEF_SOURCES:
+            raise ValueError(f"unknown belief kind {kind!r}; expected one of {BELIEF_SOURCES}")
+        if query_shape == MULTI_ASPECT and max_beliefs is not None:
+            raise ValueError(f"max_beliefs={max_beliefs} for a report request; its beliefs are every "
+                             "belief the request states, uncapped (max_beliefs null)")
+        if query_shape == MULTI_MEMBER and max_beliefs is not None and max_beliefs < 2:
+            raise ValueError(f"max_beliefs={max_beliefs} for a multi-member query; it needs at least 2 "
                              "(a member and the aggregate)")
         self._shape = query_shape
         self.kind = kind
         self._system = BELIEF_INIT_SYSTEMS[query_shape]
         self._llm = llm_client
         self.model_name = model_name
-        self._max_criteria = max_criteria
+        self._max_beliefs = max_beliefs
         self._max_tokens = max_tokens
         self._temperature = temperature
 
     @property
     def bank_fields(self) -> Dict[str, Any]:
-        """What, besides the query, decides the criteria: the bank key of
-        ``BankedCriteriaSource``.  ``prompt`` hashes the system prompt and
+        """What, besides the query, decides the beliefs: the bank key of
+        ``BankedBeliefSource``.  ``prompt`` hashes the system prompt and
         the user message without the query."""
-        prompt = self._system + "\n" + belief_init_user(self._shape, "", self._max_criteria)
+        prompt = self._system + "\n" + belief_init_user(self._shape, "", self._max_beliefs)
         return {
             "model": self.model_name,
             "query_shape": self._shape,
-            "max_criteria": self._max_criteria,
+            "max_beliefs": self._max_beliefs,
             "prompt": hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12],
         }
 
@@ -157,22 +156,22 @@ class LLMCriteriaSource(CriteriaSource):
         """The extractor's chat messages for *query*."""
         return [
             {"role": "system", "content": self._system},
-            {"role": "user", "content": belief_init_user(self._shape, query, self._max_criteria)},
+            {"role": "user", "content": belief_init_user(self._shape, query, self._max_beliefs)},
         ]
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
         try:
             raw = self._llm.complete(self.messages(query), max_tokens=self._max_tokens,
                                      temperature=self._temperature)
         except Exception as e:
-            logger.warning("LLMCriteriaSource: LLM call failed", exc_info=True)
-            return [], {"model": self.model_name, "query_shape": self._shape, "criteria_kind": self.kind,
+            logger.warning("LLMBeliefSource: LLM call failed", exc_info=True)
+            return [], {"model": self.model_name, "query_shape": self._shape, "belief_source": self.kind,
                         "errors": [f"llm_call: {e}"]}
         return self.parse(raw)
 
-    def parse(self, raw: Optional[str]) -> Tuple[List[Criterion], Dict[str, Any]]:
-        """The criteria of the extractor's reply *raw* and the extraction info."""
-        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "criteria_kind": self.kind,
+    def parse(self, raw: Optional[str]) -> Tuple[List[Belief], Dict[str, Any]]:
+        """The beliefs of the extractor's reply *raw* and the extraction info."""
+        info: Dict[str, Any] = {"model": self.model_name, "query_shape": self._shape, "belief_source": self.kind,
                                 "errors": []}
         data = parse_json_object(raw or "")
         if data is None or not isinstance(data.get(_REPLY_KEY), list):
@@ -195,38 +194,38 @@ class LLMCriteriaSource(CriteriaSource):
             if item and item not in items:
                 items.append(item)
         if not items:
-            info["errors"].append("parse: empty criteria list")
+            info["errors"].append("parse: empty belief list")
             info["raw"] = raw
 
         if self._shape == MULTI_MEMBER:
-            items = member_layout(items, self._max_criteria, info)
-        elif self._max_criteria is not None:
-            items = cap_chain(items, self._max_criteria, info)
+            items = member_layout(items, self._max_beliefs, info)
+        elif self._max_beliefs is not None:
+            items = cap_chain(items, self._max_beliefs, info)
         if self._shape == MULTI_CLUE and items:
             layout = clue_layout(items)
             if layout:
-                # Asked once more (``BankedCriteriaSource``), then kept.
+                # Asked once more (``BankedBeliefSource``), then kept.
                 info["warnings"] = info.get("warnings", []) + [f"layout: {'; '.join(layout)}"]
                 info["bad_layout"] = True
-        criteria = [
-            Criterion(id=f"c{k + 1}", text=t, kind=kind)
-            for k, (t, kind) in enumerate(zip(items, criterion_kinds(self._shape, items)))
+        beliefs = [
+            Belief(id=f"B{k + 1}", text=t, kind=kind)
+            for k, (t, kind) in enumerate(zip(items, belief_kinds(self._shape, items)))
         ]
         bad = forward_refs(items)
         if bad:
-            # A criterion refers only to criteria before it; the extraction
-            # is asked once more (``BankedCriteriaSource``), then kept.
+            # A belief refers only to beliefs before it; the extraction
+            # is asked once more (``BankedBeliefSource``), then kept.
             info["warnings"] = info.get("warnings", []) + [f"order: {'; '.join(bad)}"]
             info["bad_order"] = True
-        return criteria, info
+        return beliefs, info
 
 
 # Key of the info a producer returns that goes to the bank only (its
-# record's ``bank_only``), never to a run's criteria info: e.g. the gold
+# record's ``bank_only``), never to a run's beliefs info: e.g. the gold
 # annotation row of a TRQA query.
 BANK_ONLY = "bank_only"
 # Key of the info of a producer's empty result that is final (banked, so
-# not asked again): e.g. gold criterion texts that failed for good.
+# not asked again): e.g. gold belief texts that failed for good.
 FINAL = "final"
 
 
@@ -235,37 +234,37 @@ def without_bank_only(info: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in info.items() if k != BANK_ONLY}
 
 
-class BankedCriteriaSource(CriteriaSource):
-    """Reads the criteria of a query from a bank file; a query missing from
+class BankedBeliefSource(BeliefSource):
+    """Reads the beliefs of a query from a bank file; a query missing from
     it gets them from *inner*, the producer, and they are added to the bank.
 
-    *inner* is any ``CriteriaSource`` with ``bank_fields`` (what, besides
-    the query, decides its criteria): the extractor
-    (``LLMCriteriaSource``: model, query shape, cap, prompt hash) or TRQA's
+    *inner* is any ``BeliefSource`` with ``bank_fields`` (what, besides
+    the query, decides its beliefs): the extractor
+    (``LLMBeliefSource``: model, query shape, cap, prompt hash) or TRQA's
     gold producer (``indexing_corpus_dataset.training_datasets.gold.trqa``: the
     writer of the texts and its prompt hash).
 
     The bank (``layout.belief_bank_path``) is a JSONL file, one line per
     query and setting: the query id and text, ``inner.bank_fields``, the
-    criteria, the info and the producer's bank-only data (``BANK_ONLY`` of
+    beliefs, the info and the producer's bank-only data (``BANK_ONLY`` of
     its info, e.g. a gold annotation row; never returned).  A line is used
     only when all of these match, so a changed prompt or cap makes the
-    criteria again.  A salvaged extraction (the complete items of a
+    beliefs again.  A salvaged extraction (the complete items of a
     truncated reply) is asked once more and fails when salvaged again, so
-    every criteria list used is banked.  A failed result (no criteria) is
+    every belief list used is banked.  A failed result (no beliefs) is
     never added, unless the producer marks it final (``FINAL``: texts that
     failed for good), so it is not asked again: it is banked with no
-    criteria.  Lines are appended under a file lock, after reading the lines
+    beliefs.  Lines are appended under a file lock, after reading the lines
     added since the last read (by another worker or process): when one of
     them is the query's, it is used and none is added, so one query has one
     banked list.
 
     *info* is the stored info with ``bank``: ``"hit"`` (read from the
-    bank), ``"added"`` (made and added) or ``"failed"`` (no criteria: not
+    bank), ``"added"`` (made and added) or ``"failed"`` (no beliefs: not
     added, or banked as a final failure).
     """
 
-    def __init__(self, inner: CriteriaSource, path: Path | str) -> None:
+    def __init__(self, inner: BeliefSource, path: Path | str) -> None:
         self._inner = inner
         self.path = Path(path)
         self._fields = inner.bank_fields
@@ -295,28 +294,28 @@ class BankedCriteriaSource(CriteriaSource):
                 rec = json.loads(line)
                 self._bank[rec["key"]] = rec
             except (json.JSONDecodeError, KeyError, TypeError):
-                logger.warning("BankedCriteriaSource: a line of %s is not a bank record; skipped", self.path)
+                logger.warning("BankedBeliefSource: a line of %s is not a bank record; skipped", self.path)
         self._offset += end
 
     def _key(self, query_id: Optional[str], query: str) -> str:
         fields = {"query_id": query_id, "query": query, **self._fields}
         return hashlib.sha1(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
-    def _banked(self, rec: Dict[str, Any]) -> Tuple[List[Criterion], Dict[str, Any]]:
-        criteria = [Criterion(**c) for c in rec["criteria"]]
-        old = sorted({c.kind for c in criteria} - set(CRITERION_KINDS))
+    def _banked(self, rec: Dict[str, Any]) -> Tuple[List[Belief], Dict[str, Any]]:
+        beliefs = [Belief(**c) for c in rec["beliefs"]]
+        old = sorted({c.kind for c in beliefs} - set(BELIEF_KINDS))
         if old:
             # A bank made before schema 45 (kinds hop, target, rest).
-            raise ValueError(f"{self.path}: banked criteria of kinds {old}, which the belief no longer takes "
-                             f"(kinds {CRITERION_KINDS}); delete the bank and rebuild it")
-        return criteria, {**rec["info"], "bank": "hit" if criteria else "failed"}
+            raise ValueError(f"{self.path}: banked beliefs of kinds {old}, which the belief no longer takes "
+                             f"(kinds {BELIEF_KINDS}); delete the bank and rebuild it")
+        return beliefs, {**rec["info"], "bank": "hit" if beliefs else "failed"}
 
-    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Belief]]:
         with self._lock:
             rec = self._bank.get(self._key(query_id, query))
         return None if rec is None else self._banked(rec)[0]
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
         key = self._key(query_id, query)
         with self._lock:
             rec = self._bank.get(key)
@@ -324,23 +323,23 @@ class BankedCriteriaSource(CriteriaSource):
             return self._banked(rec)
 
         # A salvaged reply is asked once more; salvaged again, the extraction
-        # fails.  A reply whose criteria refer to a later one, exceed the cap
+        # fails.  A reply whose beliefs refer to a later one, exceed the cap
         # or (multi-clue) miss the layout is asked once more too, then kept
         # (with its warning).
         for _ in range(2):
-            criteria, info = self._inner.get(query_id, query)
+            beliefs, info = self._inner.get(query_id, query)
             if not any(info.get(flag) for flag in ("salvaged", "bad_order", "over_cap", "bad_layout")):
                 break
         if info.get("salvaged"):
             info = {**info, "errors": info.get("errors", []) + ["parse: truncated reply twice, not banked"]}
-            criteria = []
+            beliefs = []
         bank_only = info.get(BANK_ONLY)
         info = without_bank_only(info)
-        if not criteria and not info.get(FINAL):
-            return criteria, {**info, "bank": "failed"}
+        if not beliefs and not info.get(FINAL):
+            return beliefs, {**info, "bank": "failed"}
         rec = {
             "key": key, "query_id": query_id, "query": query, **self._fields,
-            "criteria": [c.to_dict() for c in criteria], "info": info,
+            "beliefs": [c.to_dict() for c in beliefs], "info": info,
             **({BANK_ONLY: bank_only} if bank_only is not None else {}),
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
@@ -365,27 +364,27 @@ class BankedCriteriaSource(CriteriaSource):
                     fcntl.flock(f, fcntl.LOCK_UN)
         if banked is not None:
             return self._banked(banked)
-        return criteria, {**info, "bank": "added" if criteria else "failed"}
+        return beliefs, {**info, "bank": "added" if beliefs else "failed"}
 
 
-# Model name in the criteria info of gold criteria (``GoldCriteriaSource``).
-GOLD_CRITERIA_MODEL = "gold"
+# Model name in the beliefs info of gold beliefs (``GoldBeliefSource``).
+GOLD_BELIEF_MODEL = "gold"
 
 
-class GoldCriteriaSource(CriteriaSource):
-    """Reads each query's gold criteria from a training dataset's queries file
-    (``layout.gold_criteria_path``, one row per query in the format of
+class GoldBeliefSource(BeliefSource):
+    """Reads each query's gold beliefs from a training dataset's queries file
+    (``layout.gold_beliefs_path``, one row per query in the format of
     ``training_datasets/gold/annotations.py``, written by the dataset build): per query,
-    its criteria with their gold answers and documents.  Only the criteria
-    (id, text, kind; the kind as ``parsing.criterion_kinds`` gives it for
+    its beliefs with their gold answers and documents.  Only the beliefs
+    (id, text, kind; the kind as ``parsing.belief_kinds`` gives it for
     the shape) reach the belief model, of a query whose row has
-    criteria with their texts (``texts_ok``), at any annotation ``level``
+    beliefs with their texts (``texts_ok``), at any annotation ``level``
     (WebShaper's ``partial`` rows included); the info records the row's
     ``level`` as ``gold_level``.
 
-    Any other query (no row, no criteria such as FRAMES', failed texts, or
-    another query text: ``missing``) gets no criteria, the reason in its
-    ``errors``; ``FallbackCriteriaSource`` gives it silver ones."""
+    Any other query (no row, no beliefs such as FRAMES', failed texts, or
+    another query text: ``missing``) gets no beliefs, the reason in its
+    ``errors``; ``FallbackBeliefSource`` gives it silver ones."""
 
     def __init__(self, path: Path | str, query_shape: str) -> None:
         self.path = Path(path)
@@ -398,54 +397,54 @@ class GoldCriteriaSource(CriteriaSource):
                 for line in f:
                     if line.strip():
                         row = json.loads(line)
-                        criteria = row.get("criteria") or []
-                        if any(c.get("kind") == "rest" for c in criteria):
-                            raise ValueError(f"{self.path}: query {row['id']} has a rest criterion "
+                        beliefs = row.get("beliefs") or []
+                        if any(c.get("kind") == "rest" for c in beliefs):
+                            raise ValueError(f"{self.path}: query {row['id']} has a rest belief "
                                              "(\"any other member\"), which the belief no longer takes; "
-                                             "rebuild the dataset's gold criteria")
-                        kinds = criterion_kinds(query_shape, [c["text"] for c in criteria])
+                                             "rebuild the dataset's gold beliefs")
+                        kinds = belief_kinds(query_shape, [c["text"] for c in beliefs])
                         self._rows[str(row["id"])] = {
                             "text": row.get("text"), "texts_ok": row.get("texts_ok"), "level": row.get("level"),
-                            "criteria": [Criterion(id=c["id"], text=c["text"], kind=kind)
-                                         for c, kind in zip(criteria, kinds)],
+                            "beliefs": [Belief(id=c["id"], text=c["text"], kind=kind)
+                                         for c, kind in zip(beliefs, kinds)],
                         }
 
     def missing(self, query_id: Optional[str], query: str) -> Optional[str]:
-        """Why the query has no gold criteria to use, or None when it has."""
+        """Why the query has no gold beliefs to use, or None when it has."""
         row = self._rows.get(str(query_id))
         if row is None:
             return f"no row for query {query_id} in {self.path}"
-        if not row.get("criteria"):
-            return "no gold criteria (the source states no structure)"
+        if not row.get("beliefs"):
+            return "no gold beliefs (the source states no structure)"
         if not row.get("texts_ok"):
-            return "no criterion texts"
+            return "no belief texts"
         if row.get("text") is not None and row["text"] != query:
             return f"the query of {query_id} in {self.path} differs"
         return None
 
-    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Belief]]:
         if self.missing(query_id, query) is not None:
             return None
-        return list(self._rows[str(query_id)]["criteria"])
+        return list(self._rows[str(query_id)]["beliefs"])
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        info: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": self._shape, "criteria_kind": GOLD_CRITERIA,
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
+        info: Dict[str, Any] = {"model": GOLD_BELIEF_MODEL, "query_shape": self._shape, "belief_source": GOLD_BELIEFS,
                                 "errors": []}
         reason = self.missing(query_id, query)
         if reason is not None:
-            return [], {**info, "errors": [f"gold criteria: {reason}"]}
+            return [], {**info, "errors": [f"gold beliefs: {reason}"]}
         row = self._rows[str(query_id)]
-        return list(row["criteria"]), {**info, "gold_level": row.get("level")}
+        return list(row["beliefs"]), {**info, "gold_level": row.get("level")}
 
 
-class FallbackCriteriaSource(CriteriaSource):
-    """The gold criteria of a query from *gold* (a training dataset's rows, or
-    TRQA's banked gold), and for a query without them (no criteria) the
+class FallbackBeliefSource(BeliefSource):
+    """The gold beliefs of a query from *gold* (a training dataset's rows, or
+    TRQA's banked gold), and for a query without them (no beliefs) the
     silver ones of *fallback*, with the reason, the gold source's
     ``errors``, in its info as ``gold_missing``.  The bank-only part of the
     info (``BANK_ONLY``) is never returned."""
 
-    def __init__(self, gold: CriteriaSource, fallback: CriteriaSource) -> None:
+    def __init__(self, gold: BeliefSource, fallback: BeliefSource) -> None:
         self.gold = gold
         self.fallback = fallback
 
@@ -453,13 +452,13 @@ class FallbackCriteriaSource(CriteriaSource):
         self.gold.prepare()
         self.fallback.prepare()
 
-    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Criterion]]:
+    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Belief]]:
         return self.gold.lookup(query_id, query) or self.fallback.lookup(query_id, query)
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
-        criteria, info = self.gold.get(query_id, query)
-        if criteria:
-            return criteria, without_bank_only(info)
-        reason = "; ".join(info.get("errors") or []) or "no gold criteria"
-        criteria, info = self.fallback.get(query_id, query)
-        return criteria, {**without_bank_only(info), "gold_missing": reason}
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
+        beliefs, info = self.gold.get(query_id, query)
+        if beliefs:
+            return beliefs, without_bank_only(info)
+        reason = "; ".join(info.get("errors") or []) or "no gold beliefs"
+        beliefs, info = self.fallback.get(query_id, query)
+        return beliefs, {**without_bank_only(info), "gold_missing": reason}

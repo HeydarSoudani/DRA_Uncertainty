@@ -1,7 +1,7 @@
 """Settings of the training dataset build (``shared``, the ``pages`` and
 ``negatives`` sections of webshaper_frames, the ``split`` section of
-infoseek and trqa_validation, and the ``gold_criteria`` section of the
-criterion texts) and its paths.  The sources and the dropped question types
+infoseek and trqa_validation, and the ``gold_beliefs`` section of the
+belief texts) and its paths.  The sources and the dropped question types
 are fixed (``sources.py``, ``filters.py``).
 
 The YAML file (``experiments/configs/build_training_dataset.yaml``) has the same
@@ -88,8 +88,8 @@ class SplitConfig:
 
 
 @dataclass
-class GoldCriteriaConfig:
-    """The criterion texts of the gold annotation (``gold/criterion_texts.py``),
+class GoldBeliefsConfig:
+    """The belief texts of the gold annotation (``gold/belief_texts.py``),
     written by an LLM at the end of every build."""
     # The writer: the teacher belief model of training (native reasoning off).
     model: str = "openrouter/qwen/qwen3.6-27b"
@@ -106,7 +106,7 @@ SECTIONS = {
     "pages": PagesConfig,
     "negatives": NegativesConfig,
     "split": SplitConfig,
-    "gold_criteria": GoldCriteriaConfig,
+    "gold_beliefs": GoldBeliefsConfig,
 }
 
 
@@ -116,7 +116,7 @@ class BuildConfig:
     pages: PagesConfig = field(default_factory=PagesConfig)
     negatives: NegativesConfig = field(default_factory=NegativesConfig)
     split: SplitConfig = field(default_factory=SplitConfig)
-    gold_criteria: GoldCriteriaConfig = field(default_factory=GoldCriteriaConfig)
+    gold_beliefs: GoldBeliefsConfig = field(default_factory=GoldBeliefsConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return dataclasses.asdict(self)
@@ -196,9 +196,9 @@ class DatasetPaths:
 
     @property
     def texts(self) -> Path:
-        """The memory of the criterion texts: one row per query whose texts
-        are final, appended as the writer finishes them (``gold/criterion_texts.py``)."""
-        return self.root / "criterion_texts.jsonl"
+        """The memory of the belief texts: one row per query whose texts
+        are final, appended as the writer finishes them (``gold/belief_texts.py``)."""
+        return self.root / "belief_texts.jsonl"
 
     @property
     def questions(self) -> Path:

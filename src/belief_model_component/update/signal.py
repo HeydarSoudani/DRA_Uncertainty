@@ -12,7 +12,7 @@ from utils.text_utils import doc_id as _doc_id, doc_text, doc_title
 
 from ..core.certainty import certainty
 from ..core.state import BeliefState
-from ..core.types import Criterion
+from ..core.types import Belief
 from ..text.passages import Passage, Turn, passage_title
 from .updater import LLMBeliefUpdater
 
@@ -71,7 +71,7 @@ class BeliefUpdateSignal:
 
     (``called`` whether a call was made; ``observations``, ``updates``, ``changed``,
     ``issues`` and ``notes`` as ``BeliefState.apply`` gives them, null / empty when the
-    call was not made or failed; ``beliefs`` every criterion's belief after
+    call was not made or failed; ``beliefs`` every belief's state after
     the step (``BeliefState.belief_lists``); ``reply`` the raw reply, null
     when not called or the call raised).
 
@@ -103,15 +103,15 @@ class BeliefUpdateSignal:
         return self._state.belief_lists() if self._state is not None else None
 
     def certainty(self) -> Optional[float]:
-        """s_t of the current belief; None without criteria."""
+        """s_t of the current belief; None without beliefs."""
         if self._state is None:
             return None
-        return certainty([{"status": self._state.status(k)} for k in range(len(self._state.criteria))],
-                         [c.kind for c in self._state.criteria])
+        return certainty([{"status": self._state.status(k)} for k in range(len(self._state.beliefs))],
+                         [c.kind for c in self._state.beliefs])
 
-    def reset(self, query: str, criteria: List[Criterion]) -> None:
+    def reset(self, query: str, beliefs: List[Belief]) -> None:
         self._query = query
-        self._state = BeliefState(criteria) if criteria else None
+        self._state = BeliefState(beliefs) if beliefs else None
         self._pending = []
 
     def step(self, docs: List[Dict[str, Any]], step: int, agent_turn: Optional[str] = None) -> Dict[str, Any]:

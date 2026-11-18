@@ -1,7 +1,7 @@
-"""Whether a text has the gold answer of a criterion.
+"""Whether a text has the gold answer of a belief.
 
 Used by the belief update evaluation (``evaluation.belief.evaluator``).  A
-criterion is a plain dict with at least ``text`` and ``answers``.
+belief is a plain dict with at least ``text`` and ``answers``.
 
 - ``states``: a text states one of the gold answers: an answer occurs in it
   as whole words (case, accents and punctuation ignored), outside a longer
@@ -30,20 +30,20 @@ _NUMBER = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
 # state the answer?) or a value (is it the answer?).
 JUDGE_PROMPTS = {
     "turn": """\
-Criterion: {criterion}
+Belief: {belief}
 Gold answer: {answers}
 
 Text:
 {text}
 
-Does the text state the gold answer of the criterion, in any wording (a name, a number in another format, or an unambiguous reference to it)? A text that only asks for it, searches for it without stating it, or states a different answer does not. Answer YES or NO.""",
+Does the text state the gold answer of the belief, in any wording (a name, a number in another format, or an unambiguous reference to it)? A text that only asks for it, searches for it without stating it, or states a different answer does not. Answer YES or NO.""",
     "candidate": """\
-Criterion: {criterion}
+Belief: {belief}
 Gold answer: {answers}
 
 Candidate answer: {text}
 
-Is the candidate answer the gold answer of the criterion (or, when several gold answers are listed, one of them), in any wording (a name, a number in another format, or an unambiguous reference to it)? A candidate that names a different entity or value, or only part of a compound answer, is not. Answer YES or NO.""",
+Is the candidate answer the gold answer of the belief (or, when several gold answers are listed, one of them), in any wording (a name, a number in another format, or an unambiguous reference to it)? A candidate that names a different entity or value, or only part of a compound answer, is not. Answer YES or NO.""",
 }
 
 # The kinds of text the judge is asked about: a candidate (is it the gold
@@ -51,7 +51,7 @@ Is the candidate answer the gold answer of the criterion (or, when several gold 
 CANDIDATE = "candidate"
 SPANS = "turn"
 
-# Gold answers shown to the judge per criterion.
+# Gold answers shown to the judge per belief.
 MAX_JUDGE_ANSWERS = 50
 
 
@@ -105,21 +105,21 @@ class AnswerJudge:
                     row = json.loads(line)
                     self._cache[row["key"]] = row["stated"]
 
-    def key(self, kind: str, criterion: Dict[str, Any], text: str) -> str:
-        blob = json.dumps([self.model, kind, criterion["text"], criterion["answers"], text], ensure_ascii=False)
+    def key(self, kind: str, belief: Dict[str, Any], text: str) -> str:
+        blob = json.dumps([self.model, kind, belief["text"], belief["answers"], text], ensure_ascii=False)
         return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
     def resolve(self, items: List[Tuple[str, Dict[str, Any], str]]) -> Dict[str, bool]:
-        """The verdict of each ``(kind, criterion, text)``, by its ``key``;
+        """The verdict of each ``(kind, belief, text)``, by its ``key``;
         uncached ones are asked (a reply without YES counts as no; one
         without YES/NO is not cached)."""
         keyed = {self.key(*item): item for item in items}
         todo = [(k, item) for k, item in keyed.items() if k not in self._cache]
         if todo:
             def one(pair):
-                key, (kind, criterion, text) = pair
+                key, (kind, belief, text) = pair
                 prompt = JUDGE_PROMPTS[kind].format(
-                    criterion=criterion["text"], answers=" | ".join(criterion["answers"][:MAX_JUDGE_ANSWERS]),
+                    belief=belief["text"], answers=" | ".join(belief["answers"][:MAX_JUDGE_ANSWERS]),
                     text=text)
                 answer = yes_no(run_sync(self._judge.ask([{"role": "user", "content": prompt}])))
                 # A reply without YES/NO (malformed, or a timeout) is no

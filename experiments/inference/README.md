@@ -9,7 +9,7 @@ are evaluated, and the output files. Datasets and indices must be built first
 
 - [Running](#running)
 - [Belief model](#belief-model)
-  - [Criteria](#criteria)
+  - [Beliefs](#beliefs)
   - [Belief update](#belief-update)
 - [Evaluation](#evaluation)
   - [Report evaluation (Auto-ARGUE)](#report-evaluation-auto-argue)
@@ -41,8 +41,8 @@ python experiments/inference/dra_inference.py \
 | `--retriever` | must have an index built for the dataset |
 | `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
-| `--belief-model` | the belief model's LLM (criteria init, belief update, final score); unset = `belief_model` in the YAML |
-| `--criteria-source` | `gold` or `silver` criteria of the belief model (TRQA, trqa_validation) |
+| `--belief-model` | the belief model's LLM (belief init, belief update, final score); unset = `belief_model` in the YAML |
+| `--belief-source` | `gold` or `silver` beliefs of the belief model (TRQA, trqa_validation) |
 | `--workers` | query-level worker processes of the generate stage: one per GPU on a GPU machine, CPU processes otherwise; `0` = auto (GPU count, 1 without GPU) |
 | `--belief-workers` | queries the belief stage runs at once (threads; `belief_workers` in the YAML) |
 | `--limit N` | each stage runs at most N queries |
@@ -73,7 +73,7 @@ python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --st
 ```
 
 Every stage resumes: the generate stage skips the queries with a finished trajectory, the belief stage those with a
-belief file of the current schema (an older one is made again). A query whose criteria or a belief call failed before
+belief file of the current schema (an older one is made again). A query whose beliefs or a belief call failed before
 any reply (the API or the server, not a reply that did not parse) stops there and is not saved, so the next belief
 stage runs it again; the stage lists these queries at its end, and `metrics.md` gives the finished queries with a
 belief file (`queries with a belief file`, the belief group). With `--stage all --limit N`, the belief stage takes the
@@ -81,7 +81,7 @@ queries this call generated first. A generate stage whose `dataset`, `agent` or 
 refused, so every trajectory of a directory ran with the same settings; the belief and eval stages are refused when
 the `dataset` settings (split, query key, relevance threshold) differ. The corpus path is recorded but not
 compared (a data root may move); a change is printed. A belief stage whose belief settings
-(belief model, criteria source and cap) differ from the run's `belief_model` section removes the run's beliefs
+(belief model, belief source and cap) differ from the run's `belief_model` section removes the run's beliefs
 (`belief/`, `eval/belief/`), then saves the new settings, and runs every query again; copy them first to keep them.
 The belief stage needs a belief model (`belief_model` empty stops it).
 `--stage all` with a `vllm/` belief model on a port the GPU release clears after generating (6008, 8000) is refused:
@@ -92,112 +92,112 @@ run `--stage generate`, then `--stage belief`, or serve it elsewhere (`$BELIEF_V
 The belief model (`src/belief_model_component/`) runs in the belief stage, over the saved trajectories of any agent;
 it never changes what the agent does. It follows Agent-BRACE (Singh et al., 2026, arXiv:2605.11436), adapted to search: the environment is the retriever,
 the observation of a search iteration is its documents and the agent's turn, and the belief state gives each
-criterion of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
+belief of the query its candidates (possible answers), each with a status of Agent-BRACE's verbal belief scale, for
 how likely it is an answer, and its support (the passage observations on it), and the names the agent proposed that no
-passage supports yet. All criteria and belief
-calls are LLM calls on one backbone, `belief_model` (`--belief-model`): the criteria init, the belief update
+passage supports yet. All beliefs and belief
+calls are LLM calls on one backbone, `belief_model` (`--belief-model`): the belief init, the belief update
 (`src/belief_model_component/update/updater.py`) and the final score.
 
-### Criteria
+### Beliefs
 
-At the start of each sample, the belief model derives a fixed list of criteria from the query: the pieces of
+At the start of each sample, the belief model derives a fixed list of beliefs from the query: the pieces of
 information a complete response must establish. The dataset's `query_shape` (`layout.DATASET_SPECS`) picks the
 prompt, a shared core plus one block per shape:
 
-| Shape | Datasets | Criteria |
+| Shape | Datasets | Beliefs |
 |---|---|---|
-| multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets c1 to c5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
-| multi-hop | infoseek, webshaper_frames | one criterion per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in c1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
-| multi-member | TRQA | one "member: property" per known member, then the aggregate: how the answer follows from the members' values (the layout of the gold criteria; at most 52: 51 members and the aggregate) |
+| multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets B1 to B5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
+| multi-hop | infoseek, webshaper_frames | one belief per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in B1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
+| multi-member | TRQA | one "member: property" per known member, then the aggregate: how the answer follows from the members' values (the layout of the gold beliefs; at most 52: 51 members and the aggregate) |
 | multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
-`max_criteria` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver criteria only: TRQA and
-trqa_validation (52) and webshaper_frames' FRAMES (8). Gold criteria are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
-whose criteria are all gold, a `max_criteria` stops the run (`criteria.factory.check_max_criteria`).
+`max_beliefs` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver beliefs only: TRQA and
+trqa_validation (52) and webshaper_frames' FRAMES (8). Gold beliefs are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
+whose beliefs are all gold, a `max_beliefs` stops the run (`init.factory.check_max_beliefs`).
 
-Rules for report criteria:
+Rules for report beliefs:
 
-- A criterion keeps the request's own limits in its wording. What the request leaves out is written into the
-  criterion it narrows ("..., not ..."); an exception ("unless ...") is its own criterion.
+- A belief keeps the request's own limits in its wording. What the request leaves out is written into the
+  belief it narrows ("..., not ..."); an exception ("unless ...") is its own belief.
 - Background on the asker is kept only when it limits what information applies (country, location, situation).
-- Every criterion reads on its own, naming its subject instead of pointing back ("it", "these").
-- Criteria are distinct: none asks for what another one asks for.
+- Every belief reads on its own, naming its subject instead of pointing back ("it", "these").
+- Beliefs are distinct: none asks for what another one asks for.
 
-Each criterion has a `kind`, set by code from the shape and the texts (`criteria.parsing.criterion_kinds`, also
-applied to the training datasets' gold rows): `closed` (one fact with one answer), `aggregate` (it combines the criteria
+Each belief has a `kind`, set by code from the shape and the texts (`init.parsing.belief_kinds`, also
+applied to the training datasets' gold rows): `closed` (one fact with one answer), `aggregate` (it combines the beliefs
 before it) or `aspect` (one aspect of a report topic). A multi-clue query's clues and asked answer are closed, its
-"meets c1 to c<k>" criterion an aggregate, the target (`criteria.parsing.target_index`); every hop of a multi-hop query
-is closed; a multi-member query's members are closed and its last criterion an aggregate, the computation (added by
-code when the model leaves it out; an "any other member" item is dropped); all report criteria are aspects. A closed
-criterion has one answer, so its candidates are alternatives. An aggregate's statuses are code's: a target's
+"meets B1 to B<k>" belief an aggregate, the target (`init.parsing.target_index`); every hop of a multi-hop query
+is closed; a multi-member query's members are closed and its last belief an aggregate, the computation (added by
+code when the model leaves it out; an "any other member" item is dropped); all report beliefs are aspects. A closed
+belief has one answer, so its candidates are alternatives. An aggregate's statuses are code's: a target's
 candidates are the names listed on every clue, a computation's are the answers the agent's turns compute; each is at
 the lowest status of its inputs, "unlikely" when a passage speaks against it.
 
-**Gold and silver criteria.** Criteria are gold when they come from the question or from the dataset's annotation,
-silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_criteria`, `criteria_choice`):
+**Gold and silver beliefs.** Beliefs are gold when they come from the question or from the dataset's annotation,
+silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_beliefs`, `belief_choice`):
 
 | Dataset | Gold | Silver |
 |---|---|---|
-| BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's criteria (the question's own clues and requirements) | none |
+| BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's beliefs (the question's own clues and requirements) | none |
 | infoseek, webshaper_frames WebShaper | the dataset's rows (`queries/queries_all.jsonl`, any `level`) | none |
-| webshaper_frames FRAMES | none | the extractor's multi-hop criteria |
-| TRQA | made from the intermediate info on demand (`training_datasets/gold/trqa.py`) | the extractor's set criteria |
-| trqa_validation | the dataset's rows | the extractor's set criteria |
+| webshaper_frames FRAMES | none | the extractor's multi-hop beliefs |
+| TRQA | made from the intermediate info on demand (`training_datasets/gold/trqa.py`) | the extractor's set beliefs |
+| trqa_validation | the dataset's rows | the extractor's set beliefs |
 
-**Criteria source** (`criteria_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_validation only,
+**Belief source** (`belief_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_validation only,
 whose queries have both; the run goes to `belief-{mode}-gold/` or `belief-{mode}-silver/`. Elsewhere it has no
 effect (an info line says so) and the run goes to `belief-{mode}/`. The belief model always runs: a query without
-gold criteria (FRAMES, failed texts) gets silver ones (`gold_missing` in its `criteria_info`). Each query's
-`criteria_info` records `criteria_kind` (`gold` or `silver`), and a gold row's `gold_level`. `run_config.json`
-records `criteria_source` and the source used, `criteria_source_effective`.
+gold beliefs (FRAMES, failed texts) gets silver ones (`gold_missing` in its `belief_info`). Each query's
+`belief_info` records `belief_source` (`gold` or `silver`), and a gold row's `gold_level`. `run_config.json`
+records `belief_source` and the source used, `belief_source_effective`.
 
-**Criteria init** (`belief_model_component/criteria/factory.py`). The criteria are part of the belief model: it makes
+**Belief init** (`belief_model_component/beliefs/factory.py`). The beliefs are part of the belief model: it makes
 each query's list once, at the start of the query (`BeliefModel.reset`). The run only passes the dataset,
-`criteria_source` and `belief_model`:
+`belief_source` and `belief_model`:
 
-1. The kind: the requested `criteria_source` on TRQA and trqa_validation, gold elsewhere; a query without gold
-   criteria gets silver ones.
-2. The criteria of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
+1. The kind: the requested `belief_source` on TRQA and trqa_validation, gold elsewhere; a query without gold
+   beliefs gets silver ones.
+2. The beliefs of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
    made the first time a query needs it, in the belief stage and in `analysis/criteria_reachability.py`; no build
    step.
 
-Before the workers start (after the vLLM servers are up), the run makes and banks the missing criteria of its
-queries in parallel (`prepare_criteria`, with counts per kind and origin); the workers share that criteria source
+Before the workers start (after the vLLM servers are up), the run makes and banks the missing beliefs of its
+queries in parallel (`prepare_beliefs`, with counts per kind and origin); the workers share that belief source
 and read them from the bank, and a query still missing is made by its worker. The settings are checked before any model is loaded
-(`check_criteria_inputs`: e.g. a missing training dataset gold file stops the run).
+(`check_belief_inputs`: e.g. a missing training dataset gold file stops the run).
 
 The banks:
 
-- The extractor's criteria (`belief_model`): `CRITERIA_ROOT/{dataset}/belief_bank/{gold|silver}/criteria_{split}.jsonl`
+- The extractor's beliefs (`belief_model`): `BELIEF_ROOT/{dataset}/belief_bank/{gold|silver}/beliefs_{split}.jsonl`
   (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
-  `CRITERIA_ROOT/training_datasets/{dataset}/belief_bank/silver/criteria_all.jsonl`), `BankedCriteriaSource`.
-- TRQA's gold criteria, in `belief_bank/gold/` next to its silver ones (key: the writer and the hash of its
+  `BELIEF_ROOT/training_datasets/{dataset}/belief_bank/silver/beliefs_all.jsonl`), `BankedBeliefSource`.
+- TRQA's gold beliefs, in `belief_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
-  (`annotations.multi_member_row`: one criterion per member, then the aggregate; members named by the page title of
+  (`annotations.multi_member_row`: one belief per member, then the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `belief_model` writes
   the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
-  criteria, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
-- A training dataset's gold criteria: its queries file is their bank, written by its build only
+  beliefs, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
+- A training dataset's gold beliefs: its queries file is their bank, written by its build only
   (`build_training_dataset.py`), never during a run, so training scores against the same texts. A query whose gold
   texts failed gets silver ones; rebuild the dataset to fix them.
 
 Rules of a bank line:
 
-- It is used only when the query id and text, `belief_model`, the query shape, `max_criteria` and a hash of the
+- It is used only when the query id and text, `belief_model`, the query shape, `max_beliefs` and a hash of the
   init prompt all match, so a changed prompt or cap extracts again. A `vllm/` model is keyed with the checkpoint
-  its server loaded (`{model}@{path}`), so two checkpoints served under one name do not share criteria.
+  its server loaded (`{model}@{path}`), so two checkpoints served under one name do not share beliefs.
 - A truncated reply is asked once more and fails when truncated again. A failed extraction is never added, so every
-  criteria list a run uses is banked.
+  belief list a run uses is banked.
 - A query extracted by two processes at once keeps the line banked first. Each process reads only the lines added
   since its last read.
-- Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the criteria the runs use.
-  The criteria are never scored against gold during a run.
+- Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the beliefs the runs use.
+  The beliefs are never scored against gold during a run.
 
 ### Belief update
 
-The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no criterion has a candidate. A call
+The belief update implements Agent-BRACE's b_t = f(query, b_{t-1}, o_t). In b_0 no belief has a candidate. A call
 (`system.txt` in `src/belief_model_component/prompts/belief_update/`, the WEP definitions of the shape's belief
 types in `prompts/shared/wep_definitions.txt`, its user template in `user.txt`, and the shape's own `<shape>.txt`: its rules and its example) is the same prompt for the prompted teacher and a trained student, so one training sample is one call.
 
@@ -214,7 +214,7 @@ update with the turns still waiting.
 tokenizer whatever the agent's model, no marker at the cut; `utils.text_utils.cut_passage`), report documents
 included. A passage's title is its metadata title, else its front matter's (`title:`), else its first line.
 
-The call reads every belief (shown as `B<k>`, saved as `c<k>`) with its statement, its passages and its
+The call reads every belief (id `B<k>`) with its statement, its passages and its
 proposals, the turns and the passages (prompt in `prompts/belief_update/`). The reply has three lists:
 
 1. **Reasoning observations** (claims): per candidate the reasoning names, assesses or rejects, `{id, candidate,
@@ -248,7 +248,7 @@ B2: It is unknown which candidate addresses the engineer who was born in B1.
   proposed: Nils Berg
 ```
 
-**Saved**: every observation that entered (verified spans), per criterion every source ever observed on it (the
+**Saved**: every observation that entered (verified spans), per belief every source ever observed on it (the
 `references` of the `final` line), the agent's latest claim on each candidate, and the belief items as written and as
 kept, with their reasons (`updates`); the claims are never shown.
 
@@ -304,9 +304,9 @@ The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed 
    word's range, unknown 0.25): q_k. The same table turns every status into a number, the final scorer's included.
    The update judges a one-answer WEP from all the belief's passages, rivals included, so the candidates share
    nothing.
-2. s_t is the mean q_k over the criteria the updater judges, on every query shape: the expected share of criteria
-   that hold, so a change on any criterion moves it. An aggregate is left out: its status is derived from its inputs
-   (the lowest of them), so it would count its weakest input twice. How much each criterion counts for the final
+2. s_t is the mean q_k over the beliefs the updater judges, on every query shape: the expected share of beliefs
+   that hold, so a change on any belief moves it. An aggregate is left out: its status is derived from its inputs
+   (the lowest of them), so it would count its weakest input twice. How much each belief counts for the final
    answer is the final scorer's to judge (s_T below), not the formula's.
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
@@ -320,13 +320,13 @@ not told which candidate the answer is. The fixed function of the final statuses
 
 Saved in `belief/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
 one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
-(`{doc_id, new, label}`), every criterion's belief after the step (`beliefs`: `{id, status, most_probable, selected,
+(`{doc_id, new, label}`), every belief's state after the step (`beliefs`: `{id, status, most_probable, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
-reply (with their reasons and passage observations), the criteria it `changed`, the `observations` that entered (claims and
+reply (with their reasons and passage observations), the beliefs it `changed`, the `observations` that entered (claims and
 passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
-criterion every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
+belief every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
 with `certainty_label`, `certainty_formula` and `final_score` (status, reason). The same belief is readable in
-`belief/{qid}.md`: the criteria, a belief table after each iteration (with the labels of its documents) and the
+`belief/{qid}.md`: the beliefs, a belief table after each iteration (with the labels of its documents) and the
 final belief. For evaluation only: `new_item_precision` and `recall_so_far`, against the qrels at the dataset's
 `min_relevance_score` (NeuCLIR and RAGTIME: grade 3, the very valuable docs), the same relevant docs as the
 end-of-run Recall@N.
@@ -346,7 +346,7 @@ The measures, by group, in the order of the files and the log:
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
 | uncertainty | queries scored; s_T and verbal: AUROC [CI], Brier; formula: AUROC [CI] | QA, belief on |
 | | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
-| belief | gold and control event change, criterion recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
+| belief | gold and control event change, belief recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
 CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.measures`). Nothing else is
@@ -357,32 +357,32 @@ raw outputs stay in the run, for `analysis/`).
 query out). The scores: `s_T` (the final scorer, the headline), `verbal` (the agent's own `Confidence: X%`, glm and
 oss; read from `generation/{qid}.md` by a regex, `evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85"
 accepted; a generation without it has none), and the ablations `formula` (the fixed function of the final statuses:
-the mean of the status probabilities of the criteria the updater judges, aggregates left out). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
+the mean of the status probabilities of the beliefs the updater judges, aggregates left out). All are measured on the same queries: those with y, s_T and, when the run has any, a verbal
 confidence. Rows: AUROC [CI] for every score, Brier for s_T and verbal. On a report dataset (`uncertainty/report.py`)
 s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
 final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the
 expected coverage); an empty report is left out. Left-out queries are logged.
 
-**Belief** (`src/evaluation/belief/evaluator.py`), on the queries whose criteria are the gold criteria (TRQA members,
-InfoSeek hops; not WebShaper or FRAMES, which have no gold per criterion). Scored criteria: a member or hop (gold
+**Belief** (`src/evaluation/belief/evaluator.py`), on the queries whose beliefs are the gold beliefs (TRQA members,
+InfoSeek hops; not WebShaper or FRAMES, which have no gold per belief). Scored beliefs: a member or hop (gold
 answer and documents) and an aggregate (gold answer only).
 
-- A **gold event** is a gold document of criterion k, new to the belief, whose text as the update read it (the
+- A **gold event** is a gold document of belief k, new to the belief, whose text as the update read it (the
   `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new
   document observed on k that is not one of its gold documents and does not state its answer.
-- `gold event: gold candidate change`: the change of the gold candidate's status probability at the criterion's
+- `gold event: gold candidate change`: the change of the gold candidate's status probability at the belief's
   first gold event (unknown -> certain = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
   `control event: ...`: the same at its control events, which should be about 0. An event whose gold candidate is
   already "certain" is left out.
-- `criterion recall`: the share of the criterion's gold documents the agent saw.
-- `reached answer`: at the end, the criterion's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
+- `belief recall`: the share of the belief's gold documents the agent saw.
+- `reached answer`: at the end, the belief's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
   share).
 - `status Brier`: the final status probability (the WEP) against whether the most probable
   candidate is a gold answer (whatever the WEP; `reached` needs "possible" or above).
 
-Each row comes twice: per query (each query's mean over its criteria, then the mean over queries, CI over queries)
-and `(c)`, the mean over every criterion. Below the table, the status calibration: per final status, how many
-criteria had it and how many have a gold answer as most probable candidate (the Brier's y). A candidate is a gold answer when it matches one, else when the
+Each row comes twice: per query (each query's mean over its beliefs, then the mean over queries, CI over queries)
+and `(c)`, the mean over every belief. Below the table, the status calibration: per final status, how many
+beliefs had it and how many have a gold answer as most probable candidate (the Brier's y). A candidate is a gold answer when it matches one, else when the
 judge (`judge_model`) says so, cached in `eval/belief/judge_cache.jsonl`. For diagnosis, `eval/belief/events.csv`
 has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
 `not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`
@@ -391,7 +391,7 @@ has every event with a gold event's funnel stage (`call_failed`, `not_assigned`,
 The terminal log prints one block, one line per group:
 
 ```
-EVALUATION  trqa / wiki2_test / glm / qwen3.6-27b (gold criteria)  (n=200)
+EVALUATION  trqa / wiki2_test / glm / qwen3.6-27b (gold beliefs)  (n=200)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
 uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 | verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 188)
@@ -425,7 +425,7 @@ src/evaluation/
 ├── generation/      AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
 ├── uncertainty/     UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
-├── belief/          BeliefUpdateEvaluator, per-criterion gold (gold_rows.py), gold match and judge
+├── belief/          BeliefUpdateEvaluator, per-belief gold (gold_rows.py), gold match and judge
 │                    (gold_match.py), issue_summary
 └── trajectory.py    TrajectoryEvaluator (per query)
 ```
@@ -476,7 +476,7 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 ├── trajectory/{qid}.jsonl          one line per step (queries, seen doc ids, the search_step of a search
 │   │                               iteration), then the meta line (counts, agent data, agent_generation)
 │   └── {qid}.md                    the same trajectory, human-readable, written live
-├── belief/{qid}.jsonl              belief stage: meta line (criteria) + one line per search iteration + final line
+├── belief/{qid}.jsonl              belief stage: meta line (beliefs) + one line per search iteration + final line
 │   └── {qid}.md                    the same belief, human-readable
 └── eval/                           the evaluation, written by every stage
     ├── metrics.md                  every measure: group | metric | value | ci_low | ci_high | n

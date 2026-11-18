@@ -79,43 +79,42 @@ def status_probability(status: str) -> float:
     return STATUS_PROBABILITY[parse_status(status) or status]
 
 
-# Criterion kinds: a closed criterion has one answer (a clue or the asked
+# Belief kinds: a closed belief has one answer (a clue or the asked
 # thing of a multi-clue query, a hop of a multi-hop query, a member's value
-# of a multi-member query); an aggregate criterion combines the answers of
-# the criteria before it (its inputs), its status set by code
+# of a multi-member query); an aggregate belief combines the answers of
+# the beliefs before it (its inputs), its status set by code
 # (``BeliefState._derive_aggregates``): the target of a multi-clue query
-# ("the composer that meets c1 to c3", ``is_target``), whose candidate is
+# ("the composer that meets B1 to B3", ``is_target``), whose candidate is
 # the name that is the most probable candidate of every clue, and the
 # computation of a multi-member query (``is_computed``), whose candidates
 # the reasoning gives (saved, never shown to the update); an aspect
-# criterion is one aspect of a report topic: its candidates are the facts
+# belief is one aspect of a report topic: its candidates are the facts
 # on it, kept or removed, and the aspect has one status.
 CLOSED = "closed"
 AGGREGATE = "aggregate"
 ASPECT = "aspect"
-CRITERION_KINDS = (CLOSED, AGGREGATE, ASPECT)
+BELIEF_KINDS = (CLOSED, AGGREGATE, ASPECT)
 
 # Exclusive kinds have one correct answer, so the values of such a
-# criterion are alternatives; an aspect's facts hold together.
+# belief are alternatives; an aspect's facts hold together.
 EXCLUSIVE_KINDS = (CLOSED, AGGREGATE)
 # Kinds whose candidates are names or figures a source writes out (checked
-# against the spans and titles of the criterion's passages).  An aggregate
+# against the spans and titles of the belief's passages).  An aggregate
 # is combined, never checked.
 NAMED_KINDS = (CLOSED,)
 
 
 def exclusive(kind: str) -> bool:
-    """Whether a criterion of *kind* has one correct answer."""
+    """Whether a belief of *kind* has one correct answer."""
     return kind in EXCLUSIVE_KINDS
 
 
-# The text of a multi-clue query's target: "the <type> that meets B1 to B<k>"
-# (the ids the belief model shows; "c1" of earlier belief banks too).
-TARGET_RE = re.compile(r"\bmeets\s+[cB]1\s+to\s+[cB](\d+)\b")
+# The text of a multi-clue query's target: "the <type> that meets B1 to B<k>".
+TARGET_RE = re.compile(r"\bmeets\s+B1\s+to\s+B(\d+)\b")
 
 
 def is_target(kind: str, text: str) -> bool:
-    """Whether a criterion of *kind* and *text* is a target: an aggregate
+    """Whether a belief of *kind* and *text* is a target: an aggregate
     whose candidate is derived from the clues before it (the name that is
     the most probable candidate of every one), never written by the belief
     update."""
@@ -123,24 +122,24 @@ def is_target(kind: str, text: str) -> bool:
 
 
 def is_computed(kind: str, text: str) -> bool:
-    """Whether a criterion of *kind* and *text* is a computed aggregate: its
-    candidates are the answers the reasoning computes from the criteria
+    """Whether a belief of *kind* and *text* is a computed aggregate: its
+    candidates are the answers the reasoning computes from the beliefs
     before it, and no passage states them."""
     return kind == AGGREGATE and not is_target(kind, text)
 
 
-# The entity a criterion is about, written before its colon: a multi-member
-# query's member criterion "<member>: <property>" (``member_subject``).
+# The entity a belief is about, written before its colon: a multi-member
+# query's member belief "<member>: <property>" (``member_subject``).
 _PARENTHETICAL_RE = re.compile(r"\s*\([^)]*\)")
 
 
-def member_subject(criteria: List["Criterion"], k: int) -> Optional[str]:
-    """The member criterion *k* is about, or None: a closed criterion
+def member_subject(beliefs: List["Belief"], k: int) -> Optional[str]:
+    """The member belief *k* is about, or None: a closed belief
     "<member>: <property>" of a multi-member query's list (one with a
     computed aggregate).  Its candidates are the member's value, never the
     member."""
-    c = criteria[k]
-    if c.kind != CLOSED or ":" not in c.text or not any(is_computed(x.kind, x.text) for x in criteria):
+    c = beliefs[k]
+    if c.kind != CLOSED or ":" not in c.text or not any(is_computed(x.kind, x.text) for x in beliefs):
         return None
     # The last separator: a member's name may hold one ("Star Wars: Episode IV: box office").
     subject = c.text.rsplit(": " if ": " in c.text else ":", 1)[0].strip()
@@ -148,7 +147,7 @@ def member_subject(criteria: List["Criterion"], k: int) -> Optional[str]:
 
 
 def subject_names(subject: str) -> List[str]:
-    """The names of a criterion's *subject* a candidate may repeat: the
+    """The names of a belief's *subject* a candidate may repeat: the
     subject, and without its parenthetical ("New York (state)": "New York")."""
     short = _PARENTHETICAL_RE.sub("", subject).strip()
     return list(dict.fromkeys(n for n in (subject, short) if n))
@@ -158,8 +157,8 @@ def subject_names(subject: str) -> List[str]:
 # list of clues, the answer the target or something asked about it,
 # one entity reached through a chain of other entities (hops), a value
 # computed over every member of a set, or a report on several aspects of a
-# topic.  The shape picks the criteria-extraction prompt and the kind of each
-# criterion; the extractor never chooses either.
+# topic.  The shape picks the belief-extraction prompt and the kind of each
+# belief; the extractor never chooses either.
 MULTI_CLUE = "multi_clue"
 MULTI_HOP = "multi_hop"
 MULTI_MEMBER = "multi_member"
@@ -167,30 +166,23 @@ MULTI_ASPECT = "multi_aspect"
 QUERY_SHAPES = (MULTI_CLUE, MULTI_HOP, MULTI_MEMBER, MULTI_ASPECT)
 
 
-# A reference to another criterion in a criterion's text ("born in B1";
-# "c1" in criteria banked before the B ids).  Criterion ids are kept as
-# "c<k>" (banks, gold annotations, evaluation); the belief update reads
-# and writes them as "B<k>" (``belief_label``).
-CRITERION_REF_RE = re.compile(r"\b[cB](\d+)\b")
-_ID_RE = re.compile(r"^[bc](\d+)$")
+# A reference to another belief in a belief's text ("born in B1").  Belief
+# ids are "B<k>" everywhere: prompts, replies, banks, gold annotations,
+# run files and evaluation.
+BELIEF_REF_RE = re.compile(r"\bB(\d+)\b")
+_ID_RE = re.compile(r"^b(\d+)$")
 
 
-def criterion_id(value: Any) -> str:
-    """A criterion id as a reply writes it ("B1", "b1.", "[c1]") as "c1"."""
+def belief_id(value: Any) -> str:
+    """A belief id as a reply writes it ("B1", "b1.", "[B1]") as "B1"."""
     key = str(value if value is not None else "").strip().strip("[].:").strip().lower()
     m = _ID_RE.match(key)
-    return f"c{m.group(1)}" if m else key
-
-
-def belief_label(cid: str) -> str:
-    """The id "c<k>" as the belief update reads it: "B<k>"."""
-    m = _ID_RE.match(cid or "")
-    return f"B{m.group(1)}" if m else cid
+    return f"B{m.group(1)}" if m else key
 
 
 @dataclass
-class Criterion:
-    """One criterion c_k of the per-query criteria list."""
+class Belief:
+    """One belief c_k of the per-query belief list."""
     id: str
     text: str
     kind: str = CLOSED
@@ -209,11 +201,11 @@ THINK = "think"
 
 @dataclass
 class Observation:
-    """What one source says about one criterion, as the belief update
+    """What one source says about one belief, as the belief update
     wrote it.
 
     A passage observation (``DOC``): the ``spans`` of the passage that
-    state a part of the criterion, the ``candidate`` they are about and
+    state a part of the belief, the ``candidate`` they are about and
     their stance (``against``: the candidate fails the part, "-"; else
     "+").  On a computed aggregate the candidate is the agent's computed
     answer, or None when the reasoning computed none.  A reasoning
@@ -226,7 +218,7 @@ class Observation:
     one span is verified.  Only grounded observations enter the belief;
     ``to_dict`` is the saved record of one that entered (its verified
     spans only)."""
-    criterion: str
+    belief: str
     source: str
     label: str
     step: int
@@ -252,7 +244,7 @@ class Observation:
         return "-" if self.against else "+"
 
     def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"id": self.criterion, "label": self.label, "step": self.step}
+        out: Dict[str, Any] = {"id": self.belief, "label": self.label, "step": self.step}
         if self.source == DOC:
             out.update(doc_id=self.doc_id, candidate=self.candidate, stance=self.stance)
         else:
@@ -265,7 +257,7 @@ class Observation:
 class Support:
     """One passage observation on a candidate: the passage (its label,
     document and title), the step it was observed in, its spans on the
-    criterion, and whether it supports the candidate or speaks against it
+    belief, and whether it supports the candidate or speaks against it
     (``against``)."""
     label: str
     doc_id: Optional[str]
@@ -296,7 +288,7 @@ REASONING = "reasoning"
 
 @dataclass
 class Candidate:
-    """One candidate of a criterion in the belief: its name, its status,
+    """One candidate of a belief in the belief: its name, its status,
     the step it was added in, its support (the passage observations that
     support it or speak against it, ``Support``) and the agent's latest
     claim on it (``claim``, from the turn ``claim_step``; never shown to
@@ -304,7 +296,7 @@ class Candidate:
     candidate and for an aspect's facts, code's for an aggregate's
     candidates, and None for any other candidate (a belief has one WEP).
     Only an aspect's fact a passage speaks against leaves the list (kept
-    in the hidden removal log of its criterion, ``RemovedCandidate``); the
+    in the hidden removal log of its belief, ``RemovedCandidate``); the
     agent's rejection is a claim and removes no candidate."""
     name: str
     status: Optional[str]
@@ -328,7 +320,7 @@ class Candidate:
 
 @dataclass
 class Proposal:
-    """A name the agent's reasoning proposed for a criterion that no
+    """A name the agent's reasoning proposed for a belief that no
     passage supports yet: no status, not a rival of the candidates.  It
     keeps the agent's latest claim on it and the turn it came from
     (``step``), and the step it was proposed in (``added_step``); a

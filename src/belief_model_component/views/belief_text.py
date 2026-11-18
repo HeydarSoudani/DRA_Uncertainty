@@ -1,6 +1,6 @@
 """The belief as text: each belief with its statement and its passages.
 
-The belief state keeps per criterion its candidates (``core.types.Candidate``),
+The belief state keeps per belief its candidates (``core.types.Candidate``),
 its most probable candidate and WEP, and its proposals
 (``core.types.Proposal``).  The belief update prompt lists every belief by
 its id "B<k>" with its statement (``belief_statement``), built by code from
@@ -27,7 +27,7 @@ texts on its inputs.  The agent's claims are never shown to the update.
 import re
 from typing import Any, List, Optional
 
-from ..core.types import ALMOST_NO_CHANCE, AGGREGATE, ASPECT, CRITERION_REF_RE, DOC, UNKNOWN, Candidate, belief_label, is_computed
+from ..core.types import ALMOST_NO_CHANCE, AGGREGATE, ASPECT, BELIEF_REF_RE, DOC, UNKNOWN, Candidate, is_computed
 
 # Characters of the spans of one passage line.
 MAX_SUPPORT_CHARS = 300
@@ -41,14 +41,14 @@ MAX_INPUT_LINES = 40
 
 
 def belief_text(state: Any, k: int) -> str:
-    """Criterion *k*'s text as the update reads it: its references to other
-    criteria by their "B<k>" ids, no closing full stop."""
-    n = len(state.criteria)
+    """Belief *k*'s text as the update reads it: its references to other
+    beliefs by their "B<k>" ids, no closing full stop."""
+    n = len(state.beliefs)
 
     def _ref(m: "re.Match") -> str:
         return f"B{m.group(1)}" if 1 <= int(m.group(1)) <= n else m.group(0)
 
-    return CRITERION_REF_RE.sub(_ref, state.criteria[k].text.strip()).rstrip(".")
+    return BELIEF_REF_RE.sub(_ref, state.beliefs[k].text.strip()).rstrip(".")
 
 
 def belief_statement(state: Any, k: int) -> str:
@@ -60,11 +60,11 @@ def belief_statement(state: Any, k: int) -> str:
     <belief>." and on an aspect "It is unknown how well the facts address
     <belief>."."""
     text, status = belief_text(state, k), state.status(k)
-    if state.criteria[k].kind == ASPECT:
+    if state.beliefs[k].kind == ASPECT:
         if status == UNKNOWN:
             return f"It is unknown how well the facts address {text}."
         return f"{_opening(status)} that the kept facts address {text}."
-    c = state.criteria[k]
+    c = state.beliefs[k]
     if c.kind != AGGREGATE:
         top = state.most_probable(k)
     else:
@@ -104,8 +104,8 @@ def input_lines(state: Any, k: int) -> List[str]:
     its inputs, such as a member meeting the set's condition): a
     heading, then one line per passage, ``"<spans>" [<title>]``, at most
     ``MAX_INPUT_LINES`` (the latest; "+N more sources" before them).
-    Empty for other criteria or without one."""
-    c = state.criteria[k]
+    Empty for other beliefs or without one."""
+    c = state.beliefs[k]
     if not is_computed(c.kind, c.text):
         return []
     obs = [o for o in state.trace[k] if o.source == DOC and o.verified_spans]
@@ -132,8 +132,8 @@ def format_belief(state: Any) -> str:
     aggregate shows no passage lines (a computed one then the passages on
     its inputs, ``input_lines``)."""
     lines = []
-    for k, c in enumerate(state.criteria):
-        lines.append(f"{belief_label(c.id)}: {belief_statement(state, k)}")
+    for k, c in enumerate(state.beliefs):
+        lines.append(f"{c.id}: {belief_statement(state, k)}")
         if c.kind != AGGREGATE:
             for x in state.ordered(k):
                 lines.extend(f"  {line}" for line in support_lines(x))

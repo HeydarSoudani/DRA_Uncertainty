@@ -1,5 +1,5 @@
 """How often the belief update's replies have issues (``core.issues``), over
-every belief file of a run (every query, gold criteria or not).
+every belief file of a run (every query, gold beliefs or not).
 
 An update call is a step or final record with a call made (``called``),
 not the final scorer's; it parsed when its ``observations`` are not null.

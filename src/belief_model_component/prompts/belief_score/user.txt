@@ -1,7 +1,7 @@
 Query: {query}
 
 Final belief state:
-{criteria}
+{beliefs}
 
 Final turn:
 {answer}

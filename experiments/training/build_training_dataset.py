@@ -3,7 +3,7 @@ data/training_datasets/{dataset} of the repo, one call per build.
 
 Every training dataset has one row per query in ``queries/queries_all.jsonl``:
 the question and answer, its source, its split (``sft``, ``rl`` or ``val``)
-and its gold annotation (criteria with their gold answers, documents and
+and its gold annotation (beliefs with their gold answers, documents and
 texts; ``training_datasets/gold/annotations.py``), and its gold documents in
 ``qrels/qrels_all.txt``.  The splits are views of that file
 (``dataset_loaders``: ``--subset sft`` of dra_inference reads the rows of
@@ -34,7 +34,7 @@ the next N questions not processed yet (0: none, the dataset files are
 rewritten; none: all of them), ``--source`` (webshaper_frames only) keeps
 the questions of the given sources.  The dataset files cover every
 processed question, and a query keeps its split as the dataset grows.  The
-criterion texts of earlier builds are kept; a build writes the texts of the
+belief texts of earlier builds are kept; a build writes the texts of the
 new queries and retries those whose writer call failed, with the writer's
 API key (``OPENROUTER_API_KEY``) when it has texts to write.  Other page or
 negatives settings than the earlier builds', or other split shares than the
@@ -42,7 +42,7 @@ recorded ones, are refused.  One build of a dataset runs at a time (a lock
 file in its folder).
 
 Settings: ``--config`` (YAML, sections ``shared``, ``pages``, ``negatives``,
-``split`` and ``gold_criteria``).
+``split`` and ``gold_beliefs``).
 """
 
 import argparse
@@ -75,7 +75,7 @@ def _parse_args() -> argparse.Namespace:
         allow_abbrev=False,
     )
     parser.add_argument("--dataset", type=str, required=True, choices=sorted(BUILT_DATASETS), help="Training dataset to build.")
-    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, sections 'shared', 'pages', 'negatives', 'split' and 'gold_criteria'.")
+    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings, sections 'shared', 'pages', 'negatives', 'split' and 'gold_beliefs'.")
     parser.add_argument("--limit", type=_non_negative_int, default=None, help="The next N questions not processed yet (0 = rewrite the dataset files only; None = all).")
     parser.add_argument("--source", type=str, default=None, help="webshaper_frames only: these sources, comma-separated (webshaper, frames; None = both).")
     return parser.parse_args()
@@ -95,7 +95,7 @@ def _lock(root: Path):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # LiteLLM and its HTTP client log every call of the criterion texts' writer at INFO.
+    # LiteLLM and its HTTP client log every call of the belief texts' writer at INFO.
     for name in ("LiteLLM", "httpx"):
         logging.getLogger(name).setLevel(logging.WARNING)
     args = _parse_args()
@@ -121,7 +121,7 @@ def main() -> None:
         webshaper_frames.build(cfg, paths, args.limit, sources)
     else:
         from indexing_corpus_dataset.training_datasets import trqa_validation
-        trqa_validation.build(paths, cfg.gold_criteria, cfg.split, args.limit)
+        trqa_validation.build(paths, cfg.gold_beliefs, cfg.split, args.limit)
 
 
 if __name__ == "__main__":

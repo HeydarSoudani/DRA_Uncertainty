@@ -1,6 +1,6 @@
 # Belief model component
 
-A prompted belief state over each query's criteria, plus per-step signals,
+A prompted belief state over each query's beliefs, plus per-step signals,
 for deep research agents. It runs in the belief stage of
 `experiments/inference/dra_inference.py` (`--stage belief`,
 `src/orchestration/belief_stage.py`), over the saved trajectories of any
@@ -13,7 +13,7 @@ belief_model_component/
   __init__.py        public API: code outside the package imports from here
   belief_model.py    BeliefModel, the per-sample entry point
   core/              the belief itself
-    types.py         statuses, criterion kinds, query shapes, dataclasses
+    types.py         statuses, belief kinds, query shapes, dataclasses
     issues.py        the issue code table (effect, role) and the sets by role
     state.py         BeliefState (b_t) and its apply rules
     certainty.py     certainty s_t of a belief
@@ -22,10 +22,10 @@ belief_model_component/
     signal.py        BeliefUpdateSignal, CallPlan: when to call, applying the reply
     final_score.py   LLMFinalScorer: s_T from b_{T-1} and the answer turn
     repair.py        one JSON-replying call with its parse retries
-  criteria/          the criteria C of a query, made once per sample
-    sources.py       LLM, banked, gold and fallback criteria sources
-    parsing.py       extractor reply parsing, criterion kinds, set layout
-    factory.py       the source of a dataset and criteria_source; prepare
+  init/              the beliefs of a query, made once per sample
+    sources.py       LLM, banked, gold and fallback belief sources
+    parsing.py       extractor reply parsing, belief kinds, set layout
+    factory.py       the source of a dataset and belief_source; prepare
   text/              plain string helpers, no belief logic
     matching.py      letter-and-digit matching (alnum, contains_words)
     passages.py      span checks, passage titles, passage labels, Passage, Turn
@@ -40,12 +40,12 @@ belief_model_component/
 
 Imports between the folders go one way: `text` -> `core` -> `prompts` ->
 `views` -> `update` -> `belief_model` (`core` reads `text.matching`, so
-`text` is the lowest layer); `criteria` reads `core.types` and `prompts`.
+`text` is the lowest layer); `beliefs` reads `core.types` and `prompts`.
 
 ## The belief
 
-The belief state b_t gives each belief (a criterion of a fixed per-query
-list, shown to the update as "B<k>", saved as "c<k>") its candidates
+The belief state b_t gives each belief (an item "B<k>" of a fixed
+per-query list) its candidates
 (possible answers), the passages on each (+ it states a part for the
 candidate, - it states the candidate fails a part), its most probable
 candidate and its word of estimative probability (WEP,
@@ -71,7 +71,7 @@ records the claims of the agent's turns since the last call (reasoning
 observations: they only propose or reject names), the passage
 observations (a passage, a belief, a candidate and a stance, with the
 spans that state it; attached to the candidate after the claims, and kept
-as the criterion's references), then per belief with a new passage
+as the belief's references), then per belief with a new passage
 observation its most probable candidate, WEP and reason. Code checks that
 the most probable candidate is listed with a + passage and that "unknown"
 goes with no supported candidate, and takes the WEP as written. Other
@@ -91,7 +91,7 @@ only, it also saves the retrieval gain against the qrels.
 ## Per sample
 
 ```
-reset(query_id, query)   the criteria list C is created once (fixed for the
+reset(query_id, query)   the belief list C is created once (fixed for the
                          sample); b_0 has no candidate ("unknown")
 observe(...)             called once per search iteration of the saved
                          trajectory with the iteration's queries, seen
@@ -135,13 +135,13 @@ agent_turn, reply, errors[]
 - `num_subqueries`: the iteration's search queries, as the trajectory saves
   them (`cpm_report` saves one per search, its keywords joined).
 - A value that could not be computed is null, never 0; the reason is in
-  `errors` (or a component is not configured: no criteria, no qrels).
+  `errors` (or a component is not configured: no beliefs, no qrels).
 - `docs`: per document of the step, `{doc_id, new, label}`. `new` when its
   id was not shown in an earlier step (`num_new_docs` counts them); `label`
   the belief's label of it ("d<n>", given when the document is first shown
   to the belief update; null for a document without text).
 - `called`: whether the step made a belief update call.
-- `beliefs`: per criterion in `criteria` order, its belief after the step,
+- `beliefs`: per belief in `beliefs` order, its belief after the step,
   `{id, status, most_probable, selected, candidates, proposals}`.
   - `candidates`: as shown to the next update, most probable first, each
     `{name, status, basis, added_step, support, claim, claim_step}`
@@ -161,14 +161,14 @@ agent_turn, reply, errors[]
   (`{candidate, stance, passage}`), `written` the item's
   `{most_probable, wep}` as the reply wrote them, `previous` the belief's
   status before; `status` null when the item was not taken.
-- `changed`: the ids of the criteria whose candidates, proposals, most
+- `changed`: the ids of the beliefs whose candidates, proposals, most
   probable candidate or WEP changed.
 - `observations`: the observations that entered the belief in the call
   (claims `{id, label, step, candidate, claim, spans}`, passage observations
   `{id, label, step, doc_id, candidate, stance, spans}`, verified spans
   only; a null candidate on a computed answer states an input), null when the
   call was not made or failed. Together over the steps they are every
-  criterion's references (the final record gathers them).
+  belief's references (the final record gathers them).
 - `issues`: one `{id, code, detail, [label]}` per thing the reply got wrong
   (`core.issues.ISSUES`: each code's effect, an observation or update
   dropped, a status corrected or a flaw flagged, and its training role).
@@ -180,9 +180,9 @@ agent_turn, reply, errors[]
   read by the step's call or by the next one. `reply`: the raw reply of the
   call.
 - `certainty`: the certainty score s_t of the belief after the step
-  (`core.certainty.certainty`: over the criteria their status's probability,
+  (`core.certainty.certainty`: over the beliefs their status's probability,
   `core.types.STATUS_PROBABILITY`; their mean, aggregates left out); null
-  without criteria.
+  without beliefs.
 
 ### Final record
 
@@ -206,7 +206,7 @@ references, agent_turn, reply, errors
   of the belief after it (`certainty` = `certainty_formula`;
   `certainty_label` and `final_score` null).
 - `reply`: the raw reply of the call.
-- `references`: per criterion every source assigned to it over the sample
+- `references`: per belief every source assigned to it over the sample
   and the candidates and proposals it dropped (`BeliefState.reference_lists`:
   `{id, references: [{label, step, [doc_id, title | candidate, claim],
   spans}], removed: [{name, status, basis, added_step, removed_step,

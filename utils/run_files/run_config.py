@@ -134,16 +134,16 @@ def build_run_config(policy_model: str, llm_model: str, *, dataset: str, split: 
 
 def build_belief_config(dataset: str, *, max_passage_tokens: Optional[int], **kwargs) -> Dict[str, Any]:
     """The ``belief_model`` section of ``run_config.json``: the belief
-    stage's settings (the criteria cap as ``resolve_dataset_defaults`` set
+    stage's settings (the belief cap as ``resolve_dataset_defaults`` set
     it from the dataset).  *max_passage_tokens* is the run's (its agent
     section): the belief update reads the text the agent was shown."""
-    from indexing_corpus_dataset.layout import effective_criteria_source
+    from indexing_corpus_dataset.layout import effective_belief_source
 
     return {
         "belief_model": kwargs.get("belief_model") or None,
-        "max_criteria": kwargs.get("max_criteria"),
-        "criteria_source": kwargs["criteria_source"],
-        "criteria_source_effective": effective_criteria_source(kwargs["criteria_source"], dataset),
+        "max_beliefs": kwargs.get("max_beliefs"),
+        "belief_source": kwargs["belief_source"],
+        "belief_source_effective": effective_belief_source(kwargs["belief_source"], dataset),
         "max_passage_tokens": max_passage_tokens,
     }
 
@@ -205,43 +205,20 @@ def check_run_config(run_dir: Union[str, Path], config: Dict[str, Any]) -> None:
     atomic_write_text(path, _json.dumps(config, indent=2))
 
 
-def _legacy_belief_section(section: Dict[str, Any]) -> Dict[str, Any]:
-    """A belief section saved before the one ``belief_model`` key, in the
-    current form: ``llm_criteria`` (criteria) and ``belief_judge_model``
-    (update, final score) become ``belief_model`` when they name the same
-    model; two different models stay as they are (another belief model
-    than one backbone, so the beliefs are made again).  ``mode: monitor``
-    and ``add_intermediate_answer: false`` (keys of the removed belief-aware
-    agent, at the only behaviour left) are dropped."""
-    section = {k: v for k, v in section.items()
-               if not (k == "mode" and v == "monitor") and not (k == "add_intermediate_answer" and v is False)}
-    if "belief_model" in section or "llm_criteria" not in section:
-        return section
-    criteria, judge = section.get("llm_criteria"), section.get("belief_judge_model")
-    if judge and judge != criteria:
-        return section
-    rest = {k: v for k, v in section.items() if k not in ("llm_criteria", "belief_judge_model")}
-    return {"belief_model": criteria, **rest}
-
-
 def belief_model_of(section: Optional[Dict[str, Any]]) -> Optional[str]:
-    """The belief model of a saved belief section, also of one saved before
-    the ``belief_model`` key (its update model, ``belief_judge_model``)."""
-    section = section or {}
-    return section.get("belief_model") or section.get("belief_judge_model") or section.get("llm_criteria")
+    """The belief model of a saved belief section."""
+    return (section or {}).get("belief_model")
 
 
 def belief_config_diffs(run_dir: Union[str, Path], section: Dict[str, Any]) -> List[str]:
     """How *section* (:func:`build_belief_config`) differs from the belief
     section of the run's ``run_config.json`` (``section.key: old -> new``),
-    empty when it is the same or the run has none.  A section saved before
-    the ``belief_model`` key is compared in the current form
-    (:func:`_legacy_belief_section`).  Reads only."""
+    empty when it is the same or the run has none.  Reads only."""
     saved = _json.loads((Path(run_dir) / RUN_CONFIG_FILE).read_text())
     old = saved.get(BELIEF_CONFIG_SECTION)
     if old is None:
         return []
-    return run_config_diffs({BELIEF_CONFIG_SECTION: _legacy_belief_section(old)}, {BELIEF_CONFIG_SECTION: section},
+    return run_config_diffs({BELIEF_CONFIG_SECTION: old}, {BELIEF_CONFIG_SECTION: section},
                             sections=(BELIEF_CONFIG_SECTION,))
 
 

@@ -1,29 +1,29 @@
-"""The gold criteria of a TRQA query (``trqa``: wiki1, wiki2, ecommerce; test
+"""The gold beliefs of a TRQA query (``trqa``: wiki1, wiki2, ecommerce; test
 or validation), made from its intermediate info when the belief model
-first needs them, and banked (``TRQAGoldCriteria`` is the producer of a
-``BankedCriteriaSource`` over the gold bank,
+first needs them, and banked (``TRQAGoldBeliefs`` is the producer of a
+``BankedBeliefSource`` over the gold bank,
 ``layout.belief_bank_path(..., "gold")``).
 
 Per query, the row of the training datasets' format
 (``training_datasets/gold/annotations.py``, ``annotations.multi_member_row``), as the
-trqa_validation dataset builds its own: one criterion per member of the set
+trqa_validation dataset builds its own: one belief per member of the set
 ("<member>: <property>", its value and documents,
 ``entity_values[].passage_ids``), then the aggregate.  A
 member is named by the page title of its first document, looked up in the
 corpus by id (``CorpusLookup``; wiki1 and wiki2: ``wiki_partial``); without
 a corpus (ecommerce), by TRQA's label.  The writer (the run's
 ``belief_model``, native reasoning off) writes the property phrase and the
-aggregation (``criterion_texts.multi_member_texts``, the prompts of the training datasets), from
-which the criterion texts are built.
+aggregation (``belief_texts.multi_member_texts``, the prompts of the training datasets), from
+which the belief texts are built.
 
 Results:
 
-- texts written: the criteria (id, text, kind) and, in the bank only
+- texts written: the beliefs (id, text, kind) and, in the bank only
   (``BANK_ONLY``), the whole row (gold answers, documents, members);
-- texts failed for good (a leak after the retry): no criteria, banked as
+- texts failed for good (a leak after the retry): no beliefs, banked as
   final (``FINAL``), so the writer is not asked again; the query gets
-  silver criteria (``FallbackCriteriaSource``);
-- no intermediate info, or the writer call failed: no criteria, not banked
+  silver beliefs (``FallbackBeliefSource``);
+- no intermediate info, or the writer call failed: no beliefs, not banked
   (asked again next run).
 """
 
@@ -31,19 +31,19 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from belief_model_component import BANK_ONLY, FINAL, GOLD_CRITERIA_MODEL, CriteriaSource, Criterion
+from belief_model_component import BANK_ONLY, FINAL, GOLD_BELIEF_MODEL, BeliefSource, Belief
 from utils.io_utils import iter_jsonl
 
 from ...doc_lookup import CorpusLookup
-from ...layout import GOLD_CRITERIA, dataset_root, default_corpus_path, qrels_base, queries_base
+from ...layout import GOLD_BELIEFS, dataset_root, default_corpus_path, qrels_base, queries_base
 from . import annotations
-from .criterion_texts import CriteriaWriter, criteria_texts, prompt_hash
+from .belief_texts import BeliefWriter, belief_texts, prompt_hash
 
 DATASET = "trqa"
 # The TRQA subsets whose member documents are in a local corpus (the
 # page title is the first line of a document).
 TITLED_SUBSETS = ("wiki1", "wiki2")
-# Where the gold criteria come from, in the bank key.
+# Where the gold beliefs come from, in the bank key.
 SOURCE = "trqa_intermediate_info"
 
 
@@ -88,8 +88,8 @@ def corpus_of(split: str) -> Optional[Path]:
     return path if path.exists() else None
 
 
-class TRQAGoldCriteria(CriteriaSource):
-    """Makes the gold criteria of a query of TRQA split *split* (e.g.
+class TRQAGoldBeliefs(BeliefSource):
+    """Makes the gold beliefs of a query of TRQA split *split* (e.g.
     ``wiki2_test``) from its intermediate info, with the texts of *writer*
     (an LLM name, the run's ``belief_model``); the producer of the gold
     bank.  The split's files are read once; the writer is created at its
@@ -98,7 +98,7 @@ class TRQAGoldCriteria(CriteriaSource):
     Args:
         split: TRQA split id.
         writer: LLM that writes the property phrase and the aggregation;
-            in the bank key (``criteria.factory.bank_model_id``: a served
+            in the bank key (``init.factory.bank_model_id``: a served
             checkpoint's path included).
         llm_client: A client of *writer* (``complete(messages, **kwargs)``);
             None: an API client is created at the first call.
@@ -122,14 +122,14 @@ class TRQAGoldCriteria(CriteriaSource):
         corpus = corpus_of(split)
         self._lookup = CorpusLookup(corpus) if corpus is not None else None
         self._llm_client = llm_client
-        self._writer: Optional[CriteriaWriter] = None
+        self._writer: Optional[BeliefWriter] = None
         self._writer_lock = threading.Lock()
 
     @property
     def bank_fields(self) -> Dict[str, Any]:
-        """What, besides the query, decides the gold criteria: the bank key
-        of ``BankedCriteriaSource``."""
-        return {"model": GOLD_CRITERIA_MODEL, "source": SOURCE, "writer": self.writer_model,
+        """What, besides the query, decides the gold beliefs: the bank key
+        of ``BankedBeliefSource``."""
+        return {"model": GOLD_BELIEF_MODEL, "source": SOURCE, "writer": self.writer_model,
                 "prompt": prompt_hash("multi_member")}
 
     def prepare(self) -> None:
@@ -138,10 +138,10 @@ class TRQAGoldCriteria(CriteriaSource):
         if self._lookup is not None:
             self._lookup.ensure_index()
 
-    def _writer_client(self) -> CriteriaWriter:
+    def _writer_client(self) -> BeliefWriter:
         with self._writer_lock:
             if self._writer is None:
-                self._writer = CriteriaWriter(self.writer_model, self._max_tokens, self._llm_client)
+                self._writer = BeliefWriter(self.writer_model, self._max_tokens, self._llm_client)
             return self._writer
 
     def _titles(self, info: dict) -> Dict[str, str]:
@@ -149,27 +149,27 @@ class TRQAGoldCriteria(CriteriaSource):
         return member_titles(self._lookup, [info]) if self._lookup is not None else {}
 
     def row(self, query_id: str, query: str) -> dict:
-        """The query's annotation row, without criterion texts."""
+        """The query's annotation row, without belief texts."""
         info = self._infos[query_id]
         return annotations.multi_member_row(query_id, f"trqa_{self.subset}", query, self._answers.get(query_id, ""), info,
                                    self._docs.get(query_id, []), self._titles(info))
 
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Criterion], Dict[str, Any]]:
+    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
         qid = str(query_id)
-        base: Dict[str, Any] = {"model": GOLD_CRITERIA_MODEL, "query_shape": "multi_member", "criteria_kind": GOLD_CRITERIA,
+        base: Dict[str, Any] = {"model": GOLD_BELIEF_MODEL, "query_shape": "multi_member", "belief_source": GOLD_BELIEFS,
                                 "writer": self.writer_model}
         if qid not in self._infos:
-            return [], {**base, "errors": [f"gold criteria: no intermediate info for query {qid} of trqa {self.split}"]}
+            return [], {**base, "errors": [f"gold beliefs: no intermediate info for query {qid} of trqa {self.split}"]}
         row = self.row(qid, query)
-        if not row["criteria"]:
-            return [], {**base, "errors": ["gold criteria: no members in the intermediate info"], FINAL: True,
+        if not row["beliefs"]:
+            return [], {**base, "errors": ["gold beliefs: no members in the intermediate info"], FINAL: True,
                         BANK_ONLY: {"row": row}}
         try:
-            done = criteria_texts(row, self._writer_client())
+            done = belief_texts(row, self._writer_client())
         except Exception as e:  # noqa: BLE001 - not banked; asked again next run
-            return [], {**base, "errors": [f"gold criteria: writer: {e}"]}
+            return [], {**base, "errors": [f"gold beliefs: writer: {e}"]}
         if not done["texts_ok"]:
-            return [], {**base, "errors": [f"gold criteria: {err}" for err in done["errors"]] or
-                        ["gold criteria: no criterion texts"], FINAL: True, BANK_ONLY: {"row": done}}
-        criteria = [Criterion(id=c["id"], text=c["text"], kind=c["kind"]) for c in done["criteria"]]
-        return criteria, {**base, "gold_level": done["level"], "errors": [], BANK_ONLY: {"row": done}}
+            return [], {**base, "errors": [f"gold beliefs: {err}" for err in done["errors"]] or
+                        ["gold beliefs: no belief texts"], FINAL: True, BANK_ONLY: {"row": done}}
+        beliefs = [Belief(id=c["id"], text=c["text"], kind=c["kind"]) for c in done["beliefs"]]
+        return beliefs, {**base, "gold_level": done["level"], "errors": [], BANK_ONLY: {"row": done}}

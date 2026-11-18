@@ -18,7 +18,7 @@ searches TRQA's ``wiki_partial`` (``layout._SHARED_CORPUS``).  The build
 is incremental, like the other builds: with a *limit*, it adds the next N
 kept queries not yet in the dataset (wiki1, then wiki2, in file order) to the
 queries already there (0: none, the files are rewritten); without one,
-every kept query.  The criterion texts of the earlier builds are reused, and
+every kept query.  The belief texts of the earlier builds are reused, and
 every query keeps its split.
 
 The gold annotation (``annotations.multi_member_row``) comes from the intermediate info: the set with the
@@ -26,7 +26,7 @@ members and their values and each member's documents
 (``entity_values[].passage_ids``), each member named by the page title
 (the first line) of its first document in ``wiki_partial``
 (``gold.trqa.member_titles``, read by id with ``CorpusLookup``).  Its source is ``trqa_{subset}``;
-an LLM writes the criterion texts (``criterion_texts.fill_texts``).
+an LLM writes the belief texts (``belief_texts.fill_texts``).
 The build sets each row's split (``sft``, ``rl`` or ``val``, ``splits.py``),
 records its counts in the ``build`` section of ``stats.json`` and the
 annotation stats in its ``annotations`` section.
@@ -44,8 +44,8 @@ from utils.io_utils import atomic_write_text, iter_jsonl
 from ..doc_lookup import CorpusLookup
 from .gold import annotations
 from .gold.trqa import docs_of, member_titles
-from .config import GoldCriteriaConfig, DatasetPaths, SplitConfig
-from .gold.criterion_texts import check_writer, fill_texts
+from .config import GoldBeliefsConfig, DatasetPaths, SplitConfig
+from .gold.belief_texts import check_writer, fill_texts
 from .splits import check_shares, split_rows
 from .stats import format_annotation_table, write_annotation_stats, write_stats
 
@@ -67,7 +67,7 @@ def _test_texts(trqa: Path) -> Set[str]:
     return texts
 
 
-def build(paths: DatasetPaths, gc: GoldCriteriaConfig, split_cfg: SplitConfig, limit: Optional[int] = None) -> None:
+def build(paths: DatasetPaths, gc: GoldBeliefsConfig, split_cfg: SplitConfig, limit: Optional[int] = None) -> None:
     # Before the writer's calls.
     check_writer(gc, paths)
     check_shares(paths, split_cfg)

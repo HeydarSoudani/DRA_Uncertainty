@@ -40,7 +40,7 @@ class IssueCode:
 
 
 # An observation that did not enter the belief.
-ISSUE_UNKNOWN_CRITERION = "unknown_criterion"
+ISSUE_UNKNOWN_BELIEF = "unknown_belief"
 ISSUE_UNKNOWN_PASSAGE = "unknown_passage"
 ISSUE_OBSERVATION_ON_TARGET = "observation_on_target"
 ISSUE_SPAN_UNVERIFIED = "span_unverified"
@@ -70,12 +70,12 @@ ISSUE_CANDIDATE_READDED = "candidate_readded"
 ISSUE_SPAN_OFF_FACT = "span_off_fact"
 
 ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
-    IssueCode(ISSUE_UNKNOWN_CRITERION, DROPPED, gate=True,
-              meaning="an observation or belief item of a criterion id the belief does not have"),
+    IssueCode(ISSUE_UNKNOWN_BELIEF, DROPPED, gate=True,
+              meaning="an observation or belief item of a belief id the belief does not have"),
     IssueCode(ISSUE_UNKNOWN_PASSAGE, DROPPED, gate=True,
               meaning="a passage label that is no passage of the call"),
     IssueCode(ISSUE_OBSERVATION_ON_TARGET, DROPPED, unclean=True,
-              meaning="an observation on a target criterion (code derives it from the clues)"),
+              meaning="an observation on a target belief (code derives it from the clues)"),
     IssueCode(ISSUE_SPAN_UNVERIFIED, DROPPED, unclean=True,
               meaning="a passage observation without a span of the passage as shown"),
     IssueCode(ISSUE_TURN_SPAN_UNVERIFIED, DROPPED, unclean=True,
@@ -89,20 +89,20 @@ ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_ANSWER_NOT_COMPUTED, DROPPED, unclean=True,
               meaning="a passage observation on a computed answer no claim of the reasoning computes"),
     IssueCode(ISSUE_SUBJECT_CANDIDATE, DROPPED, unclean=True,
-              meaning="the member a member criterion is about, as its candidate or proposal"),
+              meaning="the member a member belief is about, as its candidate or proposal"),
 
     IssueCode(ISSUE_BELIEF_REPEATED, DROPPED, gate=True, meaning="a second item of one belief in the reply"),
     IssueCode(ISSUE_UPDATE_WITHOUT_OBSERVATION, DROPPED, unclean=True,
-              meaning="a belief item of a criterion with no passage observation in the call"),
+              meaning="a belief item of a belief with no passage observation in the call"),
     IssueCode(ISSUE_UPDATE_ON_TARGET, DROPPED, unclean=True,
-              meaning="a belief item on a target criterion (code derives it)"),
+              meaning="a belief item on a target belief (code derives it)"),
     IssueCode(ISSUE_UPDATE_ON_COMPUTED, DROPPED, unclean=True,
               meaning="a belief item on a computed answer (it takes none)"),
     IssueCode(ISSUE_BELIEF_MISSING, FLAGGED, unclean=True,
               meaning="a belief with a new passage observation but no belief item: its WEP is kept"),
 
     IssueCode(ISSUE_CANDIDATE_NOT_IN_PASSAGES, FLAGGED,
-              meaning="a new candidate in no span or title of the criterion's passages"),
+              meaning="a new candidate in no span or title of the belief's passages"),
     IssueCode(ISSUE_CANDIDATE_NEAR_DUPLICATE, FLAGGED,
               meaning="a new candidate whose name contains a listed one, or the reverse"),
     IssueCode(ISSUE_FACT_MERGED, FLAGGED,
