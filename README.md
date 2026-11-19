@@ -45,7 +45,7 @@ src/
 └── indexing_corpus_dataset/  dataset download and index building
 experiments/
 ├── inference/                dra_inference.py
-├── training/                 build_training_dataset.py
+├── training/                 train_belief_model.py (phases 1-5)
 └── configs/                  YAML defaults of every script
 analysis/                     beliefs reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)

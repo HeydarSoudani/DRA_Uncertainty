@@ -224,9 +224,11 @@ _RERANKER_SERVER_SPECS: Dict[str, ServerSpec] = {
 # (each query's calls run one after another), so the server batches many
 # sequences; paged attention reserves no memory for max_model_len up front, so
 # it covers the longest belief call (prompt + up to 16k output tokens).
-_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
-    "Qwen/Qwen3.5-4B": ServerSpec(
-        model="Qwen/Qwen3.5-4B",
+# The trained belief models (utils.config.TRAINED_BELIEF_RUNS) are Qwen3.5-4B
+# checkpoints, served from their path with the same settings.
+def _qwen35_4b_belief_spec(model: str, label: str) -> ServerSpec:
+    return ServerSpec(
+        model=model,
         port=7010, tp_size=1,
         max_model_len=65536, max_num_seqs=128,
         gpu_memory_utilization=0.90,
@@ -235,8 +237,23 @@ _BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
         enable_prefix_caching=True,            # every call shares the system prompt
         model_gb=9.0, allowed_tp=(1,),
         extra_args=["--language-model-only"],  # text only: the vision tower is not loaded
-        label="Belief model Qwen3.5-4B",
-    ),
+        label=label,
+    )
+
+
+def _trained_belief_specs() -> Dict[str, ServerSpec]:
+    from utils.config import TRAINED_BELIEF_RUNS, trained_belief_checkpoint
+
+    specs = {}
+    for name, run in TRAINED_BELIEF_RUNS.items():
+        path = str(trained_belief_checkpoint(run))
+        specs[path] = _qwen35_4b_belief_spec(path, f"Belief model {name}")
+    return specs
+
+
+_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
+    "Qwen/Qwen3.5-4B": _qwen35_4b_belief_spec("Qwen/Qwen3.5-4B", "Belief model Qwen3.5-4B"),
+    **_trained_belief_specs(),
 }
 
 # NOTE: The LLM-as-judge for accuracy/report evaluation is no longer run on

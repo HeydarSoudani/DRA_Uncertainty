@@ -2,10 +2,10 @@
 #SBATCH --job-name=run_dra_inference_cpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=4
 #SBATCH --partition=staging
-#SBATCH --time=02:30:00
-#SBATCH --mem=112GB
+#SBATCH --time=04:00:00
+#SBATCH --mem=28GB
 #SBATCH --output=script_logging/%x_%j.out
 
 # CPU-only stages of dra_inference: belief (replays saved trajectories, API calls only)
@@ -16,16 +16,16 @@
 source scripts/_activate.sh
 mkdir -p script_logging
 
-export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-16}
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 
 # Must match the generate run whose trajectories are replayed.
-DATASET=browsecomp_plus            # trqa | neuclir | browsecomp_plus | ragtime
-SUBSET=                            # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
+DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
+SUBSET=wiki1                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
 POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 STAGE=${STAGE:-belief}             # belief | eval
 BELIEF_WORKERS=${BELIEF_WORKERS:-4}  # belief stage: queries at once (threads, API calls only)
-BELIEF_MODEL=${BELIEF_MODEL:-qwen3.6_27b}  # belief stage: qwen3.6_27b | qwen3.5_9b (OpenRouter); qwen3.5_4b runs on local vLLM: scripts/run_dra_inference.sh. Each model has its own folder belief/{model}/, the others are kept
+BELIEF_MODEL=${BELIEF_MODEL:-qwen3.5_9b}  # belief stage: qwen3.6_27b | qwen3.5_9b (OpenRouter); qwen3.5_4b runs on local vLLM: scripts/run_dra_inference.sh. Each model has its own folder belief/{model}/, the others are kept
 LIMIT=${LIMIT:-50}                   # belief stage only: trajectories left without a belief file to process; empty = all
 
 COMMON=(--dataset "$DATASET" ${SUBSET:+--subset "$SUBSET"} --retriever "$RETRIEVER"

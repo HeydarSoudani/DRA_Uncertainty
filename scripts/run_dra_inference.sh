@@ -5,7 +5,7 @@
 #SBATCH --gpus=3
 #SBATCH --cpus-per-task=48
 #SBATCH --partition=gpu_h100
-#SBATCH --time=01:30:00
+#SBATCH --time=03:00:00
 #SBATCH --mem=360GB
 #SBATCH --output=script_logging/%x_%j.out
 
@@ -13,9 +13,10 @@
 #   | agent   | dataset         | total time        | measured on (4 workers) |
 #   |---------|-----------------|-------------------|-------------------------|
 #   | oss_20b | browsecomp_plus | N x 1.2 + 3 min   | 48 queries, 42 min      |
-#   | glm     | browsecomp_plus | N x 0.87 + 3 min  | 1 query, 3.1 min        |
+#   | glm     | browsecomp_plus | N x 3.2 + 3 min   | 29 queries, 95 min (3w) |
 #   | oss_20b | trqa wiki2      | N x 0.8 + 3 min   | 1 query, 3.0 min        |
 #   | glm     | trqa wiki2      | N x 0.2 + 3 min   | 1 query, 1.1 min        |
+#   | glm     | trqa wiki1      | N x 3.3 + 3 min   | 27 queries, 90 min (3w) |
 
 # Loads modules, venv and project env vars; run from the repo root (paths are relative).
 source scripts/_activate.sh
@@ -27,11 +28,11 @@ export OMP_NUM_THREADS=16
 
 # DATASET + RETRIEVER must match the built index (see scripts/run_index_builder.sh).
 DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
-SUBSET=wiki2                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
+SUBSET=wiki1                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
-POLICY_MODEL=glm               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
+POLICY_MODEL=glm                   # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 STAGE=${STAGE:-generate}                # generate | belief | eval | all (= generate, then belief)
-LIMIT=${LIMIT:-49}                 # generate stage only: new queries to generate (1 already done -> 50 total)
+LIMIT=${LIMIT:-23}                 # generate stage only: new queries to generate (27 already done -> 50 total)
 WORKERS=${WORKERS:-3}              # generate stage: one query-level worker per GPU
 # Belief model (each has its own folder belief/{model}/ in the run, the others are kept):
 #   qwen3.5_4b   Qwen/Qwen3.5-4B, local vLLM: the belief stage starts its server on GPU 0 (port 7010)

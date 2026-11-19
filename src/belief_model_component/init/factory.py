@@ -24,7 +24,7 @@ Per query:
      ``layout.belief_bank_path(..., "gold")``;
    - a training dataset's gold beliefs (``GoldBeliefSource``): the dataset's
      queries file is their bank, written by the dataset build only
-     (``build_training_dataset.py``); a query without them gets silver ones.
+     (``train_belief_model.py --phase 1``); a query without them gets silver ones.
 
 Functions:
 
@@ -151,7 +151,7 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
         path = gold_beliefs_path(dataset)
         if not path.exists():
             raise SystemExit(f"belief_source gold: {path} not found; build the dataset with "
-                             f"experiments/training/build_training_dataset.py --dataset {dataset}"
+                             f"experiments/training/train_belief_model.py --phase 1 --dataset {dataset}"
                              + (", or run with --belief-source silver" if spec.belief_choice else ""))
         print(f"[INFO] beliefs: gold from {path}, silver for a query without them (extracted by {belief_model})")
     else:

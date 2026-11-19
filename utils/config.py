@@ -8,7 +8,10 @@ import functools
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+from indexing_corpus_dataset.layout import OUTPUT_ROOT
 
 
 # ---------------------------------------------------------------------------
@@ -79,10 +82,29 @@ AGENT_META_KEYS: Tuple[str, ...] = (
 # what the belief bank and run_config.json record.  A "vllm/<HF name>" LLM is
 # served locally by the belief stage (utils.vllm_manager.belief_server, its
 # spec in _BELIEF_SERVER_SPECS; needs a GPU); the others go through OpenRouter.
+#
+# The trained belief models (experiments/training/train_belief_model.py) are
+# served like qwen3.5_4b: each is the selected checkpoint of one training run,
+# ``{BELIEF_TRAINING_ROOT}/{run}/final`` (TRAINED_BELIEF_RUNS: short name ->
+# run), loaded by its path.
+BELIEF_TRAINING_ROOT = OUTPUT_ROOT / "belief_training"
+TRAINED_BELIEF_RUNS: Dict[str, str] = {
+    "qwen3.5_4b_sft":         "sft",
+    "qwen3.5_4b_rl":          "rl",
+    "qwen3.5_4b_rl_own_init": "rl_own_init",
+}
+
+
+def trained_belief_checkpoint(run: str) -> Path:
+    """The served checkpoint of the training run *run* (``sft``, ``rl``, ...)."""
+    return BELIEF_TRAINING_ROOT / run / "final"
+
+
 BELIEF_MODEL_TO_LLM: Dict[str, str] = {
     "qwen3.5_4b":  "vllm/Qwen/Qwen3.5-4B",
     "qwen3.5_9b":  "openrouter/qwen/qwen3.5-9b",
     "qwen3.6_27b": "openrouter/qwen/qwen3.6-27b",
+    **{name: f"vllm/{trained_belief_checkpoint(run)}" for name, run in TRAINED_BELIEF_RUNS.items()},
 }
 DEFAULT_BELIEF_MODEL = "qwen3.6_27b"
 

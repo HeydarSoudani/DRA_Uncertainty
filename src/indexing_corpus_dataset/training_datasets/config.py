@@ -4,7 +4,7 @@ infoseek and trqa_validation, and the ``gold_beliefs`` section of the
 belief texts) and its paths.  The sources and the dropped question types
 are fixed (``sources.py``, ``filters.py``).
 
-The YAML file (``experiments/configs/build_training_dataset.yaml``) has the same
+The ``data`` section of ``experiments/configs/belief_training.yaml`` has the same
 sections and keys as the dataclasses below (the CLI flags ``--limit`` and
 ``--source`` are not settings).  An unknown section or key is an error.
 """

@@ -6,7 +6,7 @@ Every training dataset has one row per query in ``queries/queries_all.jsonl``
 and the qrels in ``qrels/qrels_all.txt``.  The splits ``sft``, ``rl`` and
 ``val`` (``splits.py``) are views of those files, read by
 ``dataset_loaders``.  One build call per dataset
-(``experiments/training/build_training_dataset.py --dataset D --limit N``),
+(``experiments/training/train_belief_model.py --phase 1 --dataset D --limit N``),
 incremental: the next N questions not processed yet.
 
 infoseek (``infoseek.py``): InfoSeek-Hard questions over the corpus of the

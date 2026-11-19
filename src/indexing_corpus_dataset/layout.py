@@ -230,7 +230,7 @@ DATASET_SPECS = {
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_beliefs=None, gold_beliefs="question", belief_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_eval="argue", title_key="title",
     ),
-    # Training datasets built by this project (experiments/training/build_training_dataset.py),
+    # Training datasets built by this project (experiments/training/train_belief_model.py --phase 1),
     # under TRAINING_DATASETS_ROOT; ``subset`` is the split (TRAINING_SPLITS).
     # infoseek: InfoSeek-Hard questions over the original release's corpus,
     # wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under

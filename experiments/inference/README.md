@@ -205,7 +205,7 @@ The banks:
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
   beliefs, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
 - A training dataset's gold beliefs: its queries file is their bank, written by its build only
-  (`build_training_dataset.py`), never during a run, so training scores against the same texts. A query whose gold
+  (`train_belief_model.py --phase 1`), never during a run, so training scores against the same texts. A query whose gold
   texts failed gets silver ones; rebuild the dataset to fix them.
 
 Rules of a bank line:

@@ -934,10 +934,11 @@ if __name__ == "__main__":
 # ============================================================================
 # EXAMPLE USAGE
 # ============================================================================
-#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 1 --workers 1
-#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 1 --workers 1
-#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1 --workers 1
+#   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 1 --workers 1 
+#   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 3 --workers 1 --quiet
+#   python experiments/inference/dra_inference.py --stage belief --dataset browsecomp_plus --limit 1 --workers 1 --belief_model qwen3.5_9b
 #   python experiments/inference/dra_inference.py --stage belief --dataset trqa --subset wiki2 --limit 1
+#   python experiments/inference/dra_inference.py --stage eval --dataset trqa --subset wiki2 --workers 1 --quiet
 
 #   python experiments/inference/dra_inference.py --stage generate --dataset browsecomp_plus --limit 2 --workers 2 --quiet
 #   python experiments/inference/dra_inference.py --stage generate --dataset trqa --subset wiki2 --limit 2 --workers 2 --quiet

@@ -1,0 +1,136 @@
+# ============================================================================
+# Settings of experiments/training/train_belief_model.py (belief model
+# training, agent frozen; src/belief_model_training).  One section per phase
+# plus `shared`; `data` holds the dataset build settings (phase 1).  The keys
+# are the dataclass fields of src/belief_model_training/config.py, and for
+# `data` those of src/indexing_corpus_dataset/training_datasets/config.py.
+#
+# Precedence (lowest -> highest):
+#   dataclass defaults  <  this file  <  --set section.key=value
+#
+# Hyperparameters follow Agent-BRACE (arXiv 2605.11436).  Every training run
+# writes under BELIEF_TRAINING_ROOT (utils/config.py: OUTPUT_ROOT/belief_training):
+# stats/ (phase 2), sft/ (phase 3), rl/ and rl_own_init/ (phase 4); each
+# run's final/ is served by dra_inference as qwen3.5_4b_sft, qwen3.5_4b_rl,
+# qwen3.5_4b_rl_own_init.
+# ============================================================================
+
+# ── Shared ───────────────────────────────────────────────────────────────────
+shared:
+  training_datasets: [infoseek, trqa_validation]   # their sft / rl / val splits; episodes pooled (one model)
+  policy_models: [oss_20b, glm]       # frozen agents whose trajectories are the episodes
+  retriever: qwen3_emb_4b
+  teacher: qwen3.6_27b                # --belief-model of the teacher (its sft / val replies are the SFT samples)
+  student: Qwen/Qwen3.5-4B            # SFT start
+  inference_config: experiments/configs/dra_inference.yaml  # the phase 2 / 5 inference settings; its `output` holds the runs
+  seed: 0
+  max_seq_len: 32768                  # longest student sequence (prompt + reply): longer SFT samples dropped, longer RL prompts get no reply
+
+# ── Phase 1: training dataset builds (one call per dataset) ──────────────────
+# infoseek (InfoSeek-Hard over the original wiki-25-512 corpus), webshaper_frames
+# (WebShaper and FRAMES with their fetched gold pages and hard negatives;
+# sub-sections pages and negatives) and trqa_validation.  The sources and the
+# dropped question types are fixed in code.  The datasets are built under
+# data/training_datasets/{dataset} of the repo.
+data:
+  shared:
+    contact: null                     # e-mail or URL in the User-Agent (required by webshaper_frames); null = DRA_CONTACT in .env
+    timeout: 30.0                     # seconds per request
+    max_retries: 4                    # retries on transport errors and HTTP 429 / 5xx
+
+  # webshaper_frames: gold pages + Filter A
+  pages:
+    wiki_lang: en                     # other-language Wikipedia pages are dropped
+    wiki_workers: 3                   # Wikimedia asks for at most 3 concurrent requests
+    wiki_rate_per_min: 180            # limit: 200/min with contact info in the User-Agent, 10/min without
+    web_workers: 8
+    wayback: true                     # Wayback Machine fallback for dead web pages
+    wayback_rate_per_min: 15          # the archive refuses connections above ~15/min
+    wayback_timestamp: "20250601"     # closest snapshot to when WebShaper was built
+    min_words: 50                     # fewer extracted words = dead page (soft 404)
+    min_page_share: 0.8               # Filter A, questions with web gold pages: this share of all their gold pages (Wikipedia-only: all)
+  # wiki_lang, min_words, min_page_share, wayback, wayback_timestamp must stay
+  # those of the earlier builds of webshaper_frames (recorded in stats.json); to
+  # change them, remove the dataset and build it again.
+
+  # webshaper_frames: hard negatives of the Wikipedia gold pages (Wikipedia API,
+  # with the rate and workers of `pages`; web gold pages get none)
+  negatives:
+    max_per_gold: 10                  # hard negatives kept per wiki gold page
+    sources: [morelike, category]     # fill order: morelike (most similar text), category (siblings in the most specific categories)
+    candidate_factor: 3               # candidates asked from each source per slot (skipped / failed ones leave slots to the next)
+    dedup_threshold: 0.8              # skip a candidate whose word 5-gram containment with a corpus doc is >= this (the report uses the same)
+  # negatives.* and pages.wiki_lang / min_words must stay those of the earlier
+  # builds (recorded in stats.json); to change them, remove
+  # negatives/index.jsonl and the 'negatives' section of stats.json.
+
+  # Split of infoseek and trqa_validation: shares of the queries with the full
+  # gold annotation (level full); every other query goes to val as its
+  # out-of-domain part; webshaper_frames is validation only.  A query keeps its
+  # split as the dataset grows; the new ones fill the split furthest below its
+  # share.  Recorded in stats.json; other shares are refused; to change them,
+  # remove the 'split' section of stats.json (the next build re-splits every query).
+  split:
+    sft: 0.3                          # SFT samples (phase 2: teacher beliefs)
+    rl: 0.6                           # RL episodes (phase 2: trajectories only)
+    val: 0.1                          # validation of SFT and RL (phase 2: teacher beliefs); plus the out-of-domain queries
+
+  # Belief texts of the gold annotation (end of every build).  An LLM writes
+  # them from the question and the beliefs' source structure; earlier texts are
+  # kept (belief_texts.jsonl of the dataset); writing new ones needs
+  # OPENROUTER_API_KEY.  model (and the prompts) must stay those of the kept
+  # texts; to change them, remove belief_texts.jsonl.
+  gold_beliefs:
+    model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model)
+    workers: 8                        # concurrent LLM calls
+    max_tokens: 4096
+
+# ── Phase 2: dra_inference on a split (generate; teacher beliefs on sft, val) ─
+trajectories:
+  workers: 1                          # generate stage query workers (dra_inference --workers)
+  belief_workers: null                # teacher belief stage threads (null = belief_workers of the inference config)
+  quiet: true
+
+# ── Phase 3: SFT (LoRA, merged into sft/final) ───────────────────────────────
+sft:
+  init_datasets: [infoseek]           # gold beliefs as init samples (multi-hop: in the question's words; not TRQA's members)
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+  lora_target_modules: [q_proj, k_proj, v_proj, o_proj, in_proj_qkv, in_proj_z, out_proj, gate_proj, up_proj, down_proj]  # attention, Gated DeltaNet, MLP
+  learning_rate: 2.0e-5               # Agent-BRACE
+  num_epochs: 5                       # upper bound; the epoch with the lowest validation loss is merged
+  per_device_batch_size: 1            # 1 x 32 = Agent-BRACE's 4 x 8 effective batch
+  gradient_accumulation_steps: 32
+  warmup_ratio: 0.03
+  logging_steps: 5
+
+# ── Phase 4: RL (reward = gate x Brier of the final score; no transition reward) ─
+rl:
+  beliefs: gold                       # gold (run rl) | own (the student's init call, run rl_own_init)
+  init_model: null                    # null = sft/final
+  num_iterations: 200
+  episodes_per_batch: 8               # episodes per iteration
+  group_size: 8                       # chains per episode (GRPO group, same fixed trajectory)
+  scorer_samples: 4                   # final-score replies per chain; the chain's reward is their mean
+  temperature: 0.7                    # Agent-BRACE rollout temperature (validation: greedy)
+  max_chain_steps: null               # leave out episodes with more search iterations (with a document); set from phase 2 stats
+  refill_rounds: 2                    # rollouts to replace groups without reward spread
+  learning_rate: 1.0e-5               # Agent-BRACE belief lr
+  ppo_epochs: 1
+  ppo_mini_batch_chains: 4            # chains per optimizer step (Agent-BRACE mini-batch 4)
+  clip_ratio_low: 0.2                 # PPO clip 0.2
+  clip_ratio_high: 0.2
+  clip_ratio_c: 3.0                   # dual-clip
+  loss_agg_mode: token-mean
+  grad_clip: 1.0
+  use_kl_loss: false
+  kl_loss_coef: 0.001
+  kl_loss_type: low_var_kl
+  val_every: 10                       # validation (greedy chains on the val episodes; selects final/ by s_T AUROC)
+  val_max_episodes: null
+  vllm_gpu_memory_utilization: 0.55
+  vllm_max_num_seqs: 128
+  save_every: 20
+  save_total_limit: 3                 # step_{n}/ checkpoints kept
+  sync_dir: /dev/shm/belief_training_sync
