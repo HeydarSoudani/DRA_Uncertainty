@@ -379,7 +379,7 @@ belief model costs only its own judge calls.
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
-| uncertainty | verbal: queries scored, AUROC [CI], Brier (once per run) | QA, glm and oss |
+| uncertainty | verbal: queries scored, missing (scored 0.5), AUROC [CI], Brier (once per run) | QA, glm and oss |
 | | queries scored; s_T: AUROC [CI], Brier; formula: AUROC [CI] (per belief model) | QA, belief on |
 | | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
 | belief | gold and control event change, belief recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
@@ -392,8 +392,10 @@ raw outputs stay in the run, for `analysis/`).
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
 query out). The baseline `verbal` (`uncertainty/verbal.py`) is a measure of the generation, scored once per run: the
 agent's own `Confidence: X%` (glm and oss; read from `generation/{qid}.md` by a regex,
-`evaluation/generation/confidence.py`, "~85 %" and a fraction such as "0.85" accepted; a generation without it has
-none), on the judged queries with a verbal confidence. Per belief model (`uncertainty/qa.py`): `s_T` (the final
+`evaluation/generation/confidence.py`: "~85 %", a fraction such as "0.85", the value on the line after the label and
+text after a "%" value accepted), on every judged query; a query without a stated confidence (no confidence line, a
+tool call or narration as the final text) is scored 0.5 (unknown) and counted in the `missing` row, its
+per_query.csv cell left blank. Per belief model (`uncertainty/qa.py`): `s_T` (the final
 scorer, the headline) and the ablation `formula` (the fixed function of the final statuses: the mean of the status
 probabilities of the beliefs the updater judges, aggregates left out), on the queries with y and s_T. The verbal and
 s_T rows can therefore have different n. Rows: AUROC [CI] for every score, Brier for verbal and s_T. On a report dataset (`uncertainty/report.py`)
@@ -432,7 +434,7 @@ The terminal log prints one block: one line per group of the generation, then pe
 EVALUATION  trqa / wiki2_test / glm / belief models: qwen3.5_9b, qwen3.6_27b  (n=200; scored now: generation, qwen3.5_9b, qwen3.6_27b)
 retrieval    Recall@N 0.412 | Precision@N 0.081 (N 38.5)
 generation   accuracy 0.310 (62/200)
-uncertainty  verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 196)
+uncertainty  verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 196, missing 4)
 trajectory   searches 9.2 | agent tok 41234 | forced 4
 [qwen3.5_9b]
 uncertainty  s_T AUROC 0.710 [0.63,0.78] Brier 0.220 (n 188)

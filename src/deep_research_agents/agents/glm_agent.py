@@ -322,20 +322,22 @@ class GLM_Agent(BasicAgent):
             else:
                 messages.append(message)
 
-            # Record answer turn if text is present
-            if cur_text:
-                if not function_calls:
-                    self._notify_progress("answer", iteration)
-                    self._vprint(iteration, "think", (cur_reasoning or "(no reasoning)")[:100])
-                    self._vprint(iteration, "answer", cur_text[:100])
-                    self._record_step(reasoning_path, {
-                        "iteration": iteration,
-                        "action_type": "answer",
-                        "think": cur_reasoning or "",
-                        "generation": cur_text,
-                        "docs": [],
-                        "component_doc_ids": [],
-                    })
+            # Record answer turn if text is present.  Only a turn without a
+            # tool call is an answer: the text beside a tool call is narration
+            # ("Let me search ..."), and taking it as the prediction would skip
+            # the forced final answer when the loop ends without one.
+            if cur_text and not function_calls:
+                self._notify_progress("answer", iteration)
+                self._vprint(iteration, "think", (cur_reasoning or "(no reasoning)")[:100])
+                self._vprint(iteration, "answer", cur_text[:100])
+                self._record_step(reasoning_path, {
+                    "iteration": iteration,
+                    "action_type": "answer",
+                    "think": cur_reasoning or "",
+                    "generation": cur_text,
+                    "docs": [],
+                    "component_doc_ids": [],
+                })
                 prediction = cur_text
 
             # Terminate if no function calls

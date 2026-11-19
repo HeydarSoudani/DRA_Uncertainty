@@ -5,9 +5,13 @@ correctness of the agent's final answer (``eval/generation/accuracy.jsonl``:
 the judge's ``correct``, TRQA's exact match; a judge error leaves the
 query out) and the score is the agent's own confidence in its answer
 (``generation.confidence``, glm and oss).  A measure of the generation (no
-belief model), so the generate stage reports it.  Rows: the queries scored,
-the AUROC with a bootstrap CI over queries and the Brier score, over the
-judged queries with a verbal confidence.  No LLM call.
+belief model), so the generate stage reports it.  A judged query without a
+stated confidence (no confidence line, a tool call or narration as the final
+text) is scored :data:`MISSING_CONFIDENCE` (0.5: unknown, neither confident
+nor unconfident), so every judged query counts; per_query.csv keeps the raw
+value (blank when missing).  Rows: the queries scored, how many of them were
+missing (scored 0.5), the AUROC with a bootstrap CI over queries and the
+Brier score.  No LLM call.
 """
 
 import logging
@@ -21,6 +25,9 @@ from ..metrics_file import GroupResult
 
 logger = logging.getLogger(__name__)
 
+# The score of a judged query without a stated confidence (module docstring).
+MISSING_CONFIDENCE = 0.5
+
 
 class VerbalConfidenceEvaluator:
     """The verbal confidence measures of a run (module docstring)."""
@@ -31,19 +38,23 @@ class VerbalConfidenceEvaluator:
         query has a verbal confidence (an agent that states none)."""
         if not any(r.get("verbal_confidence") is not None for r in accuracy_per_query):
             return GroupResult()
-        judged = [r for r in accuracy_per_query if not r.get("judge_error")]
-        scored = [r for r in judged if r.get("verbal_confidence") is not None]
-        left_out = {"judge error": len(accuracy_per_query) - len(judged),
-                    "no verbal confidence": len(judged) - len(scored)}
-        if any(left_out.values()):
-            logger.info("verbal confidence evaluation: queries left out %s", left_out)
+        scored = [r for r in accuracy_per_query if not r.get("judge_error")]
+        missing = sum(1 for r in scored if r.get("verbal_confidence") is None)
+        if len(scored) < len(accuracy_per_query):
+            logger.info("verbal confidence evaluation: %d judge error(s) left out",
+                        len(accuracy_per_query) - len(scored))
+
+        def score(r):
+            c = r.get("verbal_confidence")
+            return MISSING_CONFIDENCE if c is None else c
 
         def stat(fn):
             return lambda rs: fn(np.array([int(bool(r.get("correct"))) for r in rs], dtype=float),
-                                 np.array([r["verbal_confidence"] for r in rs], dtype=float)) if rs else math.nan
+                                 np.array([score(r) for r in rs], dtype=float)) if rs else math.nan
 
         res = GroupResult()
         res.add("uncertainty", "verbal: queries scored", len(scored), n=len(accuracy_per_query))
+        res.add("uncertainty", f"verbal: missing (scored {MISSING_CONFIDENCE:g})", missing, n=len(scored))
         res.add("uncertainty", "verbal AUROC", stat(auroc)(scored), *bootstrap_ci(scored, stat(auroc)), len(scored))
         res.add("uncertainty", "verbal Brier", stat(brier)(scored), n=len(scored))
         return res

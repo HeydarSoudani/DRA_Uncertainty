@@ -254,7 +254,8 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
     if _get(shared, "uncertainty", "verbal AUROC"):
         out.append(f"uncertainty  verbal AUROC {_ci(shared, 'uncertainty', 'verbal AUROC')}"
                    f" Brier {_val(shared, 'uncertainty', 'verbal Brier')}"
-                   f" (n {_val(shared, 'uncertainty', 'verbal: queries scored')})")
+                   f" (n {_val(shared, 'uncertainty', 'verbal: queries scored')},"
+                   f" missing {_val(shared, 'uncertainty', 'verbal: missing (scored 0.5)')})")
     out.append(f"trajectory   searches {_val(shared, 'trajectory', 'searches', 1)}"
                f" | agent tok {_val(shared, 'trajectory', 'agent tokens', 0)}"
                f" | forced {_val(shared, 'trajectory', 'forced answers')}")
