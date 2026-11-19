@@ -50,10 +50,11 @@ class CallPlan:
 
 class BeliefUpdateSignal:
     """Belief update of the search: one call (``updater``) per step that
-    has passages to read, then one on the answer turn (``finish``).
+    has passages to read, then one on the answer turn's reasoning
+    (``finish``, the final answer left out).
 
     A step makes a call when its search returned a document with text;
-    the final turn always makes one.  The call shows every document of
+    the final update makes one when it has a turn to read.  The call shows every document of
     the step, also one shown in an earlier step: a passage gets its label
     when first shown (``BeliefState.label_doc``) and keeps it, so the
     update sees which candidates it already supports (the same passage
@@ -120,8 +121,9 @@ class BeliefUpdateSignal:
         return self._update(self.plan(docs, step, agent_turn), step)
 
     def finish(self, step: int, agent_turn: str) -> Dict[str, Any]:
-        """The final update: the agent's answer turn (labelled ``t<step>``)
-        with the turns still waiting."""
+        """The final update: the reasoning of the agent's answer turn, its
+        final answer left out (*agent_turn*, labelled ``t<step>``), with
+        the turns still waiting; no call when there is none."""
         return self._update(self.plan([], step, agent_turn, final=True), step)
 
     def passages(self, docs: List[Dict[str, Any]]) -> Tuple[List[Passage], List[str]]:

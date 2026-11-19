@@ -14,7 +14,9 @@
                      --subset for each agent (a trained model or a baseline)
 
 Settings: --config (YAML; sections shared, data, trajectories, sft, rl) and
---set section.key=value (repeatable).  The trained models are served by
+--set section.key=value (repeatable); --retriever, --workers, --belief-workers
+and --beliefs override shared.retriever, trajectories.workers,
+trajectories.belief_workers and rl.beliefs.  The trained models are served by
 dra_inference as qwen3.5_4b_sft, qwen3.5_4b_rl, qwen3.5_4b_rl_own_init.
 """
 
@@ -34,12 +36,15 @@ _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "belief_
 #: The flags each phase takes (besides --phase, --config, --set).
 PHASE_FLAGS = {
     1: {"dataset", "limit", "source"},
-    2: {"dataset", "subset", "policy_model", "limit"},
-    3: set(),
-    4: {"beliefs"},
-    5: {"dataset", "subset", "policy_model", "belief_model", "limit"},
+    2: {"dataset", "subset", "policy_model", "retriever", "workers", "belief_workers", "limit"},
+    3: {"retriever"},
+    4: {"retriever", "beliefs"},
+    5: {"dataset", "subset", "policy_model", "retriever", "belief_workers", "belief_model", "limit"},
 }
 REQUIRED = {1: {"dataset"}, 2: {"dataset", "subset"}, 5: {"dataset", "belief_model"}}
+#: The flags that override a config key.
+CONFIG_FLAGS = {"retriever": "shared.retriever", "workers": "trajectories.workers",
+                "belief_workers": "trajectories.belief_workers", "beliefs": "rl.beliefs"}
 
 
 def _non_negative_int(value: str) -> int:
@@ -49,33 +54,42 @@ def _non_negative_int(value: str) -> int:
     return n
 
 
+def _positive_int(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Belief model training, one phase per call.",
                                      formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__,
                                      allow_abbrev=False)
-    parser.add_argument("--phase", type=int, required=True, choices=sorted(PHASE_FLAGS))
-    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings.")
-    parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE",
-                        help="Override a config key (the value is read as YAML).")
-    parser.add_argument("--dataset", type=str, default=None, help="Phases 1, 2, 5: the dataset.")
-    parser.add_argument("--subset", type=str, default=None,
-                        help="Phase 2: the split (sft, rl, val); phase 5: the dataset's subset (dra_inference --subset).")
-    parser.add_argument("--policy-model", type=str, default=None,
-                        help="Phases 2, 5: one agent (default: every agent of shared.policy_models).")
-    parser.add_argument("--limit", type=_non_negative_int, default=None,
-                        help="Phase 1: the next N questions; phases 2, 5: the queries each dra_inference stage runs.")
-    parser.add_argument("--source", type=str, default=None, help="Phase 1, webshaper_frames: sources, comma-separated.")
-    parser.add_argument("--belief-model", type=str, default=None, help="Phase 5: a dra_inference --belief-model.")
-    parser.add_argument("--beliefs", type=str, default=None, choices=list(RL_BELIEFS),
-                        help="Phase 4: starting beliefs (rl.beliefs): gold or own.")
+    # ── Run ─────────────────────────────────────────────────────────────────
+    parser.add_argument("--phase", type=int, required=True, choices=sorted(PHASE_FLAGS), help="Phase to run: 1 data, 2 trajectories, 3 sft, 4 rl, 5 evaluate (see below).")
+    parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="YAML settings (sections shared, data, trajectories, sft, rl).")
+    parser.add_argument("--set", action="append", default=[], metavar="SECTION.KEY=VALUE", help="Override a config key (the value is read as YAML); repeatable.")
+    # ── Shared (each phase takes the ones listed in PHASE_FLAGS) ────────────
+    parser.add_argument("--dataset", type=str, default=None, help="Phases 1, 2, 5: the dataset. Phase 1: infoseek | webshaper_frames | trqa_validation; phase 2: a built training dataset; phase 5: a training dataset or a dra_inference --dataset.")
+    parser.add_argument("--subset", type=str, default=None, help="Phases 2, 5: phase 2: the split (sft, rl, val); phase 5: the dataset's subset (dra_inference --subset).")
+    parser.add_argument("--policy-model", type=str, default=None, help="Phases 2, 5: one agent (default: every agent of shared.policy_models).")
+    parser.add_argument("--retriever", type=str, default=None, help="Phases 2 to 5: the retriever of the runs (overrides shared.retriever); phases 3, 4 read the runs made with it.")
+    parser.add_argument("--workers", type=_positive_int, default=None, help="Phase 2: query worker processes of the generate stage (dra_inference --workers; overrides trajectories.workers).")
+    parser.add_argument("--belief-workers", type=_positive_int, default=None, help="Phases 2, 5: threads of the belief stage (dra_inference --belief-workers; overrides trajectories.belief_workers).")
+    parser.add_argument("--limit", type=_non_negative_int, default=None, help="Phases 1, 2, 5: phase 1: the next N questions (0 = rewrite the files only); phases 2, 5: the queries each dra_inference stage runs.")
+    # ── Phase 1: data ───────────────────────────────────────────────────────
+    parser.add_argument("--source", type=str, default=None, help="webshaper_frames only: sources, comma-separated (webshaper, frames).")
+    # ── Phase 4: rl ─────────────────────────────────────────────────────────
+    parser.add_argument("--beliefs", type=str, default=None, choices=list(RL_BELIEFS), help="Starting beliefs (overrides rl.beliefs): gold (run rl) or own (run rl_own_init).")
+    # ── Phase 5: evaluate ───────────────────────────────────────────────────
+    parser.add_argument("--belief-model", type=str, default=None, help="A dra_inference --belief-model (a trained model or a baseline).")
     return parser.parse_args()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = _parse_args()
-    given = {k for k in ("dataset", "subset", "policy_model", "limit", "source", "belief_model", "beliefs")
-             if getattr(args, k) is not None}
+    given = {k for k in set().union(*PHASE_FLAGS.values()) if getattr(args, k) is not None}
     extra = given - PHASE_FLAGS[args.phase]
     if extra:
         raise SystemExit(f"--phase {args.phase} takes no {', '.join('--' + k.replace('_', '-') for k in sorted(extra))}")
@@ -89,8 +103,9 @@ def main() -> None:
         if not sep:
             raise SystemExit(f"--set {item}: expected SECTION.KEY=VALUE")
         overrides[key.strip()] = yaml.safe_load(value)
-    if args.beliefs is not None:
-        overrides["rl.beliefs"] = args.beliefs
+    for flag, key in CONFIG_FLAGS.items():
+        if getattr(args, flag) is not None:
+            overrides[key] = getattr(args, flag)
     cfg = load_config(args.config, overrides)
     agents = [args.policy_model] if args.policy_model else list(cfg.shared.policy_models)
 

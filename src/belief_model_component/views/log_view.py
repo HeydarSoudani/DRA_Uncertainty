@@ -20,7 +20,10 @@ Both give the reply's issues, one line per effect (``core.issues``:
 dropped, corrected, flagged), then its notes.  The console lists
 every document of the iteration with its label ("(again)" when an earlier
 iteration showed it), so a label can be traced to its document; so does the
-md, under the iteration's heading.
+md, under the iteration's heading.  The final update (a step record with
+``final_update``, on the answer turn's reasoning) has no documents and no
+gold row; the final record shows b_T with the final scorer's word and
+reason.
 """
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -156,7 +159,9 @@ def _summary(record: Dict[str, Any], final: bool) -> str:
         out += f" ({record.get('certainty_label')}) | formula={_num(record.get('certainty_formula'))}"
     elif final and record.get("certainty_formula") != record.get("certainty"):
         out += f" | formula={_num(record.get('certainty_formula'))}"
-    if not final:
+    if not final and record.get("final_update"):
+        out += " | final update (answer turn's reasoning, no docs)"
+    elif not final:
         out += f" | {record.get('num_new_docs', 0)}/{record.get('num_docs', 0)} new docs"
     if record.get("called") is False:
         out += " | no call (belief carried forward)"
@@ -218,7 +223,7 @@ def init_lines(summary: Dict[str, Any]) -> List[Tuple[str, str]]:
 def belief_lines(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]],
                  final: bool = False) -> List[Tuple[str, str]]:
     rows: List[Tuple[str, str]] = [("belief", _summary(record, final))]
-    if not final:
+    if not final and not record.get("final_update"):
         rows.append(("gold", gold_summary(record)))
     table = belief_rows(record, beliefs, CONSOLE_VALUE_CHARS)
     status_w = max((len(r[2]) for r in table), default=0)
@@ -264,9 +269,14 @@ def init_md(summary: Dict[str, Any]) -> str:
 
 
 def belief_md(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]], final: bool = False) -> str:
-    heading = "## Final belief" if final else f"### Belief · iter {record.get('agent_iteration', record.get('iteration'))}"
+    if final:
+        heading = "## Final belief"
+    elif record.get("final_update"):
+        heading = "### Belief · final update"
+    else:
+        heading = f"### Belief · iter {record.get('agent_iteration', record.get('iteration'))}"
     lines = [heading, "", _summary(record, final).replace(" | ", " · ")]
-    if not final:
+    if not final and not record.get("final_update"):
         lines += ["", f"gold: {gold_summary(record).replace(' | ', ' · ')}"]
         if _step_labels(record):
             lines += ["", f"docs: {_labels(record)}"]

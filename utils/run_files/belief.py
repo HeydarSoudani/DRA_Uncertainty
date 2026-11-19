@@ -2,8 +2,10 @@
 
 Saves what ``BeliefModel`` records into one JSONL file per query
 under ``belief/``: a ``meta`` line, then one ``step`` line per search
-iteration, then one ``final`` line (the final scorer on the agent's
-answer turn, or on a report one more update, when it has one).  The files are the input of the offline analysis
+iteration, then the final update's ``step`` line (``final_update`` true:
+the update on the answer turn's reasoning, without the final answer),
+then one ``final`` line (the final scorer on b_T and the final answer; on
+a report the certainty of b_T), when the query has an answer turn.  The files are the input of the offline analysis
 and of belief model training.  Every line carries ``query_id``;
 correctness labels stay in the accuracy output (``eval/generation/accuracy.jsonl``, same
 ``query_id`` key).  The run settings (agent, beliefs and belief update
@@ -12,15 +14,15 @@ per-iteration seen doc ids and queries in the trajectory file
 (``trajectory/{query_id}.jsonl``), which the belief stage reads
 (``orchestration.belief_stage``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 54::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 55::
 
-    line 1  {"record": "meta", "schema_version": 54, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 55, "query_id": "q1", "question": "...",
              "num_beliefs": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "beliefs": [{"id": "B1", "text": "...", "kind": "closed"}, ...],
              "belief_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
              "tokens": {"input_tokens": 51234, "output_tokens": 8120, "total_tokens": 59354, "num_calls": 9}}
 
-    line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0,
+    line 2  {"record": "step", "query_id": "q1", "iteration": 1, "agent_iteration": 0, "final_update": false,
              "num_subqueries": 1, "num_docs": 5, "num_new_docs": 5,
              "new_item_precision": 0.4,
              "num_new_relevant": 2, "num_repeated_relevant": 0, "num_irrelevant": 3,
@@ -49,17 +51,21 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 54::
              "agent_turn": "...",
              "reply": "...", "errors": []}
     ...
+            {"record": "step", "query_id": "q1", "iteration": 9, "agent_iteration": null, "final_update": true,
+             "num_subqueries": 0, "num_docs": 0, "num_new_docs": 0, "new_item_precision": null, ...,
+             "certainty": 0.5, "called": true, "docs": [], "beliefs": [...], "updates": [...], ...,
+             "agent_turn": "<the answer turn's reasoning>", "reply": "...", "errors": []}
     last    {"record": "final", "query_id": "q1", "iteration": 9, "certainty": 0.7,
              "certainty_label": "probable", "certainty_formula": 0.5,
              "called": true,
              "final_score": {"status": "probable", "reason": "..."},
-             "beliefs": [...], "updates": [], "changed": [], "observations": null, "issues": [], "notes": [],
+             "beliefs": [...],
              "references": [{"id": "B1", "references": [{"label": "d1", "step": 1, "doc_id": "doc17",
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": null, "basis": "reasoning",
                                           "added_step": 1, "removed_step": 2,
                                           "reason": "rejected in t2: ..."}]}, ...],
-             "agent_turn": "... Final answer: ...", "reply": "...", "errors": []}
+             "agent_turn": "<the final answer>", "reply": "...", "errors": []}
 
 The fields are described in ``belief_model_component/README.md``
 (step and final records, meta line) and ``belief_model_component.init.sources``
@@ -79,6 +85,18 @@ final line's ``certainty`` is s_T and its ``references`` gathers every
 belief's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in
 ``belief/{query_id}.md`` (``belief_model_component.views.log_view``).
+
+schema_version 55 (was 54): the final scorer is split in two calls.  The
+final belief update reads the answer turn's reasoning without the final
+answer (and the turns still waiting) and is saved as one more ``step``
+line, ``final_update`` true (``agent_iteration`` null, no documents, the
+retrieval gain null); every step line has ``final_update``.  The final
+scorer reads b_T and the final answer only (no reasoning): the ``final``
+line has no ``updates``, ``changed``, ``observations``, ``issues`` or
+``notes``; its ``beliefs`` is b_T, ``certainty_formula`` the certainty of
+b_T, ``agent_turn`` the final answer, ``reply`` the scorer's reply; on a
+report ``called`` is false.  ``num_iterations`` counts the search
+iterations only.
 
 schema_version 54 (was 53): "criteria" is renamed "beliefs" everywhere,
 same content: the meta line's ``criteria``, ``criteria_info`` and
@@ -446,7 +464,7 @@ from utils.io_utils import read_jsonl
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 54
+SCHEMA_VERSION = 55
 #: One folder per belief model: ``{run_dir}/belief/{model}/`` (:func:`belief_dir`).
 BELIEF_DIR = "belief"
 

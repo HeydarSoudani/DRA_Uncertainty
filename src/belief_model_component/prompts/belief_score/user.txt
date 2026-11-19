@@ -3,7 +3,7 @@ Query: {query}
 Final belief state:
 {beliefs}
 
-Final turn:
+Final answer:
 {answer}
 
 Score the final answer.

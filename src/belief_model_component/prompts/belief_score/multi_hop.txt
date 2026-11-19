@@ -13,10 +13,6 @@ B3: It is almost certain that Skarv Lighthouse addresses the lighthouse that was
   + Skarv Lighthouse: "The Skarv Lighthouse was designed by Henrik Dahl" [Skarv Lighthouse]
   proposed: Kalvik Lighthouse
 
-Final turn:
-[t4]
-The museum was founded in Osby, Henrik Dahl was born there, and he designed the Skarv Lighthouse.
-
 Final answer:
 Skarv Lighthouse
 

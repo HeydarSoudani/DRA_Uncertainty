@@ -244,11 +244,17 @@ def verbose_print_belief(
     so far), per belief its statement row (status,
     selected candidate(s), the labels it rests on; ``*`` rewritten this
     iteration), the labels of the iteration's
-    documents, then the reply's issues and any errors.  With *final*, the
+    documents, then the reply's issues and any errors.  The final update's
+    step record (``final_update``) has no gold row; with *final*, the
     final record (``BeliefModel.final``), without the gold row."""
     from belief_model_component import belief_lines
     prefix = f"[{agent_name}] " if agent_name else ""
-    label = f"{prefix}[final belief]: " if final else f"{prefix}[Iter {iter_num}] [belief]: "
+    if final:
+        label = f"{prefix}[final belief]: "
+    elif record.get("final_update"):
+        label = f"{prefix}[final update] [belief]: "
+    else:
+        label = f"{prefix}[Iter {iter_num}] [belief]: "
     _print_rows(label, belief_lines(record, beliefs, final=final))
 
 

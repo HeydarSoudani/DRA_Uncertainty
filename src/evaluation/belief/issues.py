@@ -1,8 +1,9 @@
 """How often the belief update's replies have issues (``core.issues``), over
 every belief file of a run (every query, gold beliefs or not).
 
-An update call is a step or final record with a call made (``called``),
-not the final scorer's; it parsed when its ``observations`` are not null.
+An update call is a step record with a call made (``called``), the final
+update's included (the final record is the scorer's, never an update); it
+parsed when its ``observations`` are not null.
 Rows (the ``belief`` group of ``metrics.md``), each a share of the update
 calls:
 
@@ -43,11 +44,8 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
     with_effect: Counter = Counter()
     count: Counter = Counter()
     in_calls: Counter = Counter()
-    for _meta, steps, final in files.values():
-        records = list(steps) + ([final] if final is not None else [])
-        for r in records:
-            if r.get("final_score") is not None:
-                continue
+    for _meta, steps, _final in files.values():
+        for r in steps:
             if not r.get("called"):
                 continue
             calls += 1

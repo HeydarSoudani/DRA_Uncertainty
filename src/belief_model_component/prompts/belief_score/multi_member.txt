@@ -13,10 +13,6 @@ B3: It is unknown which candidate addresses the total length of the bridges over
     "The Kalvik Bridge is a stone arch bridge over the Varn, built in 1903" [Kalvik Bridge]
     "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
 
-Final turn:
-[t5]
-The Kalvik Bridge is 92 metres long, not 85 m. Osby Bridge is 120 m, so the total is 120 m + 92 m = 212 m.
-
 Final answer:
 212 m
 

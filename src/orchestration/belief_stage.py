@@ -16,7 +16,10 @@ what the agent's turns showed:
 * the answer turn (``answer_turn``): the reasoning after the last search and
   the generation as the agent returned it (the meta line's
   ``agent_generation``; ``generation/{qid}.md`` has the References section
-  the pipeline appends, and its docid citations renumbered).
+  the pipeline appends, and its docid citations renumbered).  The final
+  update reads the reasoning (``answer_reasoning``; none for
+  ``NO_TURN_AGENTS``) and the final scorer the generation, passed apart
+  (``BeliefModel.finish_answer``).
 
 Each query's belief goes to ``belief/{model}/{qid}.jsonl``, one folder per
 belief model (``utils.run_files.save_belief``), and its readable view to
@@ -70,6 +73,10 @@ class SavedQuery:
     question: str
     iterations: List[SearchIteration]
     answer_turn: Optional[str]
+    # The answer turn apart: the reasoning after the last search ("" for
+    # ``NO_TURN_AGENTS``) and the agent's generation.
+    answer_reasoning: str = ""
+    answer: Optional[str] = None
 
 
 def corpus_doc(doc_id: str, contents: str, retriever_name: str) -> Dict[str, Any]:
@@ -95,7 +102,7 @@ def read_saved_query(run_dir: Path, qid: str, policy_model: str) -> Optional[Sav
     None when its trajectory is not finished (no meta line).  A trajectory
     written before the stages (no ``agent_generation`` in its meta line)
     raises ValueError: its search iterations are not marked."""
-    from belief_model_component import agent_turn_text, answer_turn
+    from belief_model_component import agent_turn_text, answer_reasoning, answer_turn
 
     from utils.run_files import read_trajectory
 
@@ -121,6 +128,8 @@ def read_saved_query(run_dir: Path, qid: str, policy_model: str) -> Optional[Sav
     return SavedQuery(
         qid=qid, question=meta["question"], iterations=iterations,
         answer_turn=answer_turn(steps, meta["agent_generation"] or ""),
+        answer_reasoning=answer_reasoning(steps) if reads_turn else "",
+        answer=meta["agent_generation"] or None,
     )
 
 
@@ -162,7 +171,8 @@ def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
 def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[str]], List[Dict[str, Any]]],
                      verbose: bool, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
-    iteration, finish on the answer turn.  ``failed`` names what failed for
+    iteration, finish on the answer turn (the final update on its
+    reasoning, then the final scorer on its answer).  ``failed`` names what failed for
     a reason other than the model's reply (the beliefs, a call that raised
     before any reply, an exception); the query then stops there, is not
     saved, and the next belief stage runs it again.  *progress* gets the
@@ -209,13 +219,19 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
         if verbose:
             verbose_print_belief(it.agent_iteration, record, beliefs, agent_name=f"Belief {qid}")
     tick(f"step {n_steps}/{n_steps}, final")
+    n_before = len(belief_model.steps)
     try:
-        belief_model.finish(saved.answer_turn)
+        belief_model.finish_answer(saved.answer_reasoning, saved.answer)
     except Exception:
-        logger.warning("Belief model final update failed for %s", qid, exc_info=True)
+        logger.warning("Belief model final update or score failed for %s", qid, exc_info=True)
         return out("final")
+    final_update = belief_model.steps[n_before] if len(belief_model.steps) > n_before else None
+    if _call_failed(final_update):
+        return out("final update call")
     if _call_failed(belief_model.final):
-        return out("final call")
+        return out("final score call")
+    if verbose and final_update is not None:
+        verbose_print_belief(None, final_update, beliefs, agent_name=f"Belief {qid}")
     if verbose and belief_model.final is not None:
         verbose_print_belief(None, belief_model.final, beliefs, agent_name=f"Belief {qid}", final=True)
     return out()

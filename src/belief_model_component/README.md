@@ -20,7 +20,7 @@ belief_model_component/
   update/            the LLM calls on the belief
     updater.py       LLMBeliefUpdater: prompt, reply parsing
     signal.py        BeliefUpdateSignal, CallPlan: when to call, applying the reply
-    final_score.py   LLMFinalScorer: s_T from b_{T-1} and the answer turn
+    final_score.py   LLMFinalScorer: s_T from b_T and the final answer
     repair.py        one JSON-replying call with its parse retries
   init/              the beliefs of a query, made once per sample
     sources.py       LLM, banked, gold and fallback belief sources
@@ -80,12 +80,13 @@ steps carry the belief forward.
 Each belief's statement (built by code from its WEP and most probable
 candidate), its passages (per candidate and stance the latest
 `views.belief_text.MAX_SUPPORT_LINES`, the earlier ones counted) and its
-proposals are shown to the next update and, before the answer turn, to
+proposals are shown to the next update and, after the final update, to
 the final scorer; the claims are saved. The certainty s_t of each step is a fixed function of the
-statuses. On a short-answer query, the final scorer reads b_{T-1} and the
-agent's final turn and judges how likely the answer is correct (s_T, a word
-of estimative probability, with a reason); on a report the answer turn is
-one more update and s_T the certainty of the final belief. For evaluation
+statuses. The answer turn is read in two calls: the final belief update
+reads its reasoning, the final answer left out (b_{T-1} -> b_T); then, on
+a short-answer query, the final scorer reads b_T and the final answer only
+and judges how likely the answer is correct (s_T, a word of estimative
+probability, with a reason). On a report s_T is the certainty of b_T. For evaluation
 only, it also saves the retrieval gain against the qrels.
 
 ## Per sample
@@ -97,9 +98,15 @@ observe(...)             called once per search iteration of the saved
                          trajectory with the iteration's queries, seen
                          documents and the agent's turn; returns and stores
                          the step record
-finish(answer_turn)      once, after the last step: the final scorer on the
-                         agent's answer turn (short-answer queries; a report:
-                         one more update); stores the final record
+finish_answer(reasoning, answer)
+finish(answer_turn)      once, after the last step (the reasoning and the
+                         answer apart, or a joined answer turn split at its
+                         "Final answer:" line): the final update on the
+                         answer turn's reasoning (stored as one more step
+                         record, final_update true), then the final scorer
+                         on b_T and the final answer (short-answer queries;
+                         a report: the certainty of b_T); stores the final
+                         record
 ```
 
 Order inside `observe` (the step's documents and the agent's turn move the
@@ -119,7 +126,7 @@ One per iteration, saved as one `step` line of `belief/{model}/{query_id}.jsonl`
 `utils.run_files.save_belief`; flat scalars first, nested detail last:
 
 ```
-iteration, agent_iteration,
+iteration, agent_iteration, final_update,
 num_subqueries, num_docs, num_new_docs,
 new_item_precision,
 num_new_relevant, num_repeated_relevant, num_irrelevant,
@@ -132,6 +139,15 @@ agent_turn, reply, errors[]
 - `iteration` counts the observed search iterations from 1, the same for
   every agent; `agent_iteration` is the agent's own counter, whose base and
   meaning differ per agent.
+- `final_update`: true on the final update's record, the last step record:
+  the update on the answer turn's reasoning without the final answer
+  (the belief stage passes the reasoning, `text.agent_turn.answer_reasoning`,
+  none for an agent without turns, and the answer apart:
+  `finish_answer`; `finish` splits a joined answer turn with
+  `split_answer_turn`), labelled "t<last step + 1>" with
+  the turns still waiting; `agent_iteration` null, no documents, the
+  retrieval gain null, `agent_turn` the reasoning. No call when there is no
+  turn to read. A reply that did not parse leaves b_T = b_{T-1}.
 - `num_subqueries`: the iteration's search queries, as the trajectory saves
   them (`cpm_report` saves one per search, its keywords joined).
 - A value that could not be computed is null, never 0; the reason is in
@@ -186,30 +202,33 @@ agent_turn, reply, errors[]
 
 ### Final record
 
-One `final` line; it reads the answer turn (`text.agent_turn.answer_turn`):
+One `final` line, after the final update's step record:
 
 ```
 iteration, certainty, certainty_label, certainty_formula, called,
-final_score, beliefs, updates, changed, observations, issues, notes,
-references, agent_turn, reply, errors
+final_score, beliefs, references, agent_turn, reply, errors
 ```
 
-- Short-answer query: the final scorer (`update.final_score`) reads b_{T-1}
-  and the answer turn, and the belief is not updated. `certainty` is s_T, the
-  probability of the WEP the scorer gives the final answer
-  (`certainty_label`), null when the call failed; `final_score` holds its
-  `{status, reason}`. `certainty_formula` is the certainty of b_{T-1}
-  (`core.certainty.certainty`), a baseline. `updates`, `changed`
-  `issues` and `notes` are empty, `observations` null.
-- Report (no final scorer): the answer turn is one more update, labelled
-  "t<last step + 1>" with the turns still waiting, and s_T is the certainty
-  of the belief after it (`certainty` = `certainty_formula`;
-  `certainty_label` and `final_score` null).
-- `reply`: the raw reply of the call.
+- Short-answer query: the final scorer (`update.final_score`) reads b_T
+  and the final answer only (`clean_response`: no citations, no confidence
+  line, no reasoning). `certainty` is s_T, the probability of the WEP the
+  scorer gives the final answer (`certainty_label`), null when the call
+  failed; `final_score` holds its `{status, reason}`. `certainty_formula`
+  is the certainty of b_T (`core.certainty.certainty`), a baseline.
+- Report (no final scorer): no call; s_T is the certainty of b_T
+  (`certainty` = `certainty_formula`; `certainty_label` and `final_score`
+  null, `called` false).
+- `beliefs`: b_T, as on the final update's record. `agent_turn`: the final
+  answer. `reply`: the raw reply of the scorer.
 - `references`: per belief every source assigned to it over the sample
   and the candidates and proposals it dropped (`BeliefState.reference_lists`:
   `{id, references: [{label, step, [doc_id, title | candidate, claim],
   spans}], removed: [{name, status, basis, added_step, removed_step,
   reason}]}`: an aspect's fact a passage spoke against, a proposal the
   agent rejected or one dropped for room; saved, never shown).
-- The final record is null without an answer turn.
+- The final record is null without an answer turn, and when the final
+  update's call raised before any reply (the belief stage reruns the
+  query).
+- Training (`belief_model_training`) is not adapted to this split yet: its
+  chain tags both final calls as the score call, and its SFT samples read
+  the final update's step line as one more update sample.

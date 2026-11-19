@@ -337,20 +337,20 @@ The certainty score s_t (`belief_model_component/core/certainty.py`) is a fixed 
    answer is the final scorer's to judge (s_T below), not the formula's.
 
 s_T is compared with the correctness of the agent's final answer. On a short-answer dataset it is the final
-scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/belief_score/`): one call reads the query,
-the belief before the answer turn (statements, passages and proposals, as the update reads it) and
-the final turn (`[t<N>]`, the last 2000 characters of its reasoning and the final answer under `Final answer:`, no
-citations, no confidence line), and writes a reason and the WEP that the final answer is correct, read as a
-probability by `STATUS_PROBABILITY`. It weighs each belief by how much the answer's correctness depends on it; it is
+scorer's (`belief_model_component/update/final_score.py`, prompt in `prompts/belief_score/`). The answer turn is read
+in two calls. First the final belief update reads its reasoning, the final answer left out, and gives b_T (saved as
+one more step line, `final_update` true). Then the scorer reads the query, b_T (statements, passages and proposals, as
+the update reads it) and the final answer only (no reasoning, no citations, no confidence line), and writes a reason
+and the WEP that the final answer is correct, read as a probability by `STATUS_PROBABILITY`. It weighs each belief by how much the answer's correctness depends on it; it is
 not told which candidate the answer is. The fixed function of the final statuses is kept next to it as a baseline
 (`certainty_formula`). On a report, s_T is the fixed function of the belief after the final update.
 
-Saved in `belief/{model}/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration and
-one `final` line for the answer turn. A step line has the retrieval measures, `certainty`, `called`, the documents
+Saved in `belief/{model}/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration, the
+final update's line and one `final` line for the score. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every belief's state after the step (`beliefs`: `{id, status, most_probable, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
 reply (with their reasons and passage observations), the beliefs it `changed`, the `observations` that entered (claims and
-passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has the same belief fields plus `references` (per
+passage observations, with their verified spans), the reply's `issues`, the agent turn and the raw reply. The `final` line has `beliefs` (b_T) and `references` (per
 belief every source assigned to it over the sample, and the candidates and proposals dropped from it); its `certainty` is s_T,
 with `certainty_label`, `certainty_formula` and `final_score` (status, reason). The same belief is readable in
 `belief/{model}/{qid}.md`: the beliefs, a belief table after each iteration (with the labels of its documents) and the

@@ -1,13 +1,13 @@
 """The final scorer of the belief model: s_T, how likely the agent's final
 answer is correct, judged by the LLM from the belief.
 
-One call after the last step, in place of a belief update on the answer
-turn: it reads the query, the belief b_{T-1} (every belief with its
-statement, the passages on its candidates and the proposals:
-``format_belief``, as the update reads it) and the agent's
-final turn (``scorer_answer_text``: "[t<N>]", the end of its reasoning and
-its final answer under "Final answer:", with no citations and no
-confidence line), and replies with one JSON object:
+One call after the final belief update (the update on the answer turn's
+reasoning, without the answer: ``BeliefModel.finish``): it reads the query,
+the final belief b_T (every belief with its statement, the passages on its
+candidates and the proposals: ``format_belief``, as the update reads it)
+and the agent's final answer only (``clean_response``: no citations and no
+confidence line; the reasoning is not shown), and replies with one JSON
+object:
 
 - ``reason``: one or two sentences naming the beliefs that set the word;
 - ``wep``: the word of estimative probability that the final answer is
@@ -33,18 +33,13 @@ from utils.text_utils import parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import BELIEF_STATUSES, MULTI_CLUE, parse_status, status_probability
-from ..prompts import BELIEF_SCORE_SYSTEMS, BELIEF_SCORE_USER, TURN_TEMPLATE
-from ..text.agent_turn import FINAL_ANSWER_HEADER
+from ..prompts import BELIEF_SCORE_SYSTEMS, BELIEF_SCORE_USER
 from ..text.matching import squash
 from ..views.belief_text import format_belief
 from .repair import complete_with_repair
 
 # Output tokens of one call (a reason and a word, after any thinking).
 MAX_TOKENS = 4096
-
-# Characters of the answer turn's reasoning the scorer reads (its last
-# ones, the conclusion).
-ANSWER_REASONING_CHARS = 2000
 
 # A citation in the agent's response: a bracketed document id (one with a
 # digit), or a list of them ("[5412]", "【68484】", "[15641‑0005]", "[12, 34]").
@@ -60,21 +55,6 @@ def clean_response(response: str) -> str:
     and s_T is compared with the agent's verbal confidence)."""
     text = _CONFIDENCE_RE.sub("", _CITATION_RE.sub("", response))
     return re.sub(r"\n{3,}", "\n\n", text).strip()
-
-
-def scorer_answer_text(answer_turn: str, step: int, max_reasoning_chars: int = ANSWER_REASONING_CHARS) -> str:
-    """The answer turn as the scorer reads it: "[t<step>]", the last
-    *max_reasoning_chars* of its reasoning (no citations) and the agent's
-    final response (``clean_response``) under ``FINAL_ANSWER_HEADER``."""
-    text = answer_turn.strip()
-    cut = text.rfind(FINAL_ANSWER_HEADER)
-    reasoning, response = (text[:cut].strip(), text[cut + len(FINAL_ANSWER_HEADER):]) if cut >= 0 else ("", text)
-    response = clean_response(response)
-    if len(reasoning) > max_reasoning_chars:
-        reasoning = "..." + reasoning[-max_reasoning_chars:].lstrip(".")
-    reasoning = _CITATION_RE.sub("", reasoning).strip()
-    body = "\n\n".join(p for p in (reasoning, f"{FINAL_ANSWER_HEADER}\n{response}") if p)
-    return TURN_TEMPLATE.format(label=f"t{step}", text=body)
 
 
 def parse_final_status(value: Any) -> Optional[str]:
@@ -127,24 +107,23 @@ class LLMFinalScorer:
         self._temperature = temperature
         self._parse_retries = parse_retries
 
-    def prompt(self, query: str, state: BeliefState, answer_turn: str, step: int) -> List[Dict[str, str]]:
-        """The messages of the call: *state* is b_{T-1}, *answer_turn* the
-        agent's answer turn, labelled "t<step>"."""
+    def prompt(self, query: str, state: BeliefState, answer: str) -> List[Dict[str, str]]:
+        """The messages of the call: *state* is b_T, *answer* the agent's
+        final answer (``clean_response`` applied here)."""
         return [
             {"role": "system", "content": self._system},
             {"role": "user", "content": BELIEF_SCORE_USER.format(
-                query=query, beliefs=format_belief(state),
-                answer=scorer_answer_text(answer_turn, step))},
+                query=query, beliefs=format_belief(state), answer=clean_response(answer))},
         ]
 
-    def score(self, query: str, state: BeliefState, answer_turn: str, step: int
+    def score(self, query: str, state: BeliefState, answer: str
               ) -> Tuple[Optional[FinalScore], Optional[str], List[str]]:
         """``(score, raw, errors)``: *score* None when no reply parsed
         (*raw* the last reply, None when the first call raised).  A retry
         tells the model what was wrong with its reply
         (``repair.complete_with_repair``)."""
         return complete_with_repair(
-            "LLMFinalScorer", self._llm, self.prompt(query, state, answer_turn, step), parse_final_score,
+            "LLMFinalScorer", self._llm, self.prompt(query, state, answer), parse_final_score,
             FINAL_SCORE_REPAIR, f"no JSON object with a wep of {list(BELIEF_STATUSES)}", self._parse_retries,
             max_tokens=self.max_tokens, temperature=self._temperature)
 

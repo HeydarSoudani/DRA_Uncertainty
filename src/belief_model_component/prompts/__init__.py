@@ -129,9 +129,8 @@ for _stage, _systems_of in (("belief_init", BELIEF_INIT_SYSTEMS), ("belief_updat
 # last update, each "[t<step>]" on its own line before its text, and the
 # passages its last search returned, each "[d<n>]" before its text (whose
 # first line is the title); no turn or no passage reads ``NO_TEXT``.  The
-# scorer reads the query, the belief before the answer turn (``format_belief``)
-# and the agent's final turn, "[t<N>]" with its final answer at the end
-# (``update.final_score.scorer_answer_text``).
+# scorer reads the query, the final belief b_T (``format_belief``) and the
+# agent's final answer only (``update.final_score.clean_response``).
 BELIEF_INIT_USER = _read("belief_init/user.txt")
 BELIEF_UPDATE_USER = _read("belief_update/user.txt")
 BELIEF_SCORE_USER = _read("belief_score/user.txt")

@@ -59,7 +59,7 @@ from .init.sources import (
     FallbackBeliefSource,
     LLMBeliefSource,
 )
-from .text.agent_turn import agent_turn_text, answer_turn
+from .text.agent_turn import agent_turn_text, answer_reasoning, answer_turn, split_answer_turn
 from .text.passages import Passage, passage_title, span_in_passage, split_span
 from .update.final_score import (
     build_final_scorer,
@@ -89,7 +89,7 @@ __all__ = [
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "parse_final_score",
     # text
-    "Passage", "passage_title", "agent_turn_text", "answer_turn", "span_in_passage", "split_span",
+    "Passage", "passage_title", "agent_turn_text", "answer_reasoning", "answer_turn", "split_answer_turn", "span_in_passage", "split_span",
     # views
     "belief_lines", "belief_md", "init_lines", "init_md",
     # entry point

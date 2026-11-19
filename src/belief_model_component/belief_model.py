@@ -1,8 +1,9 @@
 """BeliefModel: the per-sample belief of a deep research agent.
 
 ``reset`` makes the beliefs of a sample, ``observe`` updates the belief
-once per search iteration and stores the step record, ``finish`` reads the
-answer turn and stores the final record.  The flow and every field of the
+once per search iteration and stores the step record, ``finish`` updates
+the belief on the answer turn's reasoning (one more step record) and
+stores the final record (the final scorer on b_T and the final answer).  The flow and every field of the
 step and final records are described in ``README.md``."""
 
 import logging
@@ -13,6 +14,7 @@ from utils.text_utils import doc_id as _doc_id, unique_docs
 from .core.types import Belief
 from .init.sources import BeliefSource
 from .eval_signals.retrieval_gain import RetrievalGainSignal
+from .text.agent_turn import split_answer_turn
 from .update.final_score import LLMFinalScorer
 from .update.signal import BeliefUpdateSignal
 from .update.updater import LLMBeliefUpdater
@@ -33,8 +35,8 @@ class BeliefModel:
         belief_updater: The belief update call
             (``update.updater.LLMBeliefUpdater``).  None: b_t is null.
         final_scorer: The final scorer call (``update.final_score.LLMFinalScorer``)
-            that gives s_T; None: the answer turn is one more update and
-            s_T the certainty of the belief after it (a report).
+            that gives s_T from b_T and the final answer; None: s_T is the
+            certainty of b_T (a report).
         qrels: ``{query_id: {doc_id: relevance}}``, thresholded, for the
             new-item precision and the recall so far.
         token_meter: The ``TokenMeter`` of the belief update and final
@@ -116,7 +118,7 @@ class BeliefModel:
         ``tokens`` the belief model's tokens on the sample (``tokens``)."""
         return {
             "num_beliefs": len(self._beliefs),
-            "num_iterations": len(self.steps),
+            "num_iterations": sum(not r.get("final_update") for r in self.steps),
             "num_unique_docs": len(self.unique_doc_ids),
             "num_relevant": self._retrieval_gain.num_relevant,
             "beliefs": [c.to_dict() for c in self._beliefs],
@@ -135,55 +137,80 @@ class BeliefModel:
         return {k: now[k] - self._tokens_at_reset[k] for k in now}
 
     def finish(self, answer_turn: Optional[str]) -> None:
-        """Read the agent's answer turn (``text.agent_turn.agent_turn_text`` with
-        the answer): the final scorer's call, or (no final scorer) one more
-        update, its label "t<last step + 1>"; its record is ``final`` (null
-        without an answer turn).  Called once, after the last step."""
-        if not self._tracks_state or answer_turn is None:
+        """Read the agent's answer turn (``text.agent_turn.agent_turn_text``
+        with the answer), in two calls.  First the final belief update on its
+        reasoning, the final answer left out (``final_update``; labelled
+        "t<last step + 1>", with the turns still waiting), stored as one more
+        step record (``final_update`` true, no documents).  Then, on a
+        short-answer query, the final scorer on b_T and the final answer
+        only; its record is ``final`` (a report: s_T is the certainty of
+        b_T).  Nothing without an answer turn; no final record when the
+        update call raised before any reply.  Called once, after the last
+        step; the answer turn is split at its ``Final answer:`` line
+        (``split_answer_turn``), else use ``finish_answer``."""
+        if answer_turn is None:
+            return
+        self.finish_answer(*split_answer_turn(answer_turn))
+
+    def finish_answer(self, reasoning: str, answer: Optional[str]) -> None:
+        """``finish`` on the answer turn's *reasoning* and the final
+        *answer* given apart (the belief stage: no parsing of a joined
+        turn).  Nothing without an answer."""
+        if not self._tracks_state or not answer or not answer.strip():
             return
         step = self._step + 1
-        if self._final_scorer is not None:
-            self.final = self._score_final(step, answer_turn)
+        update = self.final_update(step, reasoning)
+        self.steps.append(update)
+        self._step = step
+        if update["called"] and update["reply"] is None:
+            # The call raised before any reply (API, server): no final
+            # record; the belief stage reruns the query.
             return
+        if self._final_scorer is not None:
+            self.final = self._score_final(step, answer)
+            return
+        s_t = _round(self._belief.certainty())
+        self.final = self._final_record(step, answer, [], certainty=s_t, certainty_formula=s_t)
+
+    def final_update(self, step: int, reasoning: str) -> Dict[str, Any]:
+        """The step record of the final belief update (b_{T-1} -> b_T) on
+        the answer turn's *reasoning*.  A reply that did not parse leaves
+        b_T = b_{T-1} (the scorer still reads it); no call without a turn."""
         errors: List[str] = []
         update: Dict[str, Any] = {}
         try:
-            update = self._belief.finish(step, answer_turn)
+            update = self._belief.finish(step, reasoning)
         except Exception as e:
             logger.warning("BeliefModel: final belief update failed", exc_info=True)
             errors.append(f"belief_update: {e}")
-        errors.extend(update.get("errors") or [])
-        s_t = _round(self._belief.certainty())
-        self.final = self._final_record(
-            step, answer_turn, errors, certainty=s_t, certainty_formula=s_t, called=bool(update.get("called")),
-            beliefs=update.get("beliefs") or self._belief.beliefs(), updates=update.get("updates") or [],
-            changed=update.get("changed") or [], observations=update.get("observations"),
-            issues=update.get("issues") or [], notes=update.get("notes") or [], reply=update.get("reply"))
+        errors.extend(update.pop("errors", []))
+        return self._step_record(step, None, [], [], [], update, reasoning or None, errors,
+                                 dict(RetrievalGainSignal.NULL), final_update=True)
 
-    def _score_final(self, step: int, answer_turn: str) -> Dict[str, Any]:
-        """The final record of the final scorer's call on b_{T-1} and the
-        answer turn (see the module docstring)."""
+    def _score_final(self, step: int, answer: str) -> Dict[str, Any]:
+        """The final record of the final scorer's call on b_T and the final
+        *answer* (see ``update.final_score``)."""
         state = self._belief.state
         errors: List[str] = []
         score, raw = None, None
         try:
-            score, raw, call_errors = self._final_scorer.score(self._belief.query, state, answer_turn, step)
+            score, raw, call_errors = self._final_scorer.score(self._belief.query, state, answer)
             errors.extend(f"final_score: {e}" for e in call_errors)
         except Exception as e:
             logger.warning("BeliefModel: final scorer failed", exc_info=True)
             errors.append(f"final_score: {e}")
         return self._final_record(
-            step, answer_turn, errors,
+            step, answer, errors,
             certainty=_round(score.probability) if score else None,
             certainty_label=score.status if score else None,
             certainty_formula=_round(self._belief.certainty()),
             called=True,
             final_score=score.to_dict() if score else None,
-            beliefs=self._belief.beliefs(), reply=raw)
+            reply=raw)
 
-    def _final_record(self, step: int, answer_turn: str, errors: List[str], **fields: Any) -> Dict[str, Any]:
+    def _final_record(self, step: int, answer: str, errors: List[str], **fields: Any) -> Dict[str, Any]:
         """The final record: every key (README), *fields* over the defaults
-        of a final line without a scorer value or an update."""
+        of a final line without a scorer call."""
         state = self._belief.state
         return {
             "iteration": step,
@@ -192,14 +219,9 @@ class BeliefModel:
             "certainty_formula": None,
             "called": False,
             "final_score": None,
-            "beliefs": None,
-            "updates": [],
-            "changed": [],
-            "observations": None,
-            "issues": [],
-            "notes": [],
+            "beliefs": self._belief.beliefs(),
             "references": state.reference_lists() if state is not None else None,
-            "agent_turn": answer_turn,
+            "agent_turn": answer,
             "reply": None,
             **fields,
             "errors": errors,
@@ -269,9 +291,21 @@ class BeliefModel:
         if state is not None:
             for d, doc in zip(per_doc, docs):
                 d["label"] = self._belief.label_of(doc)
-        record: Dict[str, Any] = {
-            "iteration": self._step,
+        record = self._step_record(self._step, iter_num, subqueries, per_doc, new_ids, update, agent_turn,
+                                   errors, gain)
+        self.steps.append(record)
+        return record
+
+    def _step_record(self, step: int, iter_num: Optional[int], subqueries: List[str], per_doc: List[Dict[str, Any]],
+                     new_ids: List[str], update: Dict[str, Any], agent_turn: Optional[str], errors: List[str],
+                     gain: Dict[str, Any], final_update: bool = False) -> Dict[str, Any]:
+        """A step record (README): a search iteration's, or the final
+        update's (*final_update*: no documents, ``agent_iteration`` null)."""
+        state = self._belief.state if self._tracks_state else None
+        return {
+            "iteration": step,
             "agent_iteration": iter_num,
+            "final_update": final_update,
             "num_subqueries": len(subqueries),
             "num_docs": len(per_doc),
             "num_new_docs": len(new_ids),
@@ -289,5 +323,3 @@ class BeliefModel:
             "reply": update.get("reply"),
             "errors": errors,
         }
-        self.steps.append(record)
-        return record
