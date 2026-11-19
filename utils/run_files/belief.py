@@ -2,10 +2,11 @@
 
 Saves what ``BeliefModel`` records into one JSONL file per query
 under ``belief/``: a ``meta`` line, then one ``step`` line per search
-iteration, then the final update's ``step`` line (``final_update`` true:
-the update on the answer turn's reasoning, without the final answer),
-then one ``final`` line (the final scorer on b_T and the final answer; on
-a report the certainty of b_T), when the query has an answer turn.  The files are the input of the offline analysis
+iteration, then, on a short-answer query, the final update's ``step``
+line (``final_update`` true: the update on the answer turn's reasoning,
+without the final answer), then one ``final`` line (the final scorer on b_T
+and the final answer; a report has no final update and its s_T is the
+certainty of the last step's belief), when the query has an answer turn.  The files are the input of the offline analysis
 and of belief model training.  Every line carries ``query_id``;
 correctness labels stay in the accuracy output (``eval/generation/accuracy.jsonl``, same
 ``query_id`` key).  The run settings (agent, beliefs and belief update
@@ -14,9 +15,9 @@ per-iteration seen doc ids and queries in the trajectory file
 (``trajectory/{query_id}.jsonl``), which the belief stage reads
 (``orchestration.belief_stage``).
 
-Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 55::
+Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 57::
 
-    line 1  {"record": "meta", "schema_version": 55, "query_id": "q1", "question": "...",
+    line 1  {"record": "meta", "schema_version": 57, "query_id": "q1", "question": "...",
              "num_beliefs": 3, "num_iterations": 8, "num_unique_docs": 34, "num_relevant": 6,
              "beliefs": [{"id": "B1", "text": "...", "kind": "closed"}, ...],
              "belief_info": {"model": ..., "query_shape": "multi_hop", "errors": [], "bank": "hit"},
@@ -34,15 +35,15 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 55::
                                           "added_step": 1,
                                           "support": [{"label": "d1", "doc_id": "doc17", "title": "Osby",
                                                        "step": 1, "spans": ["..."], "against": false}],
-                                          "claim": "probable", "claim_step": 1}, ...],
-                          "proposals": [{"name": "Varby", "claim": "possible", "step": 1,
+                                          "claim": "keep", "claim_step": 1}, ...],
+                          "proposals": [{"name": "Varby", "claim": "keep", "step": 1,
                                          "added_step": 1}]}, ...],
              "updates": [{"id": "B1", "reason": "d1 states directly ...",
                           "passages": [{"candidate": "Osby", "stance": "+", "passage": "d1"}],
                           "written": {"most_probable": "Osby", "wep": "almost certain"},
                           "previous": "unknown", "most_probable": "Osby", "status": "almost certain"}, ...],
              "changed": ["B1"],
-             "observations": [{"id": "B1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "probable",
+             "observations": [{"id": "B1", "label": "t1", "step": 1, "candidate": "Osby", "claim": "keep",
                                "spans": ["..."]},
                               {"id": "B1", "label": "d1", "step": 1, "doc_id": "doc17", "candidate": "Osby",
                                "stance": "+", "spans": ["..."]}],
@@ -64,7 +65,7 @@ Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 55::
                                                           "title": "...", "spans": ["..."]}, ...],
                              "removed": [{"name": "Nils Berg", "status": null, "basis": "reasoning",
                                           "added_step": 1, "removed_step": 2,
-                                          "reason": "rejected in t2: ..."}]}, ...],
+                                          "reason": "dropped in t2: ..."}]}, ...],
              "agent_turn": "<the final answer>", "reply": "...", "errors": []}
 
 The fields are described in ``belief_model_component/README.md``
@@ -79,12 +80,23 @@ state: ``beliefs`` is every belief's state after the step (an
 aspect's ``status`` is its own, its facts' ``status`` "kept"),
 ``updates`` the reply's candidate updates with their reasons (an
 aspect's status item has ``candidate`` null), ``observations`` the
-observations that entered in the step (with their verified spans; on a
-computed aggregate, a passage states an input it needs).  The
+observations that entered in the step (with their verified spans).  The
 final line's ``certainty`` is s_T and its ``references`` gathers every
 belief's observations over the sample, and the candidates the update
 removed from it (``removed``, never shown).  The readable belief is in
 ``belief/{query_id}.md`` (``belief_model_component.views.log_view``).
+
+schema_version 57 (was 56): a report makes no final update (with no
+passage it could only change proposals, never s_T): its file has no
+``final_update`` step line, and its ``final`` line's ``beliefs`` and s_T
+are those of the last search step.  Short-answer files are unchanged.
+
+schema_version 56 (was 55): a claim is "keep" or "drop" (was a WEP or
+"rejected"); a belief computed from others (a target, a multi-member
+computed answer) takes no observation, so a computed answer has no
+candidates and no passages on its inputs (issues ``observation_on_aggregate``
+and ``update_on_aggregate`` replace the target and computed codes;
+``answer_not_computed`` and ``claim_unknown`` are gone).
 
 schema_version 55 (was 54): the final scorer is split in two calls.  The
 final belief update reads the answer turn's reasoning without the final
@@ -464,7 +476,7 @@ from utils.io_utils import read_jsonl
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 55
+SCHEMA_VERSION = 57
 #: One folder per belief model: ``{run_dir}/belief/{model}/`` (:func:`belief_dir`).
 BELIEF_DIR = "belief"
 

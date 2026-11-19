@@ -9,18 +9,18 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..text.matching import alnum, contains_words, content_words, squash
 from .issues import (
-    ISSUE_ANSWER_NOT_COMPUTED, ISSUE_BELIEF_MISSING, ISSUE_BELIEF_REPEATED, ISSUE_CANDIDATE_MISSING,
+    ISSUE_BELIEF_MISSING, ISSUE_BELIEF_REPEATED, ISSUE_CANDIDATE_MISSING,
     ISSUE_CANDIDATE_NEAR_DUPLICATE, ISSUE_CANDIDATE_NOT_IN_PASSAGES, ISSUE_CANDIDATE_READDED,
-    ISSUE_CLAIM_INCOMPLETE, ISSUE_CLAIM_UNKNOWN, ISSUE_FACT_MERGED, ISSUE_MOST_PROBABLE_WRONG,
-    ISSUE_OBSERVATION_ON_TARGET, ISSUE_SPAN_OFF_BELIEF, ISSUE_SPAN_OFF_FACT, ISSUE_SPAN_UNVERIFIED,
+    ISSUE_CLAIM_INCOMPLETE, ISSUE_FACT_MERGED, ISSUE_MOST_PROBABLE_WRONG,
+    ISSUE_OBSERVATION_ON_AGGREGATE, ISSUE_SPAN_OFF_BELIEF, ISSUE_SPAN_OFF_FACT, ISSUE_SPAN_UNVERIFIED,
     ISSUE_STANCE_INVALID, ISSUE_SUBJECT_CANDIDATE, ISSUE_TURN_SPAN_UNVERIFIED, ISSUE_UNKNOWN_BELIEF,
-    ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_COMPUTED, ISSUE_UPDATE_ON_TARGET,
+    ISSUE_UNKNOWN_PASSAGE, ISSUE_UNKNOWN_WITH_SUPPORT, ISSUE_UPDATE_ON_AGGREGATE,
     ISSUE_UPDATE_WITHOUT_OBSERVATION, ISSUE_WEP_INVALID, ISSUE_WEP_WITHOUT_SUPPORT, NOTE_CODES,
 )
 from .types import (
-    AGGREGATE, ASPECT, CLOSED, DOC, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, REJECTED, STATUS_LEVEL, THINK,
-    UNKNOWN, UNLIKELY, BeliefUpdate, Candidate, Belief, Observation, Proposal, RemovedCandidate, Support,
-    is_computed, is_target, member_subject, parse_status, subject_names,
+    AGGREGATE, ASPECT, CLOSED, DOC, DROP, KEEP, NAMED_KINDS, NO_SUPPORT_MAX_STATUS, REASONING, STATUS_LEVEL, THINK,
+    UNKNOWN, BeliefUpdate, Candidate, Belief, Observation, Proposal, RemovedCandidate, Support,
+    is_target, member_subject, parse_status, subject_names,
 )
 
 # Proposals kept per belief (beyond it the least recently claimed is dropped).
@@ -42,11 +42,6 @@ def _issue(cid: str, code: str, detail: str, o: Optional[Observation] = None) ->
 
 def _level(status: Optional[str]) -> int:
     return STATUS_LEVEL[status or UNKNOWN]
-
-
-def _cap(status: str) -> str:
-    """*status* at most ``NO_SUPPORT_MAX_STATUS``."""
-    return min(status, NO_SUPPORT_MAX_STATUS, key=_level)
 
 
 def _label_number(label: str) -> int:
@@ -94,18 +89,16 @@ class BeliefState:
     ``apply`` keeps what is valid:
 
     - an observation enters only when it is grounded (a verified span of
-      its passage or turn) and names a known belief that is not a
-      target; a reasoning observation also needs a candidate and a claim,
-      a passage observation a candidate (but on a computed answer) and a
-      stance "+" or "-";
-    - a claim sets the agent's claim on a listed candidate, or adds, updates
-      or (``REJECTED``) drops a proposal; it never moves a status and
-      never removes a candidate.  On a computed aggregate a claim adds its
-      answer as a candidate (a rejected one stays listed);
+      its passage or turn) and names a known belief that is not an
+      aggregate (a belief computed from others takes no observation); a
+      reasoning observation also needs a candidate and a claim (``KEEP``
+      or ``DROP``), a passage observation a candidate and a stance "+" or
+      "-";
+    - a claim sets the agent's claim on a listed candidate, or adds or
+      updates (``KEEP``) or drops (``DROP``) a proposal; it never moves a
+      status and never removes a candidate;
     - a passage observation, after the claims, attaches to its candidate
-      (a new name becomes a candidate, a proposal is promoted; on a
-      computed aggregate only a computed answer takes one, a passage with
-      no candidate states an input).  A - on an aspect's fact removes it;
+      (a new name becomes a candidate, a proposal is promoted).  A - on an aspect's fact removes it;
       a one-answer candidate is never removed by a passage;
     - a belief item is taken once per belief, only with a passage
       observation on it in the call, never on an aggregate
@@ -115,7 +108,8 @@ class BeliefState:
       observation and no item keeps its WEP (``belief_missing``);
     - a belief has one WEP: its most probable candidate (an aspect's
       facts) carries it, its other candidates have no status;
-    - an aggregate's statuses are code's (``_derive_aggregates``).
+    - an aggregate's statuses are code's (``_derive_aggregates``): a
+      target's derived candidate; a computed answer has none.
 
     Documents get their label ("d<n>") when they are first shown
     (``label_doc``).
@@ -172,13 +166,12 @@ class BeliefState:
         """The candidates of belief *k* as shown: an aspect's facts in the
         order they were added; a one-answer belief's most probable
         candidate first, then by their + passages, then in the order they
-        were added; an aggregate's highest status first."""
+        were added; an aggregate's as listed (a target has at most one
+        derived candidate, a computed answer none)."""
         cands = self.candidates[k]
         kind = self.beliefs[k].kind
-        if kind == ASPECT:
+        if kind in (ASPECT, AGGREGATE):
             return list(cands)
-        if kind == AGGREGATE:
-            return sorted(cands, key=lambda c: (-_level(c.status), c.basis == REASONING))
         top = self.most_probable(k)
         return sorted(cands, key=lambda c: (c is not top, -len(c.supports())))
 
@@ -203,9 +196,6 @@ class BeliefState:
 
     def _target(self, k: int) -> bool:
         return is_target(self.beliefs[k].kind, self.beliefs[k].text)
-
-    def _computed(self, k: int) -> bool:
-        return is_computed(self.beliefs[k].kind, self.beliefs[k].text)
 
     # ------------------------------------------------------------------
     # The update
@@ -256,10 +246,10 @@ class BeliefState:
 
     def _admit_observations(self, observations: List[Observation], call: "_CallContext") -> None:
         """Phase 1: each observation enters the trace when it passes the
-        gates (a known belief that is not a target, a passage of the
-        call, a verified span; a claim with a candidate and a status; a
-        passage observation with a stance, a candidate unless on a computed
-        answer, and not the member of a member belief); otherwise one
+        gates (a known belief that is not an aggregate, a passage of the
+        call, a verified span; a claim with a candidate and keep or drop; a
+        passage observation with a stance, a candidate, and not the member
+        of a member belief); otherwise one
         issue.  A second observation of a passage on one belief adds its
         new spans to the first in the trace."""
         issues = call.issues
@@ -267,27 +257,23 @@ class BeliefState:
             k = self._index.get(o.belief)
             if k is None:
                 issues.append(_issue(o.belief, ISSUE_UNKNOWN_BELIEF, "unknown belief id", o))
-            elif self._target(k):
-                issues.append(_issue(o.belief, ISSUE_OBSERVATION_ON_TARGET,
-                                     "the belief is derived from its clues: no observation", o))
+            elif self.beliefs[k].kind == AGGREGATE:
+                issues.append(_issue(o.belief, ISSUE_OBSERVATION_ON_AGGREGATE,
+                                     "the belief is computed from other beliefs: no observation", o))
             elif o.source == DOC and o.doc_id is None:
                 issues.append(_issue(o.belief, ISSUE_UNKNOWN_PASSAGE, "no passage of the call has this label", o))
             elif not o.grounded:
                 issues.append(_issue(o.belief, ISSUE_SPAN_UNVERIFIED, "no verified span", o) if o.source == DOC else
                               _issue(o.belief, ISSUE_TURN_SPAN_UNVERIFIED, "no span of the agent's turn", o))
-            elif (o.source == THINK and alnum(o.candidate or "") and o.claim is None
-                  and parse_status(o.claim_written) == UNKNOWN):
-                issues.append(_issue(o.belief, ISSUE_CLAIM_UNKNOWN,
-                                     f"{o.candidate!r}: claim 'unknown', a name the agent only checks; not taken", o))
             elif o.source == THINK and (not alnum(o.candidate or "") or o.claim is None):
-                why = (f"agent_claim {o.claim_written!r} is not a claim (a status above 'unknown', or "
-                       f"'{REJECTED}')" if alnum(o.candidate or "") else "no candidate")
+                why = (f"agent_claim {o.claim_written!r} is not a claim ('{KEEP}' or '{DROP}')"
+                       if alnum(o.candidate or "") else "no candidate")
                 issues.append(_issue(o.belief, ISSUE_CLAIM_INCOMPLETE,
                                      f"{o.candidate!r}: {why}" if o.candidate else why, o))
             elif o.source == DOC and o.bad_stance is not None:
                 issues.append(_issue(o.belief, ISSUE_STANCE_INVALID,
                                      f"stance {o.bad_stance!r} is neither '+' nor '-'", o))
-            elif o.source == DOC and not alnum(o.candidate or "") and not self._computed(k):
+            elif o.source == DOC and not alnum(o.candidate or ""):
                 issues.append(_issue(o.belief, ISSUE_CANDIDATE_MISSING, "a passage observation without a candidate",
                                      o))
             elif o.source == DOC and (problem := self._subject_problem(k, o.candidate or "")):
@@ -322,23 +308,14 @@ class BeliefState:
         """Phase 3, one passage observation *o* on belief *k*: it joins the
         support of its candidate.  A new name becomes a candidate (a
         proposal is promoted; an aspect's fact whose words contain a listed
-        one, or the reverse, joins it); on a computed aggregate only an
-        answer a claim computed takes one (a passage without a candidate
-        states an input only).  A passage already on the candidate with the
+        one, or the reverse, joins it).  A passage already on the candidate with the
         same stance is not added twice; a - on an aspect's fact removes it
         (only the fact or proposal it names, never a near one).  Returns
         whether the belief changed."""
         c, issues, step = self.beliefs[k], call.issues, call.step
         name = squash(o.candidate)
         existing = self._listed(k, name) if alnum(name) else None
-        if self._computed(k):
-            if not alnum(name):
-                return False
-            if existing is None:
-                issues.append(_issue(c.id, ISSUE_ANSWER_NOT_COMPUTED, f"{name!r}: no claim of the reasoning computes "
-                                                                      "it; kept as a passage on its inputs", o))
-                return False
-        elif existing is None:
+        if existing is None:
             proposal = self._proposed(k, name)
             near = [x for x in self.candidates[k] if contains_words(x.name, name) or contains_words(name, x.name)]
             if near and c.kind == ASPECT and o.against:
@@ -396,11 +373,9 @@ class BeliefState:
             issues.append(_issue(u.id, ISSUE_UNKNOWN_BELIEF, "a belief item of an unknown belief id"))
             return
         rec["passages"] = list(call.attached[k])
-        if self._target(k):
-            issues.append(_issue(u.id, ISSUE_UPDATE_ON_TARGET, "the belief is derived from its clues; ignored"))
-            return
-        if self._computed(k):
-            issues.append(_issue(u.id, ISSUE_UPDATE_ON_COMPUTED, "the computed answer takes no belief item; ignored"))
+        if self.beliefs[k].kind == AGGREGATE:
+            issues.append(_issue(u.id, ISSUE_UPDATE_ON_AGGREGATE,
+                                 "the belief is computed from other beliefs: no belief item; ignored"))
             return
         if k in done:
             issues.append(_issue(u.id, ISSUE_BELIEF_REPEATED, "a second item of the belief; ignored"))
@@ -474,26 +449,11 @@ class BeliefState:
         candidate, an "unknown" WEP or another name.  A candidate kept from
         before keeps the step it was added in.
 
-        A computed aggregate's candidates (the reasoning's answers) are
-        each at the lowest status of its inputs (``status``: an input
-        without candidates is "unknown"), "unlikely" when a passage speaks
-        against it, at most "possible" when the reasoning computed another
-        answer later or rejects it.  Saved, never shown to the update."""
-        for k, c in enumerate(self.beliefs):
-            if c.kind != AGGREGATE:
-                continue
-            inputs = [j for j in range(k) if self.beliefs[j].kind == CLOSED]
+        A computed answer (a multi-member query's) has no candidates: it
+        stays "unknown"."""
+        for k in range(len(self.beliefs)):
             if self._target(k):
-                self._derive_target(k, inputs, call)
-                continue
-            base = min((self.status(j) for j in inputs), key=_level, default=UNKNOWN)
-            latest = max((x for x in self.candidates[k] if x.claim != REJECTED),
-                         key=lambda x: (x.claim_step or x.added_step), default=None)
-            for x in self.candidates[k]:
-                status = UNLIKELY if x.supports(True) else base if x is latest else _cap(base)
-                if status != x.status:
-                    x.status = status
-                    call.changed.add(k)
+                self._derive_target(k, [j for j in range(k) if self.beliefs[j].kind == CLOSED], call)
 
     def _derive_target(self, k: int, clues: List[int], call: "_CallContext") -> None:
         """The candidate of target *k* from its *clues* (``_derive_aggregates``)."""
@@ -528,53 +488,31 @@ class BeliefState:
 
     def _claim(self, k: int, o: Observation, call: _CallContext) -> bool:
         """Apply the claim *o* on belief *k*: a listed candidate keeps
-        it as its claim (a rejection removes no candidate); a proposal the
-        claim rejects leaves the proposals (kept in the removal log), any
-        other claim updates or adds one.  Returns whether the proposals or
-        a computed aggregate's candidates changed."""
+        it as its claim (a drop removes no candidate); a proposal the
+        claim drops leaves the proposals (kept in the removal log), a keep
+        updates or adds one.  Returns whether the proposals changed."""
         step, issues = o.step, call.issues
         existing = self._listed(k, o.candidate or "")
-        if self._computed(k):
-            return self._claim_computed(k, o, existing, call)
         if existing is not None:
             existing.claim, existing.claim_step = o.claim, step
             return False
         proposal = self._proposed(k, o.candidate or "")
         if proposal is not None:
-            if o.claim == REJECTED:
+            if o.claim == DROP:
                 self.proposals[k].remove(proposal)
                 self.removed[k].append(RemovedCandidate(
                     name=proposal.name, status=None, basis=REASONING, added_step=proposal.added_step, removed_step=step,
-                    reason=f"rejected in {o.label}: {' ... '.join(o.verified_spans)}"))
+                    reason=f"dropped in {o.label}: {' ... '.join(o.verified_spans)}"))
                 return True
             proposal.claim, proposal.step = o.claim, step
             return False
-        if o.claim == REJECTED:
+        if o.claim == DROP:
             return False
         problem = self._subject_problem(k, o.candidate or "")
         if problem:
             issues.append(_issue(self.beliefs[k].id, ISSUE_SUBJECT_CANDIDATE, f"claim: {problem}; not proposed", o))
             return False
         self._add_proposal(k, squash(o.candidate), o.claim, step, issues, o)
-        return True
-
-    def _claim_computed(self, k: int, o: Observation, existing: Optional[Candidate], call: _CallContext) -> bool:
-        """A claim *o* on computed aggregate *k*: the reasoning gives its
-        candidates, so a claimed answer is added as one (its status derived,
-        ``_derive_aggregates``); a listed one keeps the claim, a rejection
-        included (it stays listed).  Returns whether the candidates
-        changed."""
-        step = o.step
-        if existing is not None:
-            existing.claim, existing.claim_step = o.claim, step
-            return False
-        if o.claim == REJECTED:
-            return False
-        if self._dropped(k, o.candidate or ""):
-            call.issues.append(_issue(self.beliefs[k].id, ISSUE_CANDIDATE_READDED,
-                                      f"{squash(o.candidate)!r}: dropped before, written again", o))
-        self.candidates[k].append(Candidate(name=squash(o.candidate), status=UNKNOWN, added_step=step,
-                                            claim=o.claim, claim_step=step))
         return True
 
     def _subject_problem(self, k: int, name: str) -> Optional[str]:

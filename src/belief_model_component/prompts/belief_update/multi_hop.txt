@@ -31,9 +31,9 @@ The Varn Folk Museum was founded in Osby in 1921.
 Output:
 {
   "reasoning_observations": [
-    {"id": "B1", "candidate": "Osby", "span": "so the town is Osby", "agent_claim": "certain"},
-    {"id": "B2", "candidate": "Nils Berg", "span": "Nils Berg may be the engineer born there", "agent_claim": "possible"},
-    {"id": "B3", "candidate": "Kalvik Lighthouse", "span": "I am fairly sure the lighthouse is the Kalvik Lighthouse", "agent_claim": "probable"}
+    {"id": "B1", "candidate": "Osby", "span": "so the town is Osby", "agent_claim": "keep"},
+    {"id": "B2", "candidate": "Nils Berg", "span": "Nils Berg may be the engineer born there", "agent_claim": "keep"},
+    {"id": "B3", "candidate": "Kalvik Lighthouse", "span": "I am fairly sure the lighthouse is the Kalvik Lighthouse", "agent_claim": "keep"}
   ],
   "passage_observations": [
     {"id": "B2", "passage": "d3", "candidate": "Henrik Dahl", "stance": "+", "spans": ["Henrik Dahl (1850-1921) was a Norland civil engineer, born in Osby"]},

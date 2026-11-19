@@ -57,18 +57,16 @@ candidates are facts, the WEP rates how well the kept facts cover the
 aspect, and a - removes a fact. An aggregate has no WEP of its own and
 takes no belief item: a multi-clue query's target has as candidate the
 name that is the most probable candidate of every clue, at the lowest of
-their WEPs; a multi-member query's computed answer keeps the agent's
-computed answers (saved, never shown: the update reads it as "unknown"
-with the passages on its inputs), each at the lowest status of the
-inputs, "unlikely" when a passage speaks against it.
+their WEPs; a multi-member query's computed answer takes no
+observation and has no candidates (always "unknown").
 
-The agent's reasoning only proposes: a claim ("rejected" included) is
-saved on its candidate and never removes one; a rejected proposal leaves
+The agent's reasoning only proposes: a claim ("keep" or "drop") is
+saved on its candidate and never removes one; a dropped proposal leaves
 the proposals. Only a `-` passage on an aspect's fact removes it.
 
 A step with a passage (new or shown before) makes one call (b_t = f(query, b_{t-1}, o_t)). It
 records the claims of the agent's turns since the last call (reasoning
-observations: they only propose or reject names), the passage
+observations: they only propose or drop names), the passage
 observations (a passage, a belief, a candidate and a stance, with the
 spans that state it; attached to the candidate after the claims, and kept
 as the belief's references), then per belief with a new passage
@@ -82,11 +80,13 @@ candidate), its passages (per candidate and stance the latest
 `views.belief_text.MAX_SUPPORT_LINES`, the earlier ones counted) and its
 proposals are shown to the next update and, after the final update, to
 the final scorer; the claims are saved. The certainty s_t of each step is a fixed function of the
-statuses. The answer turn is read in two calls: the final belief update
-reads its reasoning, the final answer left out (b_{T-1} -> b_T); then, on
-a short-answer query, the final scorer reads b_T and the final answer only
+statuses. On a short-answer query the answer turn is read in two calls:
+the final belief update reads its reasoning, the final answer left out
+(b_{T-1} -> b_T); then the final scorer reads b_T and the final answer only
 and judges how likely the answer is correct (s_T, a word of estimative
-probability, with a reason). On a report s_T is the certainty of b_T. For evaluation
+probability, with a reason). A report makes no final call (with no passage
+the final update could only change proposals, never s_T): b_T is the last
+step's belief and s_T its certainty. For evaluation
 only, it also saves the retrieval gain against the qrels.
 
 ## Per sample
@@ -101,12 +101,12 @@ observe(...)             called once per search iteration of the saved
 finish_answer(reasoning, answer)
 finish(answer_turn)      once, after the last step (the reasoning and the
                          answer apart, or a joined answer turn split at its
-                         "Final answer:" line): the final update on the
-                         answer turn's reasoning (stored as one more step
-                         record, final_update true), then the final scorer
-                         on b_T and the final answer (short-answer queries;
-                         a report: the certainty of b_T); stores the final
-                         record
+                         "Final answer:" line): on a short-answer query
+                         the final update on the answer turn's reasoning
+                         (stored as one more step record, final_update
+                         true), then the final scorer on b_T and the final
+                         answer; a report makes no call (s_T: the
+                         certainty of b_T); stores the final record
 ```
 
 Order inside `observe` (the step's documents and the agent's turn move the
@@ -139,7 +139,8 @@ agent_turn, reply, errors[]
 - `iteration` counts the observed search iterations from 1, the same for
   every agent; `agent_iteration` is the agent's own counter, whose base and
   meaning differ per agent.
-- `final_update`: true on the final update's record, the last step record:
+- `final_update`: true on the final update's record, the last step record
+  of a short-answer query (a report has none):
   the update on the answer turn's reasoning without the final answer
   (the belief stage passes the reasoning, `text.agent_turn.answer_reasoning`,
   none for an agent without turns, and the answer apart:
@@ -182,7 +183,7 @@ agent_turn, reply, errors[]
 - `observations`: the observations that entered the belief in the call
   (claims `{id, label, step, candidate, claim, spans}`, passage observations
   `{id, label, step, doc_id, candidate, stance, spans}`, verified spans
-  only; a null candidate on a computed answer states an input), null when the
+  only), null when the
   call was not made or failed. Together over the steps they are every
   belief's references (the final record gathers them).
 - `issues`: one `{id, code, detail, [label]}` per thing the reply got wrong
@@ -202,7 +203,8 @@ agent_turn, reply, errors[]
 
 ### Final record
 
-One `final` line, after the final update's step record:
+One `final` line, after the final update's step record (a report: after
+the last search step's):
 
 ```
 iteration, certainty, certainty_label, certainty_formula, called,
@@ -215,17 +217,19 @@ final_score, beliefs, references, agent_turn, reply, errors
   scorer gives the final answer (`certainty_label`), null when the call
   failed; `final_score` holds its `{status, reason}`. `certainty_formula`
   is the certainty of b_T (`core.certainty.certainty`), a baseline.
-- Report (no final scorer): no call; s_T is the certainty of b_T
-  (`certainty` = `certainty_formula`; `certainty_label` and `final_score`
-  null, `called` false).
-- `beliefs`: b_T, as on the final update's record. `agent_turn`: the final
+- Report (no final scorer): no call, no final update; s_T is the
+  certainty of b_T, the last search step's belief (`certainty` =
+  `certainty_formula`; `certainty_label` and `final_score` null, `called`
+  false).
+- `beliefs`: b_T, as on the final update's record (a report: the last
+  step's). `agent_turn`: the final
   answer. `reply`: the raw reply of the scorer.
 - `references`: per belief every source assigned to it over the sample
   and the candidates and proposals it dropped (`BeliefState.reference_lists`:
   `{id, references: [{label, step, [doc_id, title | candidate, claim],
   spans}], removed: [{name, status, basis, added_step, removed_step,
   reason}]}`: an aspect's fact a passage spoke against, a proposal the
-  agent rejected or one dropped for room; saved, never shown).
+  agent dropped or one dropped for room; saved, never shown).
 - The final record is null without an answer turn, and when the final
   update's call raised before any reply (the belief stage reruns the
   query).

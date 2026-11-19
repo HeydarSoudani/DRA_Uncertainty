@@ -1,6 +1,5 @@
 ---rules---
-- On a member belief "<member>: <property>", a candidate is a value of the property, never the member.
-- The last belief, the computed answer, takes its candidates only from the reasoning: an answer the reasoning computes is an agent claim on it. Give it the passages that state an input it needs, such as whether a member belongs to the set or the value of a member no belief lists, with the computed answer as the candidate (null when the reasoning has computed none): - when the passage shows that the answer uses a member outside the set or leaves one out, else +. It takes no item in "beliefs".
+- Member belief: it names a member and a property, for example "Osby Bridge: length". Its candidates are values of the property ("120 m"), never the member ("Osby Bridge").
 
 ---example---
 Query: What is the total length of the bridges over the river Varn that were built before 1900?
@@ -11,8 +10,6 @@ B1: It is almost certain that 120 m addresses Osby Bridge: length.
 B2: It is unknown which candidate addresses Kalvik Bridge: length.
   proposed: 85 m
 B3: It is unknown which candidate addresses the total length of the bridges over the river Varn that were built before 1900.
-  passages on its inputs:
-    "The Osby Bridge, built in 1862" [Osby Bridge]
 
 Current observation:
 [t4]
@@ -27,15 +24,12 @@ The Tirsa footbridge crosses the Varn at Tirsa. It was built in 1895 and is 40 m
 Output:
 {
   "reasoning_observations": [
-    {"id": "B1", "candidate": "120 m", "span": "Osby Bridge is 120 m", "agent_claim": "certain"},
-    {"id": "B2", "candidate": "85 m", "span": "Kalvik Bridge is about 85 m", "agent_claim": "probable"},
-    {"id": "B3", "candidate": "205 m", "span": "so the total is 205 m", "agent_claim": "certain"}
+    {"id": "B1", "candidate": "120 m", "span": "Osby Bridge is 120 m", "agent_claim": "keep"},
+    {"id": "B2", "candidate": "85 m", "span": "Kalvik Bridge is about 85 m", "agent_claim": "keep"}
   ],
   "passage_observations": [
     {"id": "B2", "passage": "d6", "candidate": "92 metres", "stance": "+", "spans": ["It is 92 metres long"]},
-    {"id": "B2", "passage": "d6", "candidate": "85 m", "stance": "-", "spans": ["It is 92 metres long"]},
-    {"id": "B3", "passage": "d6", "candidate": "205 m", "stance": "-", "spans": ["The Kalvik Bridge is a stone arch bridge over the Varn, built in 1903"]},
-    {"id": "B3", "passage": "d7", "candidate": "205 m", "stance": "-", "spans": ["The Tirsa footbridge crosses the Varn at Tirsa", "It was built in 1895 and is 40 metres long"]}
+    {"id": "B2", "passage": "d6", "candidate": "85 m", "stance": "-", "spans": ["It is 92 metres long"]}
   ],
   "beliefs": [
     {"id": "B2", "reason": "d6 states directly that the Kalvik Bridge is 92 metres long, which rules out the proposed 85 m, and no other candidate has passage support, but only one source states it; that it was built in 1903 is not a part of this belief.", "most_probable": "92 metres", "wep": "almost certain"}

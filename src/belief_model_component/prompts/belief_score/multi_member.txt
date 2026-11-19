@@ -8,16 +8,12 @@ B2: It is almost certain that 92 metres addresses Kalvik Bridge: length.
   + 92 metres: "It is 92 metres long" [Kalvik Bridge]
   - 85 m: "It is 92 metres long" [Kalvik Bridge]
 B3: It is unknown which candidate addresses the total length of the bridges over the river Varn that were built before 1900.
-  passages on its inputs:
-    "The Osby Bridge, built in 1862" [Osby Bridge]
-    "The Kalvik Bridge is a stone arch bridge over the Varn, built in 1903" [Kalvik Bridge]
-    "The Tirsa footbridge crosses the Varn at Tirsa ... It was built in 1895 and is 40 metres long" [Tirsa footbridge]
 
 Final answer:
-212 m
+205 m
 
 Output:
 {
-  "reason": "The lengths in B1 and B2 are almost certain, but the total counts the Kalvik Bridge, which a passage states was built in 1903, and leaves out the Tirsa footbridge, built in 1895 over the Varn.",
+  "reason": "The answer adds 120 m and 85 m, but B2 is almost certain that the Kalvik Bridge is 92 metres long, and its passage rules out 85 m.",
   "wep": "almost no chance"
 }

@@ -171,13 +171,14 @@ def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
 def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[str]], List[Dict[str, Any]]],
                      verbose: bool, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
-    iteration, finish on the answer turn (the final update on its
-    reasoning, then the final scorer on its answer).  ``failed`` names what failed for
+    iteration, finish on the answer turn (short-answer queries: the final
+    update on its reasoning, then the final scorer on its answer; a report
+    makes no call).  ``failed`` names what failed for
     a reason other than the model's reply (the beliefs, a call that raised
     before any reply, an exception); the query then stops there, is not
     saved, and the next belief stage runs it again.  *progress* gets the
     step being run: ``beliefs``, ``step k/N`` (N: the search iterations
-    plus the final update), ``final``."""
+    plus the final step), ``final``."""
     from utils.text_utils import verbose_print_belief, verbose_print_init
 
     qid = saved.qid

@@ -1,6 +1,6 @@
 ---rules---
-- On an aspect belief, each candidate is one fact, a short statement of one or more claims; the agent claim of a fact is how likely the reasoning says it holds.
-- An aspect belief has no most probable candidate: "most_probable" is null, and the probability word rates how well the kept facts together cover the parts of the belief.
+- Aspect belief: its candidates are facts, each a short statement such as "Barley yields fell by nearly a fifth". On a fact, - means the passage states the fact is wrong, and "drop" means the reasoning says it is wrong.
+- Its kept facts are the facts in the belief state and the new facts with a + passage, whatever the agent claims. In "beliefs", an aspect belief has "most_probable" null; its probability word rates how well its kept facts together cover the belief.
 
 ---example---
 Query: Write a report on the crop yield losses in Norland in 2022 and the support measures for crop farmers there that year, not including livestock subsidies.
@@ -25,7 +25,7 @@ In September 2022 the Norland government paid crop farmers 40 euros per hectare 
 Output:
 {
   "reasoning_observations": [
-    {"id": "B1", "candidate": "Barley yields fell by half", "span": "I also recall that barley yields fell by half, but I have not seen a source for it", "agent_claim": "possible"}
+    {"id": "B1", "candidate": "Barley yields fell by half", "span": "I also recall that barley yields fell by half, but I have not seen a source for it", "agent_claim": "keep"}
   ],
   "passage_observations": [
     {"id": "B1", "passage": "d7", "candidate": "Barley yields fell by nearly a fifth", "stance": "+", "spans": ["In 2022, barley yields in Norland fell 18% below the five-year average"]},

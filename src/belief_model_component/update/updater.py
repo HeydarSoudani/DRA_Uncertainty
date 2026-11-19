@@ -9,9 +9,9 @@ made).  The call reads every belief (id "B<k>") with its statement, the
 passages assigned to its candidates and its proposals, and replies with
 three lists:
 
-- ``reasoning_observations``: per candidate the reasoning names, assesses
-  or rejects, its belief, the span of the reasoning and the agent
-  claim (``agent_claim``: a status, or "rejected"); its turn is the latest
+- ``reasoning_observations``: per candidate the reasoning gives as an
+  answer or drops, its belief, the span of the reasoning and the agent
+  claim (``agent_claim``: "keep" or "drop"); its turn is the latest
   turn the span occurs in, and a span counts when it occurs in one;
 - ``passage_observations``: per passage, belief and candidate, the
   stance (+ the candidate meets a part, - it fails one) and the spans of
@@ -19,6 +19,7 @@ three lists:
   as the call showed it (``span_in_passage``);
 - ``beliefs``: per belief with a new passage observation, a ``reason``,
   its ``most_probable`` candidate (null on an aspect) and its ``wep``.
+  A belief computed from others (an aggregate) takes none of the three.
   The statement shown next time is built by code
   (``views.belief_text.belief_statement``).
 

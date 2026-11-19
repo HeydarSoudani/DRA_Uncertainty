@@ -7,8 +7,10 @@ the saved belief files (``belief/{qid}.jsonl``, the belief stage), without
 calling the belief model.
 
 **Scored beliefs.** Every belief with a gold answer: a closed one (a
-member's value or a hop, with gold documents) and an aggregate (gold answer
-only: no document states a computed value; scored at the end only).
+member's value or a hop, with gold documents) and a target aggregate (gold
+answer only; scored at the end only).  A computed answer (a multi-member
+query's total, ``is_computed``) is not scored: it takes no observation and
+has no candidates.
 
 **Gold event** (belief k, document d, step t): d is one of k's gold
 documents, new to the belief at step t (not in an earlier step whose update
@@ -75,7 +77,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from belief_model_component import (AGGREGATE, STATUS_LEVEL, UNKNOWN, exclusive,
+from belief_model_component import (AGGREGATE, STATUS_LEVEL, UNKNOWN, exclusive, is_computed,
                                     parse_status, status_probability)
 from indexing_corpus_dataset.doc_lookup import CorpusLookup
 from indexing_corpus_dataset.layout import DATASET_SPECS
@@ -178,7 +180,7 @@ class BeliefUpdateEvaluator:
                 continue
             gold = {}
             for run_c, gold_c in zip(meta["beliefs"], row["beliefs"]):
-                if not gold_c.get("answers"):
+                if not gold_c.get("answers") or is_computed(run_c["kind"], run_c["text"]):
                     continue
                 gold[run_c["id"]] = {"id": run_c["id"], "text": run_c["text"], "kind": run_c["kind"],
                                      "answers": list(gold_c["answers"]), "doc_ids": set(gold_c.get("doc_ids") or [])}

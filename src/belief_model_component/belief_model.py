@@ -138,14 +138,15 @@ class BeliefModel:
 
     def finish(self, answer_turn: Optional[str]) -> None:
         """Read the agent's answer turn (``text.agent_turn.agent_turn_text``
-        with the answer), in two calls.  First the final belief update on its
-        reasoning, the final answer left out (``final_update``; labelled
-        "t<last step + 1>", with the turns still waiting), stored as one more
-        step record (``final_update`` true, no documents).  Then, on a
-        short-answer query, the final scorer on b_T and the final answer
-        only; its record is ``final`` (a report: s_T is the certainty of
-        b_T).  Nothing without an answer turn; no final record when the
-        update call raised before any reply.  Called once, after the last
+        with the answer), in two calls on a short-answer query.  First the
+        final belief update on its reasoning, the final answer left out
+        (``final_update``; labelled "t<last step + 1>", with the turns still
+        waiting), stored as one more step record (``final_update`` true, no
+        documents).  Then the final scorer on b_T and the final answer only;
+        its record is ``final``.  A report makes no call: its ``final``
+        record has s_T = the certainty of the last step's belief.  Nothing
+        without an answer turn; no final record when the update call raised
+        before any reply.  Called once, after the last
         step; the answer turn is split at its ``Final answer:`` line
         (``split_answer_turn``), else use ``finish_answer``."""
         if answer_turn is None:
@@ -159,6 +160,12 @@ class BeliefModel:
         if not self._tracks_state or not answer or not answer.strip():
             return
         step = self._step + 1
+        if self._final_scorer is None:
+            # A report: no final update (with no passage it can only change
+            # proposals, never s_T); s_T is the certainty of b_{T-1}.
+            s_t = _round(self._belief.certainty())
+            self.final = self._final_record(step, answer, [], certainty=s_t, certainty_formula=s_t)
+            return
         update = self.final_update(step, reasoning)
         self.steps.append(update)
         self._step = step
@@ -166,11 +173,7 @@ class BeliefModel:
             # The call raised before any reply (API, server): no final
             # record; the belief stage reruns the query.
             return
-        if self._final_scorer is not None:
-            self.final = self._score_final(step, answer)
-            return
-        s_t = _round(self._belief.certainty())
-        self.final = self._final_record(step, answer, [], certainty=s_t, certainty_formula=s_t)
+        self.final = self._score_final(step, answer)
 
     def final_update(self, step: int, reasoning: str) -> Dict[str, Any]:
         """The step record of the final belief update (b_{T-1} -> b_T) on

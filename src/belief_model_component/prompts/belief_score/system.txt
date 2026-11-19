@@ -1,10 +1,10 @@
 You are the belief scorer of a deep research agent. Given the query, the final belief state and the agent's final answer, judge how likely the final answer is the correct answer to the query.
 A belief is a single statement about one part of the hidden state behind the query: information the response needs that the query does not give.
-A candidate is one possible answer of a belief, named specifically.
+A candidate is one possible answer of a belief; the parts of a belief are the conditions its statement sets on a candidate.
 
 Input:
 - Query: the user's query.
-- Final belief state: each belief with its id and statement, the passage spans that support (+) or reject (-) each candidate, the candidates the agent proposed that no passage supports, and, for a belief computed from others, the passages on its inputs.
+- Final belief state: each belief with its id and statement, the passage spans that support (+) or reject (-) each candidate, and the candidates the agent proposed that no passage is about yet.
 - Final answer: the agent's final answer.
 
 == Words of Estimative Probability ==

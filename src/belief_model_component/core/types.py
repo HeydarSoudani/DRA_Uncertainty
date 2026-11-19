@@ -38,23 +38,21 @@ def parse_status(text: Any) -> Optional[str]:
     return key if key in STATUS_LEVEL else None
 
 
-# What the reasoning says of a candidate (a claim): a status of the scale,
-# or that the agent rejects it.
-REJECTED = "rejected"
+# What the reasoning says of a candidate (a claim): the agent keeps it as
+# the answer or a possible answer, or drops it (it fails a part).
+KEEP = "keep"
+DROP = "drop"
+CLAIMS = (KEEP, DROP)
 
 
 def parse_claim(text: Any) -> Optional[str]:
-    """The claim *text* names: a status other than "unknown", or
-    ``REJECTED``; None otherwise."""
-    if str(text or "").strip().lower() == REJECTED:
-        return REJECTED
-    status = parse_status(text)
-    return status if status not in (None, UNKNOWN) else None
+    """The claim *text* names (``KEEP`` or ``DROP``, case and extra spaces
+    ignored), or None."""
+    key = " ".join(str(text or "").lower().split())
+    return key if key in CLAIMS else None
 
 
-# The status of an earlier answer of a computed aggregate once the
-# reasoning computes another (``BeliefState._derive_aggregates``), and the
-# lowest status a selected candidate has.
+# The lowest status a selected candidate has (``BeliefState.selected``).
 NO_SUPPORT_MAX_STATUS = "possible"
 
 
@@ -82,12 +80,12 @@ def status_probability(status: str) -> float:
 # Belief kinds: a closed belief has one answer (a clue or the asked
 # thing of a multi-clue query, a hop of a multi-hop query, a member's value
 # of a multi-member query); an aggregate belief combines the answers of
-# the beliefs before it (its inputs), its status set by code
-# (``BeliefState._derive_aggregates``): the target of a multi-clue query
-# ("the composer that meets B1 to B3", ``is_target``), whose candidate is
-# the name that is the most probable candidate of every clue, and the
-# computation of a multi-member query (``is_computed``), whose candidates
-# the reasoning gives (saved, never shown to the update); an aspect
+# the beliefs before it (its inputs) and takes no observation: the target
+# of a multi-clue query ("the composer that meets B1 to B3",
+# ``is_target``), whose candidate code derives as the name that is the
+# most probable candidate of every clue (``BeliefState._derive_aggregates``),
+# and the computation of a multi-member query (``is_computed``), which
+# stays without candidates ("unknown"); an aspect
 # belief is one aspect of a report topic: its candidates are the facts
 # on it, kept or removed, and the aspect has one status.
 CLOSED = "closed"
@@ -122,9 +120,9 @@ def is_target(kind: str, text: str) -> bool:
 
 
 def is_computed(kind: str, text: str) -> bool:
-    """Whether a belief of *kind* and *text* is a computed aggregate: its
-    candidates are the answers the reasoning computes from the beliefs
-    before it, and no passage states them."""
+    """Whether a belief of *kind* and *text* is a computed aggregate: the
+    value a multi-member query computes over its member beliefs (it takes
+    no observation and has no candidates)."""
     return kind == AGGREGATE and not is_target(kind, text)
 
 
@@ -207,11 +205,9 @@ class Observation:
     A passage observation (``DOC``): the ``spans`` of the passage that
     state a part of the belief, the ``candidate`` they are about and
     their stance (``against``: the candidate fails the part, "-"; else
-    "+").  On a computed aggregate the candidate is the agent's computed
-    answer, or None when the reasoning computed none.  A reasoning
-    observation (``THINK``, a claim): one span of the agent's turn that
-    names, assesses or rejects one ``candidate``, and the ``claim`` it
-    makes (a status, or ``REJECTED``).
+    "+").  A reasoning observation (``THINK``, a claim): one span of the
+    agent's turn that gives or drops one ``candidate``, and the ``claim``
+    it makes (``KEEP`` or ``DROP``).
 
     ``span_verified[i]`` says whether ``spans[i]`` occurs in the source as
     the call showed it (then it is the source's own words); ``grounded``:
@@ -280,8 +276,8 @@ class Support:
 
 # The basis of a candidate (derived from its support, never written by
 # the update): "passage" when a passage observation supports it or speaks
-# against it, "reasoning" when none does (a computed aggregate's
-# candidates).
+# against it, "reasoning" when none does (a proposal dropped from the
+# proposals).
 PASSAGE = "passage"
 REASONING = "reasoning"
 
@@ -293,11 +289,11 @@ class Candidate:
     support it or speak against it, ``Support``) and the agent's latest
     claim on it (``claim``, from the turn ``claim_step``; never shown to
     the update).  The status is the belief's WEP for its most probable
-    candidate and for an aspect's facts, code's for an aggregate's
-    candidates, and None for any other candidate (a belief has one WEP).
+    candidate and for an aspect's facts, code's for a target's derived
+    candidate, and None for any other candidate (a belief has one WEP).
     Only an aspect's fact a passage speaks against leaves the list (kept
     in the hidden removal log of its belief, ``RemovedCandidate``); the
-    agent's rejection is a claim and removes no candidate."""
+    agent's drop is a claim and removes no candidate."""
     name: str
     status: Optional[str]
     added_step: int = 0
@@ -324,7 +320,7 @@ class Proposal:
     passage supports yet: no status, not a rival of the candidates.  It
     keeps the agent's latest claim on it and the turn it came from
     (``step``), and the step it was proposed in (``added_step``); a
-    passage on it makes it a candidate, a claim that rejects it takes it
+    passage on it makes it a candidate, a claim that drops it takes it
     off the proposals (into the removal log)."""
     name: str
     claim: Optional[str]
@@ -338,7 +334,7 @@ class Proposal:
 @dataclass
 class RemovedCandidate:
     """One candidate or proposal the belief dropped: an aspect's fact a
-    passage spoke against, a proposal the agent's claim rejected, or a
+    passage spoke against, a proposal the agent's claim dropped, or a
     proposal dropped for room.  Its name, its status when removed (null
     for a proposal), the step it was added in and the step it was removed
     in, and the reason.  Saved, never shown."""

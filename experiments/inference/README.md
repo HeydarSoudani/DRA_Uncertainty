@@ -155,8 +155,8 @@ before it) or `aspect` (one aspect of a report topic). A multi-clue query's clue
 is closed; a multi-member query's members are closed and its last belief an aggregate, the computation (added by
 code when the model leaves it out; an "any other member" item is dropped); all report beliefs are aspects. A closed
 belief has one answer, so its candidates are alternatives. An aggregate's statuses are code's: a target's
-candidates are the names listed on every clue, a computation's are the answers the agent's turns compute; each is at
-the lowest status of its inputs, "unlikely" when a passage speaks against it.
+candidate is the name that is the most probable candidate of every clue, at the lowest of their WEPs; a computation
+takes no observation and has no candidates ("unknown").
 
 **Gold and silver beliefs.** Beliefs are gold when they come from the question or from the dataset's annotation,
 silver when an LLM extracts structure the question does not state (`DatasetSpec.gold_beliefs`, `belief_choice`):
@@ -231,8 +231,8 @@ document with text; the call shows every document of the iteration, also one sho
 shown, the same label after; a passage shown again on the same candidate and stance counts once). Otherwise no call
 is made (`called: false`): the belief is carried forward and the turn waits; the next call reads every turn since the
 last call (the last 6), each labelled `t<iteration>`. After the last iteration, the answer turn (its reasoning and
-final answer) makes the final call: on a short-answer dataset the final scorer's (below), on a report one more
-update with the turns still waiting.
+final answer) makes the final calls on a short-answer dataset (the final update and the final scorer, below); a report
+makes none (the turns still waiting are not read).
 
 **Passage length.** The agent and the belief update read the same text of each document: its first
 `max_passage_tokens` tokens (one shared setting, default 512 as in BrowseComp-Plus, counted with the `Qwen/Qwen3.5-4B`
@@ -242,8 +242,9 @@ included. A passage's title is its metadata title, else its front matter's (`tit
 The call reads every belief (id `B<k>`) with its statement, its passages and its
 proposals, the turns and the passages (prompt in `prompts/belief_update/`). The reply has three lists:
 
-1. **Reasoning observations** (claims): per candidate the reasoning names, assesses or rejects, `{id, candidate,
-   span, agent_claim}`: the claim is a word of estimative probability (WEP), or "rejected". The span must occur in a turn.
+1. **Reasoning observations** (claims): per candidate the reasoning gives as an answer or drops, `{id, candidate,
+   span, agent_claim}`: the claim is "keep" (the answer or a possible answer) or "drop" (it fails a part); a name the
+   agent only plans to check is no claim. The span must occur in a turn.
 2. **Passage observations**: per passage, belief and candidate, `{id, passage, candidate, stance, spans}`: `+` when the
    spans say the candidate meets a part of the belief, `-` when they say it fails one. Each span is checked on its own
    (a span joined with "..." is split first); an observation without a verified span is dropped.
@@ -281,8 +282,8 @@ Code applies the reply (`BeliefState.apply`), in order: observations, claims, pa
 aggregates.
 
 - **Reasoning only proposes.** A claim sets the agent's claim on a listed candidate, or adds a proposal (never
-  selected; at most 8 per belief), updates it, or takes it off the proposals when the claim is "rejected". A
-  rejection never removes a candidate (a computed answer included): it is saved as the candidate's claim. A proposal
+  selected; at most 8 per belief), updates it, or takes it off the proposals when the claim is "drop". A
+  drop never removes a candidate: it is saved as the candidate's claim. A proposal
   becomes a candidate when a passage observation names it.
 - **Passage observations.** The passage must be one of the call (`unknown_passage`), the stance `+` or `-`
   (`stance_invalid`), the candidate given (`candidate_missing`). The observation joins its candidate's support (the
@@ -299,21 +300,15 @@ aggregates.
   flagged (`unknown_with_support`). A belief has one WEP: the most probable candidate carries it (an aspect: every
   kept fact), any other candidate has no status. A belief with a new passage observation and no item keeps its WEP
   (`belief_missing`).
-- **Target.** A multi-clue query's target takes no observation (`observation_on_target`) and no belief item
-  (`update_on_target`). After each call code derives its candidate: the name that is the most probable candidate of
-  every clue, at the lowest of their WEPs; none when a clue is "unknown" or names another.
-- **Computed answer** (multi_member). Its candidates are the answers the reasoning computes (claims); a passage
-  observation on it names one (`answer_not_computed` otherwise) or none (null: it states an input). It takes no
-  belief item (`update_on_computed`). Code keeps each answer at the lowest status of the inputs, "unlikely" when a
-  passage speaks against it, at most "possible" when the reasoning computed another answer later or rejects it; saved,
-  never shown:
-  the update reads the belief as "unknown" with the passages on its inputs. The member a member belief is about is
-  never its candidate (`subject_candidate`).
+- **Aggregates.** A belief computed from others (a multi-clue target, a multi-member computed answer) takes no
+  observation (`observation_on_aggregate`) and no belief item (`update_on_aggregate`). After each call code derives a
+  target's candidate: the name that is the most probable candidate of every clue, at the lowest of their WEPs; none
+  when a clue is "unknown" or names another. A computed answer has no candidates and stays "unknown". The member a
+  member belief is about is never its candidate (`subject_candidate`).
 - **Not taken**: an item of an unknown belief, a second item of one belief (`belief_repeated`), an item of a belief
   without a passage observation in the call (`update_without_observation`); a claim without a candidate or a valid
-  claim (`claim_incomplete`); a claim "unknown" (a name the agent only checks) is not taken either, as a note
-  (`claim_unknown`). A - passage on a one-answer candidate whose spans share no content word with the belief is
-  flagged (`span_off_belief`). Removed facts and dropped proposals (rejected, or past the cap) are saved in the final
+  claim, "keep" or "drop" (`claim_incomplete`). A - passage on a one-answer candidate whose spans share no content word with the belief is
+  flagged (`span_off_belief`). Removed facts and dropped proposals (dropped by a claim, or past the cap) are saved in the final
   line's `references[].removed`; a name added again gets a note (`candidate_readded`).
 - **Issue codes.** Every code is in one table (`belief_model_component/core/issues.py`, `ISSUES`) with its effect
   (dropped, corrected, flagged or note) and its training role (format gate, unclean). The step record's `issues` holds
@@ -343,10 +338,11 @@ one more step line, `final_update` true). Then the scorer reads the query, b_T (
 the update reads it) and the final answer only (no reasoning, no citations, no confidence line), and writes a reason
 and the WEP that the final answer is correct, read as a probability by `STATUS_PROBABILITY`. It weighs each belief by how much the answer's correctness depends on it; it is
 not told which candidate the answer is. The fixed function of the final statuses is kept next to it as a baseline
-(`certainty_formula`). On a report, s_T is the fixed function of the belief after the final update.
+(`certainty_formula`). A report has no final update and no scorer: s_T is the fixed function of the belief after
+the last search step (with no passage the final update could only change proposals, never s_T).
 
 Saved in `belief/{model}/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration, the
-final update's line and one `final` line for the score. A step line has the retrieval measures, `certainty`, `called`, the documents
+final update's line (short-answer queries) and one `final` line for the score. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every belief's state after the step (`beliefs`: `{id, status, most_probable, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
 reply (with their reasons and passage observations), the beliefs it `changed`, the `observations` that entered (claims and
@@ -405,7 +401,8 @@ expected coverage); an empty report is left out. Left-out queries are logged.
 
 **Belief** (`src/evaluation/belief/evaluator.py`), on the queries whose beliefs are the gold beliefs (TRQA members,
 InfoSeek hops; not WebShaper or FRAMES, which have no gold per belief). Scored beliefs: a member or hop (gold
-answer and documents) and an aggregate (gold answer only).
+answer and documents) and a target aggregate (gold answer only); a multi-member computed answer is not scored (it
+has no candidates).
 
 - A **gold event** is a gold document of belief k, new to the belief, whose text as the update read it (the
   `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new

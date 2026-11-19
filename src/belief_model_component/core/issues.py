@@ -42,19 +42,17 @@ class IssueCode:
 # An observation that did not enter the belief.
 ISSUE_UNKNOWN_BELIEF = "unknown_belief"
 ISSUE_UNKNOWN_PASSAGE = "unknown_passage"
-ISSUE_OBSERVATION_ON_TARGET = "observation_on_target"
+ISSUE_OBSERVATION_ON_AGGREGATE = "observation_on_aggregate"
 ISSUE_SPAN_UNVERIFIED = "span_unverified"
 ISSUE_TURN_SPAN_UNVERIFIED = "turn_span_unverified"
 ISSUE_CLAIM_INCOMPLETE = "claim_incomplete"
 ISSUE_CANDIDATE_MISSING = "candidate_missing"
 ISSUE_STANCE_INVALID = "stance_invalid"
-ISSUE_ANSWER_NOT_COMPUTED = "answer_not_computed"
 ISSUE_SUBJECT_CANDIDATE = "subject_candidate"
 # A belief item that is not taken, or missing.
 ISSUE_BELIEF_REPEATED = "belief_repeated"
 ISSUE_UPDATE_WITHOUT_OBSERVATION = "update_without_observation"
-ISSUE_UPDATE_ON_TARGET = "update_on_target"
-ISSUE_UPDATE_ON_COMPUTED = "update_on_computed"
+ISSUE_UPDATE_ON_AGGREGATE = "update_on_aggregate"
 ISSUE_BELIEF_MISSING = "belief_missing"
 # The candidate name of a passage observation that entered.
 ISSUE_CANDIDATE_NOT_IN_PASSAGES = "candidate_not_in_passages"
@@ -69,38 +67,32 @@ ISSUE_UNKNOWN_WITH_SUPPORT = "unknown_with_support"
 # Notes (not errors).
 ISSUE_CANDIDATE_READDED = "candidate_readded"
 ISSUE_SPAN_OFF_FACT = "span_off_fact"
-ISSUE_CLAIM_UNKNOWN = "claim_unknown"
 
 ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_UNKNOWN_BELIEF, DROPPED, gate=True,
               meaning="an observation or belief item of a belief id the belief does not have"),
     IssueCode(ISSUE_UNKNOWN_PASSAGE, DROPPED, gate=True,
               meaning="a passage label that is no passage of the call"),
-    IssueCode(ISSUE_OBSERVATION_ON_TARGET, DROPPED, unclean=True,
-              meaning="an observation on a target belief (code derives it from the clues)"),
+    IssueCode(ISSUE_OBSERVATION_ON_AGGREGATE, DROPPED, unclean=True,
+              meaning="an observation on a belief computed from other beliefs (a target, a computed answer)"),
     IssueCode(ISSUE_SPAN_UNVERIFIED, DROPPED, unclean=True,
               meaning="a passage observation without a span of the passage as shown"),
     IssueCode(ISSUE_TURN_SPAN_UNVERIFIED, DROPPED, unclean=True,
               meaning="a reasoning observation without a span of the agent's turn"),
     IssueCode(ISSUE_CLAIM_INCOMPLETE, DROPPED, gate=True, unclean=True,
-              meaning="a reasoning observation without a candidate, or whose claim is no word nor 'rejected' "
-                      "('unknown' is a note, claim_unknown)"),
+              meaning="a reasoning observation without a candidate, or whose claim is neither 'keep' nor 'drop'"),
     IssueCode(ISSUE_CANDIDATE_MISSING, DROPPED, gate=True,
-              meaning="a passage observation without a candidate (allowed on a computed answer only)"),
+              meaning="a passage observation without a candidate"),
     IssueCode(ISSUE_STANCE_INVALID, DROPPED, gate=True,
               meaning="a passage observation whose stance is neither + nor -"),
-    IssueCode(ISSUE_ANSWER_NOT_COMPUTED, DROPPED, unclean=True,
-              meaning="a passage observation on a computed answer no claim of the reasoning computes"),
     IssueCode(ISSUE_SUBJECT_CANDIDATE, DROPPED, unclean=True,
               meaning="the member a member belief is about, as its candidate or proposal"),
 
     IssueCode(ISSUE_BELIEF_REPEATED, DROPPED, gate=True, meaning="a second item of one belief in the reply"),
     IssueCode(ISSUE_UPDATE_WITHOUT_OBSERVATION, DROPPED, unclean=True,
               meaning="a belief item of a belief with no passage observation in the call"),
-    IssueCode(ISSUE_UPDATE_ON_TARGET, DROPPED, unclean=True,
-              meaning="a belief item on a target belief (code derives it)"),
-    IssueCode(ISSUE_UPDATE_ON_COMPUTED, DROPPED, unclean=True,
-              meaning="a belief item on a computed answer (it takes none)"),
+    IssueCode(ISSUE_UPDATE_ON_AGGREGATE, DROPPED, unclean=True,
+              meaning="a belief item on a belief computed from other beliefs (it takes none)"),
     IssueCode(ISSUE_BELIEF_MISSING, FLAGGED, unclean=True,
               meaning="a belief with a new passage observation but no belief item: its WEP is kept"),
 
@@ -126,8 +118,6 @@ ISSUES: Dict[str, IssueCode] = {i.code: i for i in (
     IssueCode(ISSUE_CANDIDATE_READDED, NOTE, meaning="a name the belief dropped before, written again"),
     IssueCode(ISSUE_SPAN_OFF_FACT, NOTE,
               meaning="a supporting span of an aspect's fact that shares no content word with it"),
-    IssueCode(ISSUE_CLAIM_UNKNOWN, NOTE,
-              meaning="a reasoning observation with claim 'unknown' (a name the agent only checks): not taken"),
 )}
 
 # A reply with one of these fails the format gate.

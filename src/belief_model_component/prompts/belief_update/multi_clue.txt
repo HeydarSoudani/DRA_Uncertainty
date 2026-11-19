@@ -1,7 +1,3 @@
----rules---
-- Every clue belief is answered by the target: name a candidate the same way on every clue belief where it appears.
-- A belief that only combines earlier beliefs ("the painter that meets B1 to B2") takes no observation.
-
 ---example---
 Query: Which painter, born in a coastal town, won the Ostra Prize in the 1920s?
 
@@ -26,8 +22,8 @@ Anna Holm (1890-1960) was a painter born in the coastal town of Vik. She won the
 Output:
 {
   "reasoning_observations": [
-    {"id": "B2", "candidate": "Anna Holm", "span": "Anna Holm won the Ostra Prize, but I am not sure about the decade", "agent_claim": "possible"},
-    {"id": "B1", "candidate": "Lars Ek", "span": "Lars Ek was born inland, so he does not fit", "agent_claim": "rejected"}
+    {"id": "B2", "candidate": "Anna Holm", "span": "Anna Holm won the Ostra Prize, but I am not sure about the decade", "agent_claim": "keep"},
+    {"id": "B1", "candidate": "Lars Ek", "span": "Lars Ek was born inland, so he does not fit", "agent_claim": "drop"}
   ],
   "passage_observations": [
     {"id": "B2", "passage": "d2", "candidate": "Maja Strand", "stance": "+", "spans": ["In 1927 the Ostra Prize for painting went to Maja Strand"]},
