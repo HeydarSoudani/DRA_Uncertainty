@@ -8,4 +8,4 @@ Current observation:
 
 {passages}
 
-Write the new belief state.
+Update the belief state.

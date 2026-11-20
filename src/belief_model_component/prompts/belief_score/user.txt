@@ -6,4 +6,4 @@ Final belief state:
 Final answer:
 {answer}
 
-Score the final answer.
+Judge how likely the final answer is correct.

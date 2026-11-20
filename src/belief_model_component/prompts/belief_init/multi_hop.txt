@@ -1,5 +1,5 @@
 ---rules---
-- Every entity the query describes without naming it on the way to the answer is one belief, after the beliefs it needs. The last belief is the answer.
+- Every unnamed entity on the way to the answer is one belief. List them in the order they must be found, so the last belief is the target entity.
 
 ---example---
 Query: Which lighthouse was designed by an engineer who was born in the town where the Varn Folk Museum was founded?

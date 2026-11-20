@@ -14,6 +14,6 @@ Final answer:
 
 Output:
 {
-  "reason": "The answer adds 120 m and 85 m, but B2 is almost certain that the Kalvik Bridge is 92 metres long, and its passage rules out 85 m.",
+  "reason": "B1 supports 120 m, but the answer 205 m adds 85 m for the Kalvik Bridge, and B2 is almost certain that it is 92 metres long, with a passage that rules out 85 m.",
   "wep": "almost no chance"
 }

@@ -1,6 +1,6 @@
 ---rules---
-- Every clue the query gives about the unnamed entity it asks about is one belief: the clue in the query's words, starting with the entity's type, not merged with or split from another clue.
-- One more belief combines the clues by their ids: "the <type> that meets B1 to B<k>".
+- Every fact the query states about the target entity is one belief, starting with the entity's type.
+- One more belief combines the facts by their ids: "the <type> that meets B1 to B<k>".
 
 ---example---
 Query: A composer studied in Vienna in the 1880s. He wrote an opera about a lighthouse keeper, and his brother was the mayor of a port town. What is the composer's name?

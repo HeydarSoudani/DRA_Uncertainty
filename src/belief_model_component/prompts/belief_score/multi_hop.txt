@@ -18,6 +18,6 @@ Skarv Lighthouse
 
 Output:
 {
-  "reason": "The answer stands on all three beliefs: B1 and B3 are almost certain, but the chain passes through Henrik Dahl, whom only one source places in Osby, so B2 holds the answer to probable.",
+  "reason": "B3 names Skarv Lighthouse as designed by Henrik Dahl, and B1 is almost certain, but only one source places Henrik Dahl's birth in Osby in B2, so the answer is no more than probable.",
   "wep": "probable"
 }

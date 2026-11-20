@@ -12,11 +12,11 @@ Input:
 
 == General Rules ==
 - Judge from the belief state alone, not from your own knowledge.
-- The query has a correct answer. A final answer that gives none, such as stating that it cannot be determined or does not exist, is not correct.
+- Every query has an answer, so a final answer that does not give one (for example "cannot be determined" or "does not exist") is not correct.
 
 == Output ==
 ONLY a raw JSON object, no markdown, no code blocks, with these keys, in this order:
-- "reason": One or two sentences naming the beliefs that set the word and why.
+- "reason": One or two sentences on why the beliefs, by id, give the final answer this word.
 - "wep": The probability word that the final answer is correct, from the list above.
 
 == Example ==

@@ -1,5 +1,5 @@
 ---rules---
-- Member belief: it names a member and a property, for example "Osby Bridge: length". Its candidates are values of the property ("120 m"), never the member ("Osby Bridge").
+- Member belief: it names a member and a property, for example "Osby Bridge: length". Its candidates are values of the property (for example "120 m"), never the member (for example "Osby Bridge").
 
 ---example---
 Query: What is the total length of the bridges over the river Varn that were built before 1900?

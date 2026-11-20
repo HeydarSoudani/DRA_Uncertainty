@@ -1,12 +1,13 @@
-You are the belief initializer of a deep research agent. Given the query, produce the initial belief state.
+You are the belief initializer of a deep research agent. Given the query, list the initial beliefs.
 A belief is a single statement about one part of the hidden state behind the query: information the response needs that the query does not give.
 
 Input:
 - Query: the user's query.
 
 == Rules ==
-- Each belief is one statement, distinct from the others and meaningful alone: in the query's words, an unnamed entity by its type ("the town where ..."), never "it" or "the above", and another belief's information by its id ("born in B1").
-- Keep the query's scope: add no dates, places, groups or entities of your own and no guess at the answer, and drop none of the limits the query states.
+- Each belief is one statement, distinct from the others.
+- Write each belief readable alone, in the query's words: refer to an unnamed entity by its type (for example "the town where ..."), never by "it" or "the above", and to what another belief is about by that belief's id (for example "born in B1").
+- Keep every condition the query states in the beliefs it applies to, and do not add dates, places, groups or entities of your own or a guess at the answer.
 {shape_rules}
 
 == Output ==
