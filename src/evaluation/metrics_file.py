@@ -8,9 +8,10 @@ Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`)
   generation, uncertainty, belief, trajectory).  A measure of the
   generation (retrieval, generation, the agent's trajectory) has one row,
   ``belief_model`` "-" (:data:`NO_MODEL`), the agent's verbal confidence
-  among them (group uncertainty); a measure of the beliefs (s_T, belief,
-  the belief tokens) has one row per belief model of the run.  Then any extra section (a titled table, e.g. the belief status
-  calibration, one per belief model).  Read in the editor as is, or in the
+  among them (group uncertainty); a measure of the beliefs (the belief
+  scores, belief, the belief tokens) has one row per belief model of the
+  run.  Then any extra section (a titled table, e.g. the belief update
+  issues, one per belief model).  Read in the editor as is, or in the
   markdown preview; the main table is parsed back by ``read_metrics`` (the
   cross-run collector, ``analysis/collect_results.py``, and a scoped
   evaluation that keeps the rows it does not score), the sections by
@@ -21,8 +22,6 @@ Everything the evaluation writes is under ``{run_dir}/eval/`` (:data:`EVAL_DIR`)
 - ``generation/``: the generation evaluators' verdicts, ``accuracy.jsonl``
   (datasets with answers) or the Auto-ARGUE cache and ``scores.tsv``
   (report datasets).
-- ``belief/{model}/``: each belief model's evaluation files, ``events.csv``
-  and ``judge_cache.jsonl`` (:func:`belief_eval_dir`).
 - the log: one line per group with the headline measures, the belief
   groups once per belief model (``log_lines``).
 """
@@ -42,16 +41,10 @@ PER_QUERY_FILE = f"{EVAL_DIR}/per_query.csv"
 #: The generation evaluators' files (``accuracy.jsonl`` or the Auto-ARGUE cache).
 GENERATION_EVAL_DIR = f"{EVAL_DIR}/generation"
 ACCURACY_FILE = f"{GENERATION_EVAL_DIR}/accuracy.jsonl"
-#: The belief evaluation's files (``events.csv``, ``judge_cache.jsonl``), one folder per belief model.
-BELIEF_EVAL_DIR = f"{EVAL_DIR}/belief"
 COLUMNS = ("group", "belief_model", "metric", "value", "ci_low", "ci_high", "n")
 #: The ``belief_model`` cell of a measure of the generation (no belief model).
 NO_MODEL = "-"
 
-
-def belief_eval_dir(model: str) -> str:
-    """The evaluation folder of the belief model *model*, relative to the run directory."""
-    return f"{BELIEF_EVAL_DIR}/{model}"
 #: The rule around the log block.
 RULE = "=" * 80
 
@@ -115,11 +108,6 @@ def table(header: List[str], body: List[List[str]]) -> List[str]:
     return [line(header), "|" + "|".join("-" * (w + 2) for w in widths) + "|"] + [line(r) for r in body]
 
 
-#: The note under the main table when a row is reported per belief.
-BELIEF_NOTE = ("A row with (b) is the mean over every belief (n beliefs); the same row without it is the "
-               "mean over the queries of each query's mean over its beliefs (CI over queries, n queries).")
-
-
 def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections: Sequence[Section] = ()) -> None:
     """Write ``metrics.md``: the *header* items as a list, the table, then
     each of *sections* (``(title, columns, cell rows)``) as a titled table."""
@@ -129,8 +117,6 @@ def write_metrics(path: Path, header: Dict[str, Any], rows: List[Row], sections:
             for r in rows]
     lines = ["# Evaluation", ""] + [f"- {k}: {v}" for k, v in header.items()] + [""]
     lines += table(list(COLUMNS), body)
-    if any(r.metric.endswith(" (b)") for r in rows):
-        lines += ["", BELIEF_NOTE]
     for title, columns, cells in sections:
         lines += ["", f"## {title}", ""] + table(columns, cells)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -236,9 +222,9 @@ def _ci(rows: List[Row], group: str, metric: str) -> str:
 
 def log_lines(title: str, rows: List[Row]) -> List[str]:
     """The terminal block: one line per group of the generation present in
-    *rows*, then, per belief model, its lines (uncertainty, the belief
-    group: its files, update calls and tokens, then its gold measures when
-    the dataset has gold per belief)."""
+    *rows*, then, per belief model, its lines (uncertainty: the belief
+    scores; belief: evidence uptake, false uptake, update calls and
+    tokens)."""
     shared = [r for r in rows if r.belief_model == NO_MODEL]
     out = [title]
     out.append(f"retrieval    Recall@N {_val(shared, 'retrieval', 'Recall@N')}"
@@ -254,7 +240,7 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
     if _get(shared, "uncertainty", "verbal AUROC"):
         out.append(f"uncertainty  verbal AUROC {_ci(shared, 'uncertainty', 'verbal AUROC')}"
                    f" Brier {_val(shared, 'uncertainty', 'verbal Brier')}"
-                   f" (n {_val(shared, 'uncertainty', 'verbal: queries scored')},"
+                   f" (n {_n(shared, 'uncertainty', 'verbal AUROC')},"
                    f" missing {_val(shared, 'uncertainty', 'verbal: missing (scored 0.5)')})")
     out.append(f"trajectory   searches {_val(shared, 'trajectory', 'searches', 1)}"
                f" | agent tok {_val(shared, 'trajectory', 'agent tokens', 0)}"
@@ -268,28 +254,28 @@ def log_lines(title: str, rows: List[Row]) -> List[str]:
 def _model_lines(model: str, rows: List[Row]) -> List[str]:
     """The log lines of the belief model *model* (*rows* are its rows)."""
     out = [f"[{model}]"]
-    if _get(rows, "uncertainty", "s_T AUROC"):
-        out.append(f"uncertainty  s_T AUROC {_ci(rows, 'uncertainty', 's_T AUROC')}"
-                   f" Brier {_val(rows, 'uncertainty', 's_T Brier')}"
-                   f" (n {_val(rows, 'uncertainty', 'queries scored')})")
+    if _get(rows, "uncertainty", "belief LLM score AUROC"):
+        out.append(f"uncertainty  rule-based AUROC {_ci(rows, 'uncertainty', 'belief rule-based AUROC')}"
+                   f" Brier {_val(rows, 'uncertainty', 'belief rule-based Brier')}"
+                   f" | LLM score AUROC {_ci(rows, 'uncertainty', 'belief LLM score AUROC')}"
+                   f" Brier {_val(rows, 'uncertainty', 'belief LLM score Brier')}"
+                   f" (n {_n(rows, 'uncertainty', 'belief LLM score AUROC')})")
     elif _get(rows, "uncertainty", "s_T tau-b vs nugget coverage"):
         out.append(f"uncertainty  s_T tau-b vs coverage {_ci(rows, 'uncertainty', 's_T tau-b vs nugget coverage')}"
                    f" Brier {_val(rows, 'uncertainty', 's_T Brier vs nugget coverage')}"
                    f" (n {_val(rows, 'uncertainty', 'queries scored')})")
-    if _get(rows, "belief", "queries with a belief file"):
-        line = f"belief       files {_val(rows, 'belief', 'queries with a belief file')}"
-        if _get(rows, "belief", "update calls"):
-            line += (f" | update calls {_val(rows, 'belief', 'update calls')}"
+    parts = []
+    if _get(rows, "belief", "evidence uptake"):
+        parts.append(f"evidence uptake {_ci(rows, 'belief', 'evidence uptake')}"
+                     f" (n {_n(rows, 'belief', 'evidence uptake')})")
+    if _get(rows, "belief", "false uptake"):
+        parts.append(f"false uptake {_ci(rows, 'belief', 'false uptake')}"
+                     f" (n {_n(rows, 'belief', 'false uptake')})")
+    if _get(rows, "belief", "update calls"):
+        parts.append(f"update calls {_val(rows, 'belief', 'update calls')}"
                      f" | format gate failed {_val(rows, 'belief', 'update calls: format gate failed')}")
-        if _get(rows, "trajectory", "belief tokens"):
-            line += f" | belief tok {_val(rows, 'trajectory', 'belief tokens', 0)}"
-        out.append(line)
-    if _get(rows, "belief", "reached answer"):
-        out.append(f"belief gold  gold change {_val(rows, 'belief', 'gold event: gold candidate change')}"
-                   f" | control change {_val(rows, 'belief', 'control event: gold candidate change')}"
-                   f" | recall {_val(rows, 'belief', 'belief recall')}"
-                   f" | reached {_val(rows, 'belief', 'reached answer')}"
-                   f" (gold seen {_val(rows, 'belief', 'reached answer, gold seen')})"
-                   f" | status Brier {_val(rows, 'belief', 'status Brier')}"
-                   f" (n {_n(rows, 'belief', 'reached answer')})")
+    if _get(rows, "trajectory", "belief tokens"):
+        parts.append(f"belief tok {_val(rows, 'trajectory', 'belief tokens', 0)}")
+    if parts:
+        out.append("belief       " + " | ".join(parts))
     return out

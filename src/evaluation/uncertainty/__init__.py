@@ -3,9 +3,10 @@
 * :class:`VerbalConfidenceEvaluator` (:mod:`.verbal`): the agent's verbal
   confidence against the correctness of the final answer (AUROC, Brier), a
   measure of the generation (once per run).
-* :class:`UncertaintyEvaluator` (:mod:`.qa`): s_T (the belief model's final
-  scorer) and its formula ablation against the correctness of the final
-  answer (AUROC, Brier), once per belief model.
+* :class:`UncertaintyEvaluator` (:mod:`.qa`): the belief LLM score (s_T,
+  the belief model's final scorer) and the belief rule-based score (the
+  mean status probability of the final beliefs) against the correctness of
+  the final answer (AUROC, Brier), once per belief model.
 * :class:`ReportUncertaintyEvaluator` (:mod:`.report`): a report's s_T (the
   certainty of the final coverage) against its nugget coverage (Kendall's
   tau-b).

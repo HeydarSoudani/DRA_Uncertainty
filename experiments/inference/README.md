@@ -75,8 +75,7 @@ python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --st
 Every stage resumes: the generate stage skips the queries with a finished trajectory, the belief stage those with a
 belief file of the current schema (an older one is made again). A query whose beliefs or a belief call failed before
 any reply (the API or the server, not a reply that did not parse) stops there and is not saved, so the next belief
-stage runs it again; the stage lists these queries at its end, and `metrics.md` gives the finished queries with a
-belief file (`queries with a belief file`, the belief group). With `--stage all --limit N`, the belief stage takes the
+stage runs it again; the stage lists these queries at its end. With `--stage all --limit N`, the belief stage takes the
 queries this call generated first. A generate stage whose `dataset`, `agent` or `searcher` settings differ from the run's `run_config.json` is
 refused, so every trajectory of a directory ran with the same settings; the belief and eval stages are refused when
 the `dataset` settings (split, query key, relevance threshold) differ. The corpus path is recorded but not
@@ -86,7 +85,7 @@ One generation, many belief models: each belief model (`--belief-model`, its sho
 `belief/{model}/` and its own entry in the `belief_models` section of `run_config.json`, so running the belief stage
 with another `--belief-model` adds that model's beliefs and keeps the others. A belief stage whose settings for a
 model (belief source and cap) differ from that model's saved entry removes that model's beliefs only
-(`belief/{model}/`, `eval/belief/{model}/`), then saves the new settings, and runs every query again; copy them first
+(`belief/{model}/`), then saves the new settings, and runs every query again; copy them first
 to keep them. The evaluation reports every belief model of the run (see Evaluation).
 A `vllm/` belief model (`qwen3.5_4b`) is served by the belief stage itself: it starts the model's vLLM server
 after the generate stage released its GPUs (so `--stage all` works), and stops it when the stage ends.
@@ -361,24 +360,26 @@ rest of `eval/metrics.md` and `eval/per_query.csv`: `generate` the generation, `
 `all` everything. The belief stage scores the generation too when the saved generation rows cannot be kept (no
 `metrics.md`, no generation row in it, or another number of queries than the run's, e.g. after an interrupted
 generate stage). Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
-makes no LLM call and needs no GPU. The s_T and belief rows score the queries with a belief file.
+makes no LLM call and needs no GPU; the belief models' evaluation makes no LLM call at all. The belief score and
+belief rows score the queries with a belief file. A belief file of an older schema from 54 on (`EVAL_MIN_SCHEMA`) is scored as it is (the evaluation reads only
+fields these schemas share); an older file is left out with a warning; the `metrics.md` header then gives the model's files per schema, and the next belief stage
+makes them again.
 
 The measures, by group, in the order of the files and the log. The generation's measures (retrieval, generation,
-the agent's verbal confidence, the agent's trajectory) have one row; the beliefs' measures (s_T, belief, belief
-model tokens) have one row per belief model of the run (`belief/{model}/`), tagged in the `belief_model` column of
-`metrics.md` ("-" on the generation's rows), with their per-query columns of `per_query.csv` prefixed `{model}/` and
-their sections (status calibration, issues) titled `({model})`. The judge verdicts are cached per model, so adding a
-belief model costs only its own judge calls.
+the agent's verbal confidence, the agent's trajectory) have one row; the beliefs' measures (belief scores, belief,
+belief model tokens) have one row per belief model of the run (`belief/{model}/`), tagged in the `belief_model`
+column of `metrics.md` ("-" on the generation's rows), with their per-query columns of `per_query.csv` prefixed
+`{model}/` and their section (update issues) titled `({model})`.
 
 | Group | Measures | Datasets |
 |---|---|---|
 | retrieval | Recall@N, Precision@N of the seen docs (N = the distinct docs shown to the agent), N | all |
 | generation | accuracy (LLM judge, `--judge-model`; TRQA: numeric exact match), correct, evaluated, judge errors | QA |
 | | Auto-ARGUE nugget coverage and F1 (NeuCLIR: also the weighted ones), reports evaluated, without nuggets, empty, without citations, with unmapped citations, judge failures | reports |
-| uncertainty | verbal: queries scored, missing (scored 0.5), AUROC [CI], Brier (once per run) | QA, glm and oss |
-| | queries scored; s_T: AUROC [CI], Brier; formula: AUROC [CI] (per belief model) | QA, belief on |
+| uncertainty | verbal: missing (scored 0.5), AUROC [CI], Brier (once per run) | QA, glm and oss |
+| | belief rule-based: AUROC [CI], Brier; belief LLM score: AUROC [CI], Brier (per belief model) | QA, belief on |
 | | queries scored; s_T Kendall tau-b [CI] and Brier vs nugget coverage (and weighted) | reports, belief on |
-| belief | gold and control event change, belief recall, answer reached, status Brier; status calibration table (below) | TRQA, trqa_validation, infoseek, belief on |
+| belief | evidence uptake [CI], false uptake [CI]; update calls, format gate failed; update issue table (below) | QA datasets (qrels), belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
 CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.measures`). Nothing else is
@@ -391,39 +392,31 @@ agent's own `Confidence: X%` (glm and oss; read from `generation/{qid}.md` by a 
 `evaluation/generation/confidence.py`: "~85 %", a fraction such as "0.85", the value on the line after the label and
 text after a "%" value accepted), on every judged query; a query without a stated confidence (no confidence line, a
 tool call or narration as the final text) is scored 0.5 (unknown) and counted in the `missing` row, its
-per_query.csv cell left blank. Per belief model (`uncertainty/qa.py`): `s_T` (the final
-scorer, the headline) and the ablation `formula` (the fixed function of the final statuses: the mean of the status
-probabilities of the beliefs the updater judges, aggregates left out), on the queries with y and s_T. The verbal and
-s_T rows can therefore have different n. Rows: AUROC [CI] for every score, Brier for verbal and s_T. On a report dataset (`uncertainty/report.py`)
+per_query.csv cell left blank. Per belief model (`uncertainty/qa.py`): `belief rule-based` (the fixed function of the final statuses,
+`certainty_formula`: the mean of the status probabilities of the beliefs the updater judges, aggregates left out) and
+`belief LLM score` (s_T, the final scorer's WEP on b_T and the answer, the headline), on the queries with y and the
+LLM score. The verbal and belief rows can therefore have different n (verbal covers every judged query of the run).
+Rows: AUROC [CI] and Brier for every score. On a report dataset (`uncertainty/report.py`)
 s_T is the certainty of the final belief (the mean of the aspects' status probabilities; a report has no
 final scorer) and y the report's Auto-ARGUE nugget coverage: Kendall's tau-b [CI] (the ranking) and Brier (s_T as the
 expected coverage); an empty report is left out. Left-out queries are logged.
 
-**Belief** (`src/evaluation/belief/evaluator.py`), on the queries whose beliefs are the gold beliefs (TRQA members,
-InfoSeek hops; not WebShaper or FRAMES, which have no gold per belief). Scored beliefs: a member or hop (gold
-answer and documents) and a target aggregate (gold answer only); a multi-member computed answer is not scored (it
-has no candidates).
+**Belief** (`src/evaluation/belief/`); no LLM call. Uptake runs on QA datasets only: the qrels of a report dataset
+are pooled, so an unjudged relevant document would count as a no-evidence document.
 
-- A **gold event** is a gold document of belief k, new to the belief, whose text as the update read it (the
-  `max_passage_tokens` cut) states k's gold answer (string match, else the judge). A **control event** is a new
-  document observed on k that is not one of its gold documents and does not state its answer.
-- `gold event: gold candidate change`: the change of the gold candidate's status probability at the belief's
-  first gold event (unknown -> certain = 0.25 -> 0.97 = +0.72; a gold answer that is not a candidate is unknown);
-  `control event: ...`: the same at its control events, which should be about 0. An event whose gold candidate is
-  already "certain" is left out.
-- `belief recall`: the share of the belief's gold documents the agent saw.
-- `reached answer`: at the end, the belief's selected candidate is a gold answer; `reached answer, gold seen`: the same over members and hops with a gold document seen (the belief's own
-  share).
-- `status Brier`: the final status probability (the WEP) against whether the most probable
-  candidate is a gold answer (whatever the WEP; `reached` needs "possible" or above).
-
-Each row comes twice: per query (each query's mean over its beliefs, then the mean over queries, CI over queries)
-and `(c)`, the mean over every belief. Below the table, the status calibration: per final status, how many
-beliefs had it and how many have a gold answer as most probable candidate (the Brier's y). A candidate is a gold answer when it matches one, else when the
-judge (`judge_model`) says so, cached in `eval/belief/{model}/judge_cache.jsonl`. For diagnosis, `eval/belief/{model}/events.csv`
-has every event with a gold event's funnel stage (`call_failed`, `not_assigned`, `no_gold_candidate`,
-`not_selected`, `correct_lost`, `correct_kept`), and `per_query.csv` has each query's values and `belief_correct`
-(every member or hop reached).
+- `uptake.py`. A **step** t is one intermediate step (an agent turn and its belief update; the final update on the
+  answer turn is left out); s_t is its `certainty` (the mean status probability of the beliefs), s_0 = 0.25 (every
+  belief "unknown"). A document is **new** at the first step that shows it, and **gold** when it is in the query's
+  qrels (at the run's relevance threshold). An **evidence step** is a step with at least one new gold document
+  (every such step); a **no-evidence step** is a step with new documents, none gold. A step with no new document
+  is neither; a step where s_{t-1} is already the top (0.97, every belief "certain") or whose update call failed is
+  not scored (its documents still count as seen).
+- `evidence uptake`: per query, the share of its evidence steps where s_t rises, then the mean over the queries
+  with one (CI over queries, n = those queries). `false uptake`: the same over the no-evidence steps. A good belief
+  model has a high evidence uptake and a low false uptake. Per query: `evidence_uptake`, `false_uptake`.
+- `issues.py`: `update calls` (every call, the final update's included) and `update calls: format gate failed`
+  (the share whose reply did not parse or has a `gate` code); below the table, every issue code that occurs, with
+  its effect, training role, count and the share of calls it occurs in.
 
 The terminal log prints one block: one line per group of the generation, then per belief model its lines:
 
@@ -434,13 +427,11 @@ generation   accuracy 0.310 (62/200)
 uncertainty  verbal AUROC 0.610 [0.53,0.69] Brier 0.310 (n 196, missing 4)
 trajectory   searches 9.2 | agent tok 41234 | forced 4
 [qwen3.5_9b]
-uncertainty  s_T AUROC 0.710 [0.63,0.78] Brier 0.220 (n 188)
-belief       files 200 | update calls 1840 | format gate failed 0.020 | belief tok 18230
-belief gold  gold change 0.540 | control change 0.050 | recall 0.710 | reached 0.470 (gold seen 0.680) | status Brier 0.210 (n 200)
+uncertainty  rule-based AUROC 0.650 [0.57,0.73] Brier 0.330 | LLM score AUROC 0.710 [0.63,0.78] Brier 0.220 (n 188)
+belief       evidence uptake 0.570 [0.47,0.67] (n 180) | false uptake 0.210 [0.16,0.26] (n 190) | update calls 1840 | format gate failed 0.020 | belief tok 18230
 [qwen3.6_27b]
-uncertainty  s_T AUROC 0.780 [0.71,0.84] Brier 0.190 (n 188)
-belief       files 200 | update calls 1840 | format gate failed 0.010 | belief tok 23102
-belief gold  gold change 0.620 | control change 0.030 | recall 0.710 | reached 0.520 (gold seen 0.730) | status Brier 0.180 (n 200)
+uncertainty  rule-based AUROC 0.720 [0.64,0.80] Brier 0.340 | LLM score AUROC 0.780 [0.71,0.84] Brier 0.190 (n 188)
+belief       evidence uptake 0.750 [0.66,0.82] (n 180) | false uptake 0.210 [0.16,0.27] (n 190) | update calls 1840 | format gate failed 0.010 | belief tok 23102
 ```
 
 Every run can be compared in one table with `analysis/collect_results.py --root run_outputs` (one row per run, the
@@ -469,8 +460,7 @@ src/evaluation/
 ├── generation/      AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
 ├── uncertainty/     UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
-├── belief/          BeliefUpdateEvaluator, per-belief gold (gold_rows.py), gold match and judge
-│                    (gold_match.py), issue_summary
+├── belief/          evidence_uptake (uptake.py), issue_summary (issues.py)
 └── trajectory.py    TrajectoryEvaluator (per query)
 ```
 
@@ -526,10 +516,8 @@ $DRA_OUTPUT_ROOT/{dataset}_{split}[_{query_key}]_{retriever}/{agent}_{backend}_{
 └── eval/                           the evaluation, written by every stage
     ├── metrics.md                  every measure: group | belief_model | metric | value | ci_low | ci_high | n
     ├── per_query.csv               every per-query value of every group (belief model columns: {model}/...)
-    ├── generation/                 accuracy.jsonl: per-query verdicts (datasets with answers); or Auto-ARGUE
-    │                               inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv (reports)
-    └── belief/{model}/             belief update evaluation: events.csv (one row per gold or control event),
-                                    judge_cache.jsonl
+    └── generation/                 accuracy.jsonl: per-query verdicts (datasets with answers); or Auto-ARGUE
+                                    inputs (nuggets/, cited docs), cached judgments/, per-query scores.tsv (reports)
 ```
 
 `{agent}` is the `--policy-model` name (`oss_20b`, not the internal agent `oss`), as is `agent.policy_model` in

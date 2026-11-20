@@ -107,7 +107,6 @@ from utils.run_files.run_config import (
     set_belief_config,
     update_run_config_evaluation,
 )
-from evaluation.metrics_file import belief_eval_dir
 from evaluation.runner import build_evaluators, evaluate_and_save, load_run_results
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
@@ -331,7 +330,7 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     and agent are the generate stage's, read from the file; the corpus is
     this call's, of the run's dataset and split, ``check_run_dataset``);
     when they differ from the saved ones, the model's beliefs
-    (``belief/{model}/``, ``eval/belief/{model}/``) are removed, then the
+    (``belief/{model}/``) are removed, then the
     new settings saved, and every query is run again.  A belief file of an
     older schema is made again too.  With ``--limit`` (``--stage all``),
     the queries this call generated come first."""
@@ -346,12 +345,11 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     diffs = belief_config_diffs(run_dir, name, section)
     if diffs:
         print(f"\n[Belief] Other {name} settings than the run's ({'; '.join(diffs)}): removing its beliefs "
-              f"({belief_dir(run_dir, name).relative_to(run_dir)}/, {belief_eval_dir(name)}/) "
+              f"({belief_dir(run_dir, name).relative_to(run_dir)}/) "
               "and running every query again")
         # Removed before the new settings are saved: an interrupted call
         # never leaves old beliefs under the new settings.
-        for path in (belief_dir(run_dir, name), run_dir / belief_eval_dir(name)):
-            shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(belief_dir(run_dir, name), ignore_errors=True)
     set_belief_config(run_dir, name, section)
 
     finished = scan_queries(run_dir)[0]
@@ -865,7 +863,7 @@ def parse_args():
     )
 
     # ── Stage ───────────────────────────────────────────────────────────────
-    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation of the generation (retrieval, generation, verbal confidence, trajectory). 'belief': the belief model --belief-model over the finished trajectories without a belief file of its own (belief/{model}/{qid}.jsonl and .md, one folder per belief model; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation of that belief model, added to the run's evaluation files (the generation's rows and other belief models' rows kept); other settings (--belief-source, --max-beliefs) than the model's saved ones replace that model's beliefs only. 'eval': the evaluation only, from the saved files (every evaluator of the dataset, every belief model of the run; judge verdicts reused from eval/generation/ and eval/belief/{model}/, so an unchanged run makes no LLM call). 'all': generate, then belief, then the evaluation of everything. Every stage writes eval/metrics.md and eval/per_query.csv, keeping the rows it does not score.")
+    parser.add_argument("--stage", type=str, default="all", choices=list(STAGES), help="What to run. 'generate': the agent on the queries without a finished trajectory (trajectory/, retrieval/, generation/), then the evaluation of the generation (retrieval, generation, verbal confidence, trajectory). 'belief': the belief model --belief-model over the finished trajectories without a belief file of its own (belief/{model}/{qid}.jsonl and .md, one folder per belief model; no agent and no retrieval: the documents' text is read from the corpus by id), then the evaluation of that belief model, added to the run's evaluation files (the generation's rows and other belief models' rows kept); other settings (--belief-source, --max-beliefs) than the model's saved ones replace that model's beliefs only. 'eval': the evaluation only, from the saved files (every evaluator of the dataset, every belief model of the run; judge verdicts reused from eval/generation/, so an unchanged run makes no LLM call; the belief evaluation makes none). 'all': generate, then belief, then the evaluation of everything. Every stage writes eval/metrics.md and eval/per_query.csv, keeping the rows it does not score.")
     parser.add_argument("--config", type=str, default=_CONFIG_DEFAULT, help="Path to the YAML file holding the mostly-fixed pipeline variables. Any value in it can be overridden by passing the matching --flag on the CLI.")
     # ── Generation (the belief and eval stages need the same values to find the run directory) ──
     parser.add_argument("--dataset", type=str, default="browsecomp_plus", choices=list(DATASETS), help="Dataset; all use local indices.")
@@ -923,13 +921,12 @@ if __name__ == "__main__":
 #         │                     ci_high | n (retrieval, generation, uncertainty, belief,
 #         │                     trajectory); belief_model "-" on the rows of the generation
 #         │                     (verbal confidence included), one row per belief model on
-#         │                     the s_T and belief rows
+#         │                     the belief score and belief rows
 #         ├── per_query.csv     every per-query value of every group (a belief model's
 #         │                     columns prefixed "{model}/")
-#         ├── generation/       accuracy.jsonl: per-query answer correctness (datasets with
-#         │                     answers); or Auto-ARGUE inputs, cached judgments and
-#         │                     per-query scores.tsv (report datasets)
-#         └── belief/{model}/   belief update evaluation: events.csv, judge_cache.jsonl
+#         └── generation/       accuracy.jsonl: per-query answer correctness (datasets with
+#                               answers); or Auto-ARGUE inputs, cached judgments and
+#                               per-query scores.tsv (report datasets)
 #
 # ============================================================================
 # EXAMPLE USAGE

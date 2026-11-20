@@ -4,16 +4,13 @@ every belief file of a run (every query, gold beliefs or not).
 An update call is a step record with a call made (``called``), the final
 update's included (the final record is the scorer's, never an update); it
 parsed when its ``observations`` are not null.
-Rows (the ``belief`` group of ``metrics.md``), each a share of the update
-calls:
+Rows (the ``belief`` group of ``metrics.md``):
 
-    format gate failed   the reply did not parse, or has a ``gate`` code
-                         (training's format gate, without the cut-off
-                         check: the finish reason is not saved)
-    unclean              parsed, with an ``unclean`` code (not an SFT
-                         sample)
-    with <effect> issue  parsed, with a ``dropped`` / ``corrected`` /
-                         ``flagged`` issue
+    update calls         how many update calls
+    format gate failed   the share of them whose reply did not parse, or
+                         has a ``gate`` code (training's format gate,
+                         without the cut-off check: the finish reason is
+                         not saved)
 
 The table below ``metrics.md`` gives every code that occurs (notes too):
 its effect, its training role, how many times it occurs and in how many
@@ -22,7 +19,7 @@ update calls."""
 from collections import Counter
 from typing import Any, Dict, List, Tuple
 
-from belief_model_component import ERROR_EFFECTS, GATE_ISSUES, ISSUES, UNCLEAN_REPLY, issue_effect
+from belief_model_component import GATE_ISSUES, ISSUES, issue_effect
 
 from ..metrics_file import GroupResult
 
@@ -40,8 +37,7 @@ def _role(code: str) -> str:
 def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
     """The ``belief`` rows of the belief files *files* (``load_belief_files``)
     and the issue table (``ISSUE_COLUMNS``); empty without an update call."""
-    calls = parsed = gate = unclean = 0
-    with_effect: Counter = Counter()
+    calls = gate = 0
     count: Counter = Counter()
     in_calls: Counter = Counter()
     for _meta, steps, _final in files.values():
@@ -52,21 +48,12 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
             codes = [str(i.get("code")) for i in [*(r.get("issues") or []), *(r.get("notes") or [])]]
             count.update(codes)
             in_calls.update(set(codes))
-            if r.get("observations") is None:
-                gate += 1
-                continue
-            parsed += 1
-            gate += any(c in GATE_ISSUES for c in codes)
-            unclean += any(c in UNCLEAN_REPLY for c in codes)
-            with_effect.update({issue_effect(c) for c in codes})
+            gate += r.get("observations") is None or any(c in GATE_ISSUES for c in codes)
     if not calls:
         return GroupResult()
     res = GroupResult()
     res.add("belief", "update calls", calls, n=calls)
     res.add("belief", "update calls: format gate failed", gate / calls, n=calls)
-    res.add("belief", "update calls: unclean", unclean / calls, n=calls)
-    for e in ERROR_EFFECTS:
-        res.add("belief", f"update calls: with {e} issue", with_effect[e] / calls, n=calls)
     table = []
     for code, n in sorted(count.items(), key=lambda x: (-x[1], x[0])):
         table.append([code, issue_effect(code), _role(code), str(n), str(in_calls[code]),

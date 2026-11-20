@@ -2,18 +2,16 @@
 
 The belief files are written and read by ``utils.run_files.belief``.
 
-* :class:`BeliefUpdateEvaluator`: what the belief update does with a gold
-  document, and whether the final belief is correct and calibrated
-  (datasets with gold per belief, :data:`GOLD_DATASETS`).
-* :func:`issue_summary`: how often the update's replies have issues
-  (rows of the ``belief`` group and the issue table of ``metrics.md``).
-* :mod:`.gold_rows`: the gold answers and documents per belief of a
-  run's queries; :mod:`.gold_match`: whether a text has a belief's gold
-  answer (match, then judge).
+* :func:`evidence_uptake` (:mod:`.uptake`): whether the belief's certainty
+  s_t rises at the steps that bring a gold document (evidence uptake) and
+  at the steps that bring only non-gold documents (false uptake), from the
+  run's qrels (every dataset with qrels).
+* :func:`issue_summary` (:mod:`.issues`): how often the update's replies
+  fail the format gate (rows of the ``belief`` group) and every issue code
+  that occurs (the issue table of ``metrics.md``).
 """
 
-from .evaluator import CALIBRATION_COLUMNS, BeliefUpdateEvaluator
-from .gold_rows import GOLD_DATASETS
 from .issues import ISSUE_COLUMNS, issue_summary
+from .uptake import evidence_uptake
 
-__all__ = ["BeliefUpdateEvaluator", "CALIBRATION_COLUMNS", "GOLD_DATASETS", "ISSUE_COLUMNS", "issue_summary"]
+__all__ = ["ISSUE_COLUMNS", "evidence_uptake", "issue_summary"]

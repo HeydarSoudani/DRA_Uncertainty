@@ -12,12 +12,13 @@ generation
     against nuggets (``ArgueReportEvaluator``, Auto-ARGUE).
 uncertainty
     The agent's verbal confidence against correctness
-    (``VerbalConfidenceEvaluator``, once per run); s_T and its formula
-    ablation against correctness (``UncertaintyEvaluator``) or against
-    nugget coverage (``ReportUncertaintyEvaluator``), once per belief model.
+    (``VerbalConfidenceEvaluator``, once per run); the belief rule-based
+    score and the belief LLM score against correctness
+    (``UncertaintyEvaluator``), or s_T against nugget coverage
+    (``ReportUncertaintyEvaluator``), once per belief model.
 belief
-    The belief update evaluation (``BeliefUpdateEvaluator``) with its
-    per-belief gold, and the update's issues (``issue_summary``).
+    Evidence uptake and false uptake of the belief's certainty against the
+    qrels (``evidence_uptake``), and the update's issues (``issue_summary``).
 trajectory
     Per-query searches, tokens and forced answers (``TrajectoryEvaluator``).
 

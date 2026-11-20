@@ -477,6 +477,10 @@ logger = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 57
+#: The oldest schema the evaluation reads (``load_belief_files``): from 54 on
+#: every field it reads exists under its current name (54 renamed
+#: "criteria" to "beliefs"); an older file is left out.
+EVAL_MIN_SCHEMA = 54
 #: One folder per belief model: ``{run_dir}/belief/{model}/`` (:func:`belief_dir`).
 BELIEF_DIR = "belief"
 
@@ -562,25 +566,51 @@ def read_belief_file(path: Union[str, Path], light: bool = False) -> BeliefFile:
 
 
 def load_belief_files(run_dir: Union[str, Path], model: str, query_ids: Iterable[str]) -> Dict[str, BeliefFile]:
-    """``{qid: (meta, steps, final)}`` of the belief model *model*'s files of the
-    current ``SCHEMA_VERSION`` (light, see ``read_belief_file``), read once
-    for every evaluation; a query without one, or with an older one, is
-    left out (a warning counts the older ones by schema)."""
+    """``{qid: (meta, steps, final)}`` of the belief model *model*'s files
+    (light, see ``read_belief_file``), read once for every evaluation; a
+    query without one is left out.  A file of an older schema from
+    ``EVAL_MIN_SCHEMA`` on is kept: the evaluation reads only fields these
+    schemas share (a step's ``certainty``, ``docs``, ``called``,
+    ``observations``, ``issues`` and ``notes``; the final line's
+    ``certainty``, ``certainty_label``, ``certainty_formula`` and
+    ``final_score``), and ``belief_schemas`` reports them; an info line
+    counts them by schema.  A file older than ``EVAL_MIN_SCHEMA`` (or with
+    no schema) is left out, with a warning."""
     out: Dict[str, BeliefFile] = {}
     old: Counter = Counter()
+    too_old: Counter = Counter()
     folder = belief_dir(run_dir, model)
     for qid in query_ids:
         meta, steps, final = read_belief_file(folder / f"{qid}.jsonl", light=True)
         if meta is None:
             continue
-        if meta.get("schema_version") != SCHEMA_VERSION:
-            old[meta.get("schema_version")] += 1
+        schema = meta.get("schema_version")
+        if not isinstance(schema, int) or schema < EVAL_MIN_SCHEMA:
+            too_old[schema] += 1
             continue
+        if schema != SCHEMA_VERSION:
+            old[schema] += 1
         out[qid] = (meta, steps, final)
+    if too_old:
+        logger.warning("%s: %d belief file(s) older than schema %d (%s) left out of the evaluation;"
+                       " run the belief stage again", model, sum(too_old.values()), EVAL_MIN_SCHEMA, dict(too_old))
     if old:
-        logger.warning("%s: %d belief file(s) of another schema (%s), not %d: not evaluated",
-                       model, sum(old.values()), dict(old), SCHEMA_VERSION)
+        logger.info("%s: %d belief file(s) of an older schema (%s), not %d: evaluated as they are",
+                    model, sum(old.values()), dict(old), SCHEMA_VERSION)
     return out
+
+
+def belief_schemas(run_dir: Union[str, Path], model: str) -> Dict[Any, int]:
+    """``{schema_version: files}`` of the belief model *model*'s files (their meta lines)."""
+    counts: Counter = Counter()
+    folder = belief_dir(run_dir, model)
+    for path in sorted(folder.glob("*.jsonl")) if folder.is_dir() else []:
+        try:
+            with open(path) as f:
+                counts[json.loads(f.readline()).get("schema_version")] += 1
+        except (OSError, ValueError, AttributeError):
+            counts[None] += 1
+    return dict(counts)
 
 
 def believed_queries(run_dir: Union[str, Path], model: str) -> Tuple[set, set]:
@@ -588,8 +618,8 @@ def believed_queries(run_dir: Union[str, Path], model: str) -> Tuple[set, set]:
 
     A query is done when ``belief/{model}/{qid}.jsonl`` (written last and
     atomically, :func:`save_belief`) has a meta line of the current
-    ``SCHEMA_VERSION``; a file of another schema is stale: the evaluation
-    leaves it out, so the belief stage runs the query again.
+    ``SCHEMA_VERSION``; a file of another schema is stale: the belief stage
+    runs the query again (the evaluation scores it as it is until then).
     """
     folder = belief_dir(run_dir, model)
     if not folder.is_dir():

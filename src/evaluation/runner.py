@@ -16,26 +16,24 @@ whose beliefs several belief models made reports each of them:
     retrieval    Recall@N, Precision@N of the seen docs (N = docs seen)
     generation   accuracy (QA) or Auto-ARGUE nugget coverage and F1 (reports)
     uncertainty  the agent's verbal confidence against correctness (QA,
-                 the generation); s_T and its formula ablation against
-                 correctness (QA, belief files); a report's s_T against
-                 its nugget coverage (reports, belief files)
-    belief       the finished queries with a belief file of the current
-                 schema (belief files); the belief's change at gold and
-                 control events, and per
-                 belief its recall, answer reached and status calibration
-                 (datasets with gold per belief, belief files); the
-                 share of update calls with issues, and every issue code
-                 that occurs (belief files, ``belief.issues``)
+                 the generation); the belief rule-based score and the
+                 belief LLM score against correctness (QA, belief files);
+                 a report's s_T against its nugget coverage (reports,
+                 belief files)
+    belief       evidence uptake and false uptake of s_t against the
+                 qrels (QA, belief files, ``belief.uptake``); the update
+                 calls, the share failing the format gate, and every issue
+                 code that occurs (belief files, ``belief.issues``)
     trajectory   searches, agent tokens, forced answers; belief model tokens
 
 A run with an output directory is always evaluated from its saved files.
 Each stage (``--stage``) scores its own scope and keeps the rest of the
 files: generate the generation, belief its belief model, eval and all
 everything.
-The LLM-judged evaluators keep their verdicts in the run directory
-under ``eval/`` (``eval/generation/``: ``accuracy.jsonl`` or the Auto-ARGUE
-cache; ``eval/belief/{model}/judge_cache.jsonl``) and judge only what
-changed: a belief model added to a run costs only its own judge calls.
+The LLM-judged evaluators (the generation's) keep their verdicts in the
+run directory under ``eval/generation/`` (``accuracy.jsonl`` or the
+Auto-ARGUE cache) and judge only what changed; the belief models'
+evaluation makes no LLM call.
 """
 
 import logging
@@ -48,11 +46,12 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 
 from indexing_corpus_dataset.dataset_loaders import load_nuggets
 from indexing_corpus_dataset.layout import DATASET_SPECS
-from utils.run_files import belief_models, load_belief_files, load_result_from_saved_files
+from utils.run_files import (SCHEMA_VERSION, belief_models, belief_schemas, load_belief_files,
+                             load_result_from_saved_files)
 from utils.run_files.run_config import belief_config_of, belief_model_of, read_run_config
 from utils.progress import step_iter
 
-from .belief import GOLD_DATASETS, BeliefUpdateEvaluator, issue_summary
+from .belief import evidence_uptake, issue_summary
 from .generation import AccuracyEvaluator, ArgueReportEvaluator, NumericMatchEvaluator
 from .metrics_file import (EVAL_DIR, METRICS_FILE, NO_MODEL, PER_QUERY_FILE, RULE, GroupResult, Row, Section,
                            log_lines, read_header, read_metrics, read_per_query, read_sections, write_metrics,
@@ -70,9 +69,10 @@ class Evaluators:
     ``accuracy`` is None without ground-truth answers or for a dataset
     without ``answer_eval``; ``report`` is None for a dataset without
     ``report_eval`` (``layout.DATASET_SPECS``); ``verbal`` and ``uncertainty`` are None for
-    a report dataset, ``report_uncertainty`` for any other; ``belief`` is None for a dataset without
-    per-belief gold (``evaluation.belief.gold_rows``).  The last two score
-    a run only when its belief files exist.
+    a report dataset, ``report_uncertainty`` for any other.  ``qrels`` are
+    the run's on a QA dataset (the belief evidence uptake), None on a report
+    dataset.  The uncertainty and belief
+    evaluators score a run only when its belief files exist.
     """
     seen: SeenDocEvaluator
     trajectory: TrajectoryEvaluator
@@ -81,7 +81,7 @@ class Evaluators:
     verbal: Optional[VerbalConfidenceEvaluator] = None
     uncertainty: Optional[UncertaintyEvaluator] = None
     report_uncertainty: Optional[ReportUncertaintyEvaluator] = None
-    belief: Optional[BeliefUpdateEvaluator] = None
+    qrels: Optional[Dict] = None
     dataset: Optional[str] = None
 
 
@@ -98,7 +98,8 @@ def build_evaluators(
 
     Args:
         qrels:        Qrels dict loaded from the dataset (at the run's
-                      ``min_relevance_score``).
+                      ``min_relevance_score``): the seen-doc retrieval and
+                      the belief evidence uptake (QA datasets only).
         kwargs:       Pipeline configuration (read: ``judge_model``,
                       ``corpus_path``).
         answers:      ``query_id -> ground-truth answer``.  The dataset's
@@ -110,12 +111,14 @@ def build_evaluators(
         dataset:      Dataset name.
         data_path:    Dataset directory and *split*: the nuggets of a dataset
                       whose ``report_eval`` is ``"argue"``
-                      (:class:`ArgueReportEvaluator`); *split* also locates
-                      TRQA's gold beliefs (the belief update evaluation).
+                      (:class:`ArgueReportEvaluator`).
     """
-    evaluators = Evaluators(seen=SeenDocEvaluator(qrels), trajectory=TrajectoryEvaluator(), dataset=dataset)
-
     spec = DATASET_SPECS[dataset] if dataset else None
+    # Uptake on QA datasets only: the qrels of a report dataset are pooled, so
+    # an unjudged relevant document would count as a no-evidence document.
+    evaluators = Evaluators(seen=SeenDocEvaluator(qrels), trajectory=TrajectoryEvaluator(), dataset=dataset,
+                            qrels=qrels if spec is not None and spec.task == "qa" else None)
+
     answer_eval = spec.answer_eval if spec else "llm_judge"
     judge_model = kwargs.get("judge_model") or None
     judge_kwargs = {"judge_model": judge_model} if judge_model else {}
@@ -133,8 +136,6 @@ def build_evaluators(
         evaluators.uncertainty = UncertaintyEvaluator()
     if spec is not None and spec.task == "report" and evaluators.report is not None:
         evaluators.report_uncertainty = ReportUncertaintyEvaluator()
-    if dataset in GOLD_DATASETS:
-        evaluators.belief = BeliefUpdateEvaluator(dataset, split, kwargs.get("corpus_path"), judge_model)
     return evaluators
 
 
@@ -159,14 +160,20 @@ def _header(run_dir: Optional[Path], dataset: Optional[str], num_queries: int, m
             num_unfinished: Optional[int] = None) -> Dict[str, Any]:
     """The run's identity for the header of ``metrics.md`` and the log
     (``run_config.json``); ``belief`` names each belief model of *models*
-    (short name, LLM, belief source), ``queries`` counts the finished
+    (short name, LLM, belief source; the schemas of its files when one is
+    older than ``SCHEMA_VERSION``), ``queries`` counts the finished
     (evaluated) ones, ``unfinished`` those of the split not finished yet."""
     config = read_run_config(run_dir) if run_dir is not None else {}
     data, agent = config.get("dataset") or {}, config.get("agent") or {}
 
     def model_line(model: str) -> str:
         section = belief_config_of(config, model) or {}
-        return f"{model} ({belief_model_of(section) or '-'}, {section.get('belief_source_effective')} beliefs)"
+        schemas = belief_schemas(run_dir, model) if run_dir is not None else {}
+        older = {s: n for s, n in schemas.items() if s != SCHEMA_VERSION}
+        schema = (f", schema {', '.join(f'{s} ({n} files)' for s, n in sorted(schemas.items(), key=str))}"
+                  if older else "")
+        return (f"{model} ({belief_model_of(section) or '-'}, {section.get('belief_source_effective')} beliefs"
+                f"{schema})")
 
     return {
         "run": str(run_dir) if run_dir else "-",
@@ -189,7 +196,7 @@ def evaluate_and_save(
 ) -> None:
     """Run the evaluators of the scope, print the log block and write
     ``metrics.md``, ``per_query.csv`` (``evaluation.metrics_file``) and the
-    evaluators' own files (``eval/generation/``, ``eval/belief/{model}/``),
+    evaluators' own files (``eval/generation/``),
     all under ``eval/``.
 
     Each evaluator returns a :class:`GroupResult`; the groups are collected
@@ -279,12 +286,8 @@ def evaluate_and_save(
             collect("uncertainty", ev.uncertainty.evaluate, finals, accuracy.raw["per_query"], model=model)
         if belief_files and ev.report_uncertainty is not None and report.raw:
             collect("uncertainty", ev.report_uncertainty.evaluate, finals, report.raw["per_query"], model=model)
-        # The belief stage saves no query whose call failed: the rest of the
-        # group is over these queries only.
-        rows[model].append(Row("belief", "queries with a belief file", len(belief_files), n=len(results),
-                               belief_model=model))
-        if belief_files and ev.belief is not None:
-            collect("belief", ev.belief.evaluate, run_dir, model, belief_files, list(results), model=model)
+        if belief_files and ev.qrels:
+            collect("belief", evidence_uptake, belief_files, ev.qrels, model=model)
         if belief_files:
             collect("belief issues", issue_summary, belief_files, model=model)
             collect("belief tokens", belief_tokens, belief_files, model=model)

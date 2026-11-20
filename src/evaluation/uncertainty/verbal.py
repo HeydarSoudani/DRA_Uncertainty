@@ -9,7 +9,7 @@ belief model), so the generate stage reports it.  A judged query without a
 stated confidence (no confidence line, a tool call or narration as the final
 text) is scored :data:`MISSING_CONFIDENCE` (0.5: unknown, neither confident
 nor unconfident), so every judged query counts; per_query.csv keeps the raw
-value (blank when missing).  Rows: the queries scored, how many of them were
+value (blank when missing).  Rows: how many of the queries scored were
 missing (scored 0.5), the AUROC with a bootstrap CI over queries and the
 Brier score.  No LLM call.
 """
@@ -53,7 +53,6 @@ class VerbalConfidenceEvaluator:
                                  np.array([score(r) for r in rs], dtype=float)) if rs else math.nan
 
         res = GroupResult()
-        res.add("uncertainty", "verbal: queries scored", len(scored), n=len(accuracy_per_query))
         res.add("uncertainty", f"verbal: missing (scored {MISSING_CONFIDENCE:g})", missing, n=len(scored))
         res.add("uncertainty", "verbal AUROC", stat(auroc)(scored), *bootstrap_ci(scored, stat(auroc)), len(scored))
         res.add("uncertainty", "verbal Brier", stat(brier)(scored), n=len(scored))
