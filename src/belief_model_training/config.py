@@ -2,9 +2,10 @@
 
 The YAML file (``experiments/configs/belief_training.yaml``) has the same
 sections and keys as the dataclasses below, plus the ``data`` section: the
-settings of the training dataset build (stage data), whose sub-sections are
-those of ``indexing_corpus_dataset.training_datasets.config``.  An
-unknown section or key is an error.  The command line's flags overwrite
+settings of the training dataset build (stages data_prepare and
+data_relevance), whose sub-sections are those of
+``indexing_corpus_dataset.training_datasets.config``.  An unknown section
+or key is an error.  The command line's flags overwrite
 their keys (``load_config`` overrides: --teacher, --student, --init-model,
 --beliefs).
 
@@ -42,8 +43,8 @@ assert {SFT_RUN, *RL_RUNS.values()} == set(TRAINED_RUN_NAMES)
 
 @dataclass
 class SharedConfig:
-    # Training datasets (stage data builds them; their sft / rl / val splits
-    # feed the stages generate to rl).  Their episodes are pooled: one model
+    # Training datasets (stages data_prepare and data_relevance build them;
+    # their sft / rl / val splits feed the stages generate to rl).  Their episodes are pooled: one model
     # for every shape.
     training_datasets: List[str] = field(default_factory=lambda: ["infoseek_hard", "trqa_val"])
     # Frozen agents whose trajectories are the episodes (stage generate runs them).
@@ -173,7 +174,7 @@ SECTIONS = {
     "sft": SFTConfig,
     "rl": RLConfig,
 }
-#: The section with the dataset build settings (stage data).
+#: The section with the dataset build settings (stages data_prepare, data_relevance).
 DATA_SECTION = "data"
 
 
@@ -185,7 +186,7 @@ class TrainingConfig:
     filter: FilterConfig = field(default_factory=FilterConfig)
     sft: SFTConfig = field(default_factory=SFTConfig)
     rl: RLConfig = field(default_factory=RLConfig)
-    # The ``data`` section as written (stage data hands it to the build).
+    # The ``data`` section as written (stages data_prepare, data_relevance hand it to the build).
     data: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

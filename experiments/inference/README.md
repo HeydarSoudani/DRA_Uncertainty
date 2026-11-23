@@ -163,8 +163,8 @@ silver when an LLM extracts structure the question does not state (`DatasetSpec.
 | Dataset | Gold | Silver |
 |---|---|---|
 | BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's beliefs (the question's own clues and requirements) | none |
-| infoseek_hard | the dataset's rows (`queries/queries_all.jsonl`, any `level`) | none |
-| TRQA | made from the intermediate info on demand (`training_datasets/gold/trqa.py`) | the extractor's set beliefs |
+| infoseek_hard | the dataset's rows (`data/training_datasets/queries/infoseek_hard.jsonl`, any `level`) | none |
+| TRQA | made from the intermediate info on demand (`belief_model_component/init/trqa_gold.py`) | the extractor's set beliefs |
 | trqa_val | the dataset's rows | the extractor's set beliefs |
 
 **Belief source** (`belief_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_val only,
@@ -193,17 +193,17 @@ The banks:
 
 - The extractor's beliefs (`belief_model`): `BELIEF_ROOT/{dataset}/belief_bank/{gold|silver}/beliefs_{split}.jsonl`
   (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
-  `BELIEF_ROOT/training_datasets/{dataset}/belief_bank/silver/beliefs_all.jsonl`), `BankedBeliefSource`.
+  `BELIEF_ROOT/training_datasets/belief_bank/silver/{dataset}.jsonl`), `BankedBeliefSource`.
 - TRQA's gold beliefs, in `belief_bank/gold/` next to its silver ones (key: the writer and the hash of its
   prompts). They are made from the query's intermediate info as the trqa_val dataset makes its own
-  (`annotations.multi_member_row`: one belief per member, then the aggregate; members named by the page title of
+  (`annotation.rows.multi_member_row`: one belief per member, then the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `belief_model` writes
-  the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
+  the property phrase and the aggregation (the training datasets' prompts, `training_datasets/annotation/prompts/multi_member_*`). The bank line keeps
   the whole annotation row (gold answers, documents, members) under `bank_only`, never written to a run's files.
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
   beliefs, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
 - A training dataset's gold beliefs: its queries file is their bank, written by its build only
-  (`train_belief_model.py --stage data`), never during a run, so training scores against the same texts. A query whose gold
+  (`train_belief_model.py --stage data_relevance`), never during a run, so training scores against the same texts. A query whose gold
   texts failed gets silver ones; rebuild the dataset to fix them.
 
 Rules of a bank line:

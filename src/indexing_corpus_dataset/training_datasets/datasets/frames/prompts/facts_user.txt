@@ -1,0 +1,8 @@
+Question: {question}
+
+Answer: {answer}
+
+Pages:
+{pages}
+
+Write one fact per page.{retry}

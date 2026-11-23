@@ -1,9 +1,0 @@
-Topic: {topic}
-
-Criteria:
-{criteria}
-
-Document:
-{passage}
-
-Label every criterion.

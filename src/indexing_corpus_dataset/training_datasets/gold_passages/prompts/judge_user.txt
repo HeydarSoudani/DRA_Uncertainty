@@ -1,0 +1,7 @@
+{fact}
+
+PASSAGE:
+title: {title}
+text: {text}
+
+Answer:

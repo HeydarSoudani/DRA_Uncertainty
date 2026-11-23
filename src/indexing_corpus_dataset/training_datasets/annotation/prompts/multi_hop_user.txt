@@ -1,0 +1,6 @@
+Question: {question}
+
+Chain:
+{chain}
+
+Write one belief per placeholder, in your order.{retry}

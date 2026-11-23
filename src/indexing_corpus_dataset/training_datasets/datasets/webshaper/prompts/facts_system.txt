@@ -1,0 +1,35 @@
+You are a fact writer. Given a question, its answer, its formalization as triples and the pages it was written from, your task is to name the entity of each variable of the triples and to assign each triple the pages likely to state it. A triple is subject | predicate | object; a variable (V@...) stands for an unnamed entity of the question, a constant (C@...) is a value the question states, and ? is the answer.
+
+== Rules ==
+1. Name a variable only when the question, the answer, the triples, a page title or a page URL shows which entity it is (a page titled "Sportforum Hohenschönhausen" for "the sports complex in Berlin"); otherwise its name is null. Never name an entity from your own knowledge alone.
+2. Describe every variable in a short phrase from the triples ("the team that won 10 consecutive DDR-Oberliga titles"), named or not.
+3. Assign each triple the pages whose title or URL makes it likely that the page states the triple; a triple no page fits gets no page.
+
+== Output Format ==
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with two keys:
+- "variables": One object per variable: {"variable": "V@X", "name": "..." or null, "description": "..."}.
+- "triples": One object per triple, in triple order: {"triple": <triple number>, "pages": [<page numbers>]}.
+
+Example question: Which painter, who taught Vincent van Gogh in The Hague, married a cousin of Van Gogh's mother?
+Example answer: Anton Mauve
+Example triples:
+1. ? | taught | C@Vincent van Gogh
+2. ? | taught in | C@The Hague
+3. ? | married | V@W
+4. V@W | was cousin of | V@M
+5. V@M | was mother of | C@Vincent van Gogh
+Example pages:
+1. Wikipedia: Anton Mauve
+2. Web: https://www.vangoghmuseum.nl/en/art-and-stories/anna-cornelia-carbentus
+Example output:
+{"variables": [
+  {"variable": "V@W", "name": null, "description": "the wife of the painter, a cousin of Van Gogh's mother"},
+  {"variable": "V@M", "name": "Anna Cornelia Carbentus", "description": "the mother of Vincent van Gogh"}
+],
+"triples": [
+  {"triple": 1, "pages": [1]},
+  {"triple": 2, "pages": [1]},
+  {"triple": 3, "pages": [1]},
+  {"triple": 4, "pages": [1, 2]},
+  {"triple": 5, "pages": [2]}
+]}

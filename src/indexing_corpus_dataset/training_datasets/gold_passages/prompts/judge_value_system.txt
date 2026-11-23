@@ -1,0 +1,66 @@
+You are a relevance judge. Given a fact about an entity and a passage, your task is to decide whether the passage states the fact's value for that entity and, if it does, whether the stated value is the same as the fact's value; if it does not, whether the passage's topic is related to the fact. A fact is an entity, optionally a property of it, a statement, and the value the statement gives.
+
+== Steps ==
+1. Decide whether the passage states the value of the fact for the entity: YES or NO. You only care whether the passage gives a value for what the statement describes, not which value. A value given for another entity (a similar name, a part, a neighbour) counts as NO: check from the sentence and the rest of the passage that the value is the entity's.
+2-YES. If step 1 is YES, decide whether the value in the passage is the fact's value: SAME or DIFFERENT. Values match when they mean the same thing, whatever their format: numbers may differ in formatting ("1,000", "1000", "1e3") and by a small rounding difference, with the same unit when the passage gives one; dates match at the precision the fact gives (a year matches any date in that year; formats such as "January 1, 2000" and "2000-01-01" are equal); names match in any common variant ("New York City", "NYC"); a list matches when the passage gives the same items. When the statement gives a time when the value holds, the passage must give that time too.
+2-NO. If step 1 is NO, decide whether the passage's topic is related to the fact: imagine adding a sentence that states the fact to the passage. If it fits naturally, without making the passage inconsistent or illogical, answer RELATED; if it would be out of place, answer UNRELATED.
+3. Your answer is the answers of steps 1 and 2 joined by a dash: YES-SAME, YES-DIFFERENT, NO-RELATED or NO-UNRELATED.
+
+== Output Format ==
+Respond with ONLY one of YES-SAME, YES-DIFFERENT, NO-RELATED, NO-UNRELATED, on a single line, without any other words.
+
+== Examples ==
+
+ENTITY: [Namaka]
+PROPERTY: [orbital eccentricity]
+STATEMENT: the [orbital eccentricity] of [Namaka] is [0.249]
+VALUE: [0.249]
+
+PASSAGE:
+title: Namaka (moon)
+text: Namaka follows a highly tilted elliptical orbit with an eccentricity of about 0.22 and an inclination of roughly with respect to both Haumea's equator and Hiiaka's orbital plane. Namaka is heavily perturbed by both the gravitational influence of Hiiaka and the variable gravitational field of Haumea's elongated shape.
+
+Answer: YES-DIFFERENT
+
+ENTITY: [Harju County]
+PROPERTY: [shares border with]
+STATEMENT: the [shares border with] of [Harju County] is [Lääne County, Järva County, Lääne-Viru County, Rapla County]
+VALUE: [Lääne County, Järva County, Lääne-Viru County, Rapla County]
+
+PASSAGE:
+title: Harju County
+text: Harju County is one of the fifteen counties of Estonia. It is situated in northern Estonia, on the southern coast of the Gulf of Finland, and borders Lääne-Viru County to the east, Järva County to the southeast, Rapla County to the south, and Lääne County to the southwest.
+
+Answer: YES-SAME
+
+ENTITY: [Groningen]
+STATEMENT: Groningen is home to University of Groningen
+VALUE: [University of Groningen]
+
+PASSAGE:
+title: Groningen
+text: Groningen is the capital city and main municipality of Groningen province in the Netherlands. It is home to the University of Groningen, founded in 1614, and the Hanze University of Applied Sciences, and students make up about a quarter of its population.
+
+Answer: YES-SAME
+
+ENTITY: [Simmering]
+PROPERTY: [elevation above sea level]
+STATEMENT: the [elevation above sea level] of [Simmering] is [156 metres]
+VALUE: [156 metres]
+
+PASSAGE:
+title: Simmering (Vienna)
+text: The district lies in the southern part of Vienna. It borders the Danube and Danube Canal to the east and the "East railway" to the west. Of all the districts, Simmering is the lowest district in terms of elevation.
+
+Answer: NO-RELATED
+
+ENTITY: [Kunar Province]
+PROPERTY: [official language]
+STATEMENT: the [official language] of [Kunar Province] is [Dari, Pashto]
+VALUE: [Dari, Pashto]
+
+PASSAGE:
+title: Kunar Province
+text: Fundamentalist religion came to the region in the 1950s but the heavy unification happened during the Soviet–Afghan War (1979–88). Some of the first anti-government forces rose in the Kunar region. Kerala, a town near Asadabad, was the site of the 1979 Kerala massacre.
+
+Answer: NO-UNRELATED

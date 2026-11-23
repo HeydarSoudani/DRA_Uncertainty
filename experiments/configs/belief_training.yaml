@@ -2,7 +2,7 @@
 # Settings of experiments/training/train_belief_model.py (belief model
 # training, agent frozen; src/belief_model_training).  One section per stage
 # (belief_stage: the stages teacher and evaluate) plus `shared`; `data` holds
-# the dataset build settings (stage data).  The keys are the dataclass fields
+# the dataset build settings (stages data_prepare and data_relevance).  The keys are the dataclass fields
 # of src/belief_model_training/config.py, and for `data` those of
 # src/indexing_corpus_dataset/training_datasets/config.py.
 #
@@ -29,32 +29,58 @@ shared:
   seed: 0
   max_seq_len: 32768                  # longest student sequence (prompt + reply): longer SFT samples dropped, longer RL prompts get no reply
 
-# ── Stage data: training dataset builds (one call per dataset) ───────────────
-# infoseek_hard (InfoSeek-Hard over the original wiki-25-512 corpus) and
-# trqa_val (the TRQA wiki1 + wiki2 validation files).  The sources and the
-# dropped question types are fixed in code.  The datasets are built under
-# data/training_datasets/{dataset} of the repo.
+# ── Stages data_prepare, data_relevance: training datasets (one call each) ──
+# infoseek_hard (InfoSeek-Hard), frames (FRAMES) and webshaper (WebShaper)
+# over InfoSeek's wiki-25-512 corpus (webshaper also over its web gold pages,
+# corpus_web.jsonl in data/training_datasets/corpus), and trqa_val (the TRQA wiki1 + wiki2
+# validation files).  The sources and the checks of data_prepare are fixed
+# in code (src/indexing_corpus_dataset/training_datasets/datasets/).  The
+# source as loaded and every build file are kept in
+# data/training_datasets_raw/{dataset}, the dataset in data/training_datasets
+# (queries/{dataset}.jsonl, qrels/{dataset}.txt) of the repo.  data_prepare uses `web` only
+# (webshaper); data_relevance uses `split`, `gold_beliefs`, `gold_passages`.
 data:
-  # Split of infoseek_hard and trqa_val: shares of the queries with the full
-  # gold annotation (level full); every other query goes to val as its
-  # out-of-domain part.  A query keeps its
-  # split as the dataset grows; the new ones fill the split furthest below its
-  # share.  Recorded in stats.json; other shares are refused; to change them,
-  # remove the 'split' section of stats.json (the next build re-splits every query).
+  # Split: shares of the queries with the full gold annotation (level full);
+  # every other query goes to val as its out-of-domain part (all of frames:
+  # no beliefs).  A query keeps its split as the dataset grows; the new ones
+  # fill the split furthest below its share.  Recorded in stats.json; other
+  # shares are refused; to change them, remove the 'split' section of
+  # stats.json (the next build re-splits every query).
   split:
     sft: 0.3                          # SFT samples (stage teacher: teacher beliefs)
     rl: 0.6                           # RL episodes (trajectories only, no teacher)
     val: 0.1                          # validation of SFT and RL (stage teacher: teacher beliefs); plus the out-of-domain queries
 
-  # Belief texts of the gold annotation (end of every build).  An LLM writes
-  # them from the question and the beliefs' source structure; earlier texts are
-  # kept (belief_texts.jsonl of the dataset); writing new ones needs
-  # OPENROUTER_API_KEY.  model (and the prompts) must stay those of the kept
-  # texts; to change them, remove belief_texts.jsonl.
+  # Belief texts of the gold annotation (end of every data_relevance run), and the facts
+  # of frames and webshaper (what their gold passages must state).  An LLM
+  # writes them; earlier ones are kept (belief_texts.jsonl, facts.jsonl of the
+  # dataset); writing new ones needs OPENROUTER_API_KEY.  model (and the
+  # prompts) must stay those of the kept ones; to change them, remove those files.
   gold_beliefs:
     model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model)
     workers: 8                        # concurrent LLM calls
     max_tokens: 4096
+
+  # Judge of the gold passages (infoseek_hard, frames, webshaper): one call per
+  # (fact, passage) pair, TRQA's property check (YES-SAME / YES-DIFFERENT /
+  # NO-RELATED / NO-UNRELATED).  Earlier judgments are kept
+  # (gold_passages.jsonl of the dataset); model (and the prompts) must stay
+  # theirs; to change them, remove that file.
+  gold_passages:
+    model: openrouter/openai/gpt-4o-mini  # TRQA's judge
+    workers: 16                       # concurrent LLM calls
+    max_tokens: 16                    # the reply is one label
+
+  # webshaper: its web gold pages, fetched live, else from the Wayback Machine.
+  web:
+    contact: null                     # e-mail or URL in the User-Agent; null = DRA_CONTACT (.env)
+    timeout: 30.0
+    max_retries: 4
+    workers: 32                       # concurrent fetches (the Wayback Machine keeps its own rate)
+    wayback: true                     # Wayback Machine fallback for failed live fetches
+    wayback_rate_per_min: 15.0        # the archive refuses faster clients
+    wayback_timestamp: "20250601"     # the snapshot closest to this date (WebShaper's)
+    min_words: 50                     # fewer extracted words: a dead page
 
 # ── Stage generate: dra_inference --stage generate on a split (the agents' trajectories) ─
 generate:

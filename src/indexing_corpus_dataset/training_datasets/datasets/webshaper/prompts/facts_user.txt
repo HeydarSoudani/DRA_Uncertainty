@@ -1,0 +1,11 @@
+Question: {question}
+
+Answer: {answer}
+
+Triples:
+{triples}
+
+Pages:
+{pages}
+
+Name the variables and assign each triple its pages.{retry}

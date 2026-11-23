@@ -311,7 +311,7 @@ def _tokenizer():
         return _passage_tokenizer
 
 
-def _token_ends(text: str) -> List[int]:
+def token_ends(text: str) -> List[int]:
     """The character offset where each token of *text* ends."""
     tokenizer = _tokenizer()
     with _passage_tokenizer_lock:
@@ -327,9 +327,9 @@ def cut_passage(text: str, max_tokens: Optional[int]) -> str:
     if max_tokens < 1:
         raise ValueError(f"max_tokens must be at least 1 (None keeps the text whole), got {max_tokens}")
     window = text[:max_tokens * _WINDOW_CHARS_PER_TOKEN]
-    ends = _token_ends(window)
+    ends = token_ends(window)
     if len(window) < len(text) and (len(ends) <= max_tokens or ends[max_tokens - 1] > len(window) - _WINDOW_MARGIN_CHARS):
-        ends = _token_ends(text)
+        ends = token_ends(text)
     return text[:ends[max_tokens - 1]] if len(ends) > max_tokens else text
 
 

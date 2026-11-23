@@ -11,10 +11,14 @@
 # Belief model training, one stage per job (experiments/training/train_belief_model.py).
 # The resources above suit stage rl (one GPU shared by vLLM and the trainer).
 # Override them per stage on the sbatch line:
-#   data (CPU; infoseek_hard reads its 18.5 GB corpus):
+#   data_prepare (CPU, no LLM; infoseek_hard and frames read their 18.5 GB corpus once for new titles):
+#     sbatch --partition=rome --gpus=0 --time=04:00:00 --mem=32GB \
+#       --export=ALL,STAGE=data_prepare,DATASET=infoseek_hard scripts/run_train_belief_model.sh
+#     (trqa_val and frames the same; webshaper also fetches its web gold pages: DRA_CONTACT in .env,
+#      and a rerun fetches the pages still pending)
+#   data_relevance (CPU; the judge and the writers on OpenRouter):
 #     sbatch --partition=rome --gpus=0 --time=12:00:00 --mem=32GB \
-#       --export=ALL,STAGE=data,DATASET=infoseek_hard,LIMIT=500 scripts/run_train_belief_model.sh
-#     sbatch --partition=rome --gpus=0 --export=ALL,STAGE=data,DATASET=trqa_val scripts/run_train_belief_model.sh
+#       --export=ALL,STAGE=data_relevance,DATASET=infoseek_hard,LIMIT=500 scripts/run_train_belief_model.sh
 #   generate (agents on OpenRouter; the retriever wants a GPU):
 #     sbatch --export=ALL,STAGE=generate,DATASET=infoseek_hard,SUBSET=sft,LIMIT=50 scripts/run_train_belief_model.sh
 #     sbatch --export=ALL,STAGE=generate,DATASET=infoseek_hard,SUBSET=rl,POLICY_MODEL=glm scripts/run_train_belief_model.sh
@@ -33,7 +37,7 @@
 source scripts/_activate.sh
 mkdir -p script_logging
 
-ARGS=(--stage "${STAGE:?set STAGE=data|generate|teacher|filter|sft|rl|evaluate}")
+ARGS=(--stage "${STAGE:?set STAGE=data_prepare|data_relevance|generate|teacher|filter|sft|rl|evaluate}")
 [ -n "$DATASET" ] && ARGS+=(--dataset "$DATASET")
 [ -n "$SUBSET" ] && ARGS+=(--subset "$SUBSET")
 [ -n "$POLICY_MODEL" ] && ARGS+=(--policy-model "$POLICY_MODEL")

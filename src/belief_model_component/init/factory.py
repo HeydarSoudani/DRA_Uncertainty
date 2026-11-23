@@ -20,7 +20,7 @@ Per query:
      elsewhere (``layout.extraction_kind``); bank
      ``layout.belief_bank_path``;
    - TRQA's gold beliefs, made from the intermediate info
-     (``indexing_corpus_dataset.training_datasets.gold.trqa``); bank
+     (``trqa_gold.py``); bank
      ``layout.belief_bank_path(..., "gold")``;
    - a training dataset's gold beliefs (``GoldBeliefSource``): the dataset's
      queries file is their bank, written by the dataset build only
@@ -196,7 +196,7 @@ def build_belief_source(
         gold: BeliefSource = GoldBeliefSource(path, spec.query_shape)
         print(f"Belief model: gold beliefs from {path}")
     else:
-        from indexing_corpus_dataset.training_datasets.gold.trqa import TRQAGoldBeliefs
+        from .trqa_gold import TRQAGoldBeliefs
 
         gold_bank = belief_bank_path(dataset, split, GOLD_BELIEFS)
         gold = BankedBeliefSource(TRQAGoldBeliefs(split, writer=model_id, llm_client=llm), gold_bank)

@@ -14,6 +14,11 @@ Canonical layout::
     {data_path}/nuggets/nuggets_{split}.jsonl   (report-generation datasets only)
     {data_path}/corpus/{name}.jsonl
 
+The training datasets (``BUILT_DATASETS``) share one ``data_path``,
+``TRAINING_DATASETS_ROOT``, with one file per dataset holding every split
+(``queries/{dataset}.jsonl``, ``qrels/{dataset}.txt``; the loaders take
+the dataset name).
+
 Record schemas:
     queries : {"id": str, "text": str, "answer"?: str}   (NeuCLIR/RAGTIME add topic
               fields, e.g. "request", "title", "limit")
@@ -88,8 +93,15 @@ OUTPUT_ROOT = Path(os.environ.get(
 # (src/indexing_corpus_dataset/layout.py), so it follows the checkout.
 REPO_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 
-# The training datasets, one folder each (``{TRAINING_DATASETS_ROOT}/{dataset}``).
+# The training datasets (``BUILT_DATASETS``), all in one folder like an
+# inference dataset's: ``TRAINING_DATASETS_ROOT/queries/{dataset}.jsonl``,
+# ``qrels/{dataset}.txt``, ``belief_bank/silver/{dataset}.jsonl`` and the
+# shared ``corpus/`` (corpus_web).  Each is built in its own folder of
+# ``TRAINING_RAW_ROOT/{dataset}``: the source as loaded, the caches, the
+# prepared questions (stage data_prepare), the LLM memories (stage
+# data_relevance), the dropped questions and the build stats.
 TRAINING_DATASETS_ROOT = REPO_DATA_ROOT / "training_datasets"
+TRAINING_RAW_ROOT = REPO_DATA_ROOT / "training_datasets_raw"
 
 # Root of the belief banks, in the repo's data folder; ``DRA_BELIEF_ROOT``
 # overrides it.
@@ -147,7 +159,7 @@ class DatasetSpec:
                              dataset's annotation: a training dataset's rows,
                              ``gold_beliefs_path``; TRQA's intermediate
                              info, made on demand into its gold bank,
-                             ``training_datasets.gold.trqa``).  A query of
+                             ``belief_model_component/init/trqa_gold.py``).  A query of
                              an annotation dataset without gold beliefs
                              gets silver ones, extracted
                              from the question by an LLM.
@@ -196,7 +208,7 @@ class DatasetSpec:
 DATASET_SPECS = {
     # TRQA passages are short; answers are numeric.  Up to 52 beliefs, as
     # the gold: one per member (up to 50), the rest and the aggregate
-    # (training_datasets/gold/annotations.py).
+    # (training_datasets/annotation/rows.py).
     "trqa": DatasetSpec(
         dataset_year="test", subset="wiki2", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_beliefs=52, gold_beliefs="annotation", belief_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
@@ -229,13 +241,15 @@ DATASET_SPECS = {
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_beliefs=None, gold_beliefs="question", belief_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_eval="argue", title_key="title",
     ),
-    # Training datasets built by this project (experiments/training/train_belief_model.py --stage data),
-    # under TRAINING_DATASETS_ROOT; ``subset`` is the split (TRAINING_SPLITS).
+    # Training datasets built by this project (experiments/training/train_belief_model.py
+    # --stage data_prepare, then data_relevance), under TRAINING_DATASETS_ROOT; ``subset`` is the
+    # split (TRAINING_SPLITS).
     # infoseek_hard: InfoSeek-Hard questions over the original release's
     # corpus, wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under
     # DATA_ROOT/infoseek with its indices, ``_CORPUS_IN_DATA_ROOT``); binary
-    # qrels: the first chunk of each gold page (where InfoSeek's claims are
-    # written from).  Multi-hop gold beliefs,
+    # qrels: per gold page the chunk its claims are stated in (InfoSeek
+    # writes them from the first 1024 tokens of a page: chunk 1 or 2, an LLM
+    # judges chunk 2; chunk 1 for a page without claims).  Multi-hop gold beliefs,
     # one per hop of the research tree.
     "infoseek_hard": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
@@ -247,18 +261,31 @@ DATASET_SPECS = {
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_beliefs=52, gold_beliefs="annotation", belief_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
+    # frames and webshaper: FRAMES and WebShaper questions over the corpus of
+    # infoseek_hard (corpus_wiki, plus corpus_web: WebShaper's web gold pages
+    # in chunks of 512 tokens, merged by the user for the index).  Graded
+    # qrels from an LLM judge of each (fact, passage) pair: 2 the passage
+    # states a fact of the question (the gold), 1 it is on the fact's topic
+    # without stating it.  frames has no beliefs (query level); webshaper
+    # one per variable of its formalization.
+    "frames": DatasetSpec(
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=2,
+        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+    ),
+    "webshaper": DatasetSpec(
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=2,
+        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+    ),
 }
-# (training_datasets/webshaper_frames, WebShaper and FRAMES, is kept in the
-# code but not registered: no spec, not built.)
 
-# Datasets built by this project, kept under ``TRAINING_DATASETS_ROOT`` (the
-# others are downloaded inputs under ``DATA_ROOT``).
-BUILT_DATASETS = frozenset({"infoseek_hard", "trqa_val"})
+# Datasets built by this project, kept under ``TRAINING_DATASETS_ROOT``
+# (the others are downloaded inputs under ``DATA_ROOT``).
+BUILT_DATASETS = frozenset({"infoseek_hard", "trqa_val", "frames", "webshaper"})
 
 # Splits of a training dataset: ``all`` holds every query of the dataset as
-# built, one row per query with its ``split`` (training_datasets/gold/annotations.py);
+# built, one row per query with its ``split`` (training_datasets/annotation/rows.py);
 # ``sft``, ``rl`` and ``val`` are views of it, the rows with that split and
-# their qrels (``is_split_view``; training_datasets/splits.py), for belief
+# their qrels (``is_split_view``; training_datasets/pipeline/splits.py), for belief
 # model training.
 ALL_SPLIT = "all"
 TRAINING_SPLITS = ("sft", "rl", "val")
@@ -268,8 +295,11 @@ _SHARED_CORPUS = {"trqa_val": "trqa"}
 
 # Built datasets whose corpus is a downloaded one, kept with its indices
 # under ``DATA_ROOT/{folder}``: (folder, corpus file stem).  The folder is
-# named after the corpus's release, not the dataset: InfoSeek's.
-_CORPUS_IN_DATA_ROOT = {"infoseek_hard": ("infoseek", "wiki-25-512")}
+# named after the corpus's release, not the dataset: InfoSeek's
+# (corpus_wiki; webshaper's web gold pages are
+# ``TRAINING_DATASETS_ROOT/corpus/corpus_web.jsonl`` until the user merges
+# them into it, ``training_datasets/corpus/``).
+_CORPUS_IN_DATA_ROOT = {name: ("infoseek", "wiki-25-512") for name in ("infoseek_hard", "frames", "webshaper")}
 
 # Datasets with a local corpus + index under ``DATA_ROOT/{dataset}``.
 DATASETS = tuple(DATASET_SPECS)
@@ -332,9 +362,9 @@ _TRQA_CORPUS_NAMES = {
 # ===========================================================================
 
 def dataset_root(dataset: str) -> Path:
-    """Root folder of a dataset: ``TRAINING_DATASETS_ROOT/{dataset}`` for
+    """Root folder of a dataset: ``TRAINING_DATASETS_ROOT`` (shared) for
     the built datasets, ``DATA_ROOT/{dataset}`` for the downloaded ones."""
-    return (TRAINING_DATASETS_ROOT if dataset in BUILT_DATASETS else DATA_ROOT) / dataset
+    return TRAINING_DATASETS_ROOT if dataset in BUILT_DATASETS else DATA_ROOT / dataset
 
 
 def corpus_root(dataset: str) -> Path:
@@ -348,14 +378,17 @@ def corpus_root(dataset: str) -> Path:
     return dataset_root(dataset)
 
 
-def queries_base(data_path: Path | str, split: str) -> Path:
-    """Return the suffix-less queries path, e.g. ``.../queries/queries_test``."""
-    return Path(data_path) / "queries" / f"queries_{split}"
+def queries_base(data_path: Path | str, split: str, dataset: str | None = None) -> Path:
+    """Return the suffix-less queries path, e.g. ``.../queries/queries_test``;
+    for a training *dataset* (``BUILT_DATASETS``) its one file of every
+    split, ``.../queries/{dataset}``."""
+    return Path(data_path) / "queries" / (dataset if dataset in BUILT_DATASETS else f"queries_{split}")
 
 
-def qrels_base(data_path: Path | str, split: str) -> Path:
-    """Return the suffix-less qrels path, e.g. ``.../qrels/qrels_test``."""
-    return Path(data_path) / "qrels" / f"qrels_{split}"
+def qrels_base(data_path: Path | str, split: str, dataset: str | None = None) -> Path:
+    """Return the suffix-less qrels path, e.g. ``.../qrels/qrels_test``;
+    for a training *dataset* ``.../qrels/{dataset}`` (``queries_base``)."""
+    return Path(data_path) / "qrels" / (dataset if dataset in BUILT_DATASETS else f"qrels_{split}")
 
 
 def nuggets_base(data_path: Path | str, split: str) -> Path:
@@ -386,42 +419,37 @@ def belief_bank_path(dataset: str, split: str, kind: str | None = None) -> Path:
     (*kind*: ``extraction_kind`` by default), e.g.
     ``BELIEF_ROOT/ragtime/belief_bank/gold/beliefs_2025.jsonl`` or
     ``BELIEF_ROOT/trqa/belief_bank/silver/beliefs_wiki2_test.jsonl``.
-    A training dataset has one bank for all its splits:
-    ``BELIEF_ROOT/training_datasets/{dataset}/belief_bank/silver/beliefs_all.jsonl``.
+    A training dataset has one bank for all its splits, in the folder of
+    the training datasets:
+    ``BELIEF_ROOT/training_datasets/belief_bank/silver/{dataset}.jsonl``.
     The belief model reads and adds to them (``belief_model_component.init.factory``)."""
     kind = kind or extraction_kind(dataset)
     if kind not in BELIEF_SOURCES:
         raise ValueError(f"unknown belief kind {kind!r}; expected one of {BELIEF_SOURCES}")
     if dataset in BUILT_DATASETS:
-        return BELIEF_ROOT / "training_datasets" / dataset / "belief_bank" / kind / f"beliefs_{ALL_SPLIT}.jsonl"
+        return BELIEF_ROOT / TRAINING_DATASETS_ROOT.name / "belief_bank" / kind / f"{dataset}.jsonl"
     return BELIEF_ROOT / dataset / "belief_bank" / kind / f"beliefs_{split}.jsonl"
 
 
-def is_training_dataset(data_path: Path | str) -> bool:
-    """Whether the dataset at *data_path* is a training dataset (a folder
-    of ``TRAINING_DATASETS_ROOT``)."""
-    return Path(data_path).resolve().parent == TRAINING_DATASETS_ROOT.resolve()
-
-
-def is_split_view(data_path: Path | str, split: str) -> bool:
-    """Whether *split* of the dataset at *data_path* is a view of a
-    training dataset's split ``all`` (``sft``, ``rl`` or ``val`` of a
-    dataset under ``TRAINING_DATASETS_ROOT``): its queries are the rows of
-    ``queries_all.jsonl`` with that ``split``, its qrels theirs."""
-    return split in TRAINING_SPLITS and is_training_dataset(data_path)
+def is_split_view(dataset: str | None, split: str) -> bool:
+    """Whether *split* of *dataset* is a view of a training dataset's
+    split ``all`` (``sft``, ``rl`` or ``val`` of a dataset of
+    ``BUILT_DATASETS``): its queries are the rows of the dataset's
+    queries file with that ``split``, its qrels theirs."""
+    return split in TRAINING_SPLITS and dataset in BUILT_DATASETS
 
 
 def gold_beliefs_path(dataset: str) -> Path:
     """Return the gold beliefs of a training dataset: its queries file,
     one row per query (every split) with its gold annotation, e.g.
-    ``TRAINING_DATASETS_ROOT/infoseek_hard/queries/queries_all.jsonl``
-    (``training_datasets/gold/annotations.py``).  TRQA's gold beliefs are made
+    ``TRAINING_DATASETS_ROOT/queries/infoseek_hard.jsonl``
+    (``training_datasets/annotation/rows.py``).  TRQA's gold beliefs are made
     on demand into its gold bank (``belief_bank_path(..., "gold")``,
-    ``training_datasets.gold.trqa``); the other datasets' are the extractor's."""
+    ``belief_model_component/init/trqa_gold.py``); the other datasets' are the extractor's."""
     if dataset not in BUILT_DATASETS:
         raise ValueError(f"gold belief files exist for the training datasets only ({sorted(BUILT_DATASETS)}), "
                          f"not {dataset!r}")
-    return queries_base(TRAINING_DATASETS_ROOT / dataset, ALL_SPLIT).with_suffix(".jsonl")
+    return queries_base(dataset_root(dataset), ALL_SPLIT, dataset).with_suffix(".jsonl")
 
 
 def effective_belief_source(requested: str, dataset: str) -> str:

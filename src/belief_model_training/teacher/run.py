@@ -34,7 +34,7 @@ def run_teacher(cfg: TrainingConfig, dataset: str, split: str, policy_models: Li
         raise SystemExit(f"--subset {split}: the teacher runs on {list(TEACHER_SPLITS)} only "
                          "(the rl split needs the trajectories only)")
     teacher = cfg.shared.teacher
-    queries = load_queries(dataset_root(dataset), split, DATASET_SPECS[dataset].query_key)
+    queries = load_queries(dataset_root(dataset), split, DATASET_SPECS[dataset].query_key, dataset=dataset)
     for policy in policy_models:
         run_dir = find_run(cfg.inference_output, dataset, split, cfg.shared.retriever, policy)
         if run_dir is None:

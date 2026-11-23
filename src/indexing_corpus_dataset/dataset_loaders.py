@@ -6,9 +6,11 @@ The on-disk layout, path builders, split-id rule, and record schemas live in
 ``data_path`` and a split, it parses queries / qrels / answers.
 
 All functions take an explicit ``data_path`` so they work regardless of the
-current working directory.  Split ``sft``, ``rl`` or ``val`` of a
-training dataset is a view of its split ``all`` (``layout.is_split_view``): the rows of
-``queries_all.jsonl`` with that ``split`` and their qrels.
+current working directory.  A training dataset (``layout.BUILT_DATASETS``)
+is found by its name (the ``dataset`` argument): every split is in one
+file, ``queries/{dataset}.jsonl``; split ``sft``, ``rl`` or ``val`` is a
+view of it (``layout.is_split_view``): the rows with that ``split`` and
+their qrels.
 """
 
 from pathlib import Path
@@ -20,7 +22,7 @@ import json
 # call sites.
 from .layout import (  # noqa: F401
     ALL_SPLIT,
-    is_training_dataset,
+    BUILT_DATASETS,
     is_split_view,
     queries_base,
     qrels_base,
@@ -39,12 +41,12 @@ from .layout import (  # noqa: F401
 _VIEW_IDS: dict[Path, tuple[tuple[int, int], dict[str, set[str]]]] = {}
 
 
-def _split_view_ids(data_path: Path | str, split: str) -> set[str] | None:
+def _split_view_ids(data_path: Path | str, split: str, dataset: str | None) -> set[str] | None:
     """The ids of the queries of split view *split* (``layout.is_split_view``),
     or None when *split* is no view."""
-    if not is_split_view(data_path, split):
+    if not is_split_view(dataset, split):
         return None
-    file_path = queries_base(data_path, ALL_SPLIT).with_suffix(".jsonl")
+    file_path = queries_base(data_path, ALL_SPLIT, dataset).with_suffix(".jsonl")
     if not file_path.exists():
         return set()
     stat = file_path.stat()
@@ -61,9 +63,9 @@ def _split_view_ids(data_path: Path | str, split: str) -> set[str] | None:
     return cached[1].get(split, set())
 
 
-def _file_split(data_path: Path | str, split: str) -> str:
+def _file_split(split: str, dataset: str | None) -> str:
     """The split whose files hold *split*: ``all`` for a split view."""
-    return ALL_SPLIT if is_split_view(data_path, split) else split
+    return ALL_SPLIT if is_split_view(dataset, split) else split
 
 
 # ===========================================================================
@@ -71,7 +73,7 @@ def _file_split(data_path: Path | str, split: str) -> str:
 # ===========================================================================
 
 def _load_queries_and_answers(
-    data_path: Path | str, split: str, query_key: str = "text"
+    data_path: Path | str, split: str, query_key: str = "text", dataset: str | None = None
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Parse the queries file once, returning (queries, answers).
 
@@ -79,11 +81,11 @@ def _load_queries_and_answers(
     field (e.g. BrowseComp-Plus); it is empty for TSV files or datasets without
     answers.
     """
-    view = _split_view_ids(data_path, split)
-    file_path = _resolve_split_file(queries_base(data_path, _file_split(data_path, split)), (".tsv", ".jsonl"))
+    view = _split_view_ids(data_path, split, dataset)
+    base = queries_base(data_path, _file_split(split, dataset), dataset)
+    file_path = _resolve_split_file(base, (".tsv", ".jsonl"))
     if file_path is None:
-        print(f"Error reading queries file: No valid file found for "
-              f"{data_path}/queries/queries_{split}")
+        print(f"Error reading queries file: No valid file found for {base}")
         return {}, {}
 
     queries: dict[str, str] = {}
@@ -125,7 +127,7 @@ def _load_queries_and_answers(
 
 
 def load_queries(
-    data_path: Path | str, data_set: str = "set1", query_key: str = "text"
+    data_path: Path | str, data_set: str = "set1", query_key: str = "text", dataset: str | None = None
 ) -> dict[str, str]:
     """Load queries from a dataset directory.
 
@@ -135,8 +137,10 @@ def load_queries(
         query_key:  Key in each JSONL record to use as the query text.
                     The per-dataset default is in layout.DATASET_SPECS
                     ("request" for neuclir, "text" for the others).
+        dataset:    The dataset's name; needed for a training dataset
+                    (its file is named after it).
     """
-    return _load_queries_and_answers(data_path, data_set, query_key)[0]
+    return _load_queries_and_answers(data_path, data_set, query_key, dataset)[0]
 
 
 # ===========================================================================
@@ -144,7 +148,8 @@ def load_queries(
 # ===========================================================================
 
 def load_qrels(
-    data_path: Path | str, data_set: str = "set1", min_relevance_score: int | None = None
+    data_path: Path | str, data_set: str = "set1", min_relevance_score: int | None = None,
+    dataset: str | None = None,
 ) -> dict[str, dict[str, int]]:
     """Load qrels from a dataset directory.
 
@@ -153,15 +158,16 @@ def load_qrels(
         data_set: Split identifier (default: "set1").
         min_relevance_score: If set, only passages with relevance
             >= min_relevance_score are kept.
+        dataset: The dataset's name; needed for a training dataset.
 
     Returns:
         ``{query_id: {doc_id: relevance_score}}``
     """
-    view = _split_view_ids(data_path, data_set)
-    file_path = _resolve_split_file(qrels_base(data_path, _file_split(data_path, data_set)), (".tsv", ".txt"))
+    view = _split_view_ids(data_path, data_set, dataset)
+    base = qrels_base(data_path, _file_split(data_set, dataset), dataset)
+    file_path = _resolve_split_file(base, (".tsv", ".txt"))
     if file_path is None:
-        print(f"Error reading qrels file: No valid file found for "
-              f"{data_path}/qrels/qrels_{data_set}")
+        print(f"Error reading qrels file: No valid file found for {base}")
         return {}
 
     qrels: dict[str, dict[str, int]] = {}
@@ -211,19 +217,20 @@ def load_nuggets(data_path: Path | str, data_set: str) -> dict[str, list[dict]]:
     return nuggets
 
 
-def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[str, dict]:
+def load_query_intermediate_info(data_path: Path | str, data_set: str,
+                                 dataset: str | None = None) -> dict[str, dict]:
     """Load the per-query intermediate information (TRQA).
 
     Reads ``queries/queries_{split}_intermediate_info.jsonl`` and returns
     ``{query_id: record}``, where a record is ``{"qid", "entity_values":
     [{"entity", "value", "passage_ids"}], "property": {"label", ...}, "aggregation",
-    "answer"}``.  A training dataset has no such file: its query rows hold the
+    "answer"}``.  A training *dataset* has no such file: its query rows hold the
     information (``members``, ``property``, ``aggregation``;
-    ``training_datasets/gold/annotations.py``), returned in the same record format
+    ``training_datasets/annotation/rows.py``), returned in the same record format
     for the rows with members.  Empty for datasets without either.
     """
-    if is_training_dataset(data_path):
-        return _dataset_intermediate_info(data_path, data_set)
+    if dataset in BUILT_DATASETS:
+        return _dataset_intermediate_info(data_path, data_set, dataset)
     base = queries_base(data_path, data_set)
     file_path = base.with_name(f"{base.name}_intermediate_info.jsonl")
     if not file_path.exists():
@@ -237,11 +244,11 @@ def load_query_intermediate_info(data_path: Path | str, data_set: str) -> dict[s
     return info
 
 
-def _dataset_intermediate_info(data_path: Path | str, data_set: str) -> dict[str, dict]:
+def _dataset_intermediate_info(data_path: Path | str, data_set: str, dataset: str) -> dict[str, dict]:
     """The intermediate information of the query rows of a training dataset
     (``load_query_intermediate_info``)."""
-    view = _split_view_ids(data_path, data_set)
-    file_path = queries_base(data_path, _file_split(data_path, data_set)).with_suffix(".jsonl")
+    view = _split_view_ids(data_path, data_set, dataset)
+    file_path = queries_base(data_path, ALL_SPLIT, dataset).with_suffix(".jsonl")
     if not file_path.exists():
         return {}
     info: dict[str, dict] = {}
@@ -277,6 +284,7 @@ def load_split(
     query_key: str = "text",
     min_relevance_score: int | None = None,
     only_with_qrels: bool = False,
+    dataset: str | None = None,
 ) -> tuple[dict[str, str], dict[str, dict[str, int]], dict[str, str]]:
     """Load queries, qrels, and answers for a split in a single call.
 
@@ -288,12 +296,13 @@ def load_split(
         query_key:           Key in each JSONL record to use as the query text.
         min_relevance_score: Minimum qrel score to keep (None = keep all).
         only_with_qrels:     If True, drop queries that have no qrels entry.
+        dataset:             The dataset's name; needed for a training dataset.
 
     Returns:
         ``(queries, qrels, answers)``.
     """
-    queries, answers = _load_queries_and_answers(data_path, data_set, query_key)
-    qrels = load_qrels(data_path, data_set, min_relevance_score)
+    queries, answers = _load_queries_and_answers(data_path, data_set, query_key, dataset)
+    qrels = load_qrels(data_path, data_set, min_relevance_score, dataset)
 
     if only_with_qrels:
         queries = {qid: q for qid, q in queries.items() if qid in qrels}

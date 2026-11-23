@@ -4,7 +4,7 @@ list C = {c_1, ..., c_K}, produced once at the start of each sample.
 ``LLMBeliefSource`` derives the beliefs from the query;
 ``BankedBeliefSource`` reads them from a bank file and has its producer
 (the extractor, or TRQA's gold beliefs built from the intermediate info,
-``indexing_corpus_dataset.training_datasets.gold.trqa``) make and add only the
+``trqa_gold.py``) make and add only the
 missing ones, so runs and analyses share one list per query;
 ``GoldBeliefSource`` reads a training dataset's gold beliefs (the dataset's
 queries file is their bank, written by the dataset build only);
@@ -241,7 +241,7 @@ class BankedBeliefSource(BeliefSource):
     *inner* is any ``BeliefSource`` with ``bank_fields`` (what, besides
     the query, decides its beliefs): the extractor
     (``LLMBeliefSource``: model, query shape, cap, prompt hash) or TRQA's
-    gold producer (``indexing_corpus_dataset.training_datasets.gold.trqa``: the
+    gold producer (``trqa_gold.py``: the
     writer of the texts and its prompt hash).
 
     The bank (``layout.belief_bank_path``) is a JSONL file, one line per
@@ -374,7 +374,7 @@ GOLD_BELIEF_MODEL = "gold"
 class GoldBeliefSource(BeliefSource):
     """Reads each query's gold beliefs from a training dataset's queries file
     (``layout.gold_beliefs_path``, one row per query in the format of
-    ``training_datasets/gold/annotations.py``, written by the dataset build): per query,
+    ``training_datasets/annotation/rows.py``, written by the dataset build): per query,
     its beliefs with their gold answers and documents.  Only the beliefs
     (id, text, kind; the kind as ``parsing.belief_kinds`` gives it for
     the shape) reach the belief model, of a query whose row has

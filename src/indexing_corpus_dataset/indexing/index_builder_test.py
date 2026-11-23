@@ -346,8 +346,9 @@ def main():
         data_path = str(dataset_root(args.dataset))
 
     print(f"Loading dataset from {data_path}, split: {file_data_set}")
-    queries_dict = load_queries(str(data_path), file_data_set, query_key=args.query_key)
-    qrels_nested = load_qrels(str(data_path), file_data_set, min_relevance_score=args.min_relevance_score)
+    queries_dict = load_queries(str(data_path), file_data_set, query_key=args.query_key, dataset=args.dataset)
+    qrels_nested = load_qrels(str(data_path), file_data_set, min_relevance_score=args.min_relevance_score,
+                              dataset=args.dataset)
 
     if args.min_relevance_score is not None:
         print(f"Loaded {len(queries_dict)} queries and {len(qrels_nested)} qrels (min relevance >= {args.min_relevance_score})")

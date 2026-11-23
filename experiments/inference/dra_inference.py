@@ -180,9 +180,9 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
     # ==================== Load Dataset ====================
     # The qrels are read once; the evaluation and the belief model use the
     # grades at min_relevance_score.  Only queries with a relevant doc are run.
-    queries, all_qrels, answers = load_split(data_path, file_data_set, query_key=query_key)
+    queries, all_qrels, answers = load_split(data_path, file_data_set, query_key=query_key, dataset=dataset)
     if qrels_data_path != data_path:
-        all_qrels = load_qrels(qrels_data_path, file_data_set)
+        all_qrels = load_qrels(qrels_data_path, file_data_set, dataset=dataset)
     min_rel_score = kwargs.get("min_relevance_score")
     qrels = {}
     for qid, docs in all_qrels.items():
