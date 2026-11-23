@@ -30,6 +30,7 @@ import socket
 import subprocess
 import sys
 import time
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
@@ -224,8 +225,9 @@ _RERANKER_SERVER_SPECS: Dict[str, ServerSpec] = {
 # (each query's calls run one after another), so the server batches many
 # sequences; paged attention reserves no memory for max_model_len up front, so
 # it covers the longest belief call (prompt + up to 16k output tokens).
-# The trained belief models (utils.config.TRAINED_BELIEF_RUNS) are Qwen3.5-4B
-# checkpoints, served from their path with the same settings.
+# The trained belief models (utils.config.TRAINED_BELIEF_RUNS) are checkpoints of
+# a student (a local base belief model), served from their path with the
+# student's settings.
 def _qwen35_4b_belief_spec(model: str, label: str) -> ServerSpec:
     return ServerSpec(
         model=model,
@@ -241,19 +243,22 @@ def _qwen35_4b_belief_spec(model: str, label: str) -> ServerSpec:
     )
 
 
-def _trained_belief_specs() -> Dict[str, ServerSpec]:
-    from utils.config import TRAINED_BELIEF_RUNS, trained_belief_checkpoint
+def _trained_belief_specs(base: Dict[str, ServerSpec]) -> Dict[str, ServerSpec]:
+    from utils.config import TRAINED_BELIEF_RUNS, student_weights, trained_belief_checkpoint
 
     specs = {}
-    for name, run in TRAINED_BELIEF_RUNS.items():
-        path = str(trained_belief_checkpoint(run))
-        specs[path] = _qwen35_4b_belief_spec(path, f"Belief model {name}")
+    for name, (student, run) in TRAINED_BELIEF_RUNS.items():
+        path = str(trained_belief_checkpoint(student, run))
+        specs[path] = dataclasses.replace(base[student_weights(student)], model=path, label=f"Belief model {name}")
     return specs
 
 
-_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
+_BASE_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
     "Qwen/Qwen3.5-4B": _qwen35_4b_belief_spec("Qwen/Qwen3.5-4B", "Belief model Qwen3.5-4B"),
-    **_trained_belief_specs(),
+}
+_BELIEF_SERVER_SPECS: Dict[str, ServerSpec] = {
+    **_BASE_BELIEF_SERVER_SPECS,
+    **_trained_belief_specs(_BASE_BELIEF_SERVER_SPECS),
 }
 
 # NOTE: The LLM-as-judge for accuracy/report evaluation is no longer run on

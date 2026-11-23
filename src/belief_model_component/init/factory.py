@@ -10,7 +10,7 @@ Per query:
 
 1. The kind of its beliefs, gold or silver
    (``layout.effective_belief_source``): the requested kind on a dataset
-   with a choice (TRQA, trqa_validation), else gold.  A query without
+   with a choice (TRQA, trqa_val), else gold.  A query without
    gold beliefs gets silver ones.
 2. Its beliefs of that kind: read from the bank when there, else made,
    added to the bank and used (``BankedBeliefSource``):
@@ -24,7 +24,7 @@ Per query:
      ``layout.belief_bank_path(..., "gold")``;
    - a training dataset's gold beliefs (``GoldBeliefSource``): the dataset's
      queries file is their bank, written by the dataset build only
-     (``train_belief_model.py --phase 1``); a query without them gets silver ones.
+     (``train_belief_model.py --stage data``); a query without them gets silver ones.
 
 Functions:
 
@@ -121,12 +121,12 @@ def bank_model_id(model: str) -> str:
 
 def check_max_beliefs(dataset: str, max_beliefs: Optional[int]) -> None:
     """*max_beliefs* (after the dataset's default) caps silver beliefs
-    only: TRQA's and trqa_validation's members, webshaper_frames' FRAMES hops.  Stops
+    only: TRQA's and trqa_val's members.  Stops
     when it is set on a dataset whose beliefs are all gold (BrowseComp-Plus,
     NeuCLIR, RAGTIME: the question's own, never capped)."""
     if max_beliefs is not None and extraction_kind(dataset) != SILVER_BELIEFS:
         raise SystemExit(f"max_beliefs {max_beliefs}: the cap is for silver beliefs only (TRQA, "
-                         f"trqa_validation, webshaper_frames' FRAMES); the beliefs of {dataset} are gold, never capped. "
+                         f"trqa_val); the beliefs of {dataset} are gold, never capped. "
                          "Set max_beliefs to null")
 
 
@@ -151,7 +151,7 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
         path = gold_beliefs_path(dataset)
         if not path.exists():
             raise SystemExit(f"belief_source gold: {path} not found; build the dataset with "
-                             f"experiments/training/train_belief_model.py --phase 1 --dataset {dataset}"
+                             f"experiments/training/train_belief_model.py --stage data --dataset {dataset}"
                              + (", or run with --belief-source silver" if spec.belief_choice else ""))
         print(f"[INFO] beliefs: gold from {path}, silver for a query without them (extracted by {belief_model})")
     else:

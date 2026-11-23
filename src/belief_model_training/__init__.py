@@ -1,20 +1,24 @@
 """Belief model training (agent frozen), following Agent-BRACE (arXiv 2605.11436).
 
-One student model (Qwen3.5-4B) learns the belief model's calls with the
-inference prompts: belief update, final score, and (own-init RL) belief
-init.  Five phases, ``experiments/training/train_belief_model.py --phase N``:
+One student model (``shared.student``, Qwen3.5-4B) learns the belief model's
+calls with the inference prompts: belief update, final score, and (own-init
+RL) belief init.  Seven stages,
+``experiments/training/train_belief_model.py --stage NAME``:
 
-    1 data          build a training dataset (data/build.py)
-    2 trajectories  dra_inference: generate on a split, the teacher's
-                    beliefs on sft and val (trajectories/)
-    3 sft           the teacher's gated replies, LoRA SFT, merged (sft/)
-    4 rl            GRPO over belief chains, reward = Brier of the final
-                    score behind a format gate (rl/, reward.py)
-    5 evaluate      dra_inference --stage belief with a belief model (evaluate/)
+    data       build a training dataset (data/build.py)
+    generate   dra_inference --stage generate on a split (trajectories/)
+    teacher    dra_inference --stage belief with the teacher on sft and val
+               (teacher/)
+    filter     what is trained on: SFT samples from the teacher's gated
+               replies, RL episodes (filtering/)
+    sft        LoRA SFT on the filtered samples, merged (sft/)
+    rl         GRPO over belief chains of the filtered episodes, reward =
+               Brier of the final score behind a format gate (rl/, reward.py)
+    evaluate   dra_inference --stage belief with a belief model (evaluate/)
 
-Shared across phases:
+Shared across stages:
     config      settings (experiments/configs/belief_training.yaml), run paths
-    runs        the episodes of the phase 2 runs, their documents
+    runs        the episodes of the generated runs, their documents
     chain       one chain = the inference BeliefModel with a recording client
     reward      gate and Brier reward
     student     chat prompt, weights, tokenization

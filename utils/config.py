@@ -84,28 +84,37 @@ AGENT_META_KEYS: Tuple[str, ...] = (
 # spec in _BELIEF_SERVER_SPECS; needs a GPU); the others go through OpenRouter.
 #
 # The trained belief models (experiments/training/train_belief_model.py) are
-# served like qwen3.5_4b: each is the selected checkpoint of one training run,
-# ``{BELIEF_TRAINING_ROOT}/{run}/final`` (TRAINED_BELIEF_RUNS: short name ->
-# run), loaded by its path.
+# served like their student: each is the selected checkpoint of one training
+# run, ``{BELIEF_TRAINING_ROOT}/{student}/{run}/final``, loaded by its path and
+# named ``{student}_{run}`` (TRAINED_BELIEF_RUNS: short name -> (student, run)).
+# A student is a local base belief model below (``--student`` of the training).
 BELIEF_TRAINING_ROOT = OUTPUT_ROOT / "belief_training"
-TRAINED_BELIEF_RUNS: Dict[str, str] = {
-    "qwen3.5_4b_sft":         "sft",
-    "qwen3.5_4b_rl":          "rl",
-    "qwen3.5_4b_rl_own_init": "rl_own_init",
+STUDENT_BELIEF_MODELS: Tuple[str, ...] = ("qwen3.5_4b",)
+TRAINED_RUN_NAMES: Tuple[str, ...] = ("sft", "rl", "rl_own_init")
+TRAINED_BELIEF_RUNS: Dict[str, Tuple[str, str]] = {
+    f"{student}_{run}": (student, run) for student in STUDENT_BELIEF_MODELS for run in TRAINED_RUN_NAMES
 }
 
 
-def trained_belief_checkpoint(run: str) -> Path:
-    """The served checkpoint of the training run *run* (``sft``, ``rl``, ...)."""
-    return BELIEF_TRAINING_ROOT / run / "final"
+def trained_belief_checkpoint(student: str, run: str) -> Path:
+    """The served checkpoint of the training run *run* (``sft``, ``rl``, ...) of *student*."""
+    return BELIEF_TRAINING_ROOT / student / run / "final"
 
 
 BELIEF_MODEL_TO_LLM: Dict[str, str] = {
     "qwen3.5_4b":  "vllm/Qwen/Qwen3.5-4B",
     "qwen3.5_9b":  "openrouter/qwen/qwen3.5-9b",
     "qwen3.6_27b": "openrouter/qwen/qwen3.6-27b",
-    **{name: f"vllm/{trained_belief_checkpoint(run)}" for name, run in TRAINED_BELIEF_RUNS.items()},
+    **{name: f"vllm/{trained_belief_checkpoint(*run)}" for name, run in TRAINED_BELIEF_RUNS.items()},
 }
+_remote_students = [s for s in STUDENT_BELIEF_MODELS if not BELIEF_MODEL_TO_LLM[s].startswith("vllm/")]
+if _remote_students:
+    raise ValueError(f"STUDENT_BELIEF_MODELS: {_remote_students} are not local (vllm/) belief models")
+
+
+def student_weights(student: str) -> str:
+    """The Hugging Face weights of the student belief model *student*."""
+    return BELIEF_MODEL_TO_LLM[student].removeprefix("vllm/")
 DEFAULT_BELIEF_MODEL = "qwen3.6_27b"
 
 # OpenRouter routing of a belief model's calls (OpenRouter's ``provider``

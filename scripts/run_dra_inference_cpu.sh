@@ -19,14 +19,14 @@ mkdir -p script_logging
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-4}
 
 # Must match the generate run whose trajectories are replayed.
-DATASET=trqa                       # trqa | neuclir | browsecomp_plus | ragtime
-SUBSET=wiki1                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
+DATASET=trqa                     # trqa | neuclir | browsecomp_plus | ragtime
+SUBSET=wiki2                       # empty = the dataset's default (layout.DATASET_SPECS); trqa: wiki1|wiki2|ecommerce; neuclir: news|technical
 RETRIEVER=qwen3_emb_4b
 POLICY_MODEL=oss_20b               # glm | oss_20b | oss_120b | tongyi | react | cpm_report | ...
 STAGE=${STAGE:-belief}             # belief | eval
 BELIEF_WORKERS=${BELIEF_WORKERS:-4}  # belief stage: queries at once (threads, API calls only)
-BELIEF_MODEL=${BELIEF_MODEL:-qwen3.5_9b}  # belief stage: qwen3.6_27b | qwen3.5_9b (OpenRouter); qwen3.5_4b runs on local vLLM: scripts/run_dra_inference.sh. Each model has its own folder belief/{model}/, the others are kept
-LIMIT=${LIMIT:-50}                   # belief stage only: trajectories left without a belief file to process; empty = all
+BELIEF_MODEL=${BELIEF_MODEL:-qwen3.6_27b}  # belief stage: qwen3.6_27b | qwen3.5_9b (OpenRouter); qwen3.5_4b runs on local vLLM: scripts/run_dra_inference.sh. Each model has its own folder belief/{model}/, the others are kept
+LIMIT=${LIMIT:-100}                   # belief stage only: trajectories left without a belief file to process; empty = all
 
 COMMON=(--dataset "$DATASET" ${SUBSET:+--subset "$SUBSET"} --retriever "$RETRIEVER"
         --policy-model "$POLICY_MODEL" --quiet)

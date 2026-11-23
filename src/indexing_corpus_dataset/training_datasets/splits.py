@@ -2,12 +2,11 @@
 ``split`` field of each row of the dataset's queries file
 (``gold/annotations.py``).  SFT and RL need the full gold annotation (every
 belief with gold answers and documents: r_ret and r_reas), so the queries
-of infoseek and trqa_validation whose annotation ``level`` is ``full`` are
+of infoseek_hard and trqa_val whose annotation ``level`` is ``full`` are
 split into ``sft``, ``rl`` and ``val`` with the shares of the ``split``
 config section, and every other query goes to ``val`` as the out-of-domain
-part (OOD: the belief model writes its own beliefs there).  webshaper_frames
-is validation only (``val_only``): every query in ``val`` (WebShaper
-``partial``, FRAMES ``query``).
+part (OOD: the belief model writes its own beliefs there).  ``val_only``
+puts every query in ``val`` (the unregistered webshaper_frames build).
 
     sft   SFT samples (dra_inference in monitor mode, the teacher's replies)
     rl    RL prompts (dra_inference in off mode)

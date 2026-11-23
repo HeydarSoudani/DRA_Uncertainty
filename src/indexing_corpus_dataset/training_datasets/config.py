@@ -1,12 +1,12 @@
-"""Settings of the training dataset build (``shared``, the ``pages`` and
-``negatives`` sections of webshaper_frames, the ``split`` section of
-infoseek and trqa_validation, and the ``gold_beliefs`` section of the
-belief texts) and its paths.  The sources and the dropped question types
-are fixed (``sources.py``, ``filters.py``).
+"""Settings of the training dataset build (the ``split`` section of
+infoseek_hard and trqa_val, the ``gold_beliefs`` section of the belief
+texts; ``shared``, ``pages`` and ``negatives`` belong to the unregistered
+webshaper_frames build and keep their defaults) and its paths.  The sources
+and the dropped question types are fixed (``sources.py``, ``filters.py``).
 
 The ``data`` section of ``experiments/configs/belief_training.yaml`` has the same
-sections and keys as the dataclasses below (the CLI flags ``--limit`` and
-``--source`` are not settings).  An unknown section or key is an error.
+sections and keys as the dataclasses below (the CLI flag ``--limit`` is not
+a setting).  An unknown section or key is an error.
 """
 
 import dataclasses
@@ -76,9 +76,8 @@ class NegativesConfig:
 
 @dataclass
 class SplitConfig:
-    """The shares of the full queries of infoseek and trqa_validation in
-    the splits ``sft``, ``rl`` and ``val`` (splits.py), summing to 1;
-    webshaper_frames is validation only."""
+    """The shares of the full queries of infoseek_hard and trqa_val in
+    the splits ``sft``, ``rl`` and ``val`` (splits.py), summing to 1."""
     sft: float = 0.3
     rl: float = 0.6
     val: float = 0.1
@@ -175,9 +174,8 @@ class DatasetPaths:
     @property
     def corpus(self) -> Path:
         """The corpus the dataset searches (``layout.default_corpus_path``):
-        webshaper_frames' gold pages and hard negatives with their text,
-        written by its build; InfoSeek's downloaded wiki-25-512 under
-        ``DATA_ROOT/infoseek``; TRQA's wiki_partial for trqa_validation."""
+        InfoSeek's downloaded wiki-25-512 under ``DATA_ROOT/infoseek`` for
+        infoseek_hard; TRQA's wiki_partial for trqa_val."""
         return default_corpus_path(self.dataset)
 
     @property
@@ -208,7 +206,7 @@ class DatasetPaths:
 
     @property
     def titles(self) -> Path:
-        """infoseek: the chunk ids of each gold page title looked up in the
+        """infoseek_hard: the chunk ids of each gold page title looked up in the
         corpus (``{"title", "ids"}`` per line, ``ids`` empty when the title
         is not in the corpus), appended as builds look up new titles."""
         return self.root / "corpus_titles.jsonl"
@@ -221,8 +219,8 @@ class DatasetPaths:
     @property
     def stats(self) -> Path:
         """One section per build stage (webshaper_frames: ``questions``,
-        ``pages``, ``negatives``, ``report``; infoseek: ``questions``,
-        ``corpus``; trqa_validation: ``build``), the ``annotations`` section
+        ``pages``, ``negatives``, ``report``; infoseek_hard: ``questions``,
+        ``corpus``; trqa_val: ``build``), the ``annotations`` section
         (annotation stats and the writer of the texts) and the ``split``
         section (shares and per-split counts, ``splits.py``)."""
         return self.root / "stats.json"

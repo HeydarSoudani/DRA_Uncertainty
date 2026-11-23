@@ -1,5 +1,5 @@
 """Counts written to ``stats.json``, one section per build stage: questions
-per source, gold pages per question, drop reasons, and (webshaper_frames)
+per source, gold pages per question, drop reasons, and (the unregistered webshaper_frames)
 page fetch outcomes and lengths, the hard negatives, the dataset as written;
 the ``annotations`` section holds the gold annotation of the dataset's rows
 (every build), the ``split`` section the split (``splits.py``)."""

@@ -17,9 +17,8 @@
 #   max_length             -> auto-selected from --dataset + --retriever
 #   corpus_path            -> <corpus root>/corpus/<stem>.jsonl (per subset)
 #   save_dir               -> <corpus root>/indices/
-#                             corpus root (layout.corpus_root): DATA_ROOT/<dataset>; infoseek:
-#                             DATA_ROOT/infoseek; webshaper_frames: data/training_datasets/
-#                             webshaper_frames of the repo; trqa_validation: trqa's
+#                             corpus root (layout.corpus_root): DATA_ROOT/<dataset>; infoseek_hard:
+#                             DATA_ROOT/infoseek; trqa_val: trqa's
 #   index_path             -> derived from corpus stem + retrieval method
 # ============================================================================
 

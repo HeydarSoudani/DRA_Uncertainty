@@ -106,7 +106,7 @@ def build_evaluators(
                       ``answer_eval`` (``layout.DATASET_SPECS``) picks the
                       accuracy evaluator: ``"numeric_match"`` (TRQA)
                       :class:`NumericMatchEvaluator`, ``"llm_judge"``
-                      (BrowseComp-Plus, infoseek, webshaper_frames) :class:`AccuracyEvaluator`.
+                      (BrowseComp-Plus, infoseek_hard) :class:`AccuracyEvaluator`.
         questions:    ``query_id -> question text``, for the judges.
         dataset:      Dataset name.
         data_path:    Dataset directory and *split*: the nuggets of a dataset

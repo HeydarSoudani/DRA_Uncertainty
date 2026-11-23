@@ -1,9 +1,9 @@
-"""Phase 4: RL of the student belief model (GRPO-style over belief chains,
+"""Stage rl: RL of the student belief model (GRPO-style over belief chains,
 the PPO update of Agent-BRACE's BeliefStateLMTrainer; the agent is frozen).
 
-The episodes are the finished queries of the phase 2 runs on the ``rl``
-split (every training dataset and agent; ``rl.max_chain_steps`` leaves out
-the longest), the validation the ``val`` split.  Each iteration, on one GPU
+The episodes are stage filter's (``filter/rl_episodes.jsonl``): the train
+set from the ``rl`` split, the validation set from the ``val`` split
+(every training dataset and agent).  Each iteration, on one GPU
 shared by the vLLM engine and the trainer:
 
     sample   episodes_per_batch episodes (each epoch a new shuffled order)
@@ -30,9 +30,10 @@ Validation, before training and every ``val_every`` iterations: one greedy
 chain per val episode; s_T against y (AUROC, Brier) and the mean reward.
 ``final/`` holds the checkpoint with the best validation AUROC (Brier on a
 tie; the start model when none beats it), the served
-``qwen3.5_4b_rl`` / ``qwen3.5_4b_rl_own_init``.
+``{student}_rl`` / ``{student}_rl_own_init``.
 
-Outputs (``rl/`` or ``rl_own_init/``): ``metrics.jsonl`` (one line per
+Outputs (``{student}/rl/`` or ``{student}/rl_own_init/``): ``config.json``
+(the settings and the filter's stats), ``metrics.jsonl`` (one line per
 iteration), ``validation.jsonl``, ``step_{n}/`` every ``save_every``
 iterations (the last ``save_total_limit`` kept), ``final/``.  A run starts
 over: its earlier logs and checkpoints are removed.
@@ -50,7 +51,8 @@ import numpy as np
 from ..chain import SCORE, CallRecord, ChainResult
 from ..config import RL_RUNS, RunPaths, TrainingConfig
 from ..reward import chain_gate, mean, score_probability, score_reward
-from ..runs import DocumentStore, Episode, load_episodes
+from ..filtering.run import load_selected_episodes, read_filter_stats
+from ..runs import DocumentStore, Episode
 from .rollout import VLLMRolloutEngine, extra_score_replies, run_chains
 from .trainer import BeliefPPOTrainer, Sample
 
@@ -195,7 +197,7 @@ def _check_prompt_tokens(engine, processor, episode: Episode, store: DocumentSto
     messages = client.calls[0].messages
     ours = text_tokenizer(processor)(chat_prompt(processor, messages), add_special_tokens=False)["input_ids"]
     if ours != engine.prompt_ids(messages):
-        raise SystemExit("[phase 4] the SFT tokenization of a prompt differs from the vLLM engine's; "
+        raise SystemExit("[stage rl] the SFT tokenization of a prompt differs from the vLLM engine's; "
                          "check the chat template of the student checkpoint")
 
 
@@ -203,19 +205,19 @@ def run_rl(cfg: TrainingConfig) -> None:
     from ..student import load_processor, quiet_libraries
 
     rc, sh = cfg.rl, cfg.shared
-    paths = RunPaths()
+    paths = RunPaths(sh.student)
+    run_name = f"{sh.student}_{RL_RUNS[rc.beliefs]}"
     run_dir = paths.rl_dir(rc.beliefs)
     final_dir = paths.rl_final(rc.beliefs)
     init = Path(rc.init_model) if rc.init_model else paths.sft_final
     if not init.exists():
-        raise SystemExit(f"[phase 4] start model {init} not found: run phase 3 first, or set rl.init_model")
+        raise SystemExit(f"[stage rl] start model {init} not found: run --stage sft first, or pass --init-model")
 
-    output = cfg.inference_output
-    episodes = load_episodes(output, sh.training_datasets, "rl", sh.policy_models, sh.retriever,
-                             tag="[phase 4] rl", max_steps=rc.max_chain_steps)
-    val = load_episodes(output, sh.training_datasets, "val", sh.policy_models, sh.retriever, tag="[phase 4] val")
+    filter_stats = read_filter_stats(cfg, paths, "[stage rl]")
+    episodes = load_selected_episodes(cfg, paths, "train", tag="[stage rl] rl")
+    val = load_selected_episodes(cfg, paths, "val", tag="[stage rl] val")
     if not episodes:
-        raise SystemExit("[phase 4] no rl episode: run phase 2 on the rl split first")
+        raise SystemExit("[stage rl] no rl episode: run --stage generate on the rl split, then --stage filter")
     random.Random(sh.seed).shuffle(val)
     if rc.val_max_episodes is not None:
         val = val[:rc.val_max_episodes]
@@ -227,7 +229,8 @@ def run_rl(cfg: TrainingConfig) -> None:
     metrics_file, val_file = run_dir / "metrics.jsonl", run_dir / "validation.jsonl"
     for f in (metrics_file, val_file):
         f.unlink(missing_ok=True)
-    (run_dir / "config.json").write_text(json.dumps(cfg.to_dict(), indent=2, default=str) + "\n")
+    (run_dir / "config.json").write_text(
+        json.dumps({"config": cfg.to_dict(), "filter": filter_stats}, indent=2, default=str) + "\n")
 
     quiet_libraries()
     store = DocumentStore()
@@ -238,7 +241,7 @@ def run_rl(cfg: TrainingConfig) -> None:
     # The trainer's weights stay on the CPU until its first update (onload).
     trainer = BeliefPPOTrainer(str(init), rc, seed=sh.seed)
     sampler = EpisodeSampler(episodes, sh.seed)
-    print(f"[phase 4] run {RL_RUNS[rc.beliefs]} ({rc.beliefs} beliefs) from {init}: {len(episodes)} rl episodes, "
+    print(f"[stage rl] run {run_name} ({rc.beliefs} beliefs) from {init}: {len(episodes)} rl episodes, "
           f"{len(val)} val episodes; {rc.episodes_per_batch} episodes x {rc.group_size} chains x "
           f"{rc.scorer_samples} final scores per iteration", flush=True)
 
@@ -252,11 +255,11 @@ def run_rl(cfg: TrainingConfig) -> None:
         v = validate(val, engine, store, cfg)
         v["iteration"] = iteration
         log(val_file, v)
-        print(f"[phase 4] validation {iteration}: {json.dumps(v)}", flush=True)
+        print(f"[stage rl] validation {iteration}: {json.dumps(v)}", flush=True)
         if _better(v, best):
             shutil.rmtree(final_dir, ignore_errors=True)
             trainer.save(str(final_dir), processor)
-            print(f"[phase 4] new best (AUROC {v.get('auroc')}, Brier {v.get('brier')}): saved {final_dir}")
+            print(f"[stage rl] new best (AUROC {v.get('auroc')}, Brier {v.get('brier')}): saved {final_dir}")
             return v
         return best
 
@@ -298,7 +301,7 @@ def run_rl(cfg: TrainingConfig) -> None:
         row = {"iteration": iteration, **rollout_stats(all_groups), "trained_groups": len(groups),
                **stats, "rollout_seconds": round(t_rollout, 1), "seconds": round(time.time() - t0, 1)}
         log(metrics_file, row)
-        print(f"[phase 4] iteration {iteration}: reward {row.get('reward')}, gate {row.get('gate_rate')}, "
+        print(f"[stage rl] iteration {iteration}: reward {row.get('reward')}, gate {row.get('gate_rate')}, "
               f"groups with spread {row['groups_with_spread']}/{row['groups']}, samples {row.get('n_samples', 0)}, "
               f"{row['seconds']}s", flush=True)
 
@@ -310,5 +313,4 @@ def run_rl(cfg: TrainingConfig) -> None:
             saved_steps.append(step_dir)
             while len(saved_steps) > rc.save_total_limit:
                 shutil.rmtree(saved_steps.pop(0), ignore_errors=True)
-    print(f"[phase 4] done; best validation {json.dumps(best)}; {final_dir} is served as "
-          f"{'qwen3.5_4b_' + RL_RUNS[rc.beliefs]}")
+    print(f"[stage rl] done; best validation {json.dumps(best)}; {final_dir} is served as {run_name}")

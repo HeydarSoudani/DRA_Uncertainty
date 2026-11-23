@@ -1,4 +1,4 @@
-"""The episodes of training: the finished queries of the phase 2 runs.
+"""The episodes of training: the finished queries of the generated runs (stage generate).
 
 A run is dra_inference's run directory of one training dataset split and
 one agent (``{output}/{dataset}_{split}_{retriever}/{agent}_{backend}_{model}/``,
@@ -7,7 +7,8 @@ one finished query of a run with a judged answer and gold beliefs:
 
 * what the belief model reads of it, as the belief stage reads it
   (``orchestration.belief_stage.read_saved_query``): the search iterations
-  (queries, documents, agent turn) and the answer turn;
+  (queries, documents, agent turn) and the answer turn's reasoning and
+  final answer (a query without a final answer is not an episode);
 * the correctness y of the agent's final answer
   (``eval/generation/accuracy.jsonl``; a query without a verdict, or whose
   judge failed, is not an episode);
@@ -23,7 +24,7 @@ as the belief stage reads it.
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -45,7 +46,7 @@ class Episode:
     qid: str
     question: str
     query_shape: str
-    # orchestration.belief_stage.SavedQuery: iterations + answer turn.
+    # orchestration.belief_stage.SavedQuery: iterations, answer reasoning and answer.
     saved: Any
     # Correctness of the agent's final answer.
     y: bool
@@ -56,7 +57,6 @@ class Episode:
     max_passage_tokens: int
     # The search iterations that showed a document (an upper bound on the update calls).
     doc_steps: int = 0
-    extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -141,8 +141,8 @@ def load_run_episodes(run_dir: Path, dataset: str, split: str, policy_model: str
         if saved is None:
             drop("unfinished")
             continue
-        if not saved.answer_turn:
-            drop("no_answer_turn")
+        if not (saved.answer or "").strip():
+            drop("no_answer")
             continue
         episodes.append(Episode(
             dataset=dataset, split=split, policy_model=policy_model, run_dir=run_dir, qid=qid,
@@ -155,24 +155,19 @@ def load_run_episodes(run_dir: Path, dataset: str, split: str, policy_model: str
 
 
 def load_episodes(output_root: Path, datasets: List[str], split: str, policy_models: List[str], retriever: str,
-                  tag: str = "", max_steps: Optional[int] = None) -> List[Episode]:
+                  tag: str = "") -> List[Episode]:
     """The episodes of *split* over every dataset and agent (missing runs
-    are reported and skipped); *max_steps* leaves out longer episodes."""
+    are reported and skipped)."""
     out: List[Episode] = []
     for dataset in datasets:
         gold_rows = read_gold_rows(dataset)
         for policy in policy_models:
             run_dir = find_run(output_root, dataset, split, retriever, policy)
             if run_dir is None:
-                print(f"{tag} {dataset}/{split}/{policy}: no run (phase 2 not run)")
+                print(f"{tag} {dataset}/{split}/{policy}: no run (stage generate not run)")
                 continue
             counts: Dict[str, int] = {}
             episodes = load_run_episodes(run_dir, dataset, split, policy, gold_rows, counts)
-            if max_steps is not None:
-                long = [e for e in episodes if e.doc_steps > max_steps]
-                if long:
-                    counts["longer_than_max_steps"] = len(long)
-                    episodes = [e for e in episodes if e.doc_steps <= max_steps]
             print(f"{tag} {dataset}/{split}/{policy}: {len(episodes)} episodes"
                   + (f" (left out: {counts})" if counts else ""))
             out.extend(episodes)

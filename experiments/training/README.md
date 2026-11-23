@@ -1,7 +1,7 @@
 # Belief Model Training
 
-This file describes how the belief model is trained: the setup, the five phases with their commands, then each
-phase in turn (training datasets, trajectories, SFT, RL, evaluation). The belief model itself (its calls, prompts and
+This file describes how the belief model is trained: the setup, the seven stages with their commands, then each
+stage in turn (training datasets, trajectories, teacher beliefs, filter, SFT, RL, evaluation). The belief model itself (its calls, prompts and
 belief state) is described in `src/belief_model_component/README.md`.
 
 ## Setup
@@ -12,52 +12,68 @@ the PPO clip.
 
 | | |
 |---|---|
-| Student | Qwen3.5-4B (`shared.student`), one model for every call |
-| Teacher | `qwen3.6_27b` (`shared.teacher`, a `--belief-model` of dra_inference) |
+| Student | `qwen3.5_4b`, Qwen3.5-4B (`shared.student` or `--student`, a local base `--belief-model`), one model for every call |
+| Teacher | `qwen3.6_27b` (`shared.teacher` or `--teacher`, a `--belief-model` of dra_inference) |
 | Calls trained | belief update and final score; belief init in the own-init RL run (and from gold beliefs in SFT) |
 | Prompts | the inference prompts, built by the inference belief model itself |
-| Training data | `infoseek` (multi_hop) and `trqa_validation` (multi_member), pooled; `webshaper_frames` out of domain |
+| Training data | `infoseek_hard` (multi_hop) and `trqa_val` (multi_member), pooled |
 | Agents | `oss_20b` and `glm` (`shared.policy_models`) |
 | RL reward | gate x Brier of the final score against the correctness of the agent's answer; no reward on belief transitions |
 
 Every training call runs the inference `BeliefModel` (`belief_model_component`) over a saved trajectory
-(`src/belief_model_training/chain.py`); only its LLM client is swapped. A replay client returns the teacher's saved
-replies (SFT), a sampling client the student's replies (RL). So the prompts of training are the prompts of
-inference, and neither the belief model, the agents nor dra_inference has training code.
+(`src/belief_model_training/chain.py`), driven as the belief stage drives it (reset, one `observe` per search
+iteration, `finish_answer` on the saved reasoning and answer); only its LLM client is swapped. A replay client returns
+the teacher's saved replies (SFT), a sampling client the student's replies (RL). The init source, the updater and the
+final scorer each get their own view of that client, so every call is recorded with the kind of the component that
+made it (the final update is an update call of step N + 1, the final score a score call of the same step). So the
+prompts of training are the prompts of inference, and neither the belief model, the agents nor dra_inference has
+training code.
 
-## Phases
+## Stages
 
-`experiments/training/train_belief_model.py --phase N`, one phase per call; settings in
-`experiments/configs/belief_training.yaml` (sections `shared`, `data`, `trajectories`, `sft`, `rl`), overridden with
-`--set section.key=value`. Launcher: `scripts/run_train_belief_model.sh` (one job per phase).
+`experiments/training/train_belief_model.py --stage NAME`, one stage per call; settings in
+`experiments/configs/belief_training.yaml` (sections `shared`, `data`, `generate`, `belief_stage`, `filter`, `sft`,
+`rl`); to change a setting, edit the YAML or pass another file with `--config`. The flags `--teacher`
+(`shared.teacher`), `--student` (`shared.student`), `--init-model` (`rl.init_model`) and `--beliefs` (`rl.beliefs`)
+overwrite their YAML keys. Launcher: `scripts/run_train_belief_model.sh` (one job per stage, `STAGE=...`).
 
-| Phase | Does | Output |
-|---|---|---|
-| 1 data | builds a training dataset with its gold annotation and its sft / rl / val split | `data/training_datasets/{dataset}/` |
-| 2 trajectories | dra_inference `--stage generate` on a split for each agent; on sft and val also `--stage belief` with the teacher; then the run statistics | the runs (dra_inference layout), `stats/` |
-| 3 sft | SFT samples from the teacher's replies, LoRA SFT, merged | `sft/final` |
-| 4 rl | GRPO over belief chains from `sft/final` | `rl/final` or `rl_own_init/final` |
-| 5 evaluate | dra_inference `--stage belief --belief-model M` on a run | the run's `eval/metrics.md` |
+| Stage | Does | Flags | Output |
+|---|---|---|---|
+| `data` | builds a training dataset with its gold annotation and its sft / rl / val split | `--dataset` (required), `--limit` | `data/training_datasets/{dataset}/` |
+| `generate` | dra_inference `--stage generate` on a split for each agent; then the run statistics | `--dataset`, `--subset` (required; sft, rl, val), `--policy-model`, `--limit` | the runs (dra_inference layout), `stats/` |
+| `teacher` | dra_inference `--stage belief --belief-model {teacher}` on the sft or val split for each agent | `--dataset`, `--subset` (required; sft, val), `--policy-model`, `--limit`, `--teacher` | the runs' `belief/{teacher}/`, `eval/metrics.md` |
+| `filter` | what is trained on: SFT samples from the teacher's replies, RL episodes (CPU) | `--teacher` | `filter/` |
+| `sft` | LoRA SFT of the student on the filtered samples, merged | `--student` | `{student}/sft/final` |
+| `rl` | GRPO over belief chains of the filtered episodes, from the student's `sft/final` | `--student`, `--init-model`, `--beliefs` | `{student}/rl/final` or `{student}/rl_own_init/final` |
+| `evaluate` | dra_inference `--stage belief --belief-model M` on a run | `--dataset`, `--belief-model` (required), `--subset`, `--policy-model`, `--limit` | the run's `eval/metrics.md` |
 
-Phases 2 to 4 write under `BELIEF_TRAINING_ROOT` (`utils/config.py`: `OUTPUT_ROOT/belief_training`). The `final/`
-of each run is served by dra_inference on local vLLM as a `--belief-model`: `qwen3.5_4b_sft`, `qwen3.5_4b_rl`,
-`qwen3.5_4b_rl_own_init` (`utils.config.TRAINED_BELIEF_RUNS`).
+A stage refuses the flags it does not take. `--limit` means the next N questions in `data` and the queries the
+dra_inference stage runs in `generate`, `teacher` and `evaluate`. `sft` and `rl` take no dataset flag: they pool every
+training dataset and agent of `shared`, on fixed splits.
+
+The stages generate, filter, sft and rl write under `BELIEF_TRAINING_ROOT` (`utils/config.py`:
+`OUTPUT_ROOT/belief_training`). The `final/` of each training run is served by dra_inference on local vLLM as a
+`--belief-model` named `{student}_{run}`: `qwen3.5_4b_sft`, `qwen3.5_4b_rl`, `qwen3.5_4b_rl_own_init`
+(`utils.config.TRAINED_BELIEF_RUNS`, the students in `STUDENT_BELIEF_MODELS`).
 
 ```bash
 T=experiments/training/train_belief_model.py
-python $T --phase 1 --dataset infoseek --limit 500
-python $T --phase 1 --dataset trqa_validation
-python $T --phase 2 --dataset infoseek --subset sft          # each agent; generate + teacher beliefs
-python $T --phase 2 --dataset infoseek --subset val
-python $T --phase 2 --dataset infoseek --subset rl           # generate only
-torchrun --nproc_per_node 4 $T --phase 3
-python $T --phase 4 --beliefs gold                           # run rl
-python $T --phase 4 --beliefs own                            # run rl_own_init
-python $T --phase 5 --belief-model qwen3.5_4b_rl --dataset infoseek --subset val
-python $T --phase 5 --belief-model qwen3.5_4b --dataset browsecomp_plus   # a baseline
+python $T --stage data --dataset infoseek_hard --limit 500
+python $T --stage data --dataset trqa_val
+python $T --stage generate --dataset infoseek_hard --subset sft     # each agent
+python $T --stage generate --dataset infoseek_hard --subset val
+python $T --stage generate --dataset infoseek_hard --subset rl
+python $T --stage teacher --dataset infoseek_hard --subset sft      # each agent; teacher beliefs
+python $T --stage teacher --dataset infoseek_hard --subset val
+python $T --stage filter
+torchrun --nproc_per_node 4 $T --stage sft
+python $T --stage rl                                          # rl.beliefs gold: run rl
+python $T --stage rl --beliefs own                            # run rl_own_init
+python $T --stage evaluate --belief-model qwen3.5_4b_rl --dataset infoseek_hard --subset val
+python $T --stage evaluate --belief-model qwen3.5_4b --dataset browsecomp_plus   # a baseline
 ```
 
-## Phase 1: Training datasets
+## Stage data: Training datasets
 
 Each training dataset is a dataset of `dra_inference.py` under `data/training_datasets/{dataset}`, with one row per
 query:
@@ -70,33 +86,29 @@ query:
 
 | Dataset | Questions | Corpus | Splits |
 |---|---|---|---|
-| `infoseek` | InfoSeek-Hard | the original release's `wiki-25-512.jsonl` (Wikipedia 2025 in chunks of 512 tokens), under `DATA_ROOT/infoseek/corpus` with its indices | sft / rl / val |
-| `webshaper_frames` | WebShaper, FRAMES | its own `corpus/`: the fetched gold pages and their hard negatives | val only |
-| `trqa_validation` | TRQA wiki1 + wiki2 validation | TRQA's `wiki_partial` | sft / rl / val |
+| `infoseek_hard` | InfoSeek-Hard | the original release's `wiki-25-512.jsonl` (Wikipedia 2025 in chunks of 512 tokens), under `DATA_ROOT/infoseek/corpus` with its indices | sft / rl / val |
+| `trqa_val` | TRQA wiki1 + wiki2 validation | TRQA's `wiki_partial` | sft / rl / val |
 
 One build call per dataset; every build is incremental, like dra_inference: `--limit N` processes the next N
 questions not processed yet, `--limit 0` processes none and rewrites the dataset files, no `--limit` processes all.
 
 ```bash
-python experiments/training/train_belief_model.py --phase 1 --dataset infoseek --limit 500
-python experiments/training/train_belief_model.py --phase 1 --dataset webshaper_frames --limit 200
-python experiments/training/train_belief_model.py --phase 1 --dataset webshaper_frames --source frames --limit 50
-python experiments/training/train_belief_model.py --phase 1 --dataset trqa_validation
+python experiments/training/train_belief_model.py --stage data --dataset infoseek_hard --limit 500
+python experiments/training/train_belief_model.py --stage data --dataset trqa_val
 ```
 
 The splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
 `split` `sft` and their qrels (`layout.is_split_view`), so dra_inference runs a split as on any dataset and its run
 folders are named by the split. Every build sets each row's `split`. Training uses the queries with the full gold annotation
-(`level` `full`: every belief with gold answers and gold documents), so the full queries of `infoseek` and `trqa_validation` are split with the shares of the
+(`level` `full`: every belief with gold answers and gold documents), so the full queries of `infoseek_hard` and `trqa_val` are split with the shares of the
 `data.split` section of `experiments/configs/belief_training.yaml`, and every other query goes to `val` as its
-out-of-domain (OOD) part; `webshaper_frames` is validation only:
+out-of-domain (OOD) part:
 
-| Split | Queries | Phase 2 | Used by |
+| Split | Queries | Stages | Used by |
 |---|---|---|---|
-| `sft` | 30% of the full ones | generate + teacher beliefs | phase 3: SFT samples |
-| `rl` | 60% of the full ones | generate | phase 4: RL episodes |
-| `val` | in domain: 10% of the full ones | generate + teacher beliefs | phase 3: validation loss; phase 4: validation; phase 5 |
-| `val` | OOD: `webshaper_frames` (every query) | generate | phase 5 only |
+| `sft` | 30% of the full ones | generate, teacher | sft: SFT samples |
+| `rl` | 60% of the full ones | generate | rl: RL episodes |
+| `val` | in domain: 10% of the full ones | generate, teacher | sft: validation loss; rl: validation; evaluate |
 
 A full query without belief texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
 split until a later build writes its texts. A query keeps the split it has in the queries file, so no query moves
@@ -111,10 +123,8 @@ Classic QA sets (NQ, HotpotQA, 2WikiMultiHopQA, MuSiQue, TriviaQA) are not used:
 | Source | Questions | Gold pages / question | Gold pages: wiki / web | Question words | Answer words |
 |---|---|---|---|---|---|
 | InfoSeek-Hard | 18,110 | 3.9 | all wiki | 42 | 2.9 |
-| WebShaper | 500 | 8.1 | 22% / 78% | 65 | 3.4 |
-| FRAMES | 514 | 3.1 | all wiki | 26 | 5.1 |
 
-### infoseek
+### infoseek_hard
 
 The InfoSeek-Hard questions (`Lk123/InfoSeek`, `data/InfoSeek-Hard-18K.jsonl`, pinned), run over the corpus their
 authors search (VectorSpaceLab/InfoSeek, `research/InfoSeek/rl/InfoSeek/Retrieve`): `wiki-25-512.jsonl` of
@@ -136,35 +146,16 @@ redirected or missing in the 2025 dump) is dropped (`title_not_in_corpus` in `dr
 are kept in `corpus_titles.jsonl`, so a build reads the corpus once, and only when it has new titles. The `corpus`
 section of `stats.json` records the corpus revision (another revision is refused) and the titles found.
 
-### webshaper_frames
+### webshaper_frames (not registered)
 
-WebShaper and FRAMES questions with their gold pages fetched from the source, in stages run by every build:
+`src/indexing_corpus_dataset/training_datasets/webshaper_frames/` builds WebShaper and FRAMES questions with their
+gold pages fetched from the source and hard negatives of the Wikipedia gold pages (validation only). The code is kept
+but not registered: it has no `layout.DATASET_SPECS` entry and is not a stage data choice, and its settings (`shared`,
+`pages`, `negatives` of the build config) keep their defaults and are not in the YAML.
 
-| Stage | Does | Files |
-|---|---|---|
-| questions | merge the sources, drop duplicates and the FRAMES reasoning types Tabular reasoning and Post processing | `questions.jsonl` |
-| pages | fetch the gold pages of the next `--limit` questions (`--source`: of those sources): Wikipedia API (Parsoid HTML), web pages (Trafilatura, pypdf), Wayback Machine fallback; Filter A (a question with only Wikipedia gold pages needs all of them, one with web gold pages `min_page_share` of all its pages); the rows, qrels and corpus of every processed question | `pages/`, `queries/`, `qrels/`, `corpus/` |
-| negatives | hard negatives of the new Wikipedia gold pages, then the corpus again (none with `--limit 0`) | `negatives/index.jsonl`, `corpus/` |
-| report | the dataset per source, the hard negatives, the gold annotation, consistency checks and the duplicate documents of the corpus (report only) | `stats.json`, `duplicates.jsonl` |
+### trqa_val
 
-For each Wikipedia gold page the negatives stage asks the Wikipedia API for candidates: first `morelike` (the
-articles with the most similar text), then category siblings (articles in the page's most specific categories). It
-keeps at most `negatives.max_per_gold` (10) per gold page, skipping pages that are gold for any query, disambiguation
-and list pages, pages titled with the answer, pages under `min_words`, and duplicates of a corpus document. Web gold
-pages get none. `corpus/corpus.jsonl` holds gold pages and hard negatives with their text; `corpus/ids_gold.txt` and
-`corpus/ids_hard_negative.txt` list the ids of each. Other page settings than the earlier builds' (`wiki_lang`,
-`min_words`, `min_page_share`, `wayback`, `wayback_timestamp`) are refused (remove the dataset to change them), and
-other negatives settings too (remove `negatives/index.jsonl` and the `negatives` section of `stats.json`). The
-User-Agent contact comes from `DRA_CONTACT` in `.env`.
-
-Every query goes to `val`: WebShaper keeps its gold beliefs (they have texts, but no gold intermediate answers:
-`level` partial), and FRAMES, which has no structure, gets silver beliefs from the belief model's init call (the
-multi-hop prompt, at most 8 beliefs), as on any new dataset; its queries have qrels and a judged final answer, so
-the certainty score against correctness can be measured, but not the observations and beliefs.
-
-### trqa_validation
-
-The trqa_validation dataset merges the TRQA wiki1 and wiki2 validation files (queries, intermediate info, qrels)
+The trqa_val dataset merges the TRQA wiki1 and wiki2 validation files (queries, intermediate info, qrels)
 into `queries/queries_all.jsonl` and `qrels/qrels_all.txt`: a query and its intermediate info become one row, the
 members with their values and documents in `members`, with `property` (the label) and `aggregation`. It searches
 TRQA's `wiki_partial` corpus. The gold loaders (`load_query_intermediate_info`) read the intermediate info of a
@@ -206,8 +197,8 @@ page missing from the corpus is dropped). A WebShaper belief has no documents, a
 answers. The `annotations` section of `stats.json`, the same in every dataset, counts the rows per source and level,
 the beliefs per kind and with their answers, documents and gold, the texts per source (ok, failed, retry), and
 records the writer of the texts. The loaders build the beliefs from the source (with the page keys of their
-documents); the build resolves the keys to documents (webshaper_frames: the fetched page, a page not fetched gives
-none; infoseek: the first chunk of the page) and writes the rows to `queries/queries_all.jsonl`. The trqa_validation build
+documents); the build resolves the keys to documents (infoseek_hard: the first chunk of the page) and writes the rows
+to `queries/queries_all.jsonl`. The trqa_val build
 writes the same rows from the intermediate info. Query row: `id`, `source`, `split`, `text` (the question),
 `answer`, `query_shape`, `level`, `doc_ids` (the qrels), `beliefs`, `members` (multi-member queries: `entity`,
 `value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the members), `property` and
@@ -243,69 +234,90 @@ build asks again. The number of beliefs is the source's (no cap). Final texts ar
 beliefs (the texts do not depend on the documents) and writes only the new queries' texts. Another
 `gold_beliefs.model` or other prompts than those of `belief_texts.jsonl` are refused (remove the file to write
 every text again). The prompts are hashed per query shape, so editing the set prompts leaves the multi-hop texts
-valid. The queries of a split (its phase 2 run) are the full ones with `texts_ok` and at least one belief, and in
+valid. The queries of a split (its generate run) are the full ones with `texts_ok` and at least one belief, and in
 `val` also the OOD ones. The `split` section of `stats.json` counts the queries per split, source and level, and the
 full ones in no split (`no_split`).
 
 
-## Phase 2: Trajectories
+## Stage generate: Trajectories
 
-Phase 2 runs dra_inference on one split of a training dataset (`--subset sft | rl | val`) for each agent of
-`shared.policy_models` (or `--policy-model`), as a child process with the inference config
-(`shared.inference_config`):
+Stage generate runs dra_inference `--stage generate` on one split of a training dataset (`--subset sft | rl | val`) for
+each agent of `shared.policy_models` (or `--policy-model`), as a child process with the inference config
+(`shared.inference_config`): the agent's trajectories, and the evaluation of its answers
+(`eval/generation/accuracy.jsonl`, the correctness y of training). Settings: `generate.workers`, `quiet`.
 
-1. `--stage generate`: the agent's trajectories, and the evaluation of its answers (`eval/generation/accuracy.jsonl`,
-   the correctness y of training);
-2. on `sft` and `val` of a dataset of `shared.training_datasets`: `--stage belief --belief-model {shared.teacher}`,
-   the teacher's beliefs (the SFT samples). `rl` needs the trajectories only; `webshaper_frames` gets no teacher run.
-
-Both stages resume, and `--limit N` caps the queries each one runs. The runs are dra_inference's
+The stage resumes, and `--limit N` caps the queries it runs. The runs are dra_inference's
 (`{output}/{dataset}_{split}_{retriever}/{agent}_{backend}_{model}/`). The belief does not change what the agent does,
 so the documents and agent turns of every step are fixed, and the student's chains are run over the saved
-trajectories in phases 3 and 4.
+trajectories in the later stages.
 
 **Episodes** (`runs.py`). An episode is a finished query of a run with a judged answer (a query whose judge failed is
-left out) and gold beliefs (`texts_ok`, at least one belief): its search iterations and answer turn as the belief
-stage reads them (`orchestration.belief_stage.read_saved_query`), y, its gold beliefs, and the run's corpus,
+left out), a final answer and gold beliefs (`texts_ok`, at least one belief): its search iterations and the
+answer turn's reasoning and answer as the belief stage reads them (`orchestration.belief_stage.read_saved_query`), y, its gold beliefs, and the run's corpus,
 retriever and passage cut. Documents are read from the corpus by id, as in the belief stage.
 
 **Statistics** (`trajectories/stats.py`), printed and written to `stats/{dataset}_{split}_{agent}.json`: episodes
 and the queries left out, the agent's accuracy, the search iterations with a document per episode (mean, median,
-90th percentile, max; they set `rl.max_chain_steps`), and on teacher runs the teacher's s_T against y (Brier, AUROC),
-the baseline of the trained model.
+90th percentile, max; they set `filter.rl_max_chain_steps`).
 
-## Phase 3: SFT
+## Stage teacher: Teacher beliefs
 
-**Samples** (`sft/samples.py`). The teacher's beliefs of each sft (train set) and val (validation set) episode are
-replayed through the belief model: every call gets the teacher's saved reply, so its prompt is rebuilt by the belief
-model itself. The replay is checked against the saved file (the same calls, the same belief after every step, the
+Stage teacher runs dra_inference `--stage belief --belief-model {teacher}` (`shared.teacher` or `--teacher`) on the
+`sft` or `val` split (`--subset`; `rl` needs no teacher) for each agent, over the generated trajectories: the
+teacher's beliefs in the run's `belief/{teacher}/` (the SFT samples of stage filter), then their evaluation in the run's `eval/metrics.md` (the teacher's
+s_T against y, the baseline of the trained model). Only finished trajectories get beliefs; the stage prints how many
+queries of the split have none yet. The stage resumes, and `--limit N` caps the queries it runs. Settings:
+`belief_stage.belief_workers`, `quiet` (shared with stage evaluate). The stage needs no GPU: the documents are read
+from the corpus by id.
+
+## Stage filter: What is trained on
+
+Stage filter decides what the training stages train on, on CPU, and writes it under `filter/` for every student:
+`sft_samples.jsonl` (SFT samples), `rl_episodes.jsonl` (one row per RL episode: set, dataset, split, agent, qid, y)
+and `stats.json` (the teacher, the pool: `shared.training_datasets`, `policy_models` and `retriever`, the `filter`
+settings and the counts of each set, kept and left out by reason). Each split's episodes are loaded once for both
+files. Stage sft and stage rl read these files, stop when the pool of `stats.json` is not the config's, and record
+`stats.json` in their run's `config.json`; stage rl also leaves out (and reports) an episode no longer in its run or
+judged again since (another y). Each call rewrites the three files; run it again after more trajectories or teacher
+beliefs.
+
+**SFT samples** (`filtering/samples.py`), from the replies of the teacher (`shared.teacher` or `--teacher`; its stage
+teacher must have run). The teacher's beliefs of each sft (train set) and val (validation set) episode are
+replayed through the belief model on `filter.workers` threads: every call gets the teacher's saved reply, so its
+prompt is rebuilt by the belief model itself. The replay is checked against the saved file (the same calls, the same belief after every step, the
 same s_T); an episode that differs gives no sample. A call is a sample when it passes the format gate:
 
 | Task | Sample | Gate |
 |---|---|---|
-| update | each update call (first attempt) and the teacher's reply | the reply parsed, no issue of `GATE_ISSUES` |
+| update | each update call (first attempt; the final update too) and the teacher's reply | the reply parsed, no issue of `GATE_ISSUES` |
 | score | the final score call and the teacher's reply | the reply parsed (`parse_final_score`) |
-| init | on `sft.init_datasets` (infoseek), each query of the split: the init prompt and the gold beliefs, in the layout of the prompt's example | at most the prompt's cap of beliefs |
+| init | on `filter.sft_init_datasets` (infoseek_hard), each query of the split: the init prompt and the gold beliefs, in the layout of the prompt's example | at most the prompt's cap of beliefs |
 
-Then the SFT filter (`sft/filter.py`, `keep`): every gated sample is kept for now (TODO: the filter is open;
-Agent-BRACE does not filter). TRQA's gold beliefs are not init samples: its members are not in the question.
+Then the sample rule (`filtering/rules.py`, `keep_sample`): every gated sample is kept for now (TODO: the rule is
+open; Agent-BRACE does not filter). TRQA's gold beliefs are not init samples: its members are not in the question.
+
+**RL episodes** (`filtering/run.py`): the episodes of the `rl` split (train set) and the `val` split (validation set).
+A train episode with more search iterations with a document than `filter.rl_max_chain_steps` is left out
+(`filtering/rules.py`, `episode_drop_reason`; not cut: the final score always reads a complete belief).
+
+## Stage sft: SFT
 
 **Training** (`sft/train.py`): LoRA (r 64, alpha 128, dropout 0.05; attention, Gated DeltaNet and MLP projections),
 lr 2e-5, at most 5 epochs, effective batch 32 per GPU (1 x 32 accumulation), as Agent-BRACE. The loss is the
 token-mean cross entropy on the reply and the end-of-turn token; the prompt is the chat template the inference server
-builds (native reasoning off). Samples longer than `shared.max_seq_len` are dropped. A checkpoint every epoch; the
-one with the lowest validation loss is merged into `sft/final`.
+builds (native reasoning off). Samples longer than `shared.max_seq_len` are dropped (in the student's tokens, so
+here and not in stage filter). A checkpoint every epoch; the one with the lowest validation loss is merged into
+`{student}/sft/final`.
 
-## Phase 4: RL
+## Stage rl: RL
 
-**Chains.** A chain is the inference belief model over one rl episode with the student's sampled replies
-(`rl/rollout.py`): from the gold beliefs (`--beliefs gold`, run `rl`) or from the student's own init call
-(`--beliefs own`, run `rl_own_init`), one update call per search iteration with a passage, then the final score.
+**Chains.** A chain is the inference belief model over one filtered rl episode with the student's sampled replies
+(`rl/rollout.py`): from the gold beliefs (`rl.beliefs: gold`, run `rl`) or from the student's own init call
+(`rl.beliefs: own`, run `rl_own_init`), one update call per search iteration with a passage, then the final score.
 Each iteration draws `episodes_per_batch` episodes (a new shuffled order every epoch) and runs `group_size` chains per
 episode (the GRPO group), all on the same fixed trajectory, at temperature 0.7. All chains run at once, each in its own
 thread; their pending calls are generated together, one vLLM batch per round. Each chain's final-score call gets
-`scorer_samples - 1` more replies on the same prompt. Episodes with more search iterations than
-`rl.max_chain_steps` are left out (not cut: the final score always reads a complete belief).
+`scorer_samples - 1` more replies on the same prompt. The episodes are stage filter's (`filter/rl_episodes.jsonl`).
 
 **Reward** (`reward.py`). Per final-score reply $j$, with $p_j$ the probability of its WEP and $y$ the correctness of
 the agent's answer:
@@ -327,20 +339,21 @@ belief model only. A group whose rewards are all equal gives no gradient and is 
 **Update** (`rl/trainer.py`, Agent-BRACE's BeliefStateLMTrainer): PPO clip 0.2, dual-clip 3.0, no critic, no KL, lr
 1e-5, one epoch over the batch in mini-batches of `ppo_mini_batch_chains` chains (all the calls of a chain together),
 token-mean loss, full parameters in bf16 with stochastic-rounding AdamW. vLLM and the trainer share one GPU: the
-engine sleeps during the update and reloads the weights from `sync_dir` after it.
+engine sleeps during the update and reloads the weights from `sync_dir` after it; between updates the trainer's
+weights and optimizer state wait in pinned CPU memory (allocated once, reused).
 
 **Validation**, before training and every `val_every` iterations: one greedy chain per val episode; s_T against y
 (AUROC, Brier), the mean reward and the gate rate (`validation.jsonl`). `final/` holds the checkpoint with the best
 AUROC (Brier on a tie). Outputs: `metrics.jsonl` (one line per iteration: reward, gate rate, groups with spread, PPO
 statistics, the log-prob gap to vLLM, entropy), `validation.jsonl`, `step_{n}/`, `final/`, `config.json`.
 
-## Phase 5: Evaluation
+## Stage evaluate: Evaluation
 
-Phase 5 runs dra_inference `--stage belief --belief-model M` on the generated run of each agent: the belief model over
+Stage evaluate runs dra_inference `--stage belief --belief-model M` on the generated run of each agent: the belief model over
 the saved trajectories, then its evaluation, added to the run's `eval/metrics.md` next to the other belief models
-(one `belief_model` row each). `M` is a trained model (`qwen3.5_4b_sft`, `qwen3.5_4b_rl`, `qwen3.5_4b_rl_own_init`,
+(one `belief_model` row each). `M` is a trained model (`{student}_sft`, `{student}_rl`, `{student}_rl_own_init`,
 served from its checkpoint on local vLLM, one GPU) or a prompted baseline (`qwen3.5_4b`, `qwen3.5_9b`,
-`qwen3.6_27b`). The datasets: the in-domain val splits, `webshaper_frames` (out of domain) and the test sets
+`qwen3.6_27b`). The datasets: the val splits and the test sets
 (BrowseComp-Plus, TRQA, the report sets; multi_clue and multi_aspect queries are not in the training data).
 Headline: s_T AUROC and Brier against y.
 

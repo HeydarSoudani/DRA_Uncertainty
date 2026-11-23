@@ -1,4 +1,4 @@
-"""The infoseek build: InfoSeek-Hard questions over the corpus of the
+"""The infoseek_hard build: InfoSeek-Hard questions over the corpus of the
 original release, as the InfoSeek code searches it (VectorSpaceLab/InfoSeek,
 ``research/InfoSeek/rl/InfoSeek/Retrieve``: ``wiki-25-512.jsonl``,
 Wikipedia 2025 in chunks of 512 tokens, the page title on the first line of
@@ -98,7 +98,7 @@ def _line_title(line: bytes) -> Optional[Tuple[str, str]]:
 def ensure_corpus() -> None:
     """Download the corpus (``CORPUS``) into its place under ``DATA_ROOT``
     when it is not there."""
-    path = default_corpus_path("infoseek")
+    path = default_corpus_path("infoseek_hard")
     if path.exists():
         return
     repo, filename, revision = CORPUS
@@ -135,7 +135,7 @@ def lookup_titles(paths: DatasetPaths, wanted: Set[str], known: Dict[str, List[s
     new = wanted - set(known)
     if not new:
         return known
-    corpus = default_corpus_path("infoseek")
+    corpus = default_corpus_path("infoseek_hard")
     found: Dict[str, List[str]] = {t: [] for t in new}
     print(f"[gold] {len(new)} new titles: one pass over {corpus}")
     with open(corpus, "rb") as fh, tqdm(total=corpus.stat().st_size, unit="B", unit_scale=True,
@@ -226,11 +226,11 @@ def build(cfg: BuildConfig, paths: DatasetPaths, limit: Optional[int] = None) ->
                                            "remaining": len(records) - len(processed), "kept": question_stats(kept),
                                            "dropped": drop_stats(dropped + duplicates)})
     write_stats(paths.stats, "corpus", {"repo": CORPUS[0], "file": CORPUS[1], "revision": CORPUS[2],
-                                        "path": str(default_corpus_path("infoseek")),
+                                        "path": str(default_corpus_path("infoseek_hard")),
                                         "titles": {"looked_up": len(looked_up),
                                                    "found": sum(bool(titles.get(t)) for t in looked_up)},
                                         "qrels": sum(len(r["doc_ids"]) for r in rows)})
-    print(f"[infoseek] {len(kept)} kept, {len(dropped)} dropped of {len(processed)} processed questions "
+    print(f"[infoseek_hard] {len(kept)} kept, {len(dropped)} dropped of {len(processed)} processed questions "
           f"({len(records) - len(processed)} remaining); {sum(len(r['doc_ids']) for r in rows)} qrels -> {paths.root}")
-    print(f"[infoseek] gold annotation\n\n{format_annotation_table(stats)}\n")
+    print(f"[infoseek_hard] gold annotation\n\n{format_annotation_table(stats)}\n")
 

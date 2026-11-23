@@ -73,7 +73,7 @@ What each source states:
 The loaders build the skeletons (beliefs with the page keys of their
 documents, ``gold_keys``), the build resolves the keys to documents
 (``row``: webshaper_frames the fetched page, infoseek the first corpus
-chunk of the page); the trqa_validation build writes its rows directly
+chunk of the page); the trqa_val build writes its rows directly
 (``multi_member_row``).  Each then has an LLM write the belief texts
 (``belief_texts.fill_texts``), and the split sets ``split``.
 """

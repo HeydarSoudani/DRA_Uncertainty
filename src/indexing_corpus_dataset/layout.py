@@ -25,7 +25,7 @@ Record schemas:
               (``aggregator`` and ``answer_docs``, the supporting documents of
               each answer, where the source gives them: NeuCLIR)
     corpus  : {"id": str, "contents": str}   (the title, if any, is the first
-              line of ``contents``; webshaper_frames adds ``url``; InfoSeek's
+              line of ``contents``; InfoSeek's
               wiki-25-512 numbers its chunks, read as strings)
 
 Per-dataset defaults (split, query key, relevance threshold, task type, encoder
@@ -137,8 +137,7 @@ class DatasetSpec:
                              whose extracted beliefs are its gold
                              (``gold_beliefs == "question"``) has None; for
                              the others it caps the silver extraction (the
-                             members of a TRQA set, the hops of a FRAMES
-                             question).
+                             members of a TRQA set).
         gold_beliefs:        Where the dataset's gold beliefs come from:
                              ``"question"`` (the beliefs the extractor
                              takes from the question are the gold: every
@@ -150,7 +149,7 @@ class DatasetSpec:
                              info, made on demand into its gold bank,
                              ``training_datasets.gold.trqa``).  A query of
                              an annotation dataset without gold beliefs
-                             (webshaper_frames' FRAMES) gets silver ones, extracted
+                             gets silver ones, extracted
                              from the question by an LLM.
         belief_choice:       ``belief_source`` picks between the gold and
                              the silver beliefs of every query (TRQA);
@@ -230,39 +229,31 @@ DATASET_SPECS = {
         relevance_gains={2: 1, 3: 3}, task="report", query_shape="multi_aspect", max_beliefs=None, gold_beliefs="question", belief_choice=False, reachability="documents", answer_eval=None, doc_max_length=1024, query_max_length=512,
         report_eval="argue", title_key="title",
     ),
-    # Training datasets built by this project (experiments/training/train_belief_model.py --phase 1),
+    # Training datasets built by this project (experiments/training/train_belief_model.py --stage data),
     # under TRAINING_DATASETS_ROOT; ``subset`` is the split (TRAINING_SPLITS).
-    # infoseek: InfoSeek-Hard questions over the original release's corpus,
-    # wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under
+    # infoseek_hard: InfoSeek-Hard questions over the original release's
+    # corpus, wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under
     # DATA_ROOT/infoseek with its indices, ``_CORPUS_IN_DATA_ROOT``); binary
     # qrels: the first chunk of each gold page (where InfoSeek's claims are
     # written from).  Multi-hop gold beliefs,
     # one per hop of the research tree.
-    "infoseek": DatasetSpec(
+    "infoseek_hard": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
     ),
-    # webshaper_frames: WebShaper and FRAMES questions with their gold
-    # Wikipedia and web pages fetched from the source as binary qrels; the
-    # corpus adds hard negatives of the Wikipedia gold pages.  Validation
-    # only (out of domain).  Lengths as BrowseComp-Plus (long web pages).
-    # WebShaper's gold beliefs come from its formalizations; FRAMES has no
-    # structure: its beliefs are silver, at most 8 hops.
-    "webshaper_frames": DatasetSpec(
-        dataset_year=None, subset="val", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=4096, query_max_length=8192,
-    ),
-    # trqa_validation: the TRQA wiki1 + wiki2 validation queries, qrels and
+    # trqa_val: the TRQA wiki1 + wiki2 validation queries, qrels and
     # intermediate info merged; TRQA's settings, corpus and indices.
-    "trqa_validation": DatasetSpec(
+    "trqa_val": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
         relevance_gains={1: 1}, task="qa", query_shape="multi_member", max_beliefs=52, gold_beliefs="annotation", belief_choice=True, reachability="entities", answer_eval="numeric_match", doc_max_length=512, query_max_length=512,
     ),
 }
+# (training_datasets/webshaper_frames, WebShaper and FRAMES, is kept in the
+# code but not registered: no spec, not built.)
 
 # Datasets built by this project, kept under ``TRAINING_DATASETS_ROOT`` (the
 # others are downloaded inputs under ``DATA_ROOT``).
-BUILT_DATASETS = frozenset({"infoseek", "webshaper_frames", "trqa_validation"})
+BUILT_DATASETS = frozenset({"infoseek_hard", "trqa_val"})
 
 # Splits of a training dataset: ``all`` holds every query of the dataset as
 # built, one row per query with its ``split`` (training_datasets/gold/annotations.py);
@@ -273,11 +264,12 @@ ALL_SPLIT = "all"
 TRAINING_SPLITS = ("sft", "rl", "val")
 
 # Built datasets that search another dataset's corpus and indices.
-_SHARED_CORPUS = {"trqa_validation": "trqa"}
+_SHARED_CORPUS = {"trqa_val": "trqa"}
 
 # Built datasets whose corpus is a downloaded one, kept with its indices
-# under ``DATA_ROOT/{dataset}`` (corpus file stem): InfoSeek's release.
-_CORPUS_IN_DATA_ROOT = {"infoseek": "wiki-25-512"}
+# under ``DATA_ROOT/{folder}``: (folder, corpus file stem).  The folder is
+# named after the corpus's release, not the dataset: InfoSeek's.
+_CORPUS_IN_DATA_ROOT = {"infoseek_hard": ("infoseek", "wiki-25-512")}
 
 # Datasets with a local corpus + index under ``DATA_ROOT/{dataset}``.
 DATASETS = tuple(DATASET_SPECS)
@@ -346,12 +338,14 @@ def dataset_root(dataset: str) -> Path:
 
 
 def corpus_root(dataset: str) -> Path:
-    """Folder of a dataset's corpus and indices: ``DATA_ROOT/{dataset}``
+    """Folder of a dataset's corpus and indices: ``DATA_ROOT/{folder}``
     for a built dataset with a downloaded corpus (``_CORPUS_IN_DATA_ROOT``),
     else its ``dataset_root`` (a dataset searching another's corpus:
     that one's)."""
     dataset = _SHARED_CORPUS.get(dataset, dataset)
-    return DATA_ROOT / dataset if dataset in _CORPUS_IN_DATA_ROOT else dataset_root(dataset)
+    if dataset in _CORPUS_IN_DATA_ROOT:
+        return DATA_ROOT / _CORPUS_IN_DATA_ROOT[dataset][0]
+    return dataset_root(dataset)
 
 
 def queries_base(data_path: Path | str, split: str) -> Path:
@@ -373,7 +367,7 @@ def nuggets_base(data_path: Path | str, split: str) -> Path:
 # belief model training): gold (from the question or the dataset's
 # annotation, ``DatasetSpec.gold_beliefs``) and silver (extracted from
 # the question by an LLM where the question does not state its structure:
-# the members of a TRQA set, the hops of a FRAMES question).
+# the members of a TRQA set).
 GOLD_BELIEFS, SILVER_BELIEFS = "gold", "silver"
 BELIEF_SOURCES = (GOLD_BELIEFS, SILVER_BELIEFS)
 # Where the gold beliefs come from (``DatasetSpec.gold_beliefs``).
@@ -420,7 +414,7 @@ def is_split_view(data_path: Path | str, split: str) -> bool:
 def gold_beliefs_path(dataset: str) -> Path:
     """Return the gold beliefs of a training dataset: its queries file,
     one row per query (every split) with its gold annotation, e.g.
-    ``TRAINING_DATASETS_ROOT/infoseek/queries/queries_all.jsonl``
+    ``TRAINING_DATASETS_ROOT/infoseek_hard/queries/queries_all.jsonl``
     (``training_datasets/gold/annotations.py``).  TRQA's gold beliefs are made
     on demand into its gold bank (``belief_bank_path(..., "gold")``,
     ``training_datasets.gold.trqa``); the other datasets' are the extractor's."""
@@ -547,14 +541,14 @@ def default_corpus_path(
     if dataset in _SHARED_CORPUS:
         return default_corpus_path(_SHARED_CORPUS[dataset], DATASET_SPECS[_SHARED_CORPUS[dataset]].subset, partial=partial)
     if dataset in _CORPUS_IN_DATA_ROOT:
-        return corpus_path(corpus_root(dataset), _CORPUS_IN_DATA_ROOT[dataset])
+        return corpus_path(corpus_root(dataset), _CORPUS_IN_DATA_ROOT[dataset][1])
     if dataset == "trqa":
         return DATA_ROOT / "trqa" / "corpus" / f"{trqa_corpus_name(subset, partial)}.jsonl"
     if dataset == "ragtime":
         return DATA_ROOT / "ragtime" / "corpus" / f"{RAGTIME_CORPUS_NAME}.jsonl"
     if dataset == "browsecomp_plus":
         return DATA_ROOT / "browsecomp_plus" / "corpus" / "corpus.jsonl"
-    # webshaper_frames, or an unknown dataset (best-effort canonical location).
+    # An unknown dataset (best-effort canonical location).
     return corpus_path(dataset_root(dataset))
 
 

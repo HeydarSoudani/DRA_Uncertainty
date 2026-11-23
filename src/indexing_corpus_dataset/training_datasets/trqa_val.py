@@ -1,4 +1,4 @@
-"""The trqa_validation dataset: the TRQA wiki1 and wiki2 validation splits merged
+"""The trqa_val dataset: the TRQA wiki1 and wiki2 validation splits merged
 into one split (``all``) in the canonical layout:
 
     queries/queries_all.jsonl  queries_wiki{1,2}_validation.jsonl and
@@ -95,7 +95,7 @@ def build(paths: DatasetPaths, gc: GoldBeliefsConfig, split_cfg: SplitConfig, li
         docs = docs_of(sub_qrels)
         pending += [(row, subset, info_of.get(str(row["id"]), {}), docs.get(str(row["id"]), []))
                     for row in rows if row["id"] not in drop]
-    titles = member_titles(CorpusLookup(default_corpus_path("trqa_validation")),
+    titles = member_titles(CorpusLookup(default_corpus_path("trqa_val")),
                            [info for _, _, info, _ in pending])
     gold = [annotations.multi_member_row(str(row["id"]), f"trqa_{subset}", row["text"], str(row["answer"]), info, docs, titles)
             for row, subset, info, docs in pending]
@@ -108,7 +108,7 @@ def build(paths: DatasetPaths, gc: GoldBeliefsConfig, split_cfg: SplitConfig, li
     new = [str(qid) for qid in ids if str(qid) not in built]
     if limit is not None:
         keep = built | set(new[:limit])
-        print(f"[trqa_validation] {len(built & set(map(str, ids)))} queries in the dataset, "
+        print(f"[trqa_val] {len(built & set(map(str, ids)))} queries in the dataset, "
               f"{min(limit, len(new))} added (--limit {limit}), {max(0, len(new) - limit)} remaining")
         qrels = [line for line in qrels if line.split()[0] in keep]
         gold = [row for row in gold if row["id"] in keep]
@@ -124,6 +124,6 @@ def build(paths: DatasetPaths, gc: GoldBeliefsConfig, split_cfg: SplitConfig, li
     write_stats(paths.stats, "build", {"available": available, "remaining": available - len(gold),
                                        "queries": len(gold), "with_qrels": with_qrels, "qrels": len(qrels),
                                        "left_out": {"test_overlap": overlap, "ambiguous_ids": ambiguous}})
-    print(f"[trqa_validation] {len(gold)} of {available} queries ({with_qrels} with qrels), "
+    print(f"[trqa_val] {len(gold)} of {available} queries ({with_qrels} with qrels), "
           f"{len(qrels)} qrels -> {paths.root}")
-    print(f"[trqa_validation] gold annotation\n\n{format_annotation_table(stats)}\n")
+    print(f"[trqa_val] gold annotation\n\n{format_annotation_table(stats)}\n")

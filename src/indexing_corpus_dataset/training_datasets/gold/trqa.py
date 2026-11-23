@@ -6,7 +6,7 @@ first needs them, and banked (``TRQAGoldBeliefs`` is the producer of a
 
 Per query, the row of the training datasets' format
 (``training_datasets/gold/annotations.py``, ``annotations.multi_member_row``), as the
-trqa_validation dataset builds its own: one belief per member of the set
+trqa_val dataset builds its own: one belief per member of the set
 ("<member>: <property>", its value and documents,
 ``entity_values[].passage_ids``), then the aggregate.  A
 member is named by the page title of its first document, looked up in the

@@ -42,7 +42,7 @@ python experiments/inference/dra_inference.py \
 | `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
 | `--belief-model` | the belief model, one of `BELIEF_MODEL_TO_LLM` (`utils/config.py`): `qwen3.5_4b`, `qwen3.5_9b`, `qwen3.6_27b` (default); see [Belief model](#belief-model) |
-| `--belief-source` | `gold` or `silver` beliefs of the belief model (TRQA, trqa_validation) |
+| `--belief-source` | `gold` or `silver` beliefs of the belief model (TRQA, trqa_val) |
 | `--workers` | query-level worker processes of the generate stage: one per GPU on a GPU machine, CPU processes otherwise; `0` = auto (GPU count, 1 without GPU) |
 | `--belief-workers` | queries the belief stage runs at once (threads; `belief_workers` in the YAML) |
 | `--limit N` | each stage runs at most N queries |
@@ -131,12 +131,12 @@ prompt, a shared core plus one block per shape:
 | Shape | Datasets | Beliefs |
 |---|---|---|
 | multi-clue | BrowseComp-Plus | every clue of the target (the one entity the clues describe), copied verbatim, then the target ("the institution that meets B1 to B5"), then the asked answer when it is not the target ("the birth year of the wife of c4"; no cap) |
-| multi-hop | infoseek, webshaper_frames | one belief per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in B1"; an extraction with a forward reference is asked once more; FRAMES; at most 8) |
+| multi-hop | infoseek_hard | one belief per entity on the chain, the answer last, each naming only its own hop and referring only to hops before it by their ids ("the engineer who was born in B1"; an extraction with a forward reference is asked once more; at most 8) |
 | multi-member | TRQA | one "member: property" per known member, then the aggregate: how the answer follows from the members' values (the layout of the gold beliefs; at most 52: 51 members and the aggregate) |
 | multi-aspect | NeuCLIR, RAGTIME | every requirement the long request (background and problem statement) states, as one plain list (no cap, nothing added) |
 
 `max_beliefs` (null = the dataset's default in `layout.DATASET_SPECS`) caps silver beliefs only: TRQA and
-trqa_validation (52) and webshaper_frames' FRAMES (8). Gold beliefs are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
+trqa_val (52). Gold beliefs are never capped: on BrowseComp-Plus, NeuCLIR and RAGTIME,
 whose beliefs are all gold, a `max_beliefs` stops the run (`init.factory.check_max_beliefs`).
 
 Rules for report beliefs:
@@ -163,12 +163,11 @@ silver when an LLM extracts structure the question does not state (`DatasetSpec.
 | Dataset | Gold | Silver |
 |---|---|---|
 | BrowseComp-Plus, NeuCLIR, RAGTIME | the extractor's beliefs (the question's own clues and requirements) | none |
-| infoseek, webshaper_frames WebShaper | the dataset's rows (`queries/queries_all.jsonl`, any `level`) | none |
-| webshaper_frames FRAMES | none | the extractor's multi-hop beliefs |
+| infoseek_hard | the dataset's rows (`queries/queries_all.jsonl`, any `level`) | none |
 | TRQA | made from the intermediate info on demand (`training_datasets/gold/trqa.py`) | the extractor's set beliefs |
-| trqa_validation | the dataset's rows | the extractor's set beliefs |
+| trqa_val | the dataset's rows | the extractor's set beliefs |
 
-**Belief source** (`belief_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_validation only,
+**Belief source** (`belief_source`: `gold`, the default, or `silver`). A choice on TRQA and trqa_val only,
 whose queries have both; the run goes to `belief-{mode}-gold/` or `belief-{mode}-silver/`. Elsewhere it has no
 effect (an info line says so) and the run goes to `belief-{mode}/`. The belief model always runs: a query without
 gold beliefs (FRAMES, failed texts) gets silver ones (`gold_missing` in its `belief_info`). Each query's
@@ -179,7 +178,7 @@ records `belief_source` and the source used, `belief_source_effective`.
 each query's list once, at the start of the query (`BeliefModel.reset`). The run only passes the dataset,
 `belief_source` and `belief_model`:
 
-1. The kind: the requested `belief_source` on TRQA and trqa_validation, gold elsewhere; a query without gold
+1. The kind: the requested `belief_source` on TRQA and trqa_val, gold elsewhere; a query without gold
    beliefs gets silver ones.
 2. The beliefs of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
    made the first time a query needs it, in the belief stage and in `analysis/criteria_reachability.py`; no build
@@ -196,7 +195,7 @@ The banks:
   (gold for BrowseComp-Plus, NeuCLIR, RAGTIME; silver for TRQA; a training dataset has one bank for all its splits,
   `BELIEF_ROOT/training_datasets/{dataset}/belief_bank/silver/beliefs_all.jsonl`), `BankedBeliefSource`.
 - TRQA's gold beliefs, in `belief_bank/gold/` next to its silver ones (key: the writer and the hash of its
-  prompts). They are made from the query's intermediate info as the trqa_validation dataset makes its own
+  prompts). They are made from the query's intermediate info as the trqa_val dataset makes its own
   (`annotations.multi_member_row`: one belief per member, then the aggregate; members named by the page title of
   their first document, looked up in `wiki_partial` by id, or by TRQA's label for ecommerce); `belief_model` writes
   the property phrase and the aggregation (the training datasets' prompts, `training_datasets/gold/prompts/multi_member_*`). The bank line keeps
@@ -204,7 +203,7 @@ The banks:
   Texts that fail for good (a member or value leaks into the phrase, after one retry) are banked as final with no
   beliefs, and the query gets silver ones; a failed writer call is not banked and is asked again next run.
 - A training dataset's gold beliefs: its queries file is their bank, written by its build only
-  (`train_belief_model.py --phase 1`), never during a run, so training scores against the same texts. A query whose gold
+  (`train_belief_model.py --stage data`), never during a run, so training scores against the same texts. A query whose gold
   texts failed gets silver ones; rebuild the dataset to fix them.
 
 Rules of a bank line:

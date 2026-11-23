@@ -2,10 +2,15 @@
 
 A chain is ``belief_model_component.BeliefModel`` run over a saved episode
 exactly as the belief stage runs it (``orchestration.belief_stage``):
-reset (the beliefs), one ``observe`` per search iteration, ``finish`` on the
-answer turn (the final scorer's call).  Only the LLM client differs: every
-call of the belief model goes through a ``ChainClient``, which records it
-(its kind, step and attempt, the messages and the reply):
+reset (the beliefs), one ``observe`` per search iteration, then
+``finish_answer`` on the answer turn's saved reasoning and answer (the
+final update call, then the final scorer's call).  Only the LLM client
+differs: every call of the belief model goes through a ``ChainClient``,
+which records it (its kind, step and attempt, the messages and the reply).
+The belief source, the updater and the final scorer each get their own
+view of the client (``ChainClient.role``), so a call's kind is the role
+that made it: the final update is an update call of step N + 1, the final
+score a score call of the same step.
 
 * ``ReplayClient`` returns the teacher's saved reply of the call (SFT
   samples: the prompts are rebuilt by the belief model, byte for byte);
@@ -19,7 +24,7 @@ settings are its own: the temperature the belief model passes is ignored.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from indexing_corpus_dataset.layout import DATASET_SPECS, extraction_kind
 
@@ -49,28 +54,47 @@ class CallRecord:
 
 
 class ChainClient:
-    """The LLM client of one chain (``complete(messages, **kwargs)``):
-    records every call; subclasses produce the reply (``_reply``)."""
+    """The LLM calls of one chain: records every call; subclasses produce
+    the reply (``_reply``).  The belief model's components call it through
+    ``role`` (one view per call kind); a call's step is the one set by
+    ``at_step``, its attempt counted per (kind, step) from 1."""
 
     def __init__(self) -> None:
         self.calls: List[CallRecord] = []
-        self._kind: Optional[str] = None
         self._step: Optional[int] = None
-        self._attempt = 0
+        self._attempts: Dict[Tuple[str, Optional[int]], int] = {}
 
-    def begin(self, kind: str, step: Optional[int]) -> None:
-        """The next calls are those of *kind* at *step* (their attempts counted from 1)."""
-        self._kind, self._step, self._attempt = kind, step, 0
+    def at_step(self, step: Optional[int]) -> None:
+        """The next calls are those of *step* (None: the init call)."""
+        self._step = step
 
-    def complete(self, messages: List[Dict[str, str]], max_tokens: int = 4096, **_: Any) -> str:
-        self._attempt += 1
-        record = CallRecord(self._kind, self._step, self._attempt, [dict(m) for m in messages], "", max_tokens)
-        self._reply(record, max_tokens)
-        self.calls.append(record)
-        return record.reply
+    def role(self, kind: str) -> "RoleClient":
+        """The LLM client (``complete``) whose calls are of *kind*."""
+        return RoleClient(self, kind)
+
+    def record(self, kind: str, messages: List[Dict[str, str]], max_tokens: int) -> str:
+        key = (kind, self._step)
+        self._attempts[key] = self._attempts.get(key, 0) + 1
+        call = CallRecord(kind, self._step, self._attempts[key], [dict(m) for m in messages], "", max_tokens)
+        self._reply(call, max_tokens)
+        self.calls.append(call)
+        return call.reply
 
     def _reply(self, record: CallRecord, max_tokens: int) -> None:
         raise NotImplementedError
+
+
+class RoleClient:
+    """The LLM client the belief model's component of one call kind gets
+    (``complete(messages, **kwargs)``, the interface of the inference
+    clients); its sampling settings are the chain client's own."""
+
+    def __init__(self, chain_client: ChainClient, kind: str) -> None:
+        self._chain_client = chain_client
+        self._kind = kind
+
+    def complete(self, messages: List[Dict[str, str]], max_tokens: int = 4096, **_: Any) -> str:
+        return self._chain_client.record(self._kind, messages, max_tokens)
 
 
 class ReplayClient(ChainClient):
@@ -121,10 +145,10 @@ def build_belief_model(episode: Episode, client: ChainClient, beliefs: str = GOL
     passage cut, the gold beliefs or the student's own init."""
     from belief_model_component import BeliefModel, build_belief_updater, build_final_scorer
 
-    source = gold_belief_source(episode) if beliefs == GOLD_INIT else init_source(episode.dataset, client)
-    updater = build_belief_updater(client, model=STUDENT, query_shape=episode.query_shape,
+    source = gold_belief_source(episode) if beliefs == GOLD_INIT else init_source(episode.dataset, client.role(INIT))
+    updater = build_belief_updater(client.role(UPDATE), model=STUDENT, query_shape=episode.query_shape,
                                    max_passage_tokens=episode.max_passage_tokens)
-    scorer = build_final_scorer(client, model=STUDENT, query_shape=episode.query_shape)
+    scorer = build_final_scorer(client.role(SCORE), model=STUDENT, query_shape=episode.query_shape)
     if scorer is None:
         raise ValueError(f"{episode.key}: query shape {episode.query_shape} has no final scorer (a report)")
     return BeliefModel(belief_source=source, belief_updater=updater, qrels={}, final_scorer=scorer)
@@ -151,28 +175,25 @@ class ChainResult:
         return self.final.get("certainty")
 
 
-def run_chain(episode: Episode, client: ChainClient, store: DocumentStore, beliefs: str = GOLD_INIT,
-              on_step: Optional[Callable[[int], None]] = None) -> ChainResult:
+def run_chain(episode: Episode, client: ChainClient, store: DocumentStore, beliefs: str = GOLD_INIT) -> ChainResult:
     """The belief model over *episode* with *client* (see the module
     docstring).  An exception stops the chain (``error``)."""
     result = ChainResult(episode, client)
     model = None
     try:
         model = build_belief_model(episode, client, beliefs)
-        client.begin(INIT, None)
+        client.at_step(None)
         model.reset(query_id=episode.qid, query=episode.question)
         result.beliefs = model.init_summary()["beliefs"]
         if not result.beliefs:
             result.error = "no beliefs"
             return result
         for k, it in enumerate(episode.saved.iterations, 1):
-            if on_step is not None:
-                on_step(k)
-            client.begin(UPDATE, k)
+            client.at_step(k)
             model.observe(subqueries=it.subqueries, docs=store.docs(episode, it.doc_ids),
                           iter_num=it.agent_iteration, agent_turn=it.agent_turn)
-        client.begin(SCORE, len(episode.saved.iterations) + 1)
-        model.finish(episode.saved.answer_turn)
+        client.at_step(len(episode.saved.iterations) + 1)
+        model.finish_answer(episode.saved.answer_reasoning, episode.saved.answer)
     except Exception as e:  # noqa: BLE001 - one chain, reported by the caller
         result.error = f"{type(e).__name__}: {e}"
     if model is not None:

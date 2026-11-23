@@ -1,8 +1,8 @@
-"""Phase 3: SFT of the student on the teacher's replies (Agent-BRACE's belief
+"""Stage sft: SFT of the student on the teacher's replies (Agent-BRACE's belief
 SFT: completion-only loss, LoRA, then merged into full weights).
 
-The main process builds the samples (``sft.samples``), the others read
-them.  The input is the chat-template prompt the inference belief model
+The samples are stage filter's (``filter/sft_samples.jsonl``, its teacher
+in ``filter/stats.json``).  The input is the chat-template prompt the inference belief model
 sends, then the reply and the end-of-turn token; the loss is on the reply
 and end-of-turn token only, averaged over the reply tokens of the batch
 (token-mean); the logits are computed at the reply positions only.
@@ -10,15 +10,18 @@ Samples longer than ``shared.max_seq_len`` are dropped.
 
 Validation loss (the val set) after every epoch; a checkpoint every
 epoch, and the one with the lowest validation loss is merged into
-``sft/final`` (the served ``qwen3.5_4b_sft`` and the RL start).  Without
-validation samples the last epoch is merged.
+``{student}/sft/final`` (the served ``{student}_sft`` and the RL start).
+Without validation samples the last epoch is merged.
 
 Multi-GPU: ``torchrun --nproc_per_node N`` (data parallel; the effective
 batch is per_device_batch_size x gradient_accumulation_steps x N).
 
-Outputs (``sft/``): ``samples.jsonl``, ``checkpoints/`` (LoRA; removed at
-the start of a run), ``adapter/``, ``final/``.
+Outputs (``{student}/sft/``): ``config.json`` (the settings and the
+filter's stats), ``checkpoints/`` (LoRA; removed at the start of a run),
+``adapter/``, ``final/``.
 """
+
+import json
 
 import math
 import shutil
@@ -27,11 +30,12 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn.functional as F
 
+from utils.config import student_weights
 from utils.io_utils import read_jsonl
 
 from ..config import RunPaths, TrainingConfig
+from ..filtering.run import read_filter_stats
 from ..student import load_processor, load_student, quiet_libraries, tokenize_sample
-from .samples import build_samples
 
 
 class _Collator:
@@ -110,17 +114,20 @@ def run_sft(cfg: TrainingConfig) -> None:
     from transformers import Trainer, TrainingArguments
 
     sc, sh = cfg.sft, cfg.shared
-    paths = RunPaths()
+    paths = RunPaths(sh.student)
+    weights = student_weights(sh.student)
     state = PartialState()
     checkpoints = paths.sft_dir / "checkpoints"
+    filter_stats = read_filter_stats(cfg, paths, "[stage sft]")
     with state.main_process_first():
         if state.is_main_process:
             paths.sft_dir.mkdir(parents=True, exist_ok=True)
             # A run starts over: the Trainer's rotation would count an earlier run's checkpoints.
             shutil.rmtree(checkpoints, ignore_errors=True)
-            build_samples(cfg, paths)
-        rows = read_jsonl(paths.sft_samples)
-    processor = load_processor(sh.student)
+            (paths.sft_dir / "config.json").write_text(
+                json.dumps({"config": cfg.to_dict(), "filter": filter_stats}, indent=2, default=str) + "\n")
+    rows = read_jsonl(paths.sft_samples)
+    processor = load_processor(weights)
     tokenizer = getattr(processor, "tokenizer", processor)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -129,11 +136,12 @@ def run_sft(cfg: TrainingConfig) -> None:
     train, train_dropped = load_samples(processor, [r for r in rows if r["set"] == "train"], max_len)
     val, val_dropped = load_samples(processor, [r for r in rows if r["set"] == "val"], max_len)
     if not train:
-        raise SystemExit(f"[phase 3] no train sample in {paths.sft_samples}: run phase 2 on the sft split first")
+        raise SystemExit(f"[stage sft] no train sample in {paths.sft_samples}: run the stages generate and teacher "
+                         "on the sft and val splits, then filter")
     eval_sets = {"all": val} if val else None
 
     quiet_libraries()
-    model = load_student(sh.student)
+    model = load_student(weights)
     model.enable_input_require_grads()
     model = get_peft_model(model, LoraConfig(
         r=sc.lora_r, lora_alpha=sc.lora_alpha, lora_dropout=sc.lora_dropout, bias="none",
@@ -145,8 +153,9 @@ def run_sft(cfg: TrainingConfig) -> None:
     if state.is_main_process:
         trainable, total = model.get_nb_trainable_parameters()
         print("\n".join([
-            "[phase 3] SFT",
-            f"  student        {sh.student}",
+            "[stage sft] SFT",
+            f"  student        {sh.student} ({weights})",
+            f"  samples        {paths.sft_samples} (teacher {filter_stats.get('teacher')})",
             f"  LoRA           r {sc.lora_r}, alpha {sc.lora_alpha}, dropout {sc.lora_dropout}; "
             f"trainable {trainable / 1e6:.1f}M of {total / 1e9:.2f}B parameters",
             f"  train samples  {describe(train, train_dropped, max_len)}",
@@ -187,7 +196,7 @@ def run_sft(cfg: TrainingConfig) -> None:
     )
     trainer.train()
     if eval_sets:
-        print(f"[phase 3] best checkpoint {trainer.state.best_model_checkpoint} "
+        print(f"[stage sft] best checkpoint {trainer.state.best_model_checkpoint} "
               f"(validation loss {trainer.state.best_metric:.4f})")
 
     if trainer.is_world_process_zero():
@@ -196,4 +205,4 @@ def run_sft(cfg: TrainingConfig) -> None:
         shutil.rmtree(paths.sft_final, ignore_errors=True)
         merged.save_pretrained(str(paths.sft_final))
         processor.save_pretrained(str(paths.sft_final))
-        print(f"[phase 3] merged model saved to {paths.sft_final} (served as qwen3.5_4b_sft)")
+        print(f"[stage sft] merged model saved to {paths.sft_final} (served as {sh.student}_sft)")

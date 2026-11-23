@@ -1,8 +1,9 @@
-"""The SFT samples (phase 3): the teacher's calls on the sft (train) and val
-(validation) splits, as (messages, reply) pairs.
+"""The SFT samples (stage filter): the teacher's calls on the sft (train) and
+val (validation) splits, as (messages, reply) pairs.
 
 **Update and final score.**  The teacher's beliefs of an episode
-(``belief/{teacher}/{qid}.jsonl`` of the phase 2 run) are replayed through
+(``belief/{teacher}/{qid}.jsonl`` of the generated run, written by stage
+teacher) are replayed through
 the belief model (``chain.run_chain`` with a ``ReplayClient``): each call
 gets the teacher's saved reply, so the prompts are the belief model's own,
 byte for byte.  The replay is checked against the saved file (the same
@@ -10,9 +11,9 @@ calls, the same belief after every step, the same s_T); an episode whose
 replay differs gives no sample (``replay_mismatch``).  A call is a sample
 when it passes the format gate: an update call that parsed with no issue
 of ``GATE_ISSUES``, a final score that parsed (``reward``).  Then the
-filter (``sft.filter.keep``).
+filter rule (``filtering.rules.keep_sample``).
 
-**Init.**  On the datasets of ``sft.init_datasets``, one sample per query
+**Init.**  On the datasets of ``filter.sft_init_datasets``, one sample per query
 of the split: the init prompt of the dataset (its shape and cap) and the
 gold beliefs as the reply, in the prompt example's layout.  A query with
 more gold beliefs than the prompt's cap gives none.
@@ -24,6 +25,7 @@ or score).
 
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
 
 from utils.io_utils import write_jsonl
@@ -31,8 +33,8 @@ from utils.io_utils import write_jsonl
 from ..chain import INIT, SCORE, UPDATE, ReplayClient, init_source, run_chain
 from ..config import RunPaths, TrainingConfig
 from ..reward import score_probability, step_passes
-from ..runs import DocumentStore, Episode, load_episodes, read_gold_rows
-from .filter import keep
+from ..runs import DocumentStore, Episode, read_gold_rows
+from .rules import keep_sample
 
 #: The split of each sample set.
 SETS = {"train": "sft", "val": "val"}
@@ -112,35 +114,41 @@ def init_samples(dataset: str, split: str, counts: Counter) -> List[Dict[str, An
     return out
 
 
-def build_samples(cfg: TrainingConfig, paths: RunPaths) -> None:
-    """``sft/samples.jsonl``: the samples of the train and val sets."""
-    sh = cfg.shared
+def build_samples(cfg: TrainingConfig, paths: RunPaths,
+                  episodes: Dict[str, List[Episode]]) -> Dict[str, Dict[str, int]]:
+    """``filter/sft_samples.jsonl``: the samples of the train and val sets
+    from *episodes* (by split; the teacher ``shared.teacher``, replayed on
+    ``filter.workers`` threads); returns the counts of each set."""
+    teacher = cfg.shared.teacher
     store = DocumentStore()
     rows: List[Dict[str, Any]] = []
+    all_counts: Dict[str, Dict[str, int]] = {}
     for set_name, split in SETS.items():
         counts: Counter = Counter()
-        episodes = load_episodes(cfg.inference_output, sh.training_datasets, split, sh.policy_models,
-                                 sh.retriever, tag="[phase 3]")
         candidates = []
-        for ep in episodes:
-            samples, outcome = replay_teacher(ep, store, sh.teacher)
+        with ThreadPoolExecutor(max_workers=cfg.filter.workers) as pool:
+            replayed = list(pool.map(lambda ep: replay_teacher(ep, store, teacher), episodes[split]))
+        for samples, outcome in replayed:
             counts[f"episodes_{outcome}"] += 1
             for s in samples:
                 if s.pop("gate_failed", False):
                     counts[f"{s['task']}_gate_failed"] += 1
                 else:
                     candidates.append(s)
-        for dataset in cfg.sft.init_datasets:
+        for dataset in cfg.filter.sft_init_datasets:
             candidates += init_samples(dataset, split, counts)
         for s in candidates:
-            if keep(s):
+            if keep_sample(s):
                 counts[f"{s['task']}_samples"] += 1
                 rows.append({"set": set_name, **s})
             else:
                 counts[f"{s['task']}_filtered"] += 1
         y_counts = Counter(s["y"] for s in rows if s["set"] == set_name and s["task"] == SCORE)
-        print(f"[phase 3] {set_name} ({split}): {dict(sorted(counts.items()))}; "
-              f"score samples with y=1: {y_counts.get(True, 0)}, y=0: {y_counts.get(False, 0)}")
-    paths.sft_dir.mkdir(parents=True, exist_ok=True)
+        counts["score_samples_y1"] = y_counts.get(True, 0)
+        counts["score_samples_y0"] = y_counts.get(False, 0)
+        all_counts[set_name] = dict(sorted(counts.items()))
+        print(f"[stage filter] sft {set_name} ({split}): {all_counts[set_name]}")
+    paths.filter_dir.mkdir(parents=True, exist_ok=True)
     write_jsonl(paths.sft_samples, rows)
-    print(f"[phase 3] wrote {len(rows)} samples to {paths.sft_samples}")
+    print(f"[stage filter] wrote {len(rows)} SFT samples to {paths.sft_samples}")
+    return all_counts

@@ -1,11 +1,12 @@
-"""Settings of belief model training, one section per phase plus ``shared``.
+"""Settings of belief model training, one section per stage plus ``shared``.
 
 The YAML file (``experiments/configs/belief_training.yaml``) has the same
 sections and keys as the dataclasses below, plus the ``data`` section: the
-settings of the training dataset build (phase 1), whose sub-sections are
-those of ``indexing_corpus_dataset.training_datasets.config``.  CLI
-``--set section.key=value`` overrides a key.  An unknown section or key is
-an error.
+settings of the training dataset build (stage data), whose sub-sections are
+those of ``indexing_corpus_dataset.training_datasets.config``.  An
+unknown section or key is an error.  The command line's flags overwrite
+their keys (``load_config`` overrides: --teacher, --student, --init-model,
+--beliefs).
 
 Hyperparameters follow Agent-BRACE (arXiv 2605.11436): SFT LoRA r 64 /
 alpha 128, lr 2e-5, 5 epochs; RL lr 1e-5, PPO clip 0.2, dual-clip 3.0,
@@ -21,7 +22,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from indexing_corpus_dataset.layout import BUILT_DATASETS, OUTPUT_ROOT
-from utils.config import BELIEF_MODEL_TO_LLM, BELIEF_TRAINING_ROOT, POLICY_MODEL_TO_LLM, trained_belief_checkpoint
+from utils.config import (BELIEF_MODEL_TO_LLM, BELIEF_TRAINING_ROOT, POLICY_MODEL_TO_LLM, STUDENT_BELIEF_MODELS,
+                          TRAINED_RUN_NAMES, trained_belief_checkpoint)
 from utils.sectioned_config import load_sectioned
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -31,26 +33,32 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GOLD_INIT, OWN_INIT = "gold", "own"
 RL_BELIEFS = (GOLD_INIT, OWN_INIT)
 #: The training run of each RL starting-belief choice (its folder under
-#: BELIEF_TRAINING_ROOT, and its served name in utils.config.TRAINED_BELIEF_RUNS).
+#: BELIEF_TRAINING_ROOT/{student}, and its served name {student}_{run} in
+#: utils.config.TRAINED_BELIEF_RUNS).
 RL_RUNS = {GOLD_INIT: "rl", OWN_INIT: "rl_own_init"}
 SFT_RUN = "sft"
+assert {SFT_RUN, *RL_RUNS.values()} == set(TRAINED_RUN_NAMES)
 
 
 @dataclass
 class SharedConfig:
-    # Training datasets (phase 1 builds them; their sft / rl / val splits feed
-    # phases 2 to 4).  Their episodes are pooled: one model for every shape.
-    training_datasets: List[str] = field(default_factory=lambda: ["infoseek", "trqa_validation"])
-    # Frozen agents whose trajectories are the episodes (phase 2 runs them).
+    # Training datasets (stage data builds them; their sft / rl / val splits
+    # feed the stages generate to rl).  Their episodes are pooled: one model
+    # for every shape.
+    training_datasets: List[str] = field(default_factory=lambda: ["infoseek_hard", "trqa_val"])
+    # Frozen agents whose trajectories are the episodes (stage generate runs them).
     policy_models: List[str] = field(default_factory=lambda: ["oss_20b", "glm"])
     retriever: str = "qwen3_emb_4b"
     # Teacher belief model (a --belief-model short name of dra_inference):
-    # its replies on the sft and val splits are the SFT samples.
+    # its replies on the sft and val splits are the SFT samples (--teacher).
     teacher: str = "qwen3.6_27b"
-    # The student: Hugging Face weights of the SFT start.
-    student: str = "Qwen/Qwen3.5-4B"
-    # The inference settings of phase 2 (agent, retriever, belief stage);
-    # its ``output`` is where the runs are (null = OUTPUT_ROOT).
+    # The student: a local base --belief-model of dra_inference
+    # (utils.config.STUDENT_BELIEF_MODELS), the SFT start; its runs are
+    # under BELIEF_TRAINING_ROOT/{student} and served as {student}_{run} (--student).
+    student: str = "qwen3.5_4b"
+    # The inference settings of the stages generate, teacher and evaluate
+    # (agent, retriever, belief stage); its ``output`` is where the runs are
+    # (null = OUTPUT_ROOT).
     inference_config: str = "experiments/configs/dra_inference.yaml"
     seed: int = 0
     # Longest student sequence (prompt + reply, tokens): longer SFT samples
@@ -59,23 +67,43 @@ class SharedConfig:
 
 
 @dataclass
-class TrajectoriesConfig:
-    """Phase 2: dra_inference --stage generate on a split, then --stage
-    belief with the teacher on the sft and val splits."""
+class GenerateConfig:
+    """Stage generate: dra_inference --stage generate on a split (the agents'
+    trajectories and the correctness y of their answers)."""
     # Query worker processes of the generate stage (dra_inference --workers).
     workers: int = 1
+    quiet: bool = True
+
+
+@dataclass
+class BeliefStageConfig:
+    """Stages teacher and evaluate: dra_inference --stage belief over the
+    generated trajectories (teacher: on the sft and val splits; evaluate: the
+    belief model evaluated)."""
     # Belief stage threads (dra_inference --belief-workers); null = the inference config's.
     belief_workers: Optional[int] = None
     quiet: bool = True
 
 
 @dataclass
-class SFTConfig:
-    """Phase 3: SFT of the student on the teacher's replies (LoRA, then merged)."""
+class FilterConfig:
+    """Stage filter: what the training stages train on, the SFT samples
+    (sft, val) and the RL episodes (rl, val).  The SFT sample rule is
+    ``filtering.rules.keep_sample``."""
     # Datasets whose gold beliefs are init samples (question -> gold beliefs).
     # Multi-hop only by default: the beliefs of a multi-hop question are in
     # its words; TRQA's members are not in the question.
-    init_datasets: List[str] = field(default_factory=lambda: ["infoseek"])
+    sft_init_datasets: List[str] = field(default_factory=lambda: ["infoseek_hard"])
+    # RL episodes with more search iterations (with a document) than this
+    # are left out (null = none): set from the generate stage statistics.
+    rl_max_chain_steps: Optional[int] = None
+    # Threads replaying the teacher's beliefs (the documents are read from the corpus).
+    workers: int = 8
+
+
+@dataclass
+class SFTConfig:
+    """Stage sft: SFT of the student on the filtered samples (LoRA, then merged)."""
     lora_r: int = 64
     lora_alpha: int = 128
     lora_dropout: float = 0.05
@@ -98,10 +126,11 @@ class SFTConfig:
 
 @dataclass
 class RLConfig:
-    """Phase 4: GRPO over belief chains, reward = Brier of the final score."""
-    # Starting beliefs: gold (run ``rl``) or own (the student's init call, run ``rl_own_init``).
+    """Stage rl: GRPO over belief chains, reward = Brier of the final score."""
+    # Starting beliefs: gold (run ``rl``) or own (the student's init call,
+    # run ``rl_own_init``) (--beliefs).
     beliefs: str = GOLD_INIT
-    # Start checkpoint; null = the SFT model (``sft/final``).
+    # Start checkpoint; null = the student's SFT model (``{student}/sft/final``) (--init-model).
     init_model: Optional[str] = None
     num_iterations: int = 200
     # Episodes per iteration, chains per episode (the GRPO group), and
@@ -110,9 +139,6 @@ class RLConfig:
     group_size: int = 8
     scorer_samples: int = 4
     temperature: float = 0.7
-    # Episodes with more search iterations (with a document) than this are
-    # left out (null = none): set from the phase 2 statistics.
-    max_chain_steps: Optional[int] = None
     # Rollouts per iteration to replace groups whose chains all have the same reward.
     refill_rounds: int = 2
     learning_rate: float = 1e-5
@@ -141,21 +167,25 @@ class RLConfig:
 
 SECTIONS = {
     "shared": SharedConfig,
-    "trajectories": TrajectoriesConfig,
+    "generate": GenerateConfig,
+    "belief_stage": BeliefStageConfig,
+    "filter": FilterConfig,
     "sft": SFTConfig,
     "rl": RLConfig,
 }
-#: The section with the dataset build settings (phase 1).
+#: The section with the dataset build settings (stage data).
 DATA_SECTION = "data"
 
 
 @dataclass
 class TrainingConfig:
     shared: SharedConfig = field(default_factory=SharedConfig)
-    trajectories: TrajectoriesConfig = field(default_factory=TrajectoriesConfig)
+    generate: GenerateConfig = field(default_factory=GenerateConfig)
+    belief_stage: BeliefStageConfig = field(default_factory=BeliefStageConfig)
+    filter: FilterConfig = field(default_factory=FilterConfig)
     sft: SFTConfig = field(default_factory=SFTConfig)
     rl: RLConfig = field(default_factory=RLConfig)
-    # The ``data`` section as written (phase 1 hands it to the build).
+    # The ``data`` section as written (stage data hands it to the build).
     data: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -185,8 +215,8 @@ class TrainingConfig:
 
 
 def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None) -> TrainingConfig:
-    """The config of *path* (YAML; None = the defaults) with *overrides*
-    (``{"section.key": value}``) applied."""
+    """The config of *path* (YAML; None = the defaults), then *overrides*
+    (``{"section.key": value}``, the command line's flags)."""
     data = (yaml.safe_load(Path(path).read_text()) or {}) if path else {}
     build = data.pop(DATA_SECTION, None) or {}
     items = {f"{s}.{k}": v for s, values in data.items() for k, v in (values or {}).items()}
@@ -202,8 +232,15 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
         raise ValueError(f"shared.policy_models: unknown agents {unknown}")
     if sh.teacher not in BELIEF_MODEL_TO_LLM:
         raise ValueError(f"shared.teacher: {sh.teacher!r} is no --belief-model name ({sorted(BELIEF_MODEL_TO_LLM)})")
+    if sh.student not in STUDENT_BELIEF_MODELS:
+        raise ValueError(f"shared.student: {sh.student!r} is no student ({list(STUDENT_BELIEF_MODELS)})")
     if cfg.rl.beliefs not in RL_BELIEFS:
         raise ValueError(f"rl.beliefs: expected one of {list(RL_BELIEFS)}, got {cfg.rl.beliefs!r}")
+    unknown = sorted(set(cfg.filter.sft_init_datasets) - set(sh.training_datasets))
+    if unknown:
+        raise ValueError(f"filter.sft_init_datasets: {unknown} are not in shared.training_datasets")
+    if cfg.filter.workers < 1:
+        raise ValueError("filter.workers must be >= 1")
     if cfg.rl.group_size < 2 or cfg.rl.scorer_samples < 1:
         raise ValueError("rl.group_size must be >= 2 and rl.scorer_samples >= 1")
     return cfg
@@ -211,19 +248,36 @@ def load_config(path: Optional[str], overrides: Optional[Dict[str, Any]] = None)
 
 class RunPaths:
     """The files of the training runs under ``BELIEF_TRAINING_ROOT``
-    (``utils.config``): ``stats/`` (phase 2 statistics), ``sft/`` (phase
-    3) and ``rl/`` or ``rl_own_init/`` (phase 4); the ``final/`` of each
-    run is what dra_inference serves (``utils.config.TRAINED_BELIEF_RUNS``)."""
+    (``utils.config``): ``stats/`` (stage generate statistics), ``filter/``
+    (stage filter: what the training stages train on, for every student),
+    and per student ``{student}/sft/`` (stage sft) and ``{student}/rl/`` or
+    ``{student}/rl_own_init/`` (stage rl); the ``final/`` of each run is what
+    dra_inference serves (``utils.config.TRAINED_BELIEF_RUNS``)."""
 
-    def __init__(self) -> None:
+    def __init__(self, student: Optional[str] = None) -> None:
         self.root = BELIEF_TRAINING_ROOT
         self.stats_dir = self.root / "stats"
-        self.sft_dir = self.root / SFT_RUN
-        self.sft_samples = self.sft_dir / "samples.jsonl"
-        self.sft_final = trained_belief_checkpoint(SFT_RUN)
+        self.filter_dir = self.root / "filter"
+        self.sft_samples = self.filter_dir / "sft_samples.jsonl"
+        self.rl_episodes = self.filter_dir / "rl_episodes.jsonl"
+        self.filter_stats = self.filter_dir / "stats.json"
+        self.student = student
+
+    def _student(self) -> str:
+        if self.student is None:
+            raise ValueError("RunPaths without a student has no training run")
+        return self.student
+
+    @property
+    def sft_dir(self) -> Path:
+        return self.root / self._student() / SFT_RUN
+
+    @property
+    def sft_final(self) -> Path:
+        return trained_belief_checkpoint(self._student(), SFT_RUN)
 
     def rl_dir(self, beliefs: str) -> Path:
-        return self.root / RL_RUNS[beliefs]
+        return self.root / self._student() / RL_RUNS[beliefs]
 
     def rl_final(self, beliefs: str) -> Path:
-        return trained_belief_checkpoint(RL_RUNS[beliefs])
+        return trained_belief_checkpoint(self._student(), RL_RUNS[beliefs])

@@ -1,6 +1,6 @@
 """Question loaders: the questions of each source in one record format
 (``LOADERS``: the sources of webshaper_frames; ``load_infoseek``: the
-infoseek build's).
+infoseek_hard build's).
 
 Record (one JSON line per question)::
 
@@ -18,7 +18,7 @@ skeleton of the gold annotation (``gold/annotations.py``): the beliefs the
 source states (InfoSeek: the hops of its research tree; WebShaper: the
 variables of its formalization; FRAMES: none) with their relations, answers
 and the keys of their gold pages (``gold_keys``), resolved to documents by
-the build (webshaper_frames: the fetched pages; infoseek: the corpus chunks
+the build (webshaper_frames: the fetched pages; infoseek_hard: the corpus chunks
 of each page).
 """
 

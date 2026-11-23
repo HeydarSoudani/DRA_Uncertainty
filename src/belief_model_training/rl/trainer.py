@@ -19,7 +19,9 @@ default; the advantages are computed by the caller, ``rl.loop``).
 - The mean token entropy of the replies is reported (entropy collapse).
 
 The model and its optimizer state sit on the GPU only during ``update``
-(``onload`` / ``offload``); the rollout engine uses the GPU otherwise.
+(``onload`` / ``offload``); the rollout engine uses the GPU otherwise.  On
+the CPU they are held in pinned buffers, allocated at the first offload
+and reused, so each move is one asynchronous copy per tensor.
 """
 
 import gc
@@ -130,6 +132,8 @@ class BeliefPPOTrainer:
         self.model.config.use_cache = False
         self.optimizer = StochasticRoundingAdamW([p for p in self.model.parameters() if p.requires_grad],
                                                  lr=cfg.learning_rate)
+        # Pinned CPU copies of the parameters and optimizer state (``offload``), by tensor.
+        self._pinned: Dict[Tuple[int, str], torch.Tensor] = {}
         self.ref_model = None
         if cfg.use_kl_loss:
             self.ref_model = load_student(model_path)
@@ -138,19 +142,35 @@ class BeliefPPOTrainer:
 
     # -- placement --
 
-    def _move_optimizer(self, device: torch.device) -> None:
+    def _to_pinned(self, key: Tuple[int, str], tensor: torch.Tensor) -> torch.Tensor:
+        """*tensor* copied (asynchronously) into its pinned CPU buffer."""
+        buf = self._pinned.get(key)
+        if buf is None or buf.shape != tensor.shape or buf.dtype != tensor.dtype:
+            buf = torch.empty(tensor.shape, dtype=tensor.dtype, device="cpu", pin_memory=True)
+            self._pinned[key] = buf
+        buf.copy_(tensor, non_blocking=True)
+        return buf
+
+    def onload(self) -> None:
+        for p in self.model.parameters():
+            p.data = p.data.to(self.device, non_blocking=True)
         for state in self.optimizer.state.values():
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-
-    def onload(self) -> None:
-        self.model.to(self.device)
-        self._move_optimizer(self.device)
+                    state[k] = v.to(self.device, non_blocking=True)
+        self.model.to(self.device)  # the buffers
+        torch.cuda.synchronize()
 
     def offload(self) -> None:
-        self.model.to("cpu")
-        self._move_optimizer(torch.device("cpu"))
+        if next(self.model.parameters()).device.type != "cpu":
+            for p in self.model.parameters():
+                p.data = self._to_pinned((id(p), "param"), p.data)
+            for p, state in self.optimizer.state.items():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor) and v.device.type != "cpu":
+                        state[k] = self._to_pinned((id(p), k), v)
+            torch.cuda.synchronize()
+        self.model.to("cpu")  # the buffers
         gc.collect()
         torch.cuda.empty_cache()
 
