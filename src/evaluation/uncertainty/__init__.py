@@ -1,19 +1,21 @@
-"""Uncertainty evaluation (the ``uncertainty`` group of the run's ``metrics.md``).
+"""Uncertainty evaluation: the ``uncertainty`` group of ``metrics.md``.
 
-* :class:`VerbalConfidenceEvaluator` (:mod:`.verbal`): the agent's verbal
-  confidence against the correctness of the final answer (AUROC, Brier), a
-  measure of the generation (once per run).
-* :class:`UncertaintyEvaluator` (:mod:`.qa`): the belief LLM score (s_T,
-  the belief model's final scorer) and the belief rule-based score (the
-  mean status probability of the final beliefs) against the correctness of
-  the final answer (AUROC, Brier), once per belief model.
-* :class:`ReportUncertaintyEvaluator` (:mod:`.report`): a report's s_T (the
-  certainty of the final coverage) against its nugget coverage (Kendall's
-  tau-b).
+    verbal.py    VerbalConfidenceEvaluator: the agent's verbal confidence vs
+                 correctness (AUROC, Brier); QA, once per run
+    qa.py        UncertaintyEvaluator: the belief rule-based score and the
+                 belief LLM score (s_T) vs correctness (AUROC, Brier); QA,
+                 once per belief model
+    report.py    ReportUncertaintyEvaluator: a report's s_T vs its nugget
+                 coverage (Kendall's tau-b, Brier); reports, once per belief model
+    metrics.py   metric names and the log lines
+
+Every score here is read against the generation group's output (the answer
+verdicts or the Auto-ARGUE records), never judged again.
 """
 
-from .qa import UncertaintyEvaluator
-from .report import ReportUncertaintyEvaluator
-from .verbal import VerbalConfidenceEvaluator
+from .qa import UncertaintyEvaluator, belief_scores
+from .report import ReportUncertaintyEvaluator, report_scores
+from .verbal import VerbalConfidenceEvaluator, verbal_confidence_scores
 
-__all__ = ["ReportUncertaintyEvaluator", "UncertaintyEvaluator", "VerbalConfidenceEvaluator"]
+__all__ = ["ReportUncertaintyEvaluator", "UncertaintyEvaluator", "VerbalConfidenceEvaluator",
+           "belief_scores", "report_scores", "verbal_confidence_scores"]

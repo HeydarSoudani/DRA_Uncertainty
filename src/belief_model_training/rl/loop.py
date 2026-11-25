@@ -137,7 +137,7 @@ def rollout_stats(groups: List[Group]) -> Dict[str, Any]:
 
 def validate(val: List[Episode], engine, store: DocumentStore, cfg: TrainingConfig) -> Dict[str, Any]:
     """Greedy chains on the val episodes: s_T against y."""
-    from evaluation.measures import auroc, brier
+    from evaluation.shared.measures import auroc, brier
 
     chains = run_chains([(ep, cfg.rl.beliefs) for ep in val], engine, store, temperature=0.0)
     ys, ss, rewards, gates = [], [], [], []

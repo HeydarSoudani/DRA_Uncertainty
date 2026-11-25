@@ -1,12 +1,9 @@
-"""Shared measures of the evaluation.
-
-One copy of each measure, used by the run evaluation (``evaluation.runner``:
-uncertainty and belief update) and by the offline analyses.
+"""The measures of the evaluation, one copy each (``auroc`` and ``brier``
+also used by ``belief_model_training.rl``).
 
     auroc         AUROC of a score for a binary label (Mann-Whitney U, ties
                   as halves); NaN when one class is missing
     brier         mean squared error of a probability against the label
-    ece           expected calibration error, equal-width bins
     tau_b         Kendall's tau-b; NaN with fewer than two items or one class
     mean          the mean, NaN when empty
     mean_or_none  the mean of the defined values (None and NaN left out),
@@ -26,8 +23,6 @@ from scipy.stats import kendalltau, rankdata
 #: Resamples of the bootstrap and its seed (fixed, so a rerun gives the same CI).
 BOOTSTRAP_RESAMPLES = 1000
 BOOTSTRAP_SEED = 0
-#: Bins of the expected calibration error.
-ECE_BINS = 10
 
 
 def auroc(y: np.ndarray, s: np.ndarray) -> float:
@@ -47,18 +42,6 @@ def brier(y: np.ndarray, s: np.ndarray) -> float:
     y = np.asarray(y, dtype=float)
     s = np.asarray(s, dtype=float)
     return float(((s - y) ** 2).mean()) if len(y) else math.nan
-
-
-def ece(y: np.ndarray, s: np.ndarray, bins: int = ECE_BINS) -> float:
-    """Expected calibration error over *bins* equal-width bins of *s* (in
-    [0, 1]); NaN when empty."""
-    y = np.asarray(y, dtype=float)
-    s = np.asarray(s, dtype=float)
-    if not len(y):
-        return math.nan
-    idx = np.minimum((s * bins).astype(int), bins - 1)
-    return float(sum(abs(s[idx == b].mean() - y[idx == b].mean()) * (idx == b).sum()
-                     for b in range(bins) if (idx == b).any()) / len(y))
 
 
 def tau_b(s: np.ndarray, y: np.ndarray) -> float:

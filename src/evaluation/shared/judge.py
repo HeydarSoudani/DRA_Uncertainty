@@ -1,17 +1,20 @@
-"""LLM-as-judge plumbing shared by the answer evaluators.
+"""The LLM judge of the generation evaluators.
 
-The judge is Qwen3-32B served via OpenRouter (``openrouter/qwen/qwen3-32b``),
-the official BrowseComp-Plus / AgentIR leaderboard judge, hosted instead of run
-on local GPUs.  Requires ``OPENROUTER_API_KEY`` in the environment.
+The judge is Qwen3-32B served via OpenRouter (:data:`DEFAULT_JUDGE_MODEL`),
+the official BrowseComp-Plus / AgentIR leaderboard judge.  Requires
+``OPENROUTER_API_KEY`` in the environment.
 
-* :func:`make_judge_client` / :func:`complete_within` / :func:`judge_all`:
-  the free-text grader of the answer evaluation.
-* :class:`YesNoJudge`: the YES/NO judge of Auto-ARGUE (``generation.argue``)
-  and of the belief evaluation's gold match (``belief.gold_match``).
+    make_judge_client, complete_within, judge_all
+                    the free-text grader (``generation.llm_judge``)
+    YesNoJudge      the YES/NO judge at Auto-ARGUE's settings (``generation.argue``)
+    verdict_key     the hash a saved verdict is keyed by, so an unchanged
+                    query is never judged twice
 """
 
 import asyncio
 import concurrent.futures
+import hashlib
+import json
 import logging
 import re
 from typing import Any, Callable, Dict, List, Sequence
@@ -30,6 +33,13 @@ DEFAULT_JUDGE_MODEL = "openrouter/qwen/qwen3-32b"
 JUDGE_TIMEOUT = 180
 #: Requests made before a judge call that keeps timing out fails.
 JUDGE_ATTEMPTS = 3
+
+
+def verdict_key(payload: Any) -> str:
+    """SHA-256 of *payload* (JSON, keys sorted): the key of a saved verdict,
+    over everything the verdict depends on."""
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
 
 def run_sync(coro):
     """Run *coro* to completion from synchronous code, also when called from
@@ -112,16 +122,10 @@ YES_NO_TIMEOUT = 60
 _YES_NO = re.compile(r"\b(YES|NO)\b")
 
 
-def yes_no(text: str):
-    """The first YES or NO word of a reply (case ignored), None without one.
-    Whole words only: "UNKNOWN" or "CANNOT" is no answer."""
-    m = _YES_NO.search((text or "").upper())
-    return m.group(1) if m else None
-
-
 def has_yes_no(text: str) -> bool:
-    """Whether a reply says YES or NO (:func:`yes_no`)."""
-    return yes_no(text) is not None
+    """Whether a reply says YES or NO (case ignored).  Whole words only:
+    "UNKNOWN" or "CANNOT" is no answer."""
+    return _YES_NO.search((text or "").upper()) is not None
 
 
 class YesNoJudge:

@@ -1,36 +1,41 @@
 """Answer accuracy by LLM-as-judge (BrowseComp-Plus methodology).
 
-The judge compares the agent's answer with the ground-truth answer.  The
-grading prompt is the one of BrowseComp-Plus (Chen et al., 2025,
-arXiv:2508.06600), which adopts the prompt of OpenAI's BrowseComp
-simple-evals.  The judge model is :data:`evaluation.judge.DEFAULT_JUDGE_MODEL`.
+The judge compares the agent's answer with the ground-truth answer, with the
+grading prompt of BrowseComp-Plus (Chen et al., 2025, arXiv:2508.06600),
+itself OpenAI's BrowseComp simple-evals prompt, kept verbatim
+(:data:`GRADER_TEMPLATE`).  Its ``confidence`` field is kept so saved verdicts
+stay valid, but not read: the agent's own confidence is read from the
+generation (``confidence.py``).  The judge model is
+``shared.judge.DEFAULT_JUDGE_MODEL``.
 
-Scoring: binary (correct / incorrect).  Accuracy = #correct / #evaluated.
-The grading prompt is kept verbatim (its ``confidence`` field included, so
-saved verdicts stay valid), but that field is not used: the agent's own
-confidence is read from the generation (``generation.confidence``).
+Scoring: binary; accuracy = correct / evaluated (rows: ``accuracy.py``).
+An empty generation is incorrect without a judge call.  A reply without a
+``correct:`` field is asked again :data:`PARSE_RETRIES` times; a query whose
+judging still fails is counted incorrect, in ``judge errors``, and judged
+again on the next evaluation.
 
-A verdict is saved in ``eval/generation/accuracy.jsonl`` with a ``key`` hashing what was
-judged (question, cleaned response, gold answer, judge model, grader prompt);
-evaluating the run again reuses it.  A reply without a ``correct:`` field is
-asked again twice; a query whose judging still fails is counted incorrect, in
-``num_judge_errors``, and judged again on the next evaluation.
+Cache: every verdict is saved in ``eval/generation/accuracy.jsonl`` with a
+``key`` hashing what was judged (question, cleaned response, gold answer,
+judge model, grader prompt); evaluating the run again reuses it.
+
+Datasets: ``answer_eval == "llm_judge"`` (BrowseComp-Plus, infoseek_hard, ...).
 """
 
-import hashlib
-import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils.io_utils import read_jsonl, write_jsonl
 from reasoner_component import LiteLLMClient
 
-from ..metrics_file import ACCURACY_FILE, GroupResult
-from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client
+from ..shared.context import GENERATION, EvalContext, EvalSetup
+from ..shared.files import ACCURACY_FILE
+from ..shared.judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client, verdict_key
+from ..shared.result import GroupResult
+from .accuracy import accuracy_result
 from .confidence import verbal_confidence
-from .report_sentences import strip_references
+from .references import strip_references
 
 logger = logging.getLogger(__name__)
 
@@ -157,18 +162,18 @@ def _error_record(reasoning: str, judge_input: str = "", judge_error: bool = Tru
 
 def _verdict_key(question: str, judge_input: str, correct_answer: str, judge_model: str) -> str:
     """Hash of everything a verdict depends on."""
-    payload = [question, judge_input, correct_answer, judge_model, GRADER_TEMPLATE]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
+    return verdict_key([question, judge_input, correct_answer, judge_model, GRADER_TEMPLATE])
 
 
 class AccuracyEvaluator:
-    """Evaluate answer correctness with an LLM judge (BrowseComp-Plus method).
+    """Answer correctness by LLM judge (module docstring).
 
     Usage::
 
         evaluator = AccuracyEvaluator(answers={"q1": "gold answer", ...},
                                       questions={"q1": "question", ...})
-        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
+        raw = evaluator.score(results, run_dir)        # the verdicts (accuracy.py)
+        group = evaluator.evaluate(EvalContext(results, run_dir))   # rows, saved verdicts
 
     Args:
         answers: ``query_id -> ground-truth answer``.
@@ -177,6 +182,10 @@ class AccuracyEvaluator:
         judge_model: Judge model, resolved by ``reasoner_component.providers.routing``.
         max_concurrent_judges: Max in-flight judge requests.
     """
+
+    name = "accuracy"
+    scope = GENERATION
+    provides = "accuracy"
 
     def __init__(
         self,
@@ -190,6 +199,12 @@ class AccuracyEvaluator:
         self.judge_model = judge_model
         self.max_concurrent_judges = max_concurrent_judges
         self._client: Optional[LiteLLMClient] = None
+
+    @classmethod
+    def from_setup(cls, setup: EvalSetup) -> Optional["AccuracyEvaluator"]:
+        if not (setup.answers and setup.answer_eval == "llm_judge"):
+            return None
+        return cls(answers=setup.answers, questions=setup.questions, **setup.judge_kwargs)
 
     @property
     def client(self) -> LiteLLMClient:
@@ -240,33 +255,26 @@ class AccuracyEvaluator:
         return {r["query_id"]: r for r in read_jsonl(path)
                 if r.get("key") and not r.get("judge_error")}
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
-        """The ``generation`` rows and per-query values of :meth:`score`, its
-        verdicts saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
-        return accuracy_result(self.score(results, run_dir), run_dir, self.save_results)
+    def evaluate(self, ctx: EvalContext) -> GroupResult:
+        """The rows and per-query values of :meth:`score` (``accuracy.py``),
+        its verdicts saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
+        return accuracy_result(self.score(ctx.results, ctx.run_dir), ctx.run_dir, self.save_results)
 
-    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
-        """Judge every query with a ground-truth answer, reusing the verdicts
-        saved in ``{run_dir}/eval/generation/accuracy.jsonl`` for unchanged queries.
+    def pending(self, ctx: EvalContext) -> int:
+        """The queries :meth:`score` would judge now (no saved verdict for
+        their current input, or a saved judge error); no LLM call."""
+        return len(self._plan(ctx.results, ctx.run_dir)[1])
 
-        Returns ``accuracy``, ``num_correct``, ``num_evaluated``,
-        ``num_judge_errors``, ``num_judged`` (judge calls made now) and
-        ``per_query`` (the judge records, with the agent's
-        ``verbal_confidence``); ``{}`` when no query has an answer.
-        An empty generation is incorrect without a judge call.
-        """
-        evaluable_ids = [qid for qid in results if self.answers.get(qid)]
-        if not evaluable_ids:
-            logger.warning("No queries with ground-truth answers to evaluate")
-            return {}
-
+    def _plan(self, results: Dict[str, Dict[str, Any]], run_dir) -> Tuple[List[Dict[str, Any]], List[Tuple]]:
+        """``(records, to_judge)``: the records known without a judge call
+        (saved verdicts of unchanged queries, empty generations) and the
+        ``(query_id, generation, key)`` items left to judge."""
         saved = self._saved_verdicts(run_dir)
         per_query: List[Dict[str, Any]] = []
-        to_judge = []
-        for query_id in evaluable_ids:
+        to_judge: List[Tuple] = []
+        for query_id in (qid for qid in results if self.answers.get(qid)):
             generation = results[query_id].get("generation", "")
             if not generation:
-                logger.warning(f"Empty generation for {query_id}, marking incorrect")
                 per_query.append({"query_id": query_id, **_error_record("Empty generation", judge_error=False)})
                 continue
             key = _verdict_key(self.questions.get(query_id, query_id), _clean_response_for_judge(generation),
@@ -275,7 +283,25 @@ class AccuracyEvaluator:
                 per_query.append(saved[query_id])
             else:
                 to_judge.append((query_id, generation, key))
+        return per_query, to_judge
 
+    def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
+        """Judge every query with a ground-truth answer, reusing the verdicts
+        saved in ``{run_dir}/eval/generation/accuracy.jsonl`` for unchanged queries.
+
+        Returns ``accuracy``, ``num_correct``, ``num_evaluated``,
+        ``num_judge_errors`` and ``per_query`` (the judge records, with the
+        agent's ``verbal_confidence``); ``{}`` when no query has an answer.
+        An empty generation is incorrect without a judge call.
+        """
+        if not any(self.answers.get(qid) for qid in results):
+            logger.warning("No queries with ground-truth answers to evaluate")
+            return {}
+
+        per_query, to_judge = self._plan(results, run_dir)
+        empty = [r["query_id"] for r in per_query if r.get("reasoning") == "Empty generation"]
+        if empty:
+            logger.warning(f"Empty generation for {len(empty)} query(ies), marked incorrect: {', '.join(empty[:10])}")
         if to_judge:
             print(f"  Judging {len(to_judge)} answer(s) ({len(per_query)} reused or empty) with {self.judge_model}")
             per_query += judge_all(
@@ -295,7 +321,6 @@ class AccuracyEvaluator:
             "num_correct": num_correct,
             "num_evaluated": num_evaluated,
             "num_judge_errors": sum(1 for r in per_query if r.get("judge_error")),
-            "num_judged": len(to_judge),
             "per_query": sorted(per_query, key=lambda r: r["query_id"]),
         }
 
@@ -310,21 +335,3 @@ class AccuracyEvaluator:
                   "reasoning", "verbal_confidence")
         write_jsonl(output_path, [{k: r.get(k) for k in fields} for r in metrics.get("per_query", [])])
 
-
-def accuracy_result(metrics: Dict[str, Any], run_dir, save) -> GroupResult:
-    """The ``generation`` group of an accuracy evaluator's *metrics* (``score``
-    of :class:`AccuracyEvaluator` or ``NumericMatchEvaluator``; *raw*), saved
-    at once with *save* when there is a *run_dir*: the verdicts are paid for,
-    and a later evaluator may fail.  Empty without any evaluated query."""
-    if not metrics:
-        return GroupResult(raw=metrics)
-    if run_dir is not None:
-        save(metrics, Path(run_dir) / ACCURACY_FILE)
-    res = GroupResult(raw=metrics, per_query={
-        r["query_id"]: {"correct": None if r.get("judge_error") else bool(r["correct"]),
-                        "verbal_confidence": r.get("verbal_confidence")} for r in metrics["per_query"]})
-    res.add("generation", "accuracy", metrics["accuracy"], n=metrics["num_evaluated"])
-    res.add("generation", "correct", metrics["num_correct"])
-    res.add("generation", "evaluated", metrics["num_evaluated"])
-    res.add("generation", "judge errors", metrics.get("num_judge_errors", 0))
-    return res

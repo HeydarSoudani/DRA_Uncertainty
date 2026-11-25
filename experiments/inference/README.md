@@ -357,9 +357,11 @@ end-of-run Recall@N.
 A run is evaluated from its saved files at the end of every stage. Each stage scores its own scope and keeps the
 rest of `eval/metrics.md` and `eval/per_query.csv`: `generate` the generation, `belief` its belief model, `eval` and
 `all` everything. The belief stage scores the generation too when the saved generation rows cannot be kept (no
-`metrics.md`, no generation row in it, or another number of queries than the run's, e.g. after an interrupted
-generate stage). Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
-makes no LLM call and needs no GPU; the belief models' evaluation makes no LLM call at all. The belief score and
+`metrics.md`, no generation row in it, another number of queries than the run's, e.g. after an interrupted
+generate stage, or a query of the run missing from `per_query.csv`), and when a judge verdict of the generation is
+missing (a judge failure, judged again then), so the belief rows always use the verdicts of the generation rows.
+A belief model with no belief file to read keeps its saved rows. Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
+makes no LLM call and needs no GPU; the belief models' evaluation makes no LLM call of its own. The belief score and
 belief rows score the queries with a belief file. A belief file of an older schema from 54 on (`EVAL_MIN_SCHEMA`) is scored as it is (the evaluation reads only
 fields these schemas share); an older file is left out with a warning; the `metrics.md` header then gives the model's files per schema, and the next belief stage
 makes them again.
@@ -381,14 +383,14 @@ column of `metrics.md` ("-" on the generation's rows), with their per-query colu
 | belief | evidence uptake [CI], false uptake [CI]; update calls, format gate failed; update issue table (below) | QA datasets (qrels), belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
-CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.measures`). Nothing else is
+CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.shared.measures`). Nothing else is
 computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, soft match or length statistics (the
 raw outputs stay in the run, for `analysis/`).
 
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
 query out). The baseline `verbal` (`uncertainty/verbal.py`) is a measure of the generation, scored once per run: the
 agent's own `Confidence: X%` (glm and oss; read from `generation/{qid}.md` by a regex,
-`evaluation/generation/confidence.py`: "~85 %", a fraction such as "0.85", the value on the line after the label and
+`evaluation/generation/confidence.py`: "~85 %", a value of at most 1 without "%" such as "0.85" or "1" read as a fraction, the value on the line after the label and
 text after a "%" value accepted), on every judged query; a query without a stated confidence (no confidence line, a
 tool call or narration as the final text) is scored 0.5 (unknown) and counted in the `missing` row, its
 per_query.csv cell left blank. Per belief model (`uncertainty/qa.py`): `belief rule-based` (the fixed function of the final statuses,
@@ -437,8 +439,8 @@ Every run can be compared in one table with `analysis/collect_results.py --root 
 headline measures as columns; `--all` for every measure, `--group` to keep some groups, `--ci` for the CIs):
 `results.md` and `results.csv`.
 
-`utils/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one module or
-subpackage per group:
+`utils/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one directory
+per group of `metrics.md` (details and how to add an evaluator: `src/evaluation/README.md`):
 
 ```
 utils/run_files/
@@ -451,16 +453,14 @@ utils/run_files/
 └── run_config.py    run directory name, run_config.json, passage cut of a run
 
 src/evaluation/
-├── runner.py        build_evaluators, load_run_results, evaluate_and_save
-├── metrics_file.py  metrics.md, per_query.csv and the log block
-├── measures.py      AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with the analyses)
-├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
-├── retrieval.py     seen-doc Recall@N, Precision@N
+├── runner.py        EVALUATORS (the registry), build_evaluators, load_run_results, evaluate_and_save
+├── shared/          GroupResult, EvalSetup/EvalContext, eval/ files, log block, measures, LLM judge
+├── retrieval/       SeenDocEvaluator: seen-doc Recall@N, Precision@N
 ├── generation/      AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
-├── uncertainty/     UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
-├── belief/          evidence_uptake (uptake.py), issue_summary (issues.py)
-└── trajectory.py    TrajectoryEvaluator (per query)
+├── uncertainty/     VerbalConfidenceEvaluator, UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
+├── belief/          EvidenceUptakeEvaluator (uptake.py), IssueEvaluator (issues.py)
+└── trajectory/      TrajectoryEvaluator (agent.py), BeliefTokenEvaluator (belief_tokens.py)
 ```
 
 ### Report evaluation (Auto-ARGUE)

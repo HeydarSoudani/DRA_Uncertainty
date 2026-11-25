@@ -1,17 +1,15 @@
-"""Belief evaluation (the ``belief`` group of the run's ``metrics.md``).
+"""Belief evaluation: the ``belief`` group of ``metrics.md``, once per belief model.
+
+    uptake.py    EvidenceUptakeEvaluator: does s_t rise on gold documents
+                 (evidence uptake) and on non-gold ones (false uptake); QA datasets
+    issues.py    IssueEvaluator: update calls, the share failing the format
+                 gate, and the issue table
+    metrics.py   metric names and the log line
 
 The belief files are written and read by ``utils.run_files.belief``.
-
-* :func:`evidence_uptake` (:mod:`.uptake`): whether the belief's certainty
-  s_t rises at the steps that bring a gold document (evidence uptake) and
-  at the steps that bring only non-gold documents (false uptake), from the
-  run's qrels (every dataset with qrels).
-* :func:`issue_summary` (:mod:`.issues`): how often the update's replies
-  fail the format gate (rows of the ``belief`` group) and every issue code
-  that occurs (the issue table of ``metrics.md``).
 """
 
-from .issues import ISSUE_COLUMNS, issue_summary
-from .uptake import evidence_uptake
+from .issues import IssueEvaluator, issue_summary
+from .uptake import EvidenceUptakeEvaluator, evidence_uptake
 
-__all__ = ["ISSUE_COLUMNS", "evidence_uptake", "issue_summary"]
+__all__ = ["EvidenceUptakeEvaluator", "IssueEvaluator", "evidence_uptake", "issue_summary"]

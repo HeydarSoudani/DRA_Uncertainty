@@ -15,7 +15,7 @@ its partial log rather than appending to it.
 
 The JSONL of a finished query is rewritten by
 :func:`utils.run_files.save_trajectory`, the last file
-:func:`evaluation.runner.save_query_outputs` writes, with the meta line at
+:func:`utils.run_files.save_query_outputs` writes, with the meta line at
 the end.  The meta line is the query's completion marker
 (:func:`utils.run_files.scan_queries`): a streamed file without it is
 an unfinished query.

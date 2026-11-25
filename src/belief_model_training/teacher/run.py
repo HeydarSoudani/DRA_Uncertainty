@@ -26,7 +26,7 @@ def run_teacher(cfg: TrainingConfig, dataset: str, split: str, policy_models: Li
     from indexing_corpus_dataset.dataset_loaders import load_queries
     from indexing_corpus_dataset.layout import BUILT_DATASETS, DATASET_SPECS, dataset_root
     from utils.run_files import scan_queries
-    from evaluation.metrics_file import METRICS_FILE
+    from evaluation.shared.files import METRICS_FILE
 
     if dataset not in BUILT_DATASETS:
         raise SystemExit(f"--dataset {dataset}: stage teacher runs on a training dataset ({sorted(BUILT_DATASETS)})")

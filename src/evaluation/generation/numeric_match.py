@@ -1,32 +1,31 @@
-"""Answer accuracy by numeric match, for datasets with numeric answers (TRQA).
+"""Answer accuracy by numeric exact match, for numeric answers (TRQA).
 
-Correctness is judged by numeric matching rather than an LLM judge
-(``DATASET_SPECS[...].answer_eval == "numeric_match"``).  The matching logic
-(number extraction and exact / tolerant comparison) is ported verbatim from the
-official Total-Recall-QA repository:
+Correctness is a numeric match, not an LLM judge (``answer_eval ==
+"numeric_match"``).  The matching (number extraction, exact comparison at
+``decimals`` places) is ported verbatim from the official Total-Recall-QA
+repository:
 
     https://github.com/mahta-r/total-recall-qa/blob/main/c5_task_evaluation/metrics/generation_eval_metrics.py
 
-Metric: ``exact_match``, the fraction with an exact numeric match (as in
-``run_evalution.py`` of that repository; its tolerant matches are not
-reported).
-
+Metric: the exact match (as in that repository's ``run_evalution.py``; its
+tolerant matches are not reported), in the accuracy rows (``accuracy.py``).
 The agent's final short answer is extracted from the generation by
-:func:`extract_prediction`.  The interface matches
-:class:`evaluation.generation.llm_judge.AccuracyEvaluator`, so the runner uses
-either one in the accuracy slot.
+:func:`extract_prediction`.  No LLM call, so nothing is cached; the records
+are still written to ``eval/generation/accuracy.jsonl``.
 """
 
 import logging
 import math
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from utils.io_utils import write_jsonl
-from .report_sentences import strip_references
-from ..metrics_file import GroupResult
+
+from ..shared.context import GENERATION, EvalContext, EvalSetup
+from ..shared.result import GroupResult
+from .accuracy import accuracy_result
 from .confidence import verbal_confidence
-from .llm_judge import accuracy_result
+from .references import strip_references
 
 logger = logging.getLogger(__name__)
 
@@ -122,26 +121,41 @@ def extract_prediction(generation: str) -> str:
 # ---------------------------------------------------------------------------
 
 class NumericMatchEvaluator:
-    """Numeric exact match of the final answer.
+    """Numeric exact match of the final answer (module docstring).
 
     Usage::
 
         evaluator = NumericMatchEvaluator(answers={"q1": "8269", ...})
-        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
+        raw = evaluator.score(results)                    # the records (accuracy.py)
+        group = evaluator.evaluate(EvalContext(results, run_dir))
 
     Args:
         answers: ``query_id -> ground-truth answer``.
         decimals: Decimals kept before comparison.
     """
 
+    name = "accuracy"
+    scope = GENERATION
+    provides = "accuracy"
+
     def __init__(self, answers: Dict[str, str], decimals: int = 3) -> None:
         self.answers = answers
         self.decimals = decimals
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
-        """The ``generation`` rows and per-query values of :meth:`score`, its
-        records saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
-        return accuracy_result(self.score(results), run_dir, self.save_results)
+    @classmethod
+    def from_setup(cls, setup: EvalSetup) -> Optional["NumericMatchEvaluator"]:
+        if not (setup.answers and setup.answer_eval == "numeric_match"):
+            return None
+        return cls(answers=setup.answers)
+
+    def evaluate(self, ctx: EvalContext) -> GroupResult:
+        """The rows and per-query values of :meth:`score` (``accuracy.py``),
+        its records saved to ``{run_dir}/eval/generation/accuracy.jsonl``."""
+        return accuracy_result(self.score(ctx.results), ctx.run_dir, self.save_results)
+
+    def pending(self, ctx: EvalContext) -> int:
+        """Always 0: no judge, nothing to judge."""
+        return 0
 
     def score(self, results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         """Exact match over the queries with a ground-truth answer (no judge,

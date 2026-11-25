@@ -11,7 +11,7 @@ The belief stage writes ``belief/{model}/{qid}.jsonl``, one folder per
 belief model (``belief``); both write
 ``run_config.json`` (``run_config``).  The evaluation only reads these files
 (:func:`load_result_from_saved_files`, ``belief.load_belief_files``) and
-writes its own under ``eval/`` (``evaluation.metrics_file``).
+writes its own under ``eval/`` (``evaluation.shared.files``).
 """
 
 from pathlib import Path

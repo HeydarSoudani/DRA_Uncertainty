@@ -41,7 +41,7 @@ src/
 ├── reasoner_component/       LLM generators (API, vLLM) + vLLM servers
 ├── orchestration/            wiring of agent, searcher and belief model; multi-GPU workers
 ├── belief_model_component/   beliefs, belief state, signals, judges
-├── evaluation/               answer, retrieval, trajectory and generation evaluators
+├── evaluation/               scoring of a run, one package per metrics.md group
 └── indexing_corpus_dataset/  dataset download and index building
 experiments/
 ├── inference/                dra_inference.py

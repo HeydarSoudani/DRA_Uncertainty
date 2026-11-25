@@ -1,59 +1,79 @@
 """The agent's verbal confidence against the correctness of its answer.
 
-Per query of a short-answer dataset (``task == "qa"``), y is the
-correctness of the agent's final answer (``eval/generation/accuracy.jsonl``:
-the judge's ``correct``, TRQA's exact match; a judge error leaves the
-query out) and the score is the agent's own confidence in its answer
-(``generation.confidence``, glm and oss).  A measure of the generation (no
-belief model), so the generate stage reports it.  A judged query without a
-stated confidence (no confidence line, a tool call or narration as the final
-text) is scored :data:`MISSING_CONFIDENCE` (0.5: unknown, neither confident
-nor unconfident), so every judged query counts; per_query.csv keeps the raw
-value (blank when missing).  Rows: how many of the queries scored were
-missing (scored 0.5), the AUROC with a bootstrap CI over queries and the
-Brier score.  No LLM call.
+QA datasets.  Per judged query: y is the correctness of the final answer
+(the accuracy verdicts, ``eval/generation/accuracy.jsonl``: the judge's
+``correct``, TRQA's exact match; a judge error leaves the query out), the
+score the agent's own confidence (``generation.confidence``, glm and oss).
+A query without a stated confidence (no confidence line, a tool call or
+narration as the final text) is scored :data:`~.metrics.MISSING_CONFIDENCE`,
+so every judged query counts; ``per_query.csv`` keeps the raw value (blank
+when missing).
+
+A measure of the generation, scored once per run (the generate stage
+reports it): the baseline of the belief scores.
+
+Rows (``uncertainty`` group):
+    verbal: missing (scored 0.5)   judged queries without a confidence
+    verbal AUROC                   bootstrap CI over queries
+    verbal Brier
+
+No LLM call.
 """
 
 import logging
 import math
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from ..measures import auroc, bootstrap_ci, brier
-from ..metrics_file import GroupResult
+from ..shared.context import GENERATION, EvalContext, EvalSetup
+from ..shared.measures import auroc, bootstrap_ci, brier
+from ..shared.result import GroupResult
+from . import metrics as m
 
 logger = logging.getLogger(__name__)
 
-# The score of a judged query without a stated confidence (module docstring).
-MISSING_CONFIDENCE = 0.5
+
+def verbal_confidence_scores(accuracy_per_query: List[Dict[str, Any]]) -> GroupResult:
+    """The rows from the accuracy records (``correct``, ``judge_error``,
+    ``verbal_confidence``); empty when no query has a verbal confidence (an
+    agent that states none)."""
+    if not any(r.get("verbal_confidence") is not None for r in accuracy_per_query):
+        return GroupResult()
+    scored = [r for r in accuracy_per_query if not r.get("judge_error")]
+    missing = sum(1 for r in scored if r.get("verbal_confidence") is None)
+    if len(scored) < len(accuracy_per_query):
+        logger.info("verbal confidence evaluation: %d judge error(s) left out",
+                    len(accuracy_per_query) - len(scored))
+
+    def score(r):
+        c = r.get("verbal_confidence")
+        return m.MISSING_CONFIDENCE if c is None else c
+
+    def stat(fn):
+        return lambda rs: fn(np.array([int(bool(r.get("correct"))) for r in rs], dtype=float),
+                             np.array([score(r) for r in rs], dtype=float)) if rs else math.nan
+
+    res = GroupResult()
+    res.add(m.GROUP, m.VERBAL_MISSING, missing, n=len(scored))
+    res.add(m.GROUP, m.auroc_row(m.VERBAL), stat(auroc)(scored), *bootstrap_ci(scored, stat(auroc)), len(scored))
+    res.add(m.GROUP, m.brier_row(m.VERBAL), stat(brier)(scored), n=len(scored))
+    return res
 
 
 class VerbalConfidenceEvaluator:
-    """The verbal confidence measures of a run (module docstring)."""
+    """:func:`verbal_confidence_scores` of the run's answer verdicts; QA
+    datasets whose answers are scored."""
 
-    def evaluate(self, accuracy_per_query: List[Dict[str, Any]]) -> GroupResult:
-        """The generation's ``uncertainty`` rows from the accuracy records
-        (``correct``, ``judge_error``, ``verbal_confidence``); empty when no
-        query has a verbal confidence (an agent that states none)."""
-        if not any(r.get("verbal_confidence") is not None for r in accuracy_per_query):
+    name = "verbal"
+    scope = GENERATION
+    provides = None
+
+    @classmethod
+    def from_setup(cls, setup: EvalSetup) -> Optional["VerbalConfidenceEvaluator"]:
+        return cls() if setup.task == "qa" and setup.has_accuracy else None
+
+    def evaluate(self, ctx: EvalContext) -> GroupResult:
+        if not ctx.accuracy:
             return GroupResult()
-        scored = [r for r in accuracy_per_query if not r.get("judge_error")]
-        missing = sum(1 for r in scored if r.get("verbal_confidence") is None)
-        if len(scored) < len(accuracy_per_query):
-            logger.info("verbal confidence evaluation: %d judge error(s) left out",
-                        len(accuracy_per_query) - len(scored))
-
-        def score(r):
-            c = r.get("verbal_confidence")
-            return MISSING_CONFIDENCE if c is None else c
-
-        def stat(fn):
-            return lambda rs: fn(np.array([int(bool(r.get("correct"))) for r in rs], dtype=float),
-                                 np.array([score(r) for r in rs], dtype=float)) if rs else math.nan
-
-        res = GroupResult()
-        res.add("uncertainty", f"verbal: missing (scored {MISSING_CONFIDENCE:g})", missing, n=len(scored))
-        res.add("uncertainty", "verbal AUROC", stat(auroc)(scored), *bootstrap_ci(scored, stat(auroc)), len(scored))
-        res.add("uncertainty", "verbal Brier", stat(brier)(scored), n=len(scored))
-        return res
+        return verbal_confidence_scores(ctx.accuracy["per_query"])
