@@ -125,7 +125,7 @@ class BeliefWriter:
         *model* (None: an API client, reasoning off)."""
         self.model = model
         if llm is None:
-            from reasoner_component.factory import create_generator, disable_native_thinking
+            from reasoner_component import create_generator, disable_native_thinking
             llm = disable_native_thinking(create_generator(model, backend="api"))
         self._llm = llm
         self._max_tokens = max_tokens

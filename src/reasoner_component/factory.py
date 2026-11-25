@@ -1,102 +1,139 @@
-"""Factory for creating the right generator from a model name.
+"""Picking and building a generator.
 
-Three backends, each behind ``BaseGenerator``:
-  * ``api``   → ``APIGenerator``   (Claude / OpenAI / OpenRouter, hosted)
-  * ``vllm``  → ``VLLMGenerator``  (self-hosted OpenAI-compatible vLLM server)
-  * ``hf``    → ``HFGenerator``    (weights loaded in-process via transformers)
+``create_generator``         a model name → the right ``BaseGenerator``
+``disable_native_thinking``  switch a generator's own reasoning off
+``setup_llm``                the pipeline's generator, from the parsed CLI args
+``run_servers``              the vLLM servers a pipeline run needs
+
+Two backends, each behind ``BaseGenerator``:
+  * ``api``   → ``APIGenerator``   hosted: Claude / OpenAI / OpenRouter  (api.py)
+  * ``vllm``  → ``VLLMGenerator``  a self-hosted vLLM server             (vllm.py)
+
+``$VLLM_API_BASE`` points the pipeline's vLLM generator at a server of your
+own (another port or node) instead of its registered one; no server is then
+started for it.
 """
 
-from typing import Any, Dict, Optional
+import logging
+import os
+from typing import List, Optional
+
+from utils.config import SELF_MANAGED_LLM_AGENTS, resolve_agent_backend
 
 from .base import BaseGenerator
+from .vllm_server.registry import ServerSpec, server_spec
 
-# HuggingFace model repo slugs that must be loaded in-process (HF backend).
-# Currently empty: every finetuned model in the flow is served via an
-# OpenAI-compatible vLLM server (see is_local_finetuned / setup_llm). To route a
-# future model to in-process loading, add its slug here or address it with an
-# ``hf/`` prefix; create_generator picks the HF backend automatically.
-_HF_MODELS: set[str] = set()
+logger = logging.getLogger(__name__)
 
-
-def _infer_backend(model_name: str) -> str:
-    """Infer the backend from *model_name* prefixes / known slugs."""
-    if model_name.startswith("openrouter/"):
-        return "api"
-    if model_name.startswith("vllm/"):
-        return "vllm"
-    if model_name in _HF_MODELS or model_name.startswith("hf/"):
-        return "hf"
-    return "api"
+# CLI reranker name → the model of the vLLM server it calls.  Only these
+# rerankers get a server started for them; the others are served by hand
+# (vllm_server_scripts/rerankers/).
+RERANKER_SERVER_MODELS = {
+    "rank1": "jhu-clsp/rank1-7b",
+    "qwen3_reranker": "Qwen/Qwen3-Reranker-4B",
+}
 
 
-def create_generator(
-    model_name: str,
-    backend: Optional[str] = None,
-    **kwargs,
-) -> BaseGenerator:
-    """Instantiate the correct generator for *model_name*.
+# ── Building a generator ────────────────────────────────────────────────────
+
+def create_generator(model_name: str, backend: Optional[str] = None, **kwargs) -> BaseGenerator:
+    """The generator for *model_name*.
 
     Args:
-        model_name: Friendly model name. Recognised prefixes:
-            ``openrouter/`` → api, ``vllm/`` → vllm, ``hf/`` or a known HF slug → hf.
-        backend: Optional explicit backend (``"api"`` / ``"vllm"`` / ``"hf"``) that
-            overrides prefix inference.
-        **kwargs: Forwarded to the generator constructor.
+        model_name: ``vllm/<model>`` → vllm; anything else (``openrouter/...``,
+            a known API slug) → api.
+        backend: ``"api"`` / ``"vllm"``, overriding the inference.
+        **kwargs: Passed to the generator's constructor.
     """
-    backend = (backend or _infer_backend(model_name)).lower()
-
-    if backend == "hf":
-        # Import lazily so callers that only need API/vLLM don't pull in torch.
-        from .hf import HFGenerator, ensure_transformers_version
-
-        bare = model_name.removeprefix("hf/")
-        ensure_transformers_version(bare)
-        return HFGenerator(bare, **kwargs)
-
-    if backend == "vllm":
-        from .vllm import VLLMGenerator
-
-        return VLLMGenerator(model_name, **kwargs)
+    backend = (backend or ("vllm" if model_name.startswith("vllm/") else "api")).lower()
 
     if backend == "api":
         from .api import APIGenerator
 
         return APIGenerator(model_name, **kwargs)
 
+    if backend == "vllm":
+        from .vllm import VLLMGenerator
+
+        return VLLMGenerator(model_name, **kwargs)
+
     raise ValueError(f"Unknown backend '{backend}' for model '{model_name}'.")
 
 
-def no_thinking_extra_body(generator) -> Optional[Dict[str, Any]]:
-    """``extra_body`` that switches a model's own reasoning off.
-
-    Copies the configured body (OpenRouter provider pin) and extends it, so
-    it can be passed per call in place of the configured one: OpenRouter takes
-    ``reasoning.enabled``, a self-hosted vLLM model takes the chat-template
-    switch.  Other APIs get nothing (they may reject the vLLM kwarg).
-    """
-    client = getattr(generator, "_client", generator)
-    config = getattr(client, "config", None) or {}
-    body = dict(config.get("extra_body") or {})
-    model = str(config.get("model", "") or getattr(generator, "model_name", ""))
-    if model.startswith("openrouter/"):
-        body["reasoning"] = {"enabled": False}
-    elif model.startswith(("vllm/", "hosted_vllm/", "openai/")):
-        body["chat_template_kwargs"] = {"enable_thinking": False}
-    else:
-        return None
-    return body
-
-
-def disable_native_thinking(generator) -> BaseGenerator:
+def disable_native_thinking(generator):
     """Switch *generator*'s own reasoning off for every call; returns it.
 
-    For models that must answer in plain text within a token budget
-    (belief extraction, belief updater, the belief-aware policy):
-    with reasoning on, a thinking model can spend the whole budget before
-    writing the answer.
+    For models that must answer in plain text within a token budget (belief
+    extraction, belief updater, the belief-aware policy, the judge): with
+    reasoning on, a thinking model can spend the whole budget before writing
+    the answer.  Takes any generator or a ``LiteLLMClient``.
     """
-    body = no_thinking_extra_body(generator)
-    client = getattr(generator, "_client", generator)
-    if body is not None and isinstance(getattr(client, "config", None), dict):
-        client.config["extra_body"] = body
-    return generator
+    return generator.disable_thinking()
+
+
+# ── Pipeline wiring (CLI args) ──────────────────────────────────────────────
+
+def setup_llm(args) -> Optional[BaseGenerator]:
+    """The generator the pipeline runs on, from parsed CLI args.
+
+      * self-managed agents        → ``None`` (they create their own connection)
+      * a model with a vLLM server → ``VLLMGenerator`` at its registered
+        server (vllm_server/registry.py), or at ``$VLLM_API_BASE`` when set
+      * everything else            → ``APIGenerator``
+        (Azure/Anthropic/OpenAI/OpenRouter)
+    """
+    if args.policy_model in SELF_MANAGED_LLM_AGENTS:
+        return None
+
+    spec = server_spec(args.llm_model)
+    if spec is not None:
+        api_base = os.getenv("VLLM_API_BASE") or spec.api_base
+        print(f"Using vLLM-served model: {spec.name} at {api_base}")
+        return create_generator(
+            spec.name,
+            backend="vllm",
+            api_base=api_base,
+            temperature=args.llm_temperature,
+            top_p=args.llm_top_p,
+            max_tokens=args.llm_max_tokens_per_call,
+            timeout=args.request_timeout,
+        )
+
+    return create_generator(
+        args.llm_model,
+        temperature=args.llm_temperature,
+        top_p=args.llm_top_p,
+        max_completion_tokens=args.llm_max_tokens_per_call,
+        metadata={"model": args.llm_model},
+        request_timeout=args.request_timeout,
+    )
+
+
+def run_servers(args) -> List[ServerSpec]:
+    """The vLLM servers the run of *args* needs: its agent's (unless the agent
+    runs on OpenRouter, or ``$VLLM_API_BASE`` points ``setup_llm`` at a server
+    of your own) and its vLLM rerankers', one per port."""
+    specs: List[ServerSpec] = []
+    cli_name = getattr(args, "policy_model_cli", args.policy_model)
+    if resolve_agent_backend(cli_name)[0] == "api":
+        print(f"[vLLM] '{cli_name}' routed to OpenRouter: no vLLM server needed.")
+    elif args.policy_model not in SELF_MANAGED_LLM_AGENTS and os.getenv("VLLM_API_BASE"):
+        print(f"[vLLM] VLLM_API_BASE is set: using the server at {os.getenv('VLLM_API_BASE')}, starting none.")
+    else:
+        # The oss agent asks its server for "openai/<llm_model>" (oss_agent.py).
+        model = f"openai/{args.llm_model}" if args.policy_model == "oss" else args.llm_model
+        agent_spec = server_spec(model)
+        if agent_spec is not None:
+            specs.append(agent_spec)
+
+    for flag in ("post_retrieval_reranker", "post_fusion_reranker"):
+        model = RERANKER_SERVER_MODELS.get(getattr(args, flag, "null"))
+        spec = server_spec(model) if model else None
+        if spec is None or spec in specs:
+            continue
+        if any(s.port == spec.port for s in specs):
+            logger.warning("%s: port %d already has a server in this run; not starting %s",
+                           flag, spec.port, spec.label)
+            continue
+        specs.append(spec)
+    return specs

@@ -12,13 +12,18 @@ Two reading patterns:
   boundary to get the tokens consumed since the previous boundary.
 """
 
+import threading
 from dataclasses import dataclass, field
 from typing import Dict
 
 
 @dataclass
 class TokenMeter:
-    """Accumulate LLM token usage for a single agent/client."""
+    """Accumulate LLM token usage for a single agent/client.
+
+    Thread-safe: one generator (and so one meter) is shared by the worker
+    threads of a stage.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -28,12 +33,25 @@ class TokenMeter:
     _step_cursor: Dict[str, int] = field(
         default_factory=lambda: {"input_tokens": 0, "output_tokens": 0, "num_calls": 0}
     )
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+    def __getstate__(self) -> Dict:
+        # A lock cannot be pickled (spawned workers, deepcopy): drop it, and
+        # give the copy a fresh one.
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state: Dict) -> None:
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
 
     def record(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
         """Record one LLM call's usage (missing/None counts treated as 0)."""
-        self.input_tokens += int(prompt_tokens or 0)
-        self.output_tokens += int(completion_tokens or 0)
-        self.num_calls += 1
+        with self._lock:
+            self.input_tokens += int(prompt_tokens or 0)
+            self.output_tokens += int(completion_tokens or 0)
+            self.num_calls += 1
 
     def record_usage(self, usage) -> None:
         """Record usage from a provider response ``usage`` object or dict.
@@ -56,24 +74,26 @@ class TokenMeter:
 
     def snapshot(self) -> Dict[str, int]:
         """Return cumulative totals as a plain dict."""
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "total_tokens": self.input_tokens + self.output_tokens,
-            "num_calls": self.num_calls,
-        }
+        with self._lock:
+            return {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens,
+                "num_calls": self.num_calls,
+            }
 
     def since_last_step(self) -> Dict[str, int]:
         """Return usage accumulated since the previous call, then advance cursor."""
-        delta = {
-            "input_tokens": self.input_tokens - self._step_cursor["input_tokens"],
-            "output_tokens": self.output_tokens - self._step_cursor["output_tokens"],
-            "num_calls": self.num_calls - self._step_cursor["num_calls"],
-        }
-        delta["total_tokens"] = delta["input_tokens"] + delta["output_tokens"]
-        self._step_cursor = {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "num_calls": self.num_calls,
-        }
+        with self._lock:
+            delta = {
+                "input_tokens": self.input_tokens - self._step_cursor["input_tokens"],
+                "output_tokens": self.output_tokens - self._step_cursor["output_tokens"],
+                "num_calls": self.num_calls - self._step_cursor["num_calls"],
+            }
+            delta["total_tokens"] = delta["input_tokens"] + delta["output_tokens"]
+            self._step_cursor = {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "num_calls": self.num_calls,
+            }
         return delta

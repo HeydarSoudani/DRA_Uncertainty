@@ -115,7 +115,7 @@ OpenRouter's `provider.quantizations`), so every call of a model runs the same w
 The pin is recorded in the model's `belief_models` entry (`openrouter_provider`); a changed pin makes that model's
 beliefs again.
 
-The local model's server (`utils/vllm_manager.py`, `_BELIEF_SERVER_SPECS` and `belief_server`) runs on GPU 0, port 7010
+The local model's server (its spec in `src/reasoner_component/vllm_server/registry.py`, started by `serve` in `vllm_server/process.py`) runs on the first visible GPU, port 7010
 (`$BELIEF_VLLM_API_BASE` is set to it), text only (`--language-model-only`), bf16, prefix caching on, up to 128
 sequences at once; a server already on port 7010 that serves the model is reused and left running (anything else on the port stops the stage). Weights come from
 `$DRA_MODELS_DIR/Qwen--Qwen3.5-4B/` when pre-staged there, else from the Hugging Face cache. The belief stage sends

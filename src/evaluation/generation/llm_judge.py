@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from utils.io_utils import read_jsonl, write_jsonl
-from utils.llm_client import LiteLLMClient
+from reasoner_component import LiteLLMClient
 
 from ..metrics_file import ACCURACY_FILE, GroupResult
 from ..judge import DEFAULT_JUDGE_MODEL, complete_within, judge_all, make_judge_client
@@ -174,7 +174,7 @@ class AccuracyEvaluator:
         answers: ``query_id -> ground-truth answer``.
         questions: ``query_id -> question text``; the query id stands in for a
             missing question.
-        judge_model: Judge model, resolved by ``reasoner_component.api``.
+        judge_model: Judge model, resolved by ``reasoner_component.providers.routing``.
         max_concurrent_judges: Max in-flight judge requests.
     """
 

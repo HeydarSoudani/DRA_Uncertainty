@@ -32,6 +32,7 @@ from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
 )
 from utils.config import InferenceConfig
+from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ class CPMExplore(BasicAgent):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
 
         self.model_url = model_url or os.getenv(
-            "CPM_EXPLORE_API_BASE", "http://localhost:6008/v1"
+            "CPM_EXPLORE_API_BASE", AGENT_API_BASE
         )
         self.model_name = model_name
         self.max_output_tokens = max_output_tokens

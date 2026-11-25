@@ -18,24 +18,9 @@ from indexing_corpus_dataset.layout import OUTPUT_ROOT
 # Model maps and agent categories
 # ---------------------------------------------------------------------------
 
-# Maps policy-model name → HuggingFace model ID for vLLM-served finetuned models
-FINETUNED_MODEL_MAP: Dict[str, str] = {
-    "drtulu":     "rl-research/DR-Tulu-8B",
-    "webweaver":  "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
-    "tongyi":     "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
-    "cpm_report": "openbmb/AgentCPM-Report",
-    "searchr1":   "PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-it-em-grpo-v0.3",
-    "research":   "agentrl/ReSearch-Qwen-7B-Instruct",
-    "stepsearch": "Zill1/StepSearch-7B-Instruct",
-}
-
-
-def is_local_finetuned(policy_model: str, llm_model: str) -> bool:
-    """True when llm_model matches the agent's known HF model name."""
-    return llm_model == FINETUNED_MODEL_MAP.get(policy_model)
-
-
 # Single source of truth: CLI --policy-model value → the LLM it runs on.
+# An LLM with a vLLM server spec (reasoner_component/vllm_server/registry.py, SERVERS) runs on
+# that local server; any other goes through its hosted API.
 # --llm-model is no longer a CLI input; it is derived from this map.
 # Some agents are exposed under multiple CLI names so different model sizes are
 # selectable (oss_20b / oss_120b → "oss"); POLICY_MODEL_ALIAS maps each back to
@@ -57,11 +42,9 @@ POLICY_MODEL_TO_LLM: Dict[str, str] = {
     "react":       "claude-sonnet-4-6",
     "selfask":     "claude-sonnet-4-6",
     "searcho1":    "claude-sonnet-4-6",
-    # WebWeaver runs on the Qwen3.6-35B-A3B MoE served by OpenRouter.  Its local
-    # Tongyi-30B entry survives in FINETUNED_MODEL_MAP: is_local_finetuned
-    # compares against this map's value, so that entry stays inert until this
-    # line is pointed back at the HF slug, which is all it takes to return the
-    # agent to local vLLM.
+    # WebWeaver runs on the Qwen3.6-35B-A3B MoE served by OpenRouter.  Pointing
+    # this line back at "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B" is all it
+    # takes to return the agent to local vLLM (that model has a server spec).
     "webweaver":   "openrouter/qwen/qwen3.6-35b-a3b",
 }
 
@@ -80,8 +63,8 @@ AGENT_META_KEYS: Tuple[str, ...] = (
 # belief update, final score); the models differ in size (the belief model
 # size study), all run with the same prompts and settings.  The full id is
 # what the belief bank and run_config.json record.  A "vllm/<HF name>" LLM is
-# served locally by the belief stage (utils.vllm_manager.belief_server, its
-# spec in _BELIEF_SERVER_SPECS; needs a GPU); the others go through OpenRouter.
+# served locally by the belief stage (reasoner_component.vllm_server.serve, its spec
+# in reasoner_component/vllm_server/registry.py; needs a GPU); the others go through OpenRouter.
 #
 # The trained belief models (experiments/training/train_belief_model.py) are
 # served like their student: each is the selected checkpoint of one training

@@ -23,6 +23,7 @@ from deep_research_agents.prompts.glm.user import QUERY_TEMPLATE, REPORT_QUERY_T
 from deep_research_agents.prompts.answer_prompts import OSS_FORMAT, OSS_REPORT_FORMAT
 from utils.config import InferenceConfig
 from utils.text_utils import number_docid_citations
+from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,7 @@ class GLM_Agent(BasicAgent):
         self._extras: Dict[str, Any] = {}
 
         self.model_url = model_url or os.getenv(
-            "GLM_API_BASE", "http://localhost:6008/v1"
+            "GLM_API_BASE", AGENT_API_BASE
         )
         self.model_name = model_name
         self.max_output_tokens = max_output_tokens

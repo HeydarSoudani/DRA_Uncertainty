@@ -245,7 +245,7 @@ class ArgueReportEvaluator:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
         questions: ``query_id -> request text``.
         corpus_path: The corpus JSONL the cited document ids come from.
-        judge_model: Judge model, resolved by ``reasoner_component.api``.
+        judge_model: Judge model, resolved by ``reasoner_component.providers.routing``.
         max_concurrent_judges: Max in-flight judge requests.
     """
 

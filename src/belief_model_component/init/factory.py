@@ -66,17 +66,14 @@ PREPARE_WORKERS = 16
 def belief_llm(model: str):
     """LLM client of a belief model call, native reasoning off.  A ``vllm/``
     model is served locally at ``$BELIEF_VLLM_API_BASE`` (set by the belief
-    stage to the server it starts, ``utils.vllm_manager.belief_server``);
+    stage to the server it starts, ``reasoner_component.vllm_server.serve``);
     any other model goes through the API, routed to the hosts of its
     provider pin (:func:`belief_provider_pin`)."""
     if model.startswith("vllm/"):
-        return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base()))
+        return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base(model)))
     generator = create_generator(model, backend="api")
-    pin = belief_provider_pin(model)
-    client = getattr(generator, "_client", generator)
-    if pin and isinstance(getattr(client, "config", None), dict):
-        # Before the reasoning switch, which copies this body.
-        client.config["extra_body"] = {**(client.config.get("extra_body") or {}), "provider": pin}
+    if pin := belief_provider_pin(model):
+        generator.set_extra_body(provider=pin)
     return disable_native_thinking(generator)
 
 
@@ -89,12 +86,13 @@ def belief_provider_pin(model: str):
     return dict(pin) if pin else None
 
 
-def belief_vllm_api_base() -> str:
-    """The endpoint of a ``vllm/`` belief model: ``$BELIEF_VLLM_API_BASE``,
-    else ``$VLLM_API_BASE``, else the default local server."""
-    from reasoner_component.vllm import DEFAULT_VLLM_API_BASE
+def belief_vllm_api_base(model: str) -> str:
+    """The endpoint of the ``vllm/`` belief model *model*:
+    ``$BELIEF_VLLM_API_BASE``, else its registered server
+    (``reasoner_component.vllm_server.SERVERS``)."""
+    from reasoner_component.vllm_server import require_spec
 
-    return (os.getenv("BELIEF_VLLM_API_BASE") or os.getenv("VLLM_API_BASE") or DEFAULT_VLLM_API_BASE).rstrip("/")
+    return (os.getenv("BELIEF_VLLM_API_BASE") or require_spec(model).api_base).rstrip("/")
 
 
 def bank_model_id(model: str) -> str:
@@ -104,7 +102,7 @@ def bank_model_id(model: str) -> str:
     served under the same name, and must not read another's beliefs."""
     if not model.startswith("vllm/"):
         return model
-    base = belief_vllm_api_base()
+    base = belief_vllm_api_base(model)
     bare = model.removeprefix("vllm/")
     try:
         with urllib.request.urlopen(f"{base}/models", timeout=30) as reply:

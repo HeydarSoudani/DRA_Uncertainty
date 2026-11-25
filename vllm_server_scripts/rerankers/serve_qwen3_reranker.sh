@@ -1,47 +1,15 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
-# Start a vLLM server for Qwen3-8B used as a listwise reranker.
+# Start a vLLM server for Qwen3-8B as a listwise reranker (port 8000).
 #
 # Usage:
 #   bash vllm_server_scripts/rerankers/serve_qwen3_reranker.sh
-#   PORT=8000 bash vllm_server_scripts/rerankers/serve_qwen3_reranker.sh
+#   PORT=8001 bash vllm_server_scripts/rerankers/serve_qwen3_reranker.sh
 #
-# The decomposition pipeline connects to this server via --listwise-api-url
-# (default http://localhost:8000/v1).
-#
-# Requirements:
-#   - vLLM installed.
-#   - GPU(s): Qwen3-8B fits on 1× 80 GB GPU (TP=1). Use TP=2 for smaller GPUs.
+# Settings: the model's spec in src/reasoner_component/vllm_server/registry.py.  PORT, TP_SIZE
+# and CUDA_VISIBLE_DEVICES override them; extra arguments go to vllm.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../_common.sh"
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-PORT="${PORT:-8000}"
-MODEL="${MODEL:-Qwen/Qwen3-8B}"
-TP_SIZE="${TP_SIZE:-$(auto_tp 16 "1,2")}"
-
-# ── Check vLLM is installed ───────────────────────────────────────────────────
-VLLM_VERSION=$(python -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "none")
-if [[ "$VLLM_VERSION" == "none" ]]; then
-    echo "ERROR: vLLM is not installed. Run: pip install vllm"
-    exit 1
-fi
-echo "Using vLLM ${VLLM_VERSION}"
-
-# ── Launch ────────────────────────────────────────────────────────────────────
-echo ""
-echo "Starting vLLM reranker server:"
-echo "  Model : ${MODEL}"
-echo "  Port  : ${PORT}"
-echo "  TP    : ${TP_SIZE}"
-echo ""
-
-exec vllm serve "$MODEL" \
-    --port "$PORT" \
-    --tensor-parallel-size "$TP_SIZE" \
-    --download-dir "$DOWNLOAD_DIR" \
-    --trust-remote-code \
-    --max-model-len 8192 \
-    --max-num-seqs 64 \
-    --enable-prefix-caching
+vllm_serve "Qwen/Qwen3-8B" "$@"

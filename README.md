@@ -38,7 +38,7 @@ The project has two parts:
 src/
 ├── deep_research_agents/     agents and their prompts
 ├── searcher_component/       retrievers, rerankers, fusion
-├── reasoner_component/       LLM generators (API, vLLM)
+├── reasoner_component/       LLM generators (API, vLLM) + vLLM servers
 ├── orchestration/            wiring of agent, searcher and belief model; multi-GPU workers
 ├── belief_model_component/   beliefs, belief state, signals, judges
 ├── evaluation/               answer, retrieval, trajectory and generation evaluators

@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, Optional, List
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 from deep_research_agents.prompts.react.plan_create import REACT_PLAN_CREATE_PROMPT
 from deep_research_agents.prompts.react.plan_update import REACT_PLAN_UPDATE_PROMPT
 
@@ -10,11 +10,11 @@ from deep_research_agents.prompts.react.plan_update import REACT_PLAN_UPDATE_PRO
 class PlanTool:
     """Tool for managing retrieval plans using LLM-generated structured plans."""
 
-    def __init__(self, llm_client: LiteLLMClient):
+    def __init__(self, llm_client: BaseGenerator):
         """Initialize the PlanTool.
 
         Args:
-            llm_client: LiteLLM client for generating plans
+            llm_client: The generator that writes the plans
         """
         self.llm_client = llm_client
         self.current_plan = None

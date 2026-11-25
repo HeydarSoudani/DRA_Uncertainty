@@ -31,7 +31,7 @@ from utils.config import (
     get_reranker_configs,
     resolve_agent_backend,
 )
-from reasoner_component.setup import setup_llm
+from reasoner_component import setup_llm
 from utils.text_utils import MAX_PASSAGE_TOKENS, _build_cited_docs_ranked_list, build_references_section
 from utils.run_files.trajectory_logger import TrajectoryLogger
 
@@ -162,7 +162,7 @@ def build_agent(
     if policy_model == "glm":
         _reasoning_extra["max_output_tokens"] = max_output_tokens
         # Prefer OpenRouter when the agent is in the registry (0 local GPU);
-        # otherwise fall through to the agent's vLLM defaults (localhost:6008).
+        # otherwise fall through to the agent's vLLM defaults (registry AGENT_API_BASE).
         _backend, _slug = resolve_agent_backend(_cli_name)
         if _backend == "api":
             _reasoning_extra["model_url"] = OPENROUTER_BASE_URL
@@ -175,7 +175,7 @@ def build_agent(
         # window regardless of this ceiling.
         _reasoning_extra["max_output_tokens"] = max_output_tokens
         # Prefer OpenRouter (Responses API) when oss_20b / oss_120b is in the
-        # registry; otherwise use the agent's local vLLM defaults (localhost:6008).
+        # registry; otherwise use the agent's local vLLM defaults (registry AGENT_API_BASE).
         _backend, _slug = resolve_agent_backend(_cli_name)
         if _backend == "api":
             _reasoning_extra["model_url"] = OPENROUTER_BASE_URL
@@ -233,7 +233,7 @@ def _build_components_from_config(worker_config: dict):
         (llm_client, retriever)  — llm_client may be None for self-managed agents.
     """
     args = SimpleNamespace(**worker_config)
-    return setup_llm(args, num_gpus=1), setup_retriever_from_args(args)
+    return setup_llm(args), setup_retriever_from_args(args)
 
 
 def _silence_hf_progress_bars() -> None:

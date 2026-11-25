@@ -4,8 +4,7 @@ import logging
 import traceback
 from typing import Callable, Dict, List, Any, Optional, Union
 
-from utils.llm_client import LiteLLMClient
-from reasoner_component import REASONING_FALLBACK_PREFIX
+from reasoner_component import REASONING_FALLBACK_PREFIX, BaseGenerator
 from searcher_component import normalize_retrieval_response
 from deep_research_agents.prompts.answer_prompts import (
     FINAL_ANSWER_INSTRUCTION,
@@ -150,7 +149,7 @@ class BasicAgent(AgentVerboseMixin):
         task, else the most likely answer."""
         return REPORT_FINAL_INSTRUCTION if self.task == "report" else FINAL_ANSWER_INSTRUCTION
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None):
+    def __init__(self, llm_client: BaseGenerator, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, search_tool=None):
         """Initialize BasicAgent.
 
         Args:
@@ -206,11 +205,7 @@ class BasicAgent(AgentVerboseMixin):
         meter = getattr(self, "token_meter", None)
         if meter is not None:
             return meter
-        for client_attr in ("generator", "_vllm_client"):
-            meter = getattr(getattr(self, client_attr, None), "token_meter", None)
-            if meter is not None:
-                return meter
-        return None
+        return getattr(getattr(self, "generator", None), "token_meter", None)
 
     def _step_tokens(self):
         """Tokens consumed since the previous trajectory step (or None)."""
@@ -841,7 +836,7 @@ class TagReasoningAgent(BasicAgent):
 
     AGENT_NAME = "TagReasoning"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
         self._system_prompt: Optional[str] = None

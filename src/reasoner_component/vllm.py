@@ -1,68 +1,64 @@
-"""Self-hosted vLLM generator and low-level transport.
+"""``VLLMGenerator``: a self-hosted vLLM server behind ``BaseGenerator``.
 
-Two ways to talk to an OpenAI-compatible vLLM server (``vllm serve``):
-
-  * ``VLLMGenerator`` — a full ``BaseGenerator`` (structured output, tools, stop
-    patterns) backed by a ``LiteLLMClient``. Use this for local/finetuned models
-    in the generator pipeline.
-  * ``VLLMClient`` — a thin OpenAI Chat Completions wrapper with retry/backoff,
-    for the low-level single-call pattern used by some self-managed agents.
+Talks to the server's OpenAI-compatible API with the OpenAI SDK.  The servers
+themselves (their settings, starting and stopping them) are in
+``reasoner_component.vllm_server``.
 """
 
-import logging
-import os
-import random
-import time
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
 
-from openai import OpenAI, AzureOpenAI, APIError, APIConnectionError, APITimeoutError
+import asyncio
+import weakref
+from typing import Any, Dict, List, Optional, Tuple, Type
 
-from .base import LiteLLMBackedGenerator
-from .litellm_client import LiteLLMClient
+from openai import AsyncOpenAI, OpenAI
 
-logger = logging.getLogger(__name__)
+from utils.token_meter import TokenMeter
 
-DEFAULT_VLLM_API_BASE = "http://127.0.0.1:6008/v1"
+from .base import (BaseGenerator, PatternScan, T, json_schema_format, parse_structured, parse_tool_calls,
+                   reply_text, resolve_token_cap)
+from .vllm_server.registry import bare_model_name, require_spec
 
-
-def get_openai_client(
-    api_url: str,
-    api_key: str = "EMPTY",
-    *,
-    api_version: Optional[str] = None,
-    timeout: Optional[float] = None,
-):
-    """Construct a raw OpenAI-compatible client for a self-hosted/vLLM endpoint.
-
-    Returns the OpenAI SDK client directly — ``AzureOpenAI`` when *api_url* is an
-    Azure endpoint, otherwise ``OpenAI`` — so callers that need low-level features
-    deliberately not exposed by ``VLLMClient`` / ``VLLMGenerator`` (token
-    ``logprobs``, the text ``completions`` endpoint, Azure routing) can use them.
-    Keeps raw OpenAI client construction inside ``reasoner_component`` (the single
-    LLM home) instead of scattering ``from openai import OpenAI`` across callers.
-    """
-    extra: Dict[str, Any] = {}
-    if timeout is not None:
-        extra["timeout"] = timeout
-    if ".openai.azure.com" in api_url:
-        return AzureOpenAI(
-            api_key=api_key,
-            azure_endpoint=api_url,
-            api_version=api_version or "2025-01-01-preview",
-            **extra,
-        )
-    return OpenAI(api_key=api_key, base_url=api_url, **extra)
+# Parameters the OpenAI SDK takes; any other one is a vLLM extension (top_k,
+# min_p, repetition_penalty, chat_template_kwargs, ...) and goes in extra_body.
+_OPENAI_PARAMS = frozenset({
+    "temperature", "top_p", "max_tokens", "max_completion_tokens", "stop", "seed", "n",
+    "presence_penalty", "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
+    "response_format", "tools", "tool_choice", "parallel_tool_calls", "user",
+    "stream", "stream_options", "timeout",
+})
 
 
-class VLLMGenerator(LiteLLMBackedGenerator):
-    """LLM generator backed by an OpenAI-compatible vLLM server.
+def _merge_extra_body(defaults: Optional[Dict[str, Any]], call: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The call's ``extra_body`` over the defaults'; ``chat_template_kwargs``
+    merged key by key (a per-call one keeps ``disable_thinking``'s switch)."""
+    body = {**(defaults or {}), **(call or {})}
+    template = {**((defaults or {}).get("chat_template_kwargs") or {}),
+                **((call or {}).get("chat_template_kwargs") or {})}
+    if template:
+        body["chat_template_kwargs"] = template
+    return body
+
+
+class VLLMGenerator(BaseGenerator):
+    """The full ``BaseGenerator`` over a vLLM server's OpenAI-compatible API.
 
     Args:
-        model_name: The model served by vLLM (``hf/`` / ``vllm/`` prefixes are stripped).
-        api_base:   Server URL. Defaults to ``$VLLM_API_BASE`` or ``DEFAULT_VLLM_API_BASE``.
-        api_key:    Usually ignored by vLLM; defaults to ``"EMPTY"``.
-        litellm_prefix: LiteLLM provider prefix for OpenAI-compatible servers
-                        (``"hosted_vllm"`` or ``"openai"``).
+        model_name:  The served model (a ``vllm/`` prefix is dropped).
+        api_base:    The server; by default the registered server of the model.
+        temperature, max_tokens, **params:  Default request parameters, each
+                     overridable per call.  OpenAI ones (top_p, stop,
+                     presence_penalty, ...) go in the request, vLLM's own
+                     (top_k, min_p, repetition_penalty, ...) in ``extra_body``.
+        timeout:     Seconds per request (``request_timeout``, the API
+                     backend's name for it, is taken too, also per call).
+        max_retries: Retries, with the SDK's exponential backoff, of a failed
+                     connection, a timeout, a 429 or a 5xx reply.  Any other
+                     error, a prompt past the context window among them,
+                     raises at once.
+
+    Thread-safe: the sync methods share one connection pool, the async ones
+    get a client per event loop.
     """
 
     def __init__(
@@ -70,127 +66,155 @@ class VLLMGenerator(LiteLLMBackedGenerator):
         model_name: str,
         api_base: Optional[str] = None,
         api_key: str = "EMPTY",
+        *,
         temperature: float = 0.0,
         max_tokens: int = 4000,
-        metadata: Optional[Dict[str, str]] = None,
-        litellm_prefix: str = "hosted_vllm",
-        **kwargs,
+        timeout: float = 600.0,
+        max_retries: int = 5,
+        **params: Any,
     ):
-        bare = model_name.removeprefix("vllm/").removeprefix("hf/")
-        api_base = api_base or os.getenv("VLLM_API_BASE", DEFAULT_VLLM_API_BASE)
-        config: Dict[str, Any] = {
-            "model": f"{litellm_prefix}/{bare}",
-            "api_base": api_base,
-            "api_key": api_key,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            **kwargs,
-        }
-        self._client = LiteLLMClient(config, metadata=metadata)
-
-
-class VLLMClient:
-    """Thin wrapper around OpenAI Chat Completions API with retry logic.
-
-    Consolidates the identical _call_server() implementations found in:
-    react.py, research.py, searcho1.py, searchr1.py, selfask.py,
-    webweaver_agent.py, drtulu_agent.py, tongyi_agent.py, cpm_report.py.
-
-    Usage::
-
-        client = VLLMClient(
-            model_url="http://127.0.0.1:6008/v1",
-            model_name="deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        )
-        text = client.call(messages, stop=["</search>"], temperature=0.6)
-    """
-
-    def __init__( self, model_url: str, model_name: str, api_key: str = "EMPTY", timeout: float = 600.0, ) -> None:
-        self.model_url = model_url
-        self.model_name = model_name
-        self._api_key = api_key
-        self._timeout = timeout
-        # Build the client once; reusing it keeps the underlying HTTP connection
-        # pool warm instead of reconnecting on every call().
-        self._client = OpenAI(api_key=api_key, base_url=model_url, timeout=timeout)
-        from utils.token_meter import TokenMeter
+        self.model_name = bare_model_name(model_name)
+        if api_base is None:
+            api_base = require_spec(self.model_name).api_base
+        self.api_base = api_base.rstrip("/")
         self.token_meter = TokenMeter()
+        if "request_timeout" in params:
+            timeout = params.pop("request_timeout")
+        self._params: Dict[str, Any] = {"temperature": temperature, "max_tokens": max_tokens, **params}
+        self._client_kwargs = {"base_url": self.api_base, "api_key": api_key,
+                               "timeout": timeout, "max_retries": max_retries}
+        self._sync = OpenAI(**self._client_kwargs)
+        self._async: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, AsyncOpenAI]" = weakref.WeakKeyDictionary()
 
-    def call( self, messages: List[Dict[str, str]], *, stop: Optional[List[str]] = None, temperature: float = 0.6, top_p: float = 0.95, presence_penalty: float = 0.0, max_tokens: int = 10000, max_tries: int = 10, error_return: str = "", prepend_reasoning: bool = False, ) -> str:
-        """Call the model via OpenAI Chat Completions API with retry + backoff.
+    def disable_thinking(self) -> "VLLMGenerator":
+        """Switch the model's own reasoning off for every call (the chat
+        template's ``enable_thinking``); returns the generator."""
+        body = dict(self._params.get("extra_body") or {})
+        body["chat_template_kwargs"] = {**(body.get("chat_template_kwargs") or {}), "enable_thinking": False}
+        self._params["extra_body"] = body
+        return self
 
-        Args:
-            messages:          Chat messages in OpenAI format.
-            stop:              Stop sequences (None → no server-side stop).
-            temperature:       Sampling temperature.
-            top_p:             Nucleus sampling threshold.
-            presence_penalty:  Presence penalty.
-            max_tokens:        Max tokens to generate.
-            max_tries:         Number of retry attempts.
-            error_return:      Value returned when all retries are exhausted.
-            prepend_reasoning: If True, check for a ``reasoning`` / ``reasoning_content``
-                               attribute on the response and prepend it as ``<think>...</think>``.
-                               Used by Tongyi, WebWeaver, DrTulu, and CPM agents.
+    # ── Plain completion ─────────────────────────────────────────────────────
 
-        Returns:
-            Stripped model response text, or *error_return* on total failure.
-        """
-        client = self._client
+    def complete(self, messages: List[Dict[str, Any]], *, strip_think: bool = True,
+                 return_reasoning_fallback: bool = False, **params: Any) -> str:
+        response = self._sync.chat.completions.create(**self._request(messages, params))
+        return self._reply(response, strip_think, return_reasoning_fallback)
 
-        create_kwargs: Dict[str, Any] = {
-            "model": self.model_name,
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "max_tokens": max_tokens,
-            "presence_penalty": presence_penalty,
-        }
-        if stop is not None:
-            create_kwargs["stop"] = stop
+    async def acomplete(self, messages: List[Dict[str, Any]], *, strip_think: bool = True,
+                        return_reasoning_fallback: bool = False, **params: Any) -> str:
+        response = await self._async_client().chat.completions.create(**self._request(messages, params))
+        return self._reply(response, strip_think, return_reasoning_fallback)
 
-        base_sleep_time = 1
-        for attempt in range(max_tries):
-            try:
-                chat_response = client.chat.completions.create(**create_kwargs)
-                self.token_meter.record_usage(getattr(chat_response, "usage", None))
-                content = chat_response.choices[0].message.content
+    # ── Structured output (vLLM guided decoding on the JSON schema) ──────────
 
-                if prepend_reasoning:
-                    reasoning = (
-                        getattr(chat_response.choices[0].message, "reasoning_content", None)
-                        or getattr(chat_response.choices[0].message, "reasoning", None)
-                    )
-                    if reasoning:
-                        content = "<think>\n" + reasoning.strip() + "\n</think>\n" + (content or "")
+    def complete_with_structured_output(self, messages: List[Dict[str, Any]], response_format: Type[T],
+                                        **params: Any) -> T:
+        request = self._request(messages, {**params, "response_format": json_schema_format(response_format)})
+        return self._structured(self._sync.chat.completions.create(**request), response_format)
 
-                if content and content.strip():
-                    return content.strip()
-                else:
-                    logger.warning(f"Attempt {attempt + 1} received an empty response.")
-            except APIError as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
-                # If the error is a context-length overflow (400), reduce
-                # max_tokens so the request fits within the model's window
-                # instead of retrying the same impossible request.
-                if getattr(e, "status_code", None) == 400 and "context length" in str(e).lower():
-                    current_max = create_kwargs["max_tokens"]
-                    reduced = max(current_max // 2, 512)
-                    if reduced < current_max:
-                        logger.warning(
-                            f"Reducing max_tokens from {current_max} to {reduced} "
-                            "to fit within model context window."
-                        )
-                        create_kwargs["max_tokens"] = reduced
-                    else:
-                        logger.error("max_tokens already at minimum; cannot reduce further.")
-                        return error_return
-            except (APIConnectionError, APITimeoutError) as e:
-                logger.warning(f"Attempt {attempt + 1} failed: {e}")
-            except Exception as e:
-                logger.warning(f"Attempt {attempt + 1} unexpected error: {e}")
+    async def acomplete_with_structured_output(self, messages: List[Dict[str, Any]], response_format: Type[T],
+                                               **params: Any) -> T:
+        request = self._request(messages, {**params, "response_format": json_schema_format(response_format)})
+        return self._structured(await self._async_client().chat.completions.create(**request), response_format)
 
-            if attempt < max_tries - 1:
-                sleep_time = min(base_sleep_time * (2 ** attempt) + random.uniform(0, 1), 30)
-                time.sleep(sleep_time)
+    # ── Tool calls (the server needs a tool parser: ServerSpec.tool_parser) ──
 
-        return error_return
+    def complete_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
+                            tool_choice: Any = "auto", *, strip_think: bool = True,
+                            **params: Any) -> Tuple[str, List[Dict[str, Any]]]:
+        request = self._request(messages, {**params, "tools": tools, "tool_choice": tool_choice})
+        return self._tool_reply(self._sync.chat.completions.create(**request), strip_think)
+
+    async def acomplete_with_tools(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]],
+                                   tool_choice: Any = "auto", *, strip_think: bool = True,
+                                   **params: Any) -> Tuple[str, List[Dict[str, Any]]]:
+        request = self._request(messages, {**params, "tools": tools, "tool_choice": tool_choice})
+        return self._tool_reply(await self._async_client().chat.completions.create(**request), strip_think)
+
+    # ── Stop on a regex ──────────────────────────────────────────────────────
+    # For plain strings pass ``stop=[...]`` to ``complete``: the server stops
+    # itself.  Here the reply streams and closing the stream on a match makes
+    # vLLM abort the request.  An early stop records no token usage (the
+    # server sends it with the last chunk only).
+
+    def complete_with_stop_on_pattern(self, messages: List[Dict[str, Any]], stop_patterns: List[str],
+                                      **params: Any) -> Tuple[str, Optional[str]]:
+        scan = PatternScan(stop_patterns)
+        with self._sync.chat.completions.create(**self._stream_request(messages, params)) as stream:
+            for chunk in stream:
+                if scan.feed(chunk, self.token_meter):
+                    break
+        return scan.result()
+
+    async def acomplete_with_stop_on_pattern(self, messages: List[Dict[str, Any]], stop_patterns: List[str],
+                                             **params: Any) -> Tuple[str, Optional[str]]:
+        scan = PatternScan(stop_patterns)
+        stream = await self._async_client().chat.completions.create(**self._stream_request(messages, params))
+        async with stream:
+            async for chunk in stream:
+                if scan.feed(chunk, self.token_meter):
+                    break
+        return scan.result()
+
+    def cleanup(self) -> None:
+        """Close the connection pools.  An async client is closed on its own
+        loop when that loop is idle (a closed loop took its sockets along)."""
+        self._sync.close()
+        clients, self._async = list(self._async.items()), weakref.WeakKeyDictionary()
+        for loop, client in clients:
+            if not loop.is_closed() and not loop.is_running():
+                try:
+                    loop.run_until_complete(client.close())
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
+
+    # ── Internals ────────────────────────────────────────────────────────────
+
+    def _request(self, messages: List[Dict[str, Any]], params: Dict[str, Any]) -> Dict[str, Any]:
+        """The ``chat.completions.create`` keyword arguments of one call: the
+        defaults, the call's *params* on top (its ``chat_template_kwargs``
+        merged into the defaults', not replacing them)."""
+        overrides = dict(params)
+        if "request_timeout" in overrides:
+            overrides["timeout"] = overrides.pop("request_timeout")
+        merged = {**self._params, **overrides}
+        merged.pop("metadata", None)  # LiteLLM cost-tracking tag: not a request field
+        resolve_token_cap(merged, overrides)
+        extra_body = _merge_extra_body(self._params.get("extra_body"), overrides.get("extra_body"))
+        merged.pop("extra_body", None)
+        request: Dict[str, Any] = {"model": self.model_name, "messages": messages}
+        for key, value in merged.items():
+            if value is None:
+                continue
+            (request if key in _OPENAI_PARAMS else extra_body)[key] = value
+        if extra_body:
+            request["extra_body"] = extra_body
+        return request
+
+    def _stream_request(self, messages: List[Dict[str, Any]], params: Dict[str, Any]) -> Dict[str, Any]:
+        return self._request(messages, {**params, "stream": True, "stream_options": {"include_usage": True}})
+
+    def _async_client(self) -> AsyncOpenAI:
+        # An async HTTP pool belongs to the event loop it was opened on.
+        loop = asyncio.get_running_loop()
+        client = self._async.get(loop)
+        if client is None:
+            client = self._async[loop] = AsyncOpenAI(**self._client_kwargs)
+        return client
+
+    def _reply(self, response: Any, strip_think: bool, return_reasoning_fallback: bool) -> str:
+        self.token_meter.record_usage(response.usage)
+        choice = response.choices[0]
+        return reply_text(choice.message, strip_think=strip_think, return_reasoning_fallback=return_reasoning_fallback,
+                          finish_reason=choice.finish_reason, model=self.model_name)
+
+    def _structured(self, response: Any, response_format: Type[T]) -> T:
+        self.token_meter.record_usage(response.usage)
+        return parse_structured(response.choices[0].message.content, response_format)
+
+    def _tool_reply(self, response: Any, strip_think: bool) -> Tuple[str, List[Dict[str, Any]]]:
+        self.token_meter.record_usage(response.usage)
+        message = response.choices[0].message
+        return reply_text(message, strip_think=strip_think), parse_tool_calls(message)
+

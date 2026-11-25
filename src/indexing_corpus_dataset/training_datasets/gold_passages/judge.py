@@ -120,7 +120,7 @@ class Judge:
         """*llm*: a client with ``complete(messages, **kwargs) -> str`` for
         *model* (None: an API client)."""
         if llm is None:
-            from reasoner_component.factory import create_generator
+            from reasoner_component import create_generator
             llm = create_generator(model, backend="api")
         self._llm = llm
         self._max_tokens = max_tokens

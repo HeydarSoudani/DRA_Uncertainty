@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "research"
 SYSTEM_PROMPT_RESEARCH_INST = (_PROMPT_DIR / "system.txt").read_text()
 
@@ -17,7 +17,7 @@ class ReSearch_Agent(TagReasoningAgent):
 
     AGENT_NAME = "ReSearch"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k, verbose)
         self._system_prompt = SYSTEM_PROMPT_RESEARCH_INST
         self.curr_step_template = '\n{output_text}<result>{search_results}</result>\n'

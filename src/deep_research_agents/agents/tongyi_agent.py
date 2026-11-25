@@ -1,6 +1,6 @@
 """Tongyi-DeepResearch agent: faithful port of the AgentIR Tongyi-DR ReAct loop.
 
-LLM calls  : VLLMClient (OpenAI-compatible Chat Completions API -> vLLM server)
+LLM calls  : VLLMGenerator (OpenAI-compatible Chat Completions API -> vLLM server)
 Retrieval  : pipeline local retriever (self.retrieve_documents)
 """
 
@@ -27,7 +27,8 @@ from deep_research_agents.prompts.answer_prompts import (
 from utils.text_utils import extract_tag_content, extract_all_tag_content, parse_tool_calls_xml_list
 from utils.text_utils import format_as_markdown
 from utils.config import InferenceConfig
-from utils.llm_client import VLLMClient
+from reasoner_component.vllm import VLLMGenerator
+from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +63,9 @@ class TongyiDR_Agent(BasicAgent):
     ) -> None:
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
 
-        self.model_url = model_url or os.getenv("TONGYI_API_BASE", "http://127.0.0.1:6008/v1")
+        self.model_url = model_url or os.getenv("TONGYI_API_BASE", AGENT_API_BASE)
         self.model_name = model_name
         self.temperature = temperature
-        self.top_p = top_p
-        self.presence_penalty = presence_penalty
         self.max_tokens_per_step = max_tokens_per_step
         self.max_output_tokens = max_output_tokens
         self.max_context_tokens = max_context_tokens
@@ -74,14 +73,16 @@ class TongyiDR_Agent(BasicAgent):
         self._cumulative_output_tokens = 0
 
         self._api_key = os.getenv("TONGYI_API_KEY", "EMPTY")
-        self._default_stop_sequences = ["\n<tool_response>", "<tool_response>"]
-        self._error_return = "vllm server error!!!"
-        self._prepend_reasoning = True
 
-        self._vllm_client = VLLMClient(
-            model_url=self.model_url,
-            model_name=self.model_name,
+        # Sampling defaults of the AgentIR Tongyi loop; the server stops before
+        # the model writes a tool response itself.
+        self.generator = VLLMGenerator(
+            self.model_name,
+            api_base=self.model_url,
             api_key=self._api_key,
+            top_p=top_p,
+            presence_penalty=presence_penalty,
+            stop=["\n<tool_response>", "<tool_response>"],
         )
 
         self.inference_config = InferenceConfig(
@@ -107,24 +108,21 @@ class TongyiDR_Agent(BasicAgent):
             self.temperature = old
 
     def _call_server(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None) -> str:
-        """Call vLLM server via VLLMClient with agent-specific defaults."""
-        return self._vllm_client.call(
+        """One model turn, its reasoning kept inline as ``<think>...</think>``.
+        Raises when the server fails or the prompt is past the context window."""
+        return self.generator.complete(
             messages,
-            stop=self._default_stop_sequences,
             temperature=self.temperature,
-            top_p=self.top_p,
-            presence_penalty=self.presence_penalty,
             max_tokens=max_tokens if max_tokens is not None else self.max_tokens_per_step,
-            error_return=self._error_return,
-            prepend_reasoning=self._prepend_reasoning,
-        )
+            strip_think=False,
+        ).strip()
 
     @staticmethod
     def estimate_token_count_from_messages(messages: List[Dict[str, str]]) -> int:
         """Rough token count estimate (~4 chars per token)."""
         return sum(len(m.get("content", "")) for m in messages) // 4
 
-    # ── Force answer helpers (Chat Completions, same VLLMClient) ─────────────
+    # ── Force answer helpers (Chat Completions, same generator) ──────────────
 
     def _force_answer_chat_in_conversation(
         self,

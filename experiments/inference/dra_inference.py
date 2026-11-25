@@ -80,7 +80,7 @@ from orchestration import (
     quiet_logging,
     setup_retriever_from_args,
 )
-from utils.llm_client import setup_llm
+from reasoner_component import run_servers, setup_llm
 from utils.progress import WorkerBars
 from utils.cli_setup import (
     resolve_dataset_defaults,
@@ -372,9 +372,9 @@ def _run_belief(plan: RunPlan, verbose: bool, kwargs: dict) -> None:
     # A locally served belief model: its own vLLM server for this stage only
     # (started after the generate stage released its GPUs), more queries at
     # once for belief init (the server batches them).
-    from utils.vllm_manager import belief_server
+    from reasoner_component.vllm_server import require_spec, serve
     previous = os.environ.get("BELIEF_VLLM_API_BASE")
-    with belief_server(kwargs["belief_model"]) as api_base:
+    with serve(require_spec(kwargs["belief_model"])) as api_base:
         os.environ["BELIEF_VLLM_API_BASE"] = api_base
         try:
             _believe(plan, todo, saved, max_passage_tokens, verbose, kwargs,
@@ -643,7 +643,7 @@ def _run_queries(plan: RunPlan, policy_model: str, llm_model: str, verbose: bool
 
     # 4) Kill vLLM servers, orphan processes, and verify GPUs are free
     if _vllm_mgr is not None:
-        _vllm_mgr.shutdown_and_release_gpus(_total_gpus)
+        _vllm_mgr.release_gpus(_total_gpus)
 
 
 # ============================================================================
@@ -702,7 +702,7 @@ def main():
 
     resolve_dataset_defaults(args)
 
-    from utils.vllm_manager import VLLMServerManager
+    from reasoner_component.vllm_server import VLLMServerManager
     vllm_manager = VLLMServerManager()
 
     # Workers and GPUs of the generate stage, set below when there are
@@ -778,7 +778,7 @@ def main():
             # ── Auto-start vLLM servers if needed ─────────────────────────────────
             # The manager allocates GPUs: vLLM servers get the leftmost GPUs, the
             # remaining ones (or those of --gpu-ids) go to pipeline workers.
-            worker_gpu_ids = vllm_manager.auto_start(args, total_gpus=total_gpus_on_machine)
+            worker_gpu_ids = vllm_manager.start(run_servers(args), total_gpus=total_gpus_on_machine)
             if worker_gpu_ids is not None:
                 gpu_ids = worker_gpu_ids
                 workers = max(1, len(worker_gpu_ids))
@@ -809,7 +809,7 @@ def main():
                 # main process to avoid OOM on shared GPUs.
                 pipeline_kwargs = _pipeline_kwargs()
             else:
-                pipeline_kwargs = _pipeline_kwargs(setup_llm(args, workers), setup_retriever_from_args(args))
+                pipeline_kwargs = _pipeline_kwargs(setup_llm(args), setup_retriever_from_args(args))
                 # ── Optional post-retrieval & post-fusion rerankers ─────────────────
                 from utils.config import get_reranker_configs
                 from searcher_component.rerankers import build_reranker_from_config

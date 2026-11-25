@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 from deep_research_agents.prompts.searcho1.prompts import (
     get_multiqa_search_o1_instruction,
     get_task_instruction_openqa,
@@ -23,7 +23,7 @@ class SearchO1_Agent(BasicAgent):
 
     AGENT_NAME = "SearchO1"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
         self.BEGIN_SEARCH_QUERY = "<|begin_search_query|>"

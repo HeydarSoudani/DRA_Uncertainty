@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 from deep_research_agents.prompts.stepsearch.user_prompt import PROMPT_STEPSEARCH
 
 from .base_agent import TagReasoningAgent
@@ -13,7 +13,7 @@ class StepSearch_Agent(TagReasoningAgent):
 
     AGENT_NAME = "StepSearch"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k, verbose)
 
     def _format_initial_prompt(self, question: str) -> str:

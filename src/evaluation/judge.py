@@ -16,9 +16,7 @@ import logging
 import re
 from typing import Any, Callable, Dict, List, Sequence
 
-from reasoner_component.api import get_litellm_client
-from reasoner_component.factory import disable_native_thinking
-from utils.llm_client import LiteLLMClient
+from reasoner_component import LiteLLMClient, disable_native_thinking, get_litellm_client
 from utils.progress import StepBar
 
 logger = logging.getLogger(__name__)
