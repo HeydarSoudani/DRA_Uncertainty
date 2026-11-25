@@ -116,7 +116,7 @@ class AgentVerboseMixin:
         3. when the iteration searched (*subqueries*, or *docs*: the
            documents it was shown), numbers it: ``search_step`` (from 1,
            per query) on each of its steps, which the belief stage groups
-           the iteration's trajectory lines by (``orchestration.belief_stage``);
+           the iteration's trajectory lines by (``utils.run_files.read_saved_query``);
         4. appends the steps to *reasoning_path* through ``_record_step``.
         """
         if seen_docs is not None:

@@ -339,7 +339,7 @@ trajectories in the later stages.
 
 **Episodes** (`runs.py`). An episode is a finished query of a run with a judged answer (a query whose judge failed is
 left out), a final answer and gold beliefs (`texts_ok`, at least one belief): its search iterations and the
-answer turn's reasoning and answer as the belief stage reads them (`orchestration.belief_stage.read_saved_query`), y, its gold beliefs, and the run's corpus,
+answer turn's reasoning and answer as the belief stage reads them (`utils.run_files.read_saved_query`), y, its gold beliefs, and the run's corpus,
 retriever and passage cut. Documents are read from the corpus by id, as in the belief stage.
 
 **Statistics** (`trajectories/stats.py`), printed and written to `stats/{dataset}_{split}_{agent}.json`: episodes

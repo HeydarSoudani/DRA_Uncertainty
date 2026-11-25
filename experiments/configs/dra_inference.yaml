@@ -39,7 +39,7 @@ dataset_year: null              # neuclir: '2023'|'2024'; ragtime: '2025'; trqa:
 query_key: null                 # JSONL key for query text. neuclir: request|topic_title|topic_description|topic_narrative; ragtime: text|title
 qrels_data_path: null           # Path to load qrels from (defaults to data_path)
 min_relevance_score: null       # Minimum qrel grade treated as relevant; queries without one are not run
-query_ids_file: null            # File with one query id per line: run only these queries (null = all)
+query_ids_file: null            # File with one query id per line: the generate and belief stages run only these queries (null = all); the evaluation still scores every finished query of the run
 
 # ── Retriever ────────────────────────────────────────────────────────────────
 # Qwen3-Embedding size variants are selected via --retriever (qwen3_emb_0.6b|qwen3_emb_4b|qwen3_emb_8b)

@@ -151,7 +151,7 @@ class TRQAGoldBeliefs(BeliefSource):
         try:
             done = belief_texts(row, self._writer_client())
         except Exception as e:  # noqa: BLE001 - not banked; asked again next run
-            return [], {**base, "errors": [f"gold beliefs: writer: {e}"]}
+            return [], {**base, "errors": [f"gold beliefs: writer: {e}"]}   # sources.INIT_CALL_ERRORS
         if not done["texts_ok"]:
             return [], {**base, "errors": [f"gold beliefs: {err}" for err in done["errors"]] or
                         ["gold beliefs: no belief texts"], FINAL: True, BANK_ONLY: {"row": done}}

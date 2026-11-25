@@ -48,8 +48,8 @@ else
 fi
 
 # ── Make the project packages importable ──────────────────────────────────────
-# Two source roots (see pyproject.toml): the repo root (utils.*, orchestration.*)
-# and src/ (indexing_corpus_dataset.*, deep_research_agents.*, ...). The project
+# Two source roots (see pyproject.toml): the repo root (utils.*)
+# and src/ (pipeline.*, indexing_corpus_dataset.*, deep_research_agents.*, ...). The project
 # is NOT pip-installed into the venv, so put both on PYTHONPATH. Anchored on the
 # script location, so it is correct regardless of the caller's CWD.
 _DRA_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

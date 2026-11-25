@@ -6,7 +6,7 @@ found by the ``policy_model`` of its ``run_config.json``).  An episode is
 one finished query of a run with a judged answer and gold beliefs:
 
 * what the belief model reads of it, as the belief stage reads it
-  (``orchestration.belief_stage.read_saved_query``): the search iterations
+  (``utils.run_files.read_saved_query``): the search iterations
   (queries, documents, agent turn) and the answer turn's reasoning and
   final answer (a query without a final answer is not an episode);
 * the correctness y of the agent's final answer
@@ -46,7 +46,7 @@ class Episode:
     qid: str
     question: str
     query_shape: str
-    # orchestration.belief_stage.SavedQuery: iterations, answer reasoning and answer.
+    # utils.run_files.SavedQuery: iterations, answer reasoning and answer.
     saved: Any
     # Correctness of the agent's final answer.
     y: bool
@@ -111,7 +111,7 @@ def load_run_episodes(run_dir: Path, dataset: str, split: str, policy_model: str
                       gold_rows: Dict[str, Dict[str, Any]], counts: Optional[Dict[str, int]] = None) -> List[Episode]:
     """The episodes of one run (see the module docstring); *counts* gets
     the queries left out, by reason."""
-    from orchestration.belief_stage import read_saved_query
+    from utils.run_files import read_saved_query
 
     counts = counts if counts is not None else {}
 
@@ -177,7 +177,7 @@ def load_episodes(output_root: Path, datasets: List[str], split: str, policy_mod
 class DocumentStore:
     """The documents of the episodes, read from each run's corpus by id and
     shaped as the run's retriever returns them
-    (``orchestration.belief_stage.corpus_doc``); one corpus index per
+    (``utils.run_files.corpus_doc``); one corpus index per
     corpus file, shared by threads."""
 
     def __init__(self) -> None:
@@ -196,7 +196,7 @@ class DocumentStore:
             return lookup
 
     def docs(self, episode: Episode, doc_ids: List[str]) -> List[Dict[str, Any]]:
-        from orchestration.belief_stage import corpus_doc
+        from utils.run_files import corpus_doc
 
         contents = self._lookup(episode.corpus_path).contents(doc_ids)
         return [corpus_doc(i, contents.get(i, ""), episode.retriever_name) for i in doc_ids]

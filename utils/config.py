@@ -285,7 +285,7 @@ def resolve_agent_backend(policy_model: str) -> Tuple[str, Optional[str]]:
 # Retriever config
 # ---------------------------------------------------------------------------
 
-class _RetrieverConfig:
+class RetrieverConfig:
     """Lightweight config object for local retrievers (BM25, Dense, Rerank, SPLADE)."""
 
     def __init__(self, retriever_name, index_dir, corpus_path, topk):

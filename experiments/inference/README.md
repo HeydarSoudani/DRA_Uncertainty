@@ -64,7 +64,7 @@ needs no agent, retriever or GPU: it reads each search iteration's queries, the 
 shown and the agent's turn from `trajectory/{qid}.jsonl`, reads the documents' text from the corpus by id
 (this call's corpus of the run's dataset and split; `CorpusLookup`, shaped as the run's retriever returns a
 document), and the answer as the agent returned it (`agent_generation` in the trajectory's meta
-line; `src/orchestration/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
+line; read by `utils/run_files/saved_query.py`, run by `src/pipeline/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
 
 ```bash
 python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage generate --limit 3

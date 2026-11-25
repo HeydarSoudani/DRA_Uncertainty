@@ -173,7 +173,7 @@ def build_meta_line(query_id: str, question: str, result: Dict[str, Any]) -> Dic
     counts and the agent-specific payloads in
     :data:`utils.config.AGENT_META_KEYS` that are persisted nowhere else.  The
     final generation is in ``generation/{qid}.md`` only; ``agent_generation``
-    (set by ``orchestration.run_query``) is the generation as the agent
+    (set by ``pipeline.workers.run_query``) is the generation as the agent
     returned it, before the pipeline appends a References section and
     renumbers its docid citations (``build_references_section``): the answer
     the belief stage reads.  Written last, it marks the query as finished.

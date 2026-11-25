@@ -95,7 +95,7 @@ class BeliefModel:
                 self._beliefs, self._belief_info = self._belief_source.get(query_id, query)
             except Exception as e:
                 logger.warning("BeliefModel: belief source failed", exc_info=True)
-                self._belief_info = {"errors": [f"belief_source: {e}"]}
+                self._belief_info = {"errors": [f"belief_source: {e}"]}   # init.sources.INIT_CALL_ERRORS
             logger.info("BeliefModel: %d beliefs: %s",
                         len(self._beliefs), [c.text for c in self._beliefs])
         if self._belief is not None:

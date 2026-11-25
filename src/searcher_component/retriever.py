@@ -2,6 +2,7 @@
 # === Src: https://github.com/PeterGriffinJin/Search-R1/blob/main/search_r1/search/retrieval_server.py
 # ===========================
 import os
+import shutil
 
 # Disable safetensors auto-conversion (avoids background thread errors when
 # HuggingFace Hub is unreachable or returns empty responses).
@@ -29,10 +30,17 @@ from typing import List
 from sentence_transformers import CrossEncoder
 
 # pyserini boots the JVM at import time, so this import is the single point
-# where the VM is created -- cap its heap here, before it starts.  It has to be
-# here rather than in worker setup code: multiprocessing "spawn" re-imports
-# __main__ in every GPU worker, which reaches this module and starts the VM
-# long before the worker gets a chance to configure it (orchestration._init_worker).
+# where the VM is created -- point pyjnius at the JDK of the `java` on PATH and
+# cap its heap here, before it starts.  Every process (the main one and each
+# generate-stage worker) loads this module on its first retriever
+# (searcher_component.__getattr__), so this is the one place to configure it.
+_java_bin = shutil.which("java")
+if _java_bin:
+    _java_home = os.path.dirname(os.path.dirname(os.path.realpath(_java_bin)))
+    _jvm_so = os.path.join(_java_home, "lib", "server", "libjvm.so")
+    if os.path.isfile(_jvm_so):
+        os.environ["JAVA_HOME"] = _java_home
+        os.environ["JVM_PATH"] = _jvm_so
 try:
     import jnius_config
     if not jnius_config.vm_running:

@@ -1,7 +1,7 @@
 """CLI argument resolution and pipeline-kwargs assembly.
 
 Leaf-layer helpers that turn parsed argparse args into the dataset defaults,
-worker config, and pipeline kwargs consumed by the orchestration layer. Depends
+worker config, and pipeline kwargs consumed by the pipeline package. Depends
 only on stdlib and ``utils`` — no heavy component imports.
 """
 
@@ -251,18 +251,25 @@ def resolve_dataset_defaults(args) -> None:
 
 
 def count_gpus() -> int:
-    """The GPUs visible on this machine (0 without CUDA or torch)."""
+    """The GPUs visible to this process (0 without CUDA or torch).
+
+    ``torch.cuda.device_count()`` counts them through NVML without
+    initialising CUDA (``torch.cuda.is_available()`` would: the process's
+    ``CUDA_VISIBLE_DEVICES`` is then fixed, and the generate stage sets it
+    after this count)."""
     try:
         import torch
     except ImportError:
         return 0
-    return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    return torch.cuda.device_count()
 
 
-def resolve_workers(requested: int, total_gpus: int, gpu_ids: Optional[List[int]] = None) -> int:
+def resolve_workers(requested: int, total_gpus: int, gpu_ids: Optional[List[str]] = None) -> int:
     """The generate stage's worker count from ``--workers`` (``0`` = auto:
     the GPUs of ``--gpu-ids``, else the machine's, else 1 on a CPU machine).
     ``--gpu-ids`` with the default single worker runs one worker per listed GPU."""
+    if requested < 0:
+        raise SystemExit(f"--workers {requested}: must be 0 (auto) or more")
     if gpu_ids and requested <= 1:
         return len(gpu_ids)
     if requested != 0:
@@ -326,7 +333,7 @@ def assemble_pipeline_kwargs(args, llm_client, retriever, workers: int, verbose:
         "hard_mode":               args.hard_mode,
         "max_passage_tokens":       args.max_passage_tokens,
         "verbose":                 verbose,
-        "gpu_ids":                 gpu_ids or [],  # empty: CPU workers
+        "gpu_ids":                 gpu_ids or [],  # real GPU ids; empty: CPU workers
         "post_retrieval_reranker_type": args.post_retrieval_reranker,
         "post_fusion_reranker_type":    args.post_fusion_reranker,
         "rerank_top_k":                 args.rerank_top_k,

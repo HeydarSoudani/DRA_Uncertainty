@@ -20,7 +20,7 @@ dependencies = { file = ["requirements.txt"] }
 where = [".", "src"]
 include = [
     "utils*",
-    "orchestration*",
+    "pipeline*",
     "deep_research_agents*",
     "evaluation*",
     "searcher_component*",

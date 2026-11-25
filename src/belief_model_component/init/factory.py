@@ -222,7 +222,7 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str], workers: int 
             return qid, source.get(qid, query)
         except Exception as e:  # noqa: BLE001 - its worker tries again
             logger.warning("Belief init of %s failed", qid, exc_info=True)
-            return qid, ([], {"errors": [f"belief_source: {e}"]})
+            return qid, ([], {"errors": [f"belief_source: {e}"]})   # sources.INIT_CALL_ERRORS
 
     counts: Counter = Counter()
     failed = []

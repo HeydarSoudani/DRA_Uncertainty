@@ -166,7 +166,7 @@ class LLMBeliefSource(BeliefSource):
         except Exception as e:
             logger.warning("LLMBeliefSource: LLM call failed", exc_info=True)
             return [], {"model": self.model_name, "query_shape": self._shape, "belief_source": self.kind,
-                        "errors": [f"llm_call: {e}"]}
+                        "errors": [f"llm_call: {e}"]}   # INIT_CALL_ERRORS
         return self.parse(raw)
 
     def parse(self, raw: Optional[str]) -> Tuple[List[Belief], Dict[str, Any]]:
@@ -227,6 +227,26 @@ BANK_ONLY = "bank_only"
 # Key of the info of a producer's empty result that is final (banked, so
 # not asked again): e.g. gold belief texts that failed for good.
 FINAL = "final"
+
+
+#: Prefixes of the belief info errors of a call that raised before any
+#: reply (the API or the server, not the model; nothing banked, so the
+#: next call makes the beliefs again): the belief source itself
+#: (``BeliefModel.reset``, ``init.factory.prepare_beliefs``), the
+#: extractor's call (``LLMBeliefSource.get``), TRQA's gold belief writer
+#: (``init.trqa_gold``; its failure would otherwise leave the query on its
+#: silver beliefs).  Each error is written where it is raised; keep them
+#: in step with this tuple.
+INIT_CALL_ERRORS = ("belief_source:", "llm_call:", "gold beliefs: writer:")
+
+
+def beliefs_call_failed(info: Dict[str, Any]) -> bool:
+    """The query's beliefs (its belief info) failed for the API or the
+    server, not for the model's reply: an error of ``INIT_CALL_ERRORS``,
+    also behind a silver fallback (``gold_missing``, the gold errors joined
+    by "; ", :class:`FallbackBeliefSource`)."""
+    texts = [str(e) for e in info.get("errors") or []] + [str(info.get("gold_missing") or "")]
+    return any(part.startswith(INIT_CALL_ERRORS) for text in texts for part in text.split("; "))
 
 
 def without_bank_only(info: Dict[str, Any]) -> Dict[str, Any]:

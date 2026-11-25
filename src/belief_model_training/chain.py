@@ -1,7 +1,7 @@
 """One belief chain over an episode: the inference belief model itself.
 
 A chain is ``belief_model_component.BeliefModel`` run over a saved episode
-exactly as the belief stage runs it (``orchestration.belief_stage``):
+exactly as the belief stage runs it (``pipeline.belief_stage``):
 reset (the beliefs), one ``observe`` per search iteration, then
 ``finish_answer`` on the answer turn's saved reasoning and answer (the
 final update call, then the final scorer's call).  Only the LLM client

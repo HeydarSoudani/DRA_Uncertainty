@@ -7,8 +7,9 @@ The generate stage writes, per query (:func:`save_query_outputs`):
     trajectory/{qid}.jsonl                       the steps, then the meta line (``trajectory``);
                                                  written last: it marks the query as finished
 
-The belief stage writes ``belief/{model}/{qid}.jsonl``, one folder per
-belief model (``belief``); both write
+The belief stage reads a query's saved run back (``saved_query``) and
+writes ``belief/{model}/{qid}.jsonl``, one folder per belief model
+(``belief``); both write
 ``run_config.json`` (``run_config``).  The evaluation only reads these files
 (:func:`load_result_from_saved_files`, ``belief.load_belief_files``) and
 writes its own under ``eval/`` (``evaluation.shared.files``).
@@ -26,6 +27,7 @@ from .generation import GENERATION_DIR, read_generation, save_generation
 from .retrieval import (CITED_DIR, SEEN_DIR, SURFACED_DIR, cited_docs, doc_ids, save_retrieval, seen_iterations,
                         surfaced_iterations)
 from .run_config import read_run_config
+from .saved_query import NO_TURN_AGENTS, TITLED_RETRIEVERS, SavedQuery, SearchIteration, corpus_doc, read_saved_query
 from .trajectory import TRAJECTORY_DIR, is_finished, read_trajectory, save_trajectory, scan_queries
 
 #: Per-query output directories of the generate stage (``belief/`` is the
@@ -81,5 +83,6 @@ __all__ = [
     "CITED_DIR", "SEEN_DIR", "SURFACED_DIR", "cited_docs", "doc_ids", "save_retrieval", "seen_iterations",
     "surfaced_iterations",
     "read_run_config",
+    "NO_TURN_AGENTS", "TITLED_RETRIEVERS", "SavedQuery", "SearchIteration", "corpus_doc", "read_saved_query",
     "TRAJECTORY_DIR", "is_finished", "read_trajectory", "save_trajectory", "scan_queries",
 ]

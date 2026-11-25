@@ -3,7 +3,7 @@ per-step signals, for deep research agents.
 
 Run over saved agent trajectories by the belief stage of
 ``experiments/inference/dra_inference.py`` (``--stage belief``,
-``orchestration.belief_stage``); it never changes what the agent does.  The
+``pipeline.belief_stage``); it never changes what the agent does.  The
 design is described in ``README.md``.
 
 Layout:
@@ -54,10 +54,12 @@ from .init.sources import (
     BANK_ONLY,
     FINAL,
     GOLD_BELIEF_MODEL,
+    INIT_CALL_ERRORS,
     BankedBeliefSource,
     BeliefSource,
     FallbackBeliefSource,
     LLMBeliefSource,
+    beliefs_call_failed,
 )
 from .text.agent_turn import agent_turn_text, answer_reasoning, answer_turn, split_answer_turn
 from .text.passages import Passage, passage_title, span_in_passage, split_span
@@ -81,7 +83,7 @@ __all__ = [
     "BeliefState",
     "certainty", "counted",
     # beliefs
-    "BANK_ONLY", "FINAL", "GOLD_BELIEF_MODEL",
+    "BANK_ONLY", "FINAL", "GOLD_BELIEF_MODEL", "INIT_CALL_ERRORS", "beliefs_call_failed",
     "BeliefSource", "LLMBeliefSource", "BankedBeliefSource", "FallbackBeliefSource",
     "belief_kinds",
     "belief_llm", "belief_provider_pin", "belief_vllm_api_base", "build_belief_source", "check_belief_inputs", "check_max_beliefs", "prepare_beliefs",

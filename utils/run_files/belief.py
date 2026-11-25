@@ -13,7 +13,7 @@ correctness labels stay in the accuracy output (``eval/generation/accuracy.jsonl
 models, belief cap, retriever) are in the run's ``run_config.json``; the
 per-iteration seen doc ids and queries in the trajectory file
 (``trajectory/{query_id}.jsonl``), which the belief stage reads
-(``orchestration.belief_stage``).
+(``pipeline.belief_stage``).
 
 Per-query JSONL schema (``belief/{query_id}.jsonl``), schema_version 57::
 
