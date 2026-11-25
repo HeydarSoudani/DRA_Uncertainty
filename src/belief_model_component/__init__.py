@@ -11,7 +11,8 @@ Layout:
     core/           types, issues, state (BeliefState), certainty
     update/         updater, signal (BeliefUpdateSignal), final_score, repair
     init/           sources, parsing, factory (the beliefs of a query)
-    text/           matching, passages, agent_turn (plain string helpers)
+    text/           matching, passages, agent_turn, saved_query (the agent's side as
+                    the belief model reads it; read_saved_query)
     views/          belief_text (the belief as prompt text), log_view
     eval_signals/   retrieval_gain (evaluation only)
     prompts/        system prompts and user templates
@@ -20,7 +21,7 @@ Code outside the package imports from here, never from a module path.
 """
 
 from .core.certainty import certainty, counted
-from .core.issues import EFFECTS, ERROR_EFFECTS, GATE_ISSUES, ISSUES, NOTE_CODES, UNCLEAN_REPLY, issue_effect
+from .core.issues import EFFECTS, GATE_ISSUES, ISSUES, NOTE_CODES, UNCLEAN_REPLY, issue_effect
 from .core.state import BeliefState
 from .core.types import (
     AGGREGATE,
@@ -62,15 +63,16 @@ from .init.sources import (
     beliefs_call_failed,
 )
 from .text.agent_turn import agent_turn_text, answer_reasoning, answer_turn, split_answer_turn
-from .text.passages import Passage, passage_title, span_in_passage, split_span
+from .text.passages import Passage, span_in_passage, split_span
 from .update.final_score import (
     build_final_scorer,
     parse_final_score,
 )
 from .update.signal import BeliefUpdateSignal, CallPlan
 from .update.updater import LLMBeliefUpdater, build_belief_updater
-from .views.log_view import belief_lines, belief_md, init_lines, init_md
+from .views.log_view import belief_lines, belief_md, init_lines, init_md, verbose_print_belief, verbose_print_init
 from .belief_model import BeliefModel
+from .text.saved_query import NO_TURN_AGENTS, TITLED_RETRIEVERS, SavedQuery, SearchIteration, corpus_doc, read_saved_query
 
 __all__ = [
     # core
@@ -78,7 +80,7 @@ __all__ = [
     "STATUS_LEVEL", "UNKNOWN",
     "Candidate", "Belief", "Observation", "Support",
     "exclusive", "is_computed", "is_target", "parse_status", "status_probability",
-    "EFFECTS", "ERROR_EFFECTS", "GATE_ISSUES", "ISSUES", "NOTE_CODES", "UNCLEAN_REPLY",
+    "EFFECTS", "GATE_ISSUES", "ISSUES", "NOTE_CODES", "UNCLEAN_REPLY",
     "issue_effect",
     "BeliefState",
     "certainty", "counted",
@@ -91,9 +93,11 @@ __all__ = [
     "LLMBeliefUpdater", "build_belief_updater", "BeliefUpdateSignal", "CallPlan",
     "build_final_scorer", "parse_final_score",
     # text
-    "Passage", "passage_title", "agent_turn_text", "answer_reasoning", "answer_turn", "split_answer_turn", "span_in_passage", "split_span",
+    "Passage", "agent_turn_text", "answer_reasoning", "answer_turn", "split_answer_turn", "span_in_passage", "split_span",
     # views
-    "belief_lines", "belief_md", "init_lines", "init_md",
+    "belief_lines", "belief_md", "init_lines", "init_md", "verbose_print_belief", "verbose_print_init",
     # entry point
     "BeliefModel",
+    # input
+    "NO_TURN_AGENTS", "TITLED_RETRIEVERS", "SavedQuery", "SearchIteration", "corpus_doc", "read_saved_query",
 ]

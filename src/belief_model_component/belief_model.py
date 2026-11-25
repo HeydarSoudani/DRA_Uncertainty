@@ -9,7 +9,7 @@ step and final records are described in ``README.md``."""
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from utils.text_utils import doc_id as _doc_id, unique_docs
+from utils.documents import doc_id as _doc_id, unique_docs
 
 from .core.types import Belief
 from .init.sources import BeliefSource

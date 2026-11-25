@@ -24,10 +24,10 @@ from deep_research_agents.prompts.answer_prompts import (
     TAG_FORMAT,
     force_answer_prompt,
 )
-from utils.text_utils import extract_tag_content, extract_all_tag_content, parse_tool_calls_xml_list
-from utils.text_utils import format_as_markdown
-from utils.config import InferenceConfig
-from reasoner_component.vllm import VLLMGenerator
+from deep_research_agents.shared.parsing import extract_tag_content, extract_all_tag_content, parse_tool_calls_xml_list
+from deep_research_agents.shared.formatting import format_as_markdown
+from deep_research_agents.shared.config import InferenceConfig
+from reasoner_component.providers.vllm import VLLMGenerator
 from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)

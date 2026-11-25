@@ -8,7 +8,7 @@
 #   --stage
 #   generation: --dataset  --subset  --policy-model  --retriever
 #   generation: --workers  (query worker processes; one per GPU, or CPU processes)
-#   belief:     --belief-model  (qwen3.6_27b | qwen3.5_9b; utils/config.py BELIEF_MODEL_TO_LLM)
+#   belief:     --belief-model  (qwen3.6_27b | qwen3.5_9b; src/utils/models.py BELIEF_MODEL_TO_LLM)
 #               --belief-source  --belief-workers   (defaults below)
 #   shared:     --limit  --quiet
 #   The belief and eval stages need no GPU (with an API belief model): run them on a CPU node.
@@ -26,10 +26,10 @@
 # ============================================================================
 
 # ── LLM ─────────────────────────────────────────────────────────────────────
-llm_temperature: null           # Sampling temperature (null = per-agent, see utils.config.AGENT_TEMPERATURE)
+llm_temperature: null           # Sampling temperature (null = per-agent, see utils.models.AGENT_TEMPERATURE)
 llm_max_tokens_per_call: 2000  # Max tokens generated per single LLM API call
 llm_top_p: 1.0                  # Top-p sampling (reasoning agents only)
-max_output_tokens_total: 120000 # Output-token budget (glm/oss/tongyi/cpm_explore), capped per agent by utils.config.OUTPUT_TOKEN_CAPS; run_config.json records the capped value
+max_output_tokens_total: 120000 # Output-token budget (glm/oss/tongyi/cpm_explore), capped per agent by utils.models.OUTPUT_TOKEN_CAPS; run_config.json records the capped value
 request_timeout: 300            # HTTP request timeout (s) for LLM API calls
 
 # ── Dataset (null = per-dataset default in layout.DATASET_SPECS) ──────────────

@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Start a vLLM server for Rank-R1-7B (ielab), a setwise reranker: LoRA adapters
 # on Qwen/Qwen2.5-7B-Instruct, served under the alias "rank-r1" (port 8001,
-# the reranker's api_url in utils/config.py).
+# the reranker's api_url in src/searcher_component/shared/config.py).
 #
 # Usage:
 #   bash vllm_server_scripts/rerankers/serve_rank_r1.sh

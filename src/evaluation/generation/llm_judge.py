@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.io_utils import read_jsonl, write_jsonl
+from utils.io import read_jsonl, write_jsonl
 from reasoner_component import LiteLLMClient
 
 from ..shared.context import GENERATION, EvalContext, EvalSetup

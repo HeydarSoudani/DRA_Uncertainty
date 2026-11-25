@@ -26,8 +26,6 @@ from typing import Dict, Tuple
 DROPPED, CORRECTED, FLAGGED, NOTE = "dropped", "corrected", "flagged", "note"
 # The effects in the order a log shows them.
 EFFECTS = (DROPPED, CORRECTED, FLAGGED, NOTE)
-# The effects of an error (a note is none).
-ERROR_EFFECTS = (DROPPED, CORRECTED, FLAGGED)
 
 
 @dataclass(frozen=True)

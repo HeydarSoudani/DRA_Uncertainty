@@ -28,12 +28,12 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Tuple
 
-from utils.io_utils import write_jsonl
+from utils.io import write_jsonl
 
-from ..chain import INIT, SCORE, UPDATE, ReplayClient, init_source, run_chain
-from ..config import RunPaths, TrainingConfig
-from ..reward import score_probability, step_passes
-from ..runs import DocumentStore, Episode, read_gold_rows
+from ..shared.chain import INIT, SCORE, UPDATE, ReplayClient, init_source, run_chain
+from ..shared.config import RunPaths, TrainingConfig
+from ..shared.reward import score_probability, step_passes
+from ..shared.runs import DocumentStore, Episode, read_gold_rows
 from .rules import keep_sample
 
 #: The split of each sample set.
@@ -97,7 +97,7 @@ def init_completion(beliefs: List[Dict[str, Any]]) -> str:
 
 
 def init_samples(dataset: str, split: str, counts: Counter) -> List[Dict[str, Any]]:
-    from indexing_corpus_dataset.layout import DATASET_SPECS
+    from indexing_corpus_dataset.shared.layout import DATASET_SPECS
 
     cap = DATASET_SPECS[dataset].max_beliefs
     source = init_source(dataset, None)

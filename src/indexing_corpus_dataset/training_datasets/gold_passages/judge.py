@@ -39,7 +39,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tqdm import tqdm
 
-from utils.io_utils import drop_partial_line, iter_jsonl
+from utils.io import drop_partial_line, iter_jsonl
 
 from ..annotation.belief_texts import MAX_REPLY_FAILURES
 from ..config import DatasetPaths, GoldPassagesConfig

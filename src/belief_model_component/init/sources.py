@@ -44,8 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.layout import BELIEF_SOURCES, GOLD_BELIEFS, SILVER_BELIEFS
-from utils.text_utils import parse_json_object
+from indexing_corpus_dataset.shared.layout import BELIEF_SOURCES, GOLD_BELIEFS, SILVER_BELIEFS
+from utils.json_parse import parse_json_object
 
 from ..core.types import BELIEF_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Belief
 from ..prompts import BELIEF_INIT_SYSTEMS, belief_init_user

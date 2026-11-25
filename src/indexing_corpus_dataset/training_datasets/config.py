@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from utils.sectioned_config import load_sectioned
-from indexing_corpus_dataset.layout import (ALL_SPLIT, BUILT_DATASETS, TRAINING_RAW_ROOT, TRAINING_SPLITS,
-                                            dataset_root, default_corpus_path, qrels_base, queries_base)
+from utils.yaml_config import load_sectioned
+from indexing_corpus_dataset.shared.layout import (
+    ALL_SPLIT, BUILT_DATASETS, TRAINING_SPLITS, dataset_root, default_corpus_path, qrels_base, queries_base,
+)
+from utils.paths import TRAINING_RAW_ROOT
 
 
 @dataclass
@@ -126,7 +128,7 @@ class DatasetPaths:
 
     The dataset itself, in the folder shared by every training dataset,
     ``TRAINING_DATASETS_ROOT`` (data/training_datasets, laid out like an
-    inference dataset, ``layout.py``): ``queries/{dataset}.jsonl`` (split
+    inference dataset, ``shared/layout.py``): ``queries/{dataset}.jsonl`` (split
     ``all``: every query, one row per query with its split and gold
     annotation, ``annotation/rows.py``) and ``qrels/{dataset}.txt``,
     written by stage data_relevance."""

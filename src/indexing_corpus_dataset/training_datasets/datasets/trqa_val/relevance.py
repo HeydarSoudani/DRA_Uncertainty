@@ -24,9 +24,9 @@ split: ``pipeline/relevance.finish``.
 
 from typing import List
 
-from indexing_corpus_dataset.layout import default_corpus_path
+from indexing_corpus_dataset.shared.layout import default_corpus_path
 
-from ....doc_lookup import CorpusLookup
+from ....shared.doc_lookup import CorpusLookup
 from ...annotation import rows as annotation_rows
 from ...config import BuildConfig, DatasetPaths
 from ...pipeline.relevance import Built

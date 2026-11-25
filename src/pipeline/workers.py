@@ -18,7 +18,7 @@ from typing import List, Optional
 
 from reasoner_component import setup_llm
 from utils.run_files.trajectory_logger import TrajectoryLogger
-from utils.text_utils import _build_cited_docs_ranked_list, build_references_section
+from utils.citations import ranked_cited_docs, with_references_section
 
 from .factories import build_agent, build_rerankers, build_search_tool, setup_retriever_from_args
 from .logging_setup import quiet_logging
@@ -56,15 +56,13 @@ def run_query(agent, run_dir, query_id: str, query_text: str, *, policy_model: s
         )
         if result is None:
             return None
-        result["cited_docs_ranked_list"] = _build_cited_docs_ranked_list(result)
+        result["cited_docs_ranked_list"] = ranked_cited_docs(result)
         # The generation as the agent returned it, before the References
         # section (which also renumbers docid citations): the answer the
         # belief stage reads (trajectory meta line).
         result["agent_generation"] = result["generation"]
         # Append a References section to the generation (CPMReport already has one)
-        references = build_references_section(result)
-        if references:
-            result["generation"] = result["generation"].rstrip() + references
+        result["generation"] = with_references_section(result)
         save_query_outputs(run_dir, query_id, query_text, result)
         return result
     except Exception as exc:

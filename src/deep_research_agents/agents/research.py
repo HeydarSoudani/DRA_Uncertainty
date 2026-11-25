@@ -9,7 +9,9 @@ from reasoner_component import BaseGenerator
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "research"
 SYSTEM_PROMPT_RESEARCH_INST = (_PROMPT_DIR / "system.txt").read_text()
 
-from .base_agent import TagReasoningAgent, passages2string
+from deep_research_agents.shared.formatting import passages2string
+
+from .base_agent import TagReasoningAgent
 
 
 class ReSearch_Agent(TagReasoningAgent):

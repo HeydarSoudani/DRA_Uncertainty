@@ -17,10 +17,16 @@ Modules:
     factories       retriever, rerankers, search tool, agent, belief model
     resources       the generate stage's GPUs: worker plan, vLLM start, release
     logging_setup   the --quiet logging of a process
+    cli             the CLI's run config (dra_inference.yaml), dataset defaults
+                    and the run_pipeline kwargs
+    run_config      the run directory's name and run_config.json (built,
+                    checked against a resumed run, updated)
 
 The package exports what the CLI uses; the rest is internal to it.
 """
 
+from .cli import (apply_run_config, assemble_pipeline_kwargs, cleanup_event_loop, load_run_config,
+                  resolve_dataset_defaults)
 from .factories import build_rerankers, setup_retriever_from_args
 from .logging_setup import quiet_logging
 from .resources import WorkerPlan, plan_generate_workers
@@ -28,6 +34,8 @@ from .run_plan import STAGES, prepare_run
 from .runner import run_pipeline
 
 __all__ = [
+    "apply_run_config", "assemble_pipeline_kwargs", "cleanup_event_loop", "load_run_config",
+    "resolve_dataset_defaults",
     "build_rerankers", "setup_retriever_from_args",
     "quiet_logging", "WorkerPlan", "plan_generate_workers",
     "STAGES", "prepare_run",

@@ -15,10 +15,10 @@
 from collections import Counter
 from typing import List, Optional
 
-from indexing_corpus_dataset.layout import dataset_root, default_corpus_path, queries_base, resolve_split_id
-from utils.io_utils import iter_jsonl
+from indexing_corpus_dataset.shared.layout import dataset_root, default_corpus_path, queries_base, resolve_split_id
+from utils.io import iter_jsonl
 
-from ....doc_lookup import CorpusLookup
+from ....shared.doc_lookup import CorpusLookup
 from ...pipeline.checks import answer_check, duplicate_check, no_gold_check, question_key
 from ...pipeline.funnel import Funnel
 from .source import TRQA_SUBSETS

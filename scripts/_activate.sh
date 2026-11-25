@@ -48,12 +48,12 @@ else
 fi
 
 # ── Make the project packages importable ──────────────────────────────────────
-# Two source roots (see pyproject.toml): the repo root (utils.*)
-# and src/ (pipeline.*, indexing_corpus_dataset.*, deep_research_agents.*, ...). The project
-# is NOT pip-installed into the venv, so put both on PYTHONPATH. Anchored on the
-# script location, so it is correct regardless of the caller's CWD.
+# One source root (see pyproject.toml): src/ (utils.*, pipeline.*,
+# indexing_corpus_dataset.*, deep_research_agents.*, ...). The project is NOT
+# pip-installed into the venv, so put it on PYTHONPATH. Anchored on the script
+# location, so it is correct regardless of the caller's CWD.
 _DRA_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${_DRA_REPO_ROOT}:${_DRA_REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${_DRA_REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── Project env vars (paths previously set inline in each SBATCH script) ──────
 export PYTHONUNBUFFERED=1

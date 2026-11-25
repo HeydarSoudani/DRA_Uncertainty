@@ -37,8 +37,8 @@ import hashlib
 from collections import Counter
 from typing import Dict, List, Optional
 
-from indexing_corpus_dataset.layout import TRAINING_SPLITS
-from utils.io_utils import iter_jsonl
+from indexing_corpus_dataset.shared.layout import TRAINING_SPLITS
+from utils.io import iter_jsonl
 
 from ..annotation.rows import FULL
 from ..config import DatasetPaths, SplitConfig

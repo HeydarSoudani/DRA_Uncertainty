@@ -4,7 +4,7 @@
 ``process``   ``VLLMServer``, ``VLLMServerManager``, ``serve``: start / stop / GPUs
 ``__main__``  ``python -m reasoner_component.vllm_server serve <model>`` (``list``)
 
-The client that talks to a running server is ``reasoner_component.vllm.VLLMGenerator``.
+The client that talks to a running server is ``reasoner_component.providers.vllm.VLLMGenerator``.
 Importing this package starts nothing and imports neither ``vllm`` nor ``torch``.
 """
 

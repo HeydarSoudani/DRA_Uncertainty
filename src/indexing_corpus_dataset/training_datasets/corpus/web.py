@@ -15,7 +15,7 @@ reachable) is fetched again by the next builds, ``MAX_ATTEMPTS`` fetches in
 all; then its failure is final.
 
 corpus_web: every fetched page cut into passages of at most
-``MAX_PASSAGE_TOKENS`` tokens (``utils.text_utils.PASSAGE_TOKENIZER``),
+``MAX_PASSAGE_TOKENS`` tokens (``utils.documents.PASSAGE_TOKENIZER``),
 whole sentences where a sentence fits, the page title on the first line of
 each passage as in corpus_wiki; a passage id is ``web_<url hash>_<k>``.
 Written again (atomically) from the fetched pages when they or the cut
@@ -27,7 +27,6 @@ passage a retriever returns is always some question's gold page.
 import hashlib
 import json
 import logging
-import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,9 +35,10 @@ from typing import Dict, List, Optional
 
 from tqdm import tqdm
 
-from indexing_corpus_dataset.layout import TRAINING_DATASETS_ROOT, corpus_path
-from utils.io_utils import atomic_write_text, drop_partial_line, iter_jsonl
-from utils.text_utils import MAX_PASSAGE_TOKENS, PASSAGE_TOKENIZER, token_ends
+from indexing_corpus_dataset.shared.layout import corpus_path
+from utils.paths import TRAINING_DATASETS_ROOT
+from utils.io import atomic_open, atomic_write_text, drop_partial_line, iter_jsonl
+from utils.documents import MAX_PASSAGE_TOKENS, PASSAGE_TOKENIZER, token_ends
 
 from ..config import DatasetPaths, WebConfig
 from .fetch.http_client import HttpClient, error_text
@@ -222,10 +222,8 @@ def write_web_corpus(store: PageStore) -> Dict[str, List[str]]:
             return out
     texts = store.texts()
     ok = [u for u, r in store.rows.items() if r["status"] == "ok" and u in texts]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
     out: Dict[str, List[str]] = {}
-    with open(tmp, "w", encoding="utf-8", errors="replace") as fh:
+    with atomic_open(path, errors="replace") as fh:
         for url in sorted(ok):
             title = store.rows[url].get("title") or url
             ids = []
@@ -234,7 +232,6 @@ def write_web_corpus(store: PageStore) -> Dict[str, List[str]]:
                 fh.write(json.dumps({"id": ids[-1], "contents": f"{title}\n{chunk}", "url": url},
                                     ensure_ascii=False) + "\n")
             out[url] = ids
-    os.replace(tmp, path)
     atomic_write_text(record, json.dumps({"signature": signature, "corpus_bytes": path.stat().st_size}, indent=2) + "\n")
     print(f"[web] corpus_web: {sum(map(len, out.values()))} passages of {len(out)} pages -> {path}")
     return out

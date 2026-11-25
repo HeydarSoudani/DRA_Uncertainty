@@ -6,8 +6,8 @@
 ``run_servers``              the vLLM servers a pipeline run needs
 
 Two backends, each behind ``BaseGenerator``:
-  * ``api``   → ``APIGenerator``   hosted: Claude / OpenAI / OpenRouter  (api.py)
-  * ``vllm``  → ``VLLMGenerator``  a self-hosted vLLM server             (vllm.py)
+  * ``api``   → ``APIGenerator``   hosted: Claude / OpenAI / OpenRouter  (providers/api.py)
+  * ``vllm``  → ``VLLMGenerator``  a self-hosted vLLM server             (providers/vllm.py)
 
 ``$VLLM_API_BASE`` points the pipeline's vLLM generator at a server of your
 own (another port or node) instead of its registered one; no server is then
@@ -18,7 +18,7 @@ import logging
 import os
 from typing import List, Optional
 
-from utils.config import SELF_MANAGED_LLM_AGENTS, resolve_agent_backend
+from utils.models import SELF_MANAGED_LLM_AGENTS, resolve_agent_backend
 
 from .base import BaseGenerator
 from .vllm_server.registry import ServerSpec, server_spec
@@ -48,12 +48,12 @@ def create_generator(model_name: str, backend: Optional[str] = None, **kwargs) -
     backend = (backend or ("vllm" if model_name.startswith("vllm/") else "api")).lower()
 
     if backend == "api":
-        from .api import APIGenerator
+        from .providers.api import APIGenerator
 
         return APIGenerator(model_name, **kwargs)
 
     if backend == "vllm":
-        from .vllm import VLLMGenerator
+        from .providers.vllm import VLLMGenerator
 
         return VLLMGenerator(model_name, **kwargs)
 

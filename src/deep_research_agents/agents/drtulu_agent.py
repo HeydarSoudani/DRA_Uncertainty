@@ -93,7 +93,7 @@ from reasoner_component import BaseGenerator              # noqa: E402
 
 from .base_agent import BasicAgent                                                           # noqa: E402
 from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, DRTULU_FORMAT
-from utils.text_utils import format_as_snippets                                          # noqa: E402
+from deep_research_agents.shared.formatting import format_as_snippets  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

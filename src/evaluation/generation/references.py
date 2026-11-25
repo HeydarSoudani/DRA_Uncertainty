@@ -1,7 +1,7 @@
 """The References block of a generation.
 
 Every generation ends with a ``## References`` block of ``[N] doc_id`` lines
-(written by CPM-Report itself, by ``utils.text_utils.build_references_section``
+(written by CPM-Report itself, by ``utils.citations.with_references_section``
 for the other agents).  Two cuts of it, kept apart because the answer
 judges' saved verdicts are keyed on their input text:
 

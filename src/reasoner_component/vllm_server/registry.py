@@ -152,9 +152,9 @@ _SPECS: Tuple[ServerSpec, ...] = (
 
 
 def _trained_belief_specs() -> List[ServerSpec]:
-    """The trained belief models (``utils.config.TRAINED_BELIEF_RUNS``): their
+    """The trained belief models (``utils.models.TRAINED_BELIEF_RUNS``): their
     checkpoint path, served with their student's settings."""
-    from utils.config import TRAINED_BELIEF_RUNS, student_weights, trained_belief_checkpoint
+    from utils.models import TRAINED_BELIEF_RUNS, student_weights, trained_belief_checkpoint
 
     students = {_BASE_BELIEF.model: _BASE_BELIEF}
     return [

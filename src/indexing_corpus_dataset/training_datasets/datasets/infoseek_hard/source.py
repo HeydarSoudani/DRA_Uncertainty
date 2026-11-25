@@ -6,7 +6,7 @@ Wikipedia page of every tree node, the skeleton the hops of the tree
 
 from typing import Dict, Iterator, List
 
-from utils.io_utils import iter_jsonl
+from utils.io import iter_jsonl
 
 from ...annotation.names import entity_names
 from ...annotation.rows import CLOSED

@@ -12,11 +12,11 @@ from deep_research_agents.prompts.answer_prompts import (
     TAG_FORMAT,
     force_answer_prompt,
 )
-from utils.text_utils import MAX_PASSAGE_TOKENS, passages2string, format_as_json  # noqa: F401 – re-exported for back-compat
-from utils.text_utils import reduce_reasoning_path, build_evidence_summary
-from utils.config import InferenceConfig
-from utils.text_utils import verbose_print, verbose_print_search_results
-from utils.text_utils import get_think as _get_think, get_query as _get_query, get_answer as _get_answer  # noqa: E501
+from utils.documents import MAX_PASSAGE_TOKENS
+from deep_research_agents.shared.formatting import (build_evidence_summary, format_as_json, passages2string,
+                                             reduce_reasoning_path, verbose_print, verbose_print_search_results)
+from deep_research_agents.shared.config import InferenceConfig
+from deep_research_agents.shared.parsing import get_think as _get_think, get_query as _get_query, get_answer as _get_answer
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +64,6 @@ class AgentVerboseMixin:
             logger_.log_step(step)
         return step
 
-    def _log_block(self, text: str, *, title: str = None) -> None:
-        """Write a markdown-only note into the trajectory log.
-
-        For what explains the trajectory without belonging to it: phase
-        banners, parse errors and retries.  Never touches the
-        JSONL.
-        """
-        logger_ = getattr(self, "_traj_logger", None)
-        if logger_ is not None:
-            logger_.log_block(text, title=title)
-
     def _begin_trajectory_log(self, trajectory_logger) -> None:
         """Attach and open the per-query trajectory log (no-op when absent)."""
         self._traj_logger = trajectory_logger
@@ -116,7 +105,7 @@ class AgentVerboseMixin:
         3. when the iteration searched (*subqueries*, or *docs*: the
            documents it was shown), numbers it: ``search_step`` (from 1,
            per query) on each of its steps, which the belief stage groups
-           the iteration's trajectory lines by (``utils.run_files.read_saved_query``);
+           the iteration's trajectory lines by (``belief_model_component.read_saved_query``);
         4. appends the steps to *reasoning_path* through ``_record_step``.
         """
         if seen_docs is not None:
@@ -508,7 +497,7 @@ class BasicAgent(AgentVerboseMixin):
         """Agent-specific keys added to the result of the last ``inference``.
 
         Added before the trajectory log is finalised, so keys listed in
-        ``utils.config.AGENT_META_KEYS`` reach the trajectory meta line.
+        ``utils.run_files.AGENT_META_KEYS`` reach the trajectory meta line.
         """
         return {}
 

@@ -19,7 +19,7 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from utils.io_utils import write_jsonl
+from utils.io import write_jsonl
 
 from ..shared.context import GENERATION, EvalContext, EvalSetup
 from ..shared.result import GroupResult

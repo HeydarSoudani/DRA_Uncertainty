@@ -3,8 +3,7 @@
 The belief model makes its belief list once per sample
 (``BeliefModel.reset`` calls ``BeliefSource.get``).  This module decides
 which source that is, from the dataset and the run's ``belief_source``;
-the callers (the belief stage of dra_inference,
-``analysis/criteria_reachability.py``) only pass these settings.
+the caller (the belief stage of dra_inference) only passes these settings.
 
 Per query:
 
@@ -24,7 +23,7 @@ Per query:
      ``layout.belief_bank_path(..., "gold")``;
    - a training dataset's gold beliefs (``GoldBeliefSource``): the dataset's
      queries file is their bank, written by the dataset build only
-     (``train_belief_model.py --stage data``); a query without them gets silver ones.
+     (``train_belief_model.py --stage data_prepare`` then ``data_relevance``); a query without them gets silver ones.
 
 Functions:
 
@@ -45,7 +44,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-from indexing_corpus_dataset.layout import (
+from indexing_corpus_dataset.shared.layout import (
     ANNOTATION_GOLD, BUILT_DATASETS, DATASET_SPECS, GOLD_BELIEFS, SILVER_BELIEFS, belief_bank_path,
     effective_belief_source, extraction_kind, gold_beliefs_path,
 )
@@ -79,8 +78,8 @@ def belief_llm(model: str):
 
 def belief_provider_pin(model: str):
     """The OpenRouter ``provider`` routing of the belief model LLM *model*
-    (``utils.config.BELIEF_OPENROUTER_PROVIDER``), None when it has none."""
-    from utils.config import BELIEF_OPENROUTER_PROVIDER
+    (``utils.models.BELIEF_OPENROUTER_PROVIDER``), None when it has none."""
+    from utils.models import BELIEF_OPENROUTER_PROVIDER
 
     pin = BELIEF_OPENROUTER_PROVIDER.get(model)
     return dict(pin) if pin else None
@@ -149,7 +148,8 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
         path = gold_beliefs_path(dataset)
         if not path.exists():
             raise SystemExit(f"belief_source gold: {path} not found; build the dataset with "
-                             f"experiments/training/train_belief_model.py --stage data --dataset {dataset}"
+                             f"experiments/training/train_belief_model.py --stage data_prepare, then "
+                             f"--stage data_relevance, --dataset {dataset}"
                              + (", or run with --belief-source silver" if spec.belief_choice else ""))
         print(f"[INFO] beliefs: gold from {path}, silver for a query without them (extracted by {belief_model})")
     else:
@@ -164,15 +164,13 @@ def build_belief_source(
     belief_model: str,
     max_beliefs: Optional[int],
     belief_source: str = GOLD_BELIEFS,
-    fallback: bool = True,
 ) -> BeliefSource:
     """The belief source of the queries of *split* of *dataset* (see the
     module docstring).
 
     *belief_model* extracts the beliefs from the question and writes
     TRQA's gold belief texts; *max_beliefs* caps the extraction (None:
-    uncapped).  *fallback* false: a query without gold beliefs gets none
-    (``analysis/criteria_reachability.py``)."""
+    uncapped)."""
     if not belief_model:
         raise ValueError("the belief source needs a belief model")
     spec = DATASET_SPECS[dataset]
@@ -200,8 +198,6 @@ def build_belief_source(
         gold = BankedBeliefSource(TRQAGoldBeliefs(split, writer=model_id, llm_client=llm), gold_bank)
         print(f"Belief model: gold beliefs from the bank {gold_bank}, missing ones made from the "
               f"intermediate info (texts by {model_id})")
-    if not fallback:
-        return gold
     print(f"Belief model: a query without gold beliefs gets the {kind} ones above")
     return FallbackBeliefSource(gold, source)
 

@@ -8,12 +8,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.text_utils import doc_id as _doc_id, doc_text, doc_title
+from utils.documents import doc_id as _doc_id, doc_text, doc_title, passage_title
 
 from ..core.certainty import certainty
 from ..core.state import BeliefState
 from ..core.types import Belief
-from ..text.passages import Passage, Turn, passage_title
+from ..text.passages import Passage, Turn
 from .updater import LLMBeliefUpdater
 
 logger = logging.getLogger(__name__)

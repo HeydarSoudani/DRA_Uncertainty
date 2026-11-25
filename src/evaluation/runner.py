@@ -21,7 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from indexing_corpus_dataset.layout import DATASET_SPECS
+from indexing_corpus_dataset.shared.layout import DATASET_SPECS
 from utils.run_files import (SCHEMA_VERSION, belief_models, belief_schemas, load_belief_files,
                              load_result_from_saved_files)
 from utils.run_files.run_config import belief_config_of, belief_model_of, read_run_config

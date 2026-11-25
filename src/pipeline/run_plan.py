@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from indexing_corpus_dataset.dataset_loaders import load_qrels, load_split, resolve_split_id
-from indexing_corpus_dataset.layout import DATASET_SPECS
+from indexing_corpus_dataset.shared.dataset_loaders import load_qrels, load_split, resolve_split_id
+from indexing_corpus_dataset.shared.layout import DATASET_SPECS, build_dataset_dir_name
 from utils.run_files import scan_queries
-from utils.run_files.run_config import (
-    build_dataset_dir_name,
+
+from .run_config import (
     build_run_config,
     build_run_name_for_pipeline,
     check_run_config,
@@ -138,8 +138,6 @@ def prepare_run(data_path: str, output_path: str, policy_model: str, subset: Opt
         # The belief and eval stages read the saved run with this call's
         # qrels and corpus (the dataset section, which must be the run's);
         # only the evaluation settings (e.g. the judge) may change.
-        if not (Path(run_dir) / "run_config.json").exists():
-            raise SystemExit(f"No run in {run_dir} (no run_config.json): run --stage generate first.")
         check_run_dataset(run_dir, run_config)
         update_run_config_evaluation(run_dir, run_config)
 

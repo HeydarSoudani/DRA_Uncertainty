@@ -3,7 +3,7 @@ only, never shown to the agent)."""
 
 from typing import Any, Dict, List, Optional, Set
 
-from utils.text_utils import doc_id as _doc_id
+from utils.documents import doc_id as _doc_id
 
 
 class RetrievalGainSignal:

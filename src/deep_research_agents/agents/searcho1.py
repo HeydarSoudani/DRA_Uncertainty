@@ -12,7 +12,9 @@ from deep_research_agents.prompts.searcho1.prompts import (
     get_webpage_to_reasonchain_instruction,
 )
 
-from .base_agent import BasicAgent, passages2string
+from deep_research_agents.shared.formatting import passages2string
+
+from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, BOXED_FORMAT
 
 logger = logging.getLogger(__name__)
@@ -28,8 +30,6 @@ class SearchO1_Agent(BasicAgent):
         self.verbose = verbose
         self.BEGIN_SEARCH_QUERY = "<|begin_search_query|>"
         self.END_SEARCH_QUERY = "<|end_search_query|>"
-        self.BEGIN_SEARCH_RESULT = "<|begin_search_result|>"
-        self.END_SEARCH_RESULT = "<|end_search_result|>"
         self.MAX_SEARCH_LIMIT = max_iteration
         self.with_reason_in_documents = True
         self.instruction = get_multiqa_search_o1_instruction(self.MAX_SEARCH_LIMIT)

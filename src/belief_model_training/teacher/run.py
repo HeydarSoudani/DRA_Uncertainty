@@ -13,9 +13,9 @@ queries it runs.
 
 from typing import List, Optional
 
-from ..config import TrainingConfig
-from ..inference import run_dra_inference
-from ..runs import find_run
+from ..shared.config import TrainingConfig
+from ..shared.inference import run_dra_inference
+from ..shared.runs import find_run
 
 #: The splits whose trajectories get the teacher's beliefs.
 TEACHER_SPLITS = ("sft", "val")
@@ -23,8 +23,8 @@ TEACHER_SPLITS = ("sft", "val")
 
 def run_teacher(cfg: TrainingConfig, dataset: str, split: str, policy_models: List[str],
                 limit: Optional[int]) -> None:
-    from indexing_corpus_dataset.dataset_loaders import load_queries
-    from indexing_corpus_dataset.layout import BUILT_DATASETS, DATASET_SPECS, dataset_root
+    from indexing_corpus_dataset.shared.dataset_loaders import load_queries
+    from indexing_corpus_dataset.shared.layout import BUILT_DATASETS, DATASET_SPECS, dataset_root
     from utils.run_files import scan_queries
     from evaluation.shared.files import METRICS_FILE
 

@@ -45,7 +45,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
-from utils.io_utils import drop_partial_line, iter_jsonl
+from utils.io import drop_partial_line, iter_jsonl
 
 from ..annotation.belief_texts import MAX_REPLY_FAILURES, BeliefWriter, ReplyError, require_api_key
 from ..config import DatasetPaths, GoldBeliefsConfig

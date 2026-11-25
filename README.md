@@ -18,7 +18,7 @@ The project has two parts:
 
 ## Supported agents, datasets and retrievers
 
-**Agents** (the LLM is picked automatically per agent, `utils/config.py`):
+**Agents** (the LLM is picked automatically per agent, `src/utils/models.py`):
 
 | Family | Agents |
 |---|---|
@@ -41,13 +41,15 @@ src/
 ├── reasoner_component/       LLM generators (API, vLLM) + vLLM servers
 ├── pipeline/                 wiring of agent, searcher and belief model; multi-GPU workers
 ├── belief_model_component/   beliefs, belief state, signals, judges
+├── belief_model_training/    teacher runs, filtering, SFT and RL of the belief model
 ├── evaluation/               scoring of a run, one package per metrics.md group
-└── indexing_corpus_dataset/  dataset download and index building
+├── indexing_corpus_dataset/  dataset download and index building
+└── utils/                    shared leaf helpers (imports no other package): paths, models, documents,
+                              citations, JSON/JSONL I/O, YAML configs, progress bars, run_files/ (the run directory)
 experiments/
 ├── inference/                dra_inference.py
-├── training/                 train_belief_model.py (phases 1-5)
+├── training/                 train_belief_model.py (the eight training stages)
 └── configs/                  YAML defaults of every script
-analysis/                     beliefs reachability, final score ablation
 scripts/                      Slurm wrappers (run_*.sh)
 data/                         belief banks, training datasets
 ```
@@ -60,7 +62,7 @@ pip install -e .
 
 This registers all packages so imports resolve from any working directory. Set `DRA_DATA_ROOT` (corpus + indices),
 `DRA_OUTPUT_ROOT` (run outputs) and `DRA_BELIEF_ROOT` (belief banks, default the repo's `data/`) to control
-where data is read and written. On Slurm, `scripts/_activate.sh` loads the modules, activates the venv and exports
+where data is read and written (`src/utils/paths.py`; they can also be set in the project-root `.env`). On Slurm, `scripts/_activate.sh` loads the modules, activates the venv and exports
 these variables.
 
 ## Data and indices

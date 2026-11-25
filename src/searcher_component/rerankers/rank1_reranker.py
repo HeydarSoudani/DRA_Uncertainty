@@ -22,7 +22,6 @@ Information Retrieval", arXiv:2502.18418.
 Public API
 ----------
 score_query(query, texts)                          ->  List[float]
-rerank_batch(requests, rank_start, rank_end, ...)  ->  List[Result]
 rerank(request, rank_start, rank_end, ...)         ->  Result
 rerank(query_str, documents, top_k)               ->  List[Dict]   (convenience)
 
@@ -409,25 +408,6 @@ class Rank1Reranker:
     # ------------------------------------------------------------------
     # GitHub-compatible core API  (matches ZephyrReranker / SafeOpenai)
     # ------------------------------------------------------------------
-
-    def rerank_batch( self, requests: List[Request], rank_start: int = 0, rank_end: int = 100, shuffle_candidates: bool = False, logging: bool = False, **kwargs: Any, ) -> List[Result]:
-        """Rerank a batch of requests.
-
-        Matches the signature of ``ZephyrReranker.rerank_batch`` from the
-        castorini/rank_llm repository.
-        """
-        results = []
-        for request in requests:
-            result = self.rerank(
-                request,
-                rank_start=rank_start,
-                rank_end=rank_end,
-                shuffle_candidates=shuffle_candidates,
-                logging=logging,
-                **kwargs,
-            )
-            results.append(result)
-        return results
 
     def rerank( self, request_or_query: Union[Request, str], documents: Optional[List[Dict]] = None, top_k: Optional[int] = None, rank_start: int = 0, rank_end: int = 100, shuffle_candidates: bool = False, logging: bool = False, **kwargs: Any, ) -> Union[Result, List[Dict]]:
         """Rerank a single request.

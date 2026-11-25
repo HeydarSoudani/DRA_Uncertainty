@@ -30,12 +30,12 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn.functional as F
 
-from utils.config import student_weights
-from utils.io_utils import read_jsonl
+from utils.models import student_weights
+from utils.io import read_jsonl
 
-from ..config import RunPaths, TrainingConfig
+from ..shared.config import RunPaths, TrainingConfig
 from ..filtering.run import read_filter_stats
-from ..student import load_processor, load_student, quiet_libraries, tokenize_sample
+from ..shared.student import load_processor, load_student, quiet_libraries, tokenize_sample
 
 
 class _Collator:

@@ -60,12 +60,12 @@ from tqdm import tqdm
 
 from indexing_corpus_dataset.indexing.index_builder import (
     Index_Builder, MODEL2PATH, MODEL2POOLING,
-    load_model, get_device, doc_text, encode_texts, peek_corpus_has_title,
+    load_model, get_device, record_text, encode_texts, peek_corpus_has_title,
 )
-from indexing_corpus_dataset.layout import (
+from indexing_corpus_dataset.shared.layout import (
     DATASETS, apply_dataset_defaults, dataset_root, default_corpus_path, query_max_length,
 )
-from indexing_corpus_dataset.dataset_loaders import load_qrels, load_queries, resolve_split_id
+from indexing_corpus_dataset.shared.dataset_loaders import load_qrels, load_queries, resolve_split_id
 from indexing_corpus_dataset.indexing.index_config import (
     TEST_DEFAULTS, TEST_CONFIG_DEFAULT, resolve_index_config, resolve_max_length,
 )
@@ -196,7 +196,7 @@ def check_length_sorted_batching(args, pooling_method, corpus_path, n_docs=LENGT
     encoder, tokenizer = load_model(args.retriever, args.model_path, args.use_fp16, device)
     has_title = peek_corpus_has_title([corpus_path])
     with open(corpus_path, encoding='utf-8') as f:
-        texts = [doc_text(json.loads(line), has_title, args.retriever)
+        texts = [record_text(json.loads(line), has_title, args.retriever)
                  for line, _ in zip(f, range(n_docs))]
 
     def _encode(length_sorted):
@@ -441,7 +441,6 @@ def main():
     config.corpus_path = small_corpus_path
     config.index_dir = args.save_dir
     config.retrieval_topk = 1000  # retrieve enough for recall@k
-    config.retrieval_batch_size = 32
     config.retrieval_query_max_length = query_max_length(args.dataset, args.retriever)
     config.retrieval_use_fp16 = args.use_fp16
     config.bm25_k1 = 0.9

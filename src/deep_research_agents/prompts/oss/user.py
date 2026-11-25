@@ -7,7 +7,7 @@ Confidence: {{your confidence score between 0% and 100% for your answer}}"""
 
 # Report tasks (layout.DATASET_SPECS task == "report"): the response is the
 # report itself; its docid citations become numbered [N] markers
-# (utils.text_utils.number_docid_citations).
+# (deep_research_agents.shared.formatting.number_docid_citations).
 REPORT_QUERY_TEMPLATE = """Request: {Question}
 
 Your response should be the report that answers the request. Cite your evidence documents inline by enclosing their full docids, exactly as given in the search results, in square brackets [] at the end of sentences. For example, [<docid>]. Do not add a reference list."""

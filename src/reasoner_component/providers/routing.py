@@ -16,10 +16,9 @@ from typing import Any, Dict, Optional
 
 import litellm
 
-from .litellm_client import LiteLLMClient
+from utils.models import OPENROUTER_BASE_URL
 
-# OpenRouter OpenAI-compatible endpoint.
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+from .litellm_client import LiteLLMClient
 
 # Azure OpenAI models: shared OPENAI_ENDPOINT + OPENAI_API_KEY,
 # per-model {PREFIX}_DEPLOYMENT and {PREFIX}_API_VERSION.

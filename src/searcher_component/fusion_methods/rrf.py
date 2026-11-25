@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Any
 
+from utils.documents import doc_id as get_doc_id
+
 from .base import BaseFusion
 
 
@@ -30,7 +32,7 @@ class ReciprocalRankFusion(BaseFusion):
 
         for ranked_list in ranked_lists:
             for rank, result in enumerate(ranked_list, start=1):
-                doc_id = self._get_doc_id(result)
+                doc_id = get_doc_id(result)
                 if not doc_id:
                     continue
 

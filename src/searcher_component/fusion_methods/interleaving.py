@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Any
 
+from utils.documents import doc_id as get_doc_id
+
 from .base import BaseFusion
 
 
@@ -34,7 +36,7 @@ class InterleavingFusion(BaseFusion):
                 items_taken = 0
                 while items_taken < self.window and positions[list_idx] < len(ranked_list):
                     result = ranked_list[positions[list_idx]]
-                    doc_id = self._get_doc_id(result)
+                    doc_id = get_doc_id(result)
 
                     if doc_id and doc_id not in seen_doc_ids:
                         fused_results.append(result)
@@ -44,47 +46,3 @@ class InterleavingFusion(BaseFusion):
                     items_taken += 1
 
         return fused_results
-
-
-class NestedInterleavingFusion(BaseFusion):
-    """Combine nested ranked lists using two-level interleaving.
-
-    Applies interleaving at two levels:
-    1. WITHIN each Search call: interleave documents from multiple Retrieve actions.
-    2. ACROSS Search calls: interleave the per-Search results.
-
-    Use case: ReAct model where each Search tool call contains multiple Retrieve actions.
-    - Outer list : multiple Search tool calls
-    - Middle list: multiple Retrieve actions within a Search call
-    - Inner list : documents from one Retrieve action
-
-    Example:
-        Search 1: [[doc1_a, doc1_b], [doc1_c, doc1_d]]
-        Search 2: [[doc2_a, doc2_b], [doc2_c, doc2_d]]
-
-        Step 1 – interleave within each Search:
-            Search 1 → [doc1_a, doc1_c, doc1_b, doc1_d]
-            Search 2 → [doc2_a, doc2_c, doc2_b, doc2_d]
-
-        Step 2 – interleave across Searches:
-            Final → [doc1_a, doc2_a, doc1_c, doc2_c, doc1_b, doc2_b, doc1_d, doc2_d]
-    """
-
-    def __init__(self, window: int = 1):
-        """
-        Args:
-            window: Window size forwarded to the inner InterleavingFusion.
-        """
-        self.window = window if window and window > 0 else 1
-        self._interleaver = InterleavingFusion(window=self.window)
-
-    def fuse(self, nested_ranked_lists: List[List[List[Dict[str, Any]]]]) -> List[Dict[str, Any]]:
-        # Step 1: interleave Retrieve actions within each Search call
-        search_level_results = [
-            interleaved
-            for search_call_lists in nested_ranked_lists
-            if (interleaved := self._interleaver.fuse(search_call_lists))
-        ]
-
-        # Step 2: interleave across Search calls
-        return self._interleaver.fuse(search_level_results)

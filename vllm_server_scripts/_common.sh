@@ -26,7 +26,7 @@ export DRA_MODELS_DIR="${DRA_MODELS_DIR:-/projects/0/prjs0834/heydars/DRA_traini
 
 # ── Make the project packages importable (as scripts/_activate.sh does) ───────
 _DRA_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PYTHONPATH="${_DRA_REPO_ROOT}:${_DRA_REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${_DRA_REPO_ROOT}/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # ── vllm_serve <model> [extra args...]: run the registered server in the foreground
 vllm_serve() {

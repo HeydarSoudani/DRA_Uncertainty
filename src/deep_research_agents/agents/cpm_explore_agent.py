@@ -31,7 +31,7 @@ from deep_research_agents.prompts.answer_prompts import (
     CPM_EXPLORE_FORMAT,
     FINAL_ANSWER_INSTRUCTION,
 )
-from utils.config import InferenceConfig
+from deep_research_agents.shared.config import InferenceConfig
 from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)

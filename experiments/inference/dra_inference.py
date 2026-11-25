@@ -46,7 +46,8 @@ Stages (--stage):
 
 This file is the CLI: the settings (YAML config + flags) and the setup of
 the run.  The stages themselves are the ``pipeline`` package (src/pipeline/:
-run_plan, runner, generate_stage, belief_stage, workers, factories).
+cli, run_config, run_plan, runner, generate_stage, belief_stage, workers,
+factories, resources).
 
 Output structure: see OUTPUT STRUCTURE at the end of this file.
 """
@@ -67,28 +68,28 @@ warnings.filterwarnings("ignore", category=ResourceWarning, message=".*unclosed.
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 logging.getLogger("asyncio.sslproto").setLevel(logging.CRITICAL)
 
-from indexing_corpus_dataset.layout import BELIEF_SOURCES, DATASETS, OUTPUT_ROOT
+from indexing_corpus_dataset.shared.layout import BELIEF_SOURCES, DATASETS
+from utils.paths import OUTPUT_ROOT
 
-from utils.config import BELIEF_MODEL_TO_LLM, DEFAULT_BELIEF_MODEL, POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature
+from utils.models import (
+    BELIEF_MODEL_TO_LLM, DEFAULT_BELIEF_MODEL, POLICY_MODEL_TO_LLM, POLICY_MODEL_ALIAS, resolve_temperature,
+)
 from pipeline import (
     STAGES,
+    apply_run_config,
+    assemble_pipeline_kwargs,
     build_rerankers,
+    cleanup_event_loop,
+    load_run_config,
     plan_generate_workers,
     prepare_run,
     quiet_logging,
+    resolve_dataset_defaults,
     run_pipeline,
     setup_retriever_from_args,
 )
 from reasoner_component import setup_llm
-from utils.cli_setup import (
-    resolve_dataset_defaults,
-    assemble_pipeline_kwargs,
-    cleanup_event_loop,
-    load_run_config,
-    parse_cli_overrides,
-    apply_config_to_args,
-    _sm_bool,
-)
+from utils.yaml_config import parse_bool, parse_cli_overrides
 
 _OUTPUT_PREFIX = str(OUTPUT_ROOT)
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "dra_inference.yaml")
@@ -105,7 +106,7 @@ def _resolve_args(args, extras):
     cli_belief_source = args.belief_source
     config = load_run_config(args.config)
     overrides = parse_cli_overrides(extras)
-    apply_config_to_args(args, config, overrides)
+    apply_run_config(args, config, overrides)
     if cli_subset is not None:
         args.subset = cli_subset
     if cli_belief_source is not None:
@@ -272,11 +273,11 @@ def parse_args():
     parser.add_argument("--retriever", type=str, default="qwen3_emb_4b", choices=["bm25", "spladepp", "spladev3", "rerank_l6", "rerank_l12", "contriever", "dpr", "e5", "bge", "qwen3_emb_0.6b", "qwen3_emb_4b", "qwen3_emb_8b", "agentir_4b"], help="Retriever; its index must be built for --dataset.")
     parser.add_argument("--workers", type=int, default=1, help="Query-level worker processes of the generate stage; each loads its own retriever and agent. On a GPU machine one worker per GPU (capped at the GPUs, or at --gpu-ids); on a CPU machine CPU processes (the retriever on CPU, one copy in RAM each). 0 = auto: the GPU count, 1 without GPU. Ignored by the belief and eval stages (no GPU; the belief stage runs --belief-workers threads).")
     # ── Belief ──────────────────────────────────────────────────────────────
-    parser.add_argument("--belief-model", type=str, default=DEFAULT_BELIEF_MODEL, choices=list(BELIEF_MODEL_TO_LLM), help="Belief model (its folder belief/{name}/ of the run, one per model); its LLM is selected from utils/config.py BELIEF_MODEL_TO_LLM: qwen3.5_4b (Qwen/Qwen3.5-4B on local vLLM: the belief stage starts its server on the first visible GPU, port 7010, and stops it after; needs a GPU), qwen3.5_9b (openrouter/qwen/qwen3.5-9b) or qwen3.6_27b (openrouter/qwen/qwen3.6-27b). One LLM for its three calls: belief init (banked under the LLM id), belief update and final score.")
+    parser.add_argument("--belief-model", type=str, default=DEFAULT_BELIEF_MODEL, choices=list(BELIEF_MODEL_TO_LLM), help="Belief model (its folder belief/{name}/ of the run, one per model); its LLM is selected from src/utils/models.py BELIEF_MODEL_TO_LLM: qwen3.5_4b (Qwen/Qwen3.5-4B on local vLLM: the belief stage starts its server on the first visible GPU, port 7010, and stops it after; needs a GPU), qwen3.5_9b (openrouter/qwen/qwen3.5-9b) or qwen3.6_27b (openrouter/qwen/qwen3.6-27b). One LLM for its three calls: belief init (banked under the LLM id), belief update and final score.")
     parser.add_argument("--belief-source", type=str, default=None, choices=list(BELIEF_SOURCES), help="Beliefs of the belief model: gold (TRQA: made from the intermediate info; trqa_val: the dataset rows) or silver (extracted by --belief-model). A choice only on TRQA and trqa_val; elsewhere the dataset's own source is used. Unset = belief_source in --config.")
     # ── Shared ──────────────────────────────────────────────────────────────
     parser.add_argument("--limit", type=int, default=None, help="Cap the queries each stage runs (for quick tests): the generate stage's queries left to generate, the belief stage's trajectories left without a belief file. The evaluation still scores every finished query of the run (as with --query-ids-file).")
-    parser.add_argument("--quiet", type=_sm_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
+    parser.add_argument("--quiet", type=parse_bool, nargs="?", const=True, default=False, help="Print minimal logs (overrides verbose)")
 
     args, extras = parser.parse_known_args()
     return args, extras
@@ -299,6 +300,7 @@ if __name__ == "__main__":
 #     │                         stage; a resume with other settings is refused), belief_models
 #     │                         ({model: settings}, belief stage; other settings of a model
 #     │                         replace that model's beliefs), evaluation
+#     ├── .run_config.json.lock the lock of run_config.json's updates (utils.io.file_lock)
 #     ├── retrieval/
 #     │   ├── surfaced/{qid}.trec   surfaced-doc TREC (raw retriever output, col 6 = iter_N)
 #     │   ├── seen/{qid}.trec       seen-doc TREC (docs shown to the LLM)

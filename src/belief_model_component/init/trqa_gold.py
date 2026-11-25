@@ -31,12 +31,12 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.doc_lookup import CorpusLookup
-from indexing_corpus_dataset.layout import GOLD_BELIEFS, dataset_root, default_corpus_path, qrels_base, queries_base
+from indexing_corpus_dataset.shared.doc_lookup import CorpusLookup
+from indexing_corpus_dataset.shared.layout import GOLD_BELIEFS, dataset_root, default_corpus_path, qrels_base, queries_base
 from indexing_corpus_dataset.training_datasets.annotation.belief_texts import BeliefWriter, belief_texts, prompt_hash
 from indexing_corpus_dataset.training_datasets.annotation.rows import multi_member_row
 from indexing_corpus_dataset.training_datasets.datasets.trqa_val.trqa import docs_of, member_titles
-from utils.io_utils import iter_jsonl
+from utils.io import iter_jsonl
 
 from ..core.types import Belief
 from .sources import BANK_ONLY, FINAL, GOLD_BELIEF_MODEL, BeliefSource

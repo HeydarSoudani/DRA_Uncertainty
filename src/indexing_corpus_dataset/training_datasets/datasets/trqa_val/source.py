@@ -6,8 +6,8 @@ ids do not collide)."""
 
 from typing import Dict, Iterator, List
 
-from indexing_corpus_dataset.layout import dataset_root, qrels_base, queries_base, resolve_split_id
-from utils.io_utils import iter_jsonl
+from indexing_corpus_dataset.shared.layout import dataset_root, qrels_base, queries_base, resolve_split_id
+from utils.io import iter_jsonl
 
 from .trqa import docs_of
 

@@ -1,11 +1,12 @@
 """Corpus, dataset, and index tooling for retrieval research.
 
 Provides the canonical on-disk dataset layout and the readers around it,
-imported across the repo:
+imported across the repo (``shared/``):
 
-    layout.py             canonical paths, data root, split-id + corpus-name rules
-    dataset_loaders.py    read queries / qrels / answers / nuggets from that layout
-    doc_lookup.py         fetch corpus documents by id (byte-offset index)
+    shared/layout.py           canonical paths, split-id + corpus-name rules (the data
+                               root itself: ``utils.paths``)
+    shared/dataset_loaders.py  read queries / qrels / answers / nuggets from that layout
+    shared/doc_lookup.py       fetch corpus documents by id (byte-offset index)
 
 and one subpackage per job:
 
@@ -22,8 +23,9 @@ Canonical layout::
     {data_path}/corpus/{name}.jsonl
 """
 
-from .layout import (
-    DATA_ROOT,
+from utils.paths import DATA_ROOT
+
+from .shared.layout import (
     queries_base,
     qrels_base,
     nuggets_base,
@@ -33,7 +35,7 @@ from .layout import (
     default_corpus_path,
     default_index_dir,
 )
-from .dataset_loaders import (
+from .shared.dataset_loaders import (
     load_queries,
     load_qrels,
     load_nuggets,

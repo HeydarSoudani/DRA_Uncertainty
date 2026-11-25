@@ -13,7 +13,12 @@ import os
 from dataclasses import dataclass
 from typing import List, Optional
 
-from utils.cli_setup import count_gpus, resolve_workers
+
+# Rough VRAM footprint (GB, fp16) of the fixed dense retriever (qwen3_emb_4b):
+# ~8 GB weights + activations for batched 8196-token queries.  FAISS lives on
+# CPU, so the retriever only needs this much GPU and can co-reside on a worker
+# GPU.  Used for the GPU-plan log; tune once measured.
+RETRIEVER_VRAM_GB = 14
 
 
 @dataclass
@@ -23,6 +28,35 @@ class WorkerPlan:
     gpu_ids: Optional[List[str]]    # the workers' GPU ids; None: the visible GPUs; []: the CPU
     total_gpus: int                 # the GPUs visible to this process before the plan
     visible_before: Optional[str]   # CUDA_VISIBLE_DEVICES before the plan (None: unset)
+
+
+def count_gpus() -> int:
+    """The GPUs visible to this process (0 without CUDA or torch).
+
+    ``torch.cuda.device_count()`` counts them through NVML without
+    initialising CUDA (``torch.cuda.is_available()`` would: the process's
+    ``CUDA_VISIBLE_DEVICES`` is then fixed, and the generate stage sets it
+    after this count)."""
+    try:
+        import torch
+    except ImportError:
+        return 0
+    return torch.cuda.device_count()
+
+
+def resolve_workers(requested: int, total_gpus: int, gpu_ids: Optional[List[str]] = None) -> int:
+    """The generate stage's worker count from ``--workers`` (``0`` = auto:
+    the GPUs of ``--gpu-ids``, else the machine's, else 1 on a CPU machine).
+    ``--gpu-ids`` with the default single worker runs one worker per listed GPU."""
+    if requested < 0:
+        raise SystemExit(f"--workers {requested}: must be 0 (auto) or more")
+    if gpu_ids and requested <= 1:
+        return len(gpu_ids)
+    if requested != 0:
+        return requested
+    workers = max(1, total_gpus)
+    print(f"Auto-selected {workers} worker(s) ({total_gpus} GPUs on this machine)")
+    return workers
 
 
 def _parse_gpu_ids(value) -> Optional[List[str]]:
@@ -45,7 +79,7 @@ def plan_generate_workers(args, vllm_manager, n_queries: int) -> WorkerPlan:
     """
     from reasoner_component import run_servers
     from reasoner_component.vllm_server.process import gpu_ids as ids_of_positions
-    from utils.config import RETRIEVER_VRAM_GB, resolve_agent_backend
+    from utils.models import resolve_agent_backend
 
     visible_before = os.environ.get("CUDA_VISIBLE_DEVICES")
     total_gpus = count_gpus()

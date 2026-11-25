@@ -1,0 +1,259 @@
+"""The models of a run: the policy and belief model maps, the agents'
+sampling settings, the trained belief checkpoints and the OpenRouter routing.
+
+No heavy imports — this module must be safe to import from anywhere
+without triggering circular dependencies.
+"""
+
+import functools
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+from utils.paths import OUTPUT_ROOT, REPO_ROOT
+
+
+# ---------------------------------------------------------------------------
+# Model maps and agent categories
+# ---------------------------------------------------------------------------
+
+# Single source of truth: CLI --policy-model value → the LLM it runs on.
+# An LLM with a vLLM server spec (reasoner_component/vllm_server/registry.py, SERVERS) runs on
+# that local server; any other goes through its hosted API.
+# --llm-model is no longer a CLI input; it is derived from this map.
+# Some agents are exposed under multiple CLI names so different model sizes are
+# selectable (oss_20b / oss_120b → "oss"); POLICY_MODEL_ALIAS maps each back to
+# the internal agent name used by AGENT_MAP / SELF_MANAGED_LLM_AGENTS.
+POLICY_MODEL_TO_LLM: Dict[str, str] = {
+    # self-managed (vLLM)
+    "cpm_report":  "openbmb/AgentCPM-Report",
+    "cpm_explore": "openbmb/AgentCPM-Explore",
+    "glm":         "zai-org/GLM-4.7-Flash",
+    "tongyi":      "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B",
+    "oss_20b":     "gpt-oss-20b",
+    "oss_120b":    "gpt-oss-120b",
+    # local-finetuned (vLLM)
+    "drtulu":      "rl-research/DR-Tulu-8B",
+    "searchr1":    "PeterJinGo/SearchR1-nq_hotpotqa_train-qwen2.5-7b-it-em-grpo-v0.3",
+    "research":    "agentrl/ReSearch-Qwen-7B-Instruct",
+    "stepsearch":  "Zill1/StepSearch-7B-Instruct",
+    # API-backed instruction-tuned reasoning agents
+    "react":       "claude-sonnet-4-6",
+    "selfask":     "claude-sonnet-4-6",
+    "searcho1":    "claude-sonnet-4-6",
+    # WebWeaver runs on the Qwen3.6-35B-A3B MoE served by OpenRouter.  Pointing
+    # this line back at "Alibaba-NLP/Tongyi-DeepResearch-30B-A3B" is all it
+    # takes to return the agent to local vLLM (that model has a server spec).
+    "webweaver":   "openrouter/qwen/qwen3.6-35b-a3b",
+}
+
+
+# CLI --belief-model value → the LLM of the belief model's calls (belief init,
+# belief update, final score); the models differ in size (the belief model
+# size study), all run with the same prompts and settings.  The full id is
+# what the belief bank and run_config.json record.  A "vllm/<HF name>" LLM is
+# served locally by the belief stage (reasoner_component.vllm_server.serve, its spec
+# in reasoner_component/vllm_server/registry.py; needs a GPU); the others go through OpenRouter.
+#
+# The trained belief models (experiments/training/train_belief_model.py) are
+# served like their student: each is the selected checkpoint of one training
+# run, ``{BELIEF_TRAINING_ROOT}/{student}/{run}/final``, loaded by its path and
+# named ``{student}_{run}`` (TRAINED_BELIEF_RUNS: short name -> (student, run)).
+# A student is a local base belief model below (``--student`` of the training).
+BELIEF_TRAINING_ROOT = OUTPUT_ROOT / "belief_training"
+STUDENT_BELIEF_MODELS: Tuple[str, ...] = ("qwen3.5_4b",)
+TRAINED_RUN_NAMES: Tuple[str, ...] = ("sft", "rl", "rl_own_init")
+TRAINED_BELIEF_RUNS: Dict[str, Tuple[str, str]] = {
+    f"{student}_{run}": (student, run) for student in STUDENT_BELIEF_MODELS for run in TRAINED_RUN_NAMES
+}
+
+
+def trained_belief_checkpoint(student: str, run: str) -> Path:
+    """The served checkpoint of the training run *run* (``sft``, ``rl``, ...) of *student*."""
+    return BELIEF_TRAINING_ROOT / student / run / "final"
+
+
+BELIEF_MODEL_TO_LLM: Dict[str, str] = {
+    "qwen3.5_4b":  "vllm/Qwen/Qwen3.5-4B",
+    "qwen3.5_9b":  "openrouter/qwen/qwen3.5-9b",
+    "qwen3.6_27b": "openrouter/qwen/qwen3.6-27b",
+    **{name: f"vllm/{trained_belief_checkpoint(*run)}" for name, run in TRAINED_BELIEF_RUNS.items()},
+}
+_remote_students = [s for s in STUDENT_BELIEF_MODELS if not BELIEF_MODEL_TO_LLM[s].startswith("vllm/")]
+if _remote_students:
+    raise ValueError(f"STUDENT_BELIEF_MODELS: {_remote_students} are not local (vllm/) belief models")
+
+
+def student_weights(student: str) -> str:
+    """The Hugging Face weights of the student belief model *student*."""
+    return BELIEF_MODEL_TO_LLM[student].removeprefix("vllm/")
+
+
+DEFAULT_BELIEF_MODEL = "qwen3.6_27b"
+
+# OpenRouter routing of a belief model's calls (OpenRouter's ``provider``
+# request field), by LLM id: only hosts that serve the weights at this
+# precision, so every call of a model runs the same weights.  qwen3.5-9b:
+# bf16, as the local qwen3.5_4b (its fp8 and fp4 hosts left out); qwen3.6-27b:
+# fp8, the only precision its hosts state (2026-11-18).  Recorded in the run's
+# belief_models entry; a changed pin makes that model's beliefs again.
+BELIEF_OPENROUTER_PROVIDER: Dict[str, Dict[str, Any]] = {
+    "openrouter/qwen/qwen3.5-9b":  {"quantizations": ["bf16"]},
+    "openrouter/qwen/qwen3.6-27b": {"quantizations": ["fp8"]},
+}
+
+
+# CLI --policy-model value → internal agent name (when they differ).
+POLICY_MODEL_ALIAS: Dict[str, str] = {
+    "oss_20b":  "oss",
+    "oss_120b": "oss",
+}
+
+
+# Sampling temperature per agent, keyed by the internal agent name (the value
+# POLICY_MODEL_ALIAS resolves to, not the CLI name).  Each agent was tuned at a
+# different point: the values here are the ones its own constructor defaults to,
+# lifted into one table so a run cannot silently override them.
+#
+# Absent from the map means DEFAULT_AGENT_TEMPERATURE -- greedy decoding, which
+# is what the deterministic agents want.  It is not a safe blanket default: a
+# thinking model decoded greedily can fall into a repetition loop and spend its
+# whole token budget inside <think> without ever emitting an action, which the
+# calling phase then sees as a malformed (empty) response.  An agent that shows
+# that behaviour belongs in this table, not on the default.
+DEFAULT_AGENT_TEMPERATURE: float = 0.0
+AGENT_TEMPERATURE: Dict[str, float] = {
+    "cpm_report":  0.7,
+    "cpm_explore": 1.0,
+    "tongyi":      0.6,
+}
+
+
+def resolve_temperature(policy_model: str, explicit: Optional[float] = None) -> float:
+    """The temperature a run of ``policy_model`` uses.
+
+    ``explicit`` is the run config's ``llm_temperature``: ``None`` means the
+    user left it on auto and the agent's own value applies, any float means they
+    asked for that value and it wins for every agent.
+    """
+    if explicit is not None:
+        return float(explicit)
+    internal = POLICY_MODEL_ALIAS.get(policy_model, policy_model)
+    return AGENT_TEMPERATURE.get(internal, DEFAULT_AGENT_TEMPERATURE)
+
+
+# Ceiling on ``max_output_tokens_total`` for the agents that read it, keyed by
+# the internal agent name: the prompt and history must still fit the 131072-token
+# vLLM window (cpm_explore: its own lower limit).  Other agents ignore the value.
+OUTPUT_TOKEN_CAPS: Dict[str, int] = {
+    "glm":         20000,
+    "oss":         20000,
+    "tongyi":      20000,
+    "cpm_explore": 16384,
+}
+
+
+def effective_max_output_tokens(policy_model: str, value: int) -> int:
+    """``max_output_tokens_total`` as the agent of ``policy_model`` (CLI or
+    internal name) uses it: capped by :data:`OUTPUT_TOKEN_CAPS`."""
+    cap = OUTPUT_TOKEN_CAPS.get(POLICY_MODEL_ALIAS.get(policy_model, policy_model))
+    return value if cap is None else min(value, cap)
+
+
+# Agents that manage their own LLM connection (direct vLLM/OpenAI clients)
+SELF_MANAGED_LLM_AGENTS = frozenset({"oss", "tongyi", "glm", "cpm_explore", "cpm_report"})
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter routing (prefer hosted API over local GPU)
+# ---------------------------------------------------------------------------
+
+# OpenAI-compatible OpenRouter endpoint.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Path to the static OpenRouter slug registry (filled in by the user).
+_OPENROUTER_REGISTRY_PATH = REPO_ROOT / "experiments" / "configs" / "openrouter_registry.yaml"
+
+
+@functools.lru_cache(maxsize=1)
+def _registry() -> Dict[str, Any]:
+    """The registry file's content, read once (``{}`` when it is missing or
+    empty, so every agent safely falls back to the local vLLM path)."""
+    try:
+        import yaml  # lazy: keep this module import-light
+        with open(_OPENROUTER_REGISTRY_PATH) as fh:
+            return yaml.safe_load(fh) or {}
+    except (FileNotFoundError, ImportError):
+        return {}
+
+
+def _registry_section(name: str) -> Dict[str, str]:
+    """One section of the registry (``{str: str}``, empty values left out)."""
+    return {str(k): str(v) for k, v in (_registry().get(name) or {}).items() if v}
+
+
+def load_openrouter_registry() -> Dict[str, str]:
+    """The policy-model → OpenRouter-slug map of the registry's ``models``."""
+    return _registry_section("models")
+
+
+def load_model_display_names() -> Dict[str, str]:
+    """The optional ``display_names`` overrides of the registry: a full model
+    id (e.g. ``zai-org/GLM-4.7-Flash``) to a short, curated label used in
+    output directory names.  Empty when the section is absent."""
+    return _registry_section("display_names")
+
+
+def model_display_name(model: str) -> str:
+    """Short, filesystem-friendly label for a model id.
+
+    Uses a curated override from the registry's ``display_names`` section when
+    present; otherwise falls back to the last path segment, lowercased
+    (``zai-org/GLM-4.7-Flash`` -> ``glm-4.7-flash``).
+    """
+    if not model:
+        return "default"
+    override = load_model_display_names().get(model)
+    if override:
+        return override
+    return model.split("/")[-1].lower()
+
+
+def resolve_agent_backend(policy_model: str) -> Tuple[str, Optional[str]]:
+    """Decide how an agent's LLM is served.
+
+    Priority: if the agent is in the OpenRouter registry AND OPENROUTER_API_KEY
+    is set, use the hosted API (no local GPU).  Otherwise fall back to vLLM.
+
+    Returns:
+        ("api", openrouter_slug) or ("vllm", None).
+    """
+    slug = load_openrouter_registry().get(policy_model)
+
+    # The same slug is spelled twice for agents addressed directly through
+    # POLICY_MODEL_TO_LLM: once bare in the registry (which decides the
+    # reported backend) and once "openrouter/"-prefixed here (which selects the
+    # generator).  Drift between them is silent and ships a run recorded
+    # against the wrong model, so say so loudly instead.
+    configured = POLICY_MODEL_TO_LLM.get(policy_model, "")
+    if configured.startswith("openrouter/"):
+        bare = configured.removeprefix("openrouter/")
+        if slug is None:
+            logging.getLogger(__name__).warning(
+                "Agent %r runs on OpenRouter (%s) but is missing from %s; the run "
+                "will record itself as backend 'vllm'.  Add '%s: %s' to its models "
+                "section.", policy_model, configured,
+                _OPENROUTER_REGISTRY_PATH.name, policy_model, bare,
+            )
+        elif slug != bare:
+            logging.getLogger(__name__).warning(
+                "OpenRouter slug mismatch for %r: registry says %r, "
+                "POLICY_MODEL_TO_LLM says %r.  The registry value is reported as "
+                "the backend; the latter is what actually gets called.",
+                policy_model, slug, bare,
+            )
+
+    if slug and os.getenv("OPENROUTER_API_KEY"):
+        return "api", slug
+    return "vllm", None

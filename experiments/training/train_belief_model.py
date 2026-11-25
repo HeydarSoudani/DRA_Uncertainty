@@ -42,7 +42,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from belief_model_training.config import RL_BELIEFS, load_config
+from belief_model_training.shared.config import RL_BELIEFS, load_config
 
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "belief_training.yaml")
 
@@ -128,12 +128,16 @@ def main() -> None:
         raise SystemExit(f"--stage {stage}: {e}")
     agents = [args.policy_model] if args.policy_model else list(cfg.shared.policy_models)
 
-    if stage == "data_prepare":
-        from belief_model_training.data.build import prepare_dataset
-        prepare_dataset(cfg, args.dataset)
-    elif stage == "data_relevance":
-        from belief_model_training.data.build import relevance_dataset
-        relevance_dataset(cfg, args.dataset, args.limit)
+    if stage in ("data_prepare", "data_relevance"):
+        from indexing_corpus_dataset.training_datasets import DatasetPaths, build_relevance, prepare
+        try:
+            paths = DatasetPaths(args.dataset)
+        except ValueError as e:
+            raise SystemExit(f"--stage {stage}: {e}")
+        if stage == "data_prepare":
+            prepare(cfg.build_config(), paths)
+        else:
+            build_relevance(cfg.build_config(), paths, args.limit)
     elif stage == "generate":
         from belief_model_training.trajectories.run import run_trajectories
         run_trajectories(cfg, args.dataset, args.subset, agents, args.limit)

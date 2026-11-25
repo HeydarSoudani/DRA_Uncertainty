@@ -31,8 +31,8 @@ from typing import Dict, List, Tuple
 
 import torch
 
-from ..config import RLConfig
-from ..student import load_student
+from ..shared.config import RLConfig
+from ..shared.student import load_student
 from .ppo import kl_penalty, policy_loss_vanilla
 
 # Reply tokens per chunk of the log-prob and entropy computation.

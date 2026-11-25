@@ -1,7 +1,7 @@
 """Readable views of the belief: the beliefs, one iteration's belief and
 the final belief.
 
-One renderer feeds the console (``utils.text_utils.verbose_print_*``) and
+One renderer feeds the console (:func:`verbose_print_init`, :func:`verbose_print_belief`) and
 the belief markdown (``belief/{model}/{qid}.md``, written by the belief stage), so
 the two never drift apart.  It reads the saved shapes only: the step and final
 records of ``BeliefModel`` and ``BeliefModel.init_summary``.
@@ -300,3 +300,47 @@ def belief_md(record: Dict[str, Any], beliefs: Sequence[Dict[str, Any]], final: 
     if record.get("errors"):
         lines += ["", f"*errors: {'; '.join(map(str, record['errors']))}*"]
     return "\n".join(lines)
+
+
+# ===========================================================================
+# Console
+# ===========================================================================
+
+def _print_rows(label: str, rows) -> None:
+    """Print (family, row) pairs under *label*, the families in one column."""
+    padding = " " * len(label)
+    for i, (family, row) in enumerate(rows):
+        print(f"{label if i == 0 else padding}{(family + ':') if family else '':<11}{row}")
+
+
+def verbose_print_init(summary: Dict[str, Any], *, agent_name: str = "") -> None:
+    """Print the query's beliefs once, before the first iteration
+    (``BeliefModel.init_summary``)."""
+    prefix = f"[{agent_name}] " if agent_name else ""
+    _print_rows(f"{prefix}[beliefs]: ", init_lines(summary))
+
+
+def verbose_print_belief(
+    iter_num: Optional[int],
+    record: Dict[str, Any],
+    beliefs: List[Dict[str, Any]],
+    *,
+    agent_name: str = "",
+    final: bool = False,
+) -> None:
+    """Print the belief model's record for one search iteration: the belief
+    row (certainty, new doc ids), the gold row (new-item precision, recall
+    so far), per belief its statement row (status,
+    selected candidate(s), the labels it rests on; ``*`` rewritten this
+    iteration), the labels of the iteration's
+    documents, then the reply's issues and any errors.  The final update's
+    step record (``final_update``) has no gold row; with *final*, the
+    final record (``BeliefModel.final``), without the gold row."""
+    prefix = f"[{agent_name}] " if agent_name else ""
+    if final:
+        label = f"{prefix}[final belief]: "
+    elif record.get("final_update"):
+        label = f"{prefix}[final update] [belief]: "
+    else:
+        label = f"{prefix}[Iter {iter_num}] [belief]: "
+    _print_rows(label, belief_lines(record, beliefs, final=final))

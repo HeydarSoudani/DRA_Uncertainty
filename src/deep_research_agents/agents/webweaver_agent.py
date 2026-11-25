@@ -23,13 +23,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from reasoner_component import BaseGenerator
 
 from .base_agent import BasicAgent
-from utils.config import InferenceConfig
-from utils.text_utils import (
-    doc_text,
-    extract_tag_content as _extract_tag,
-    number_citations,
-    parse_tool_call_xml,
-)
+from deep_research_agents.shared.config import InferenceConfig
+from utils.documents import doc_text
+from deep_research_agents.shared.parsing import extract_tag_content as _extract_tag, parse_tool_call_xml
+from deep_research_agents.shared.formatting import number_citations
 from deep_research_agents.prompts.webweaver.user_prompts import (
     PLANNER_USER_TEMPLATE,
     WRITER_USER_TEMPLATE,

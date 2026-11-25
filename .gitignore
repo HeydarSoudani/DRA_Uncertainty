@@ -117,7 +117,7 @@ ENV/
 
 
 # My
-data/
+/data/
 archive/
 run_outputs/
 script_logging/

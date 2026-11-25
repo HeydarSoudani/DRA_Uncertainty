@@ -120,6 +120,9 @@ waits for the next call.
 
 ## Saved records
 
+The changes of each earlier `schema_version` are in
+[SCHEMA_CHANGELOG.md](SCHEMA_CHANGELOG.md).
+
 ### Step record
 
 One per iteration, saved as one `step` line of `belief/{model}/{query_id}.jsonl` by

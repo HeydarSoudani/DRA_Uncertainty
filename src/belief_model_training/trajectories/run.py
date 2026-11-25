@@ -11,14 +11,14 @@ are stage teacher (``teacher``).
 
 from typing import List, Optional
 
-from ..config import TrainingConfig
-from ..inference import run_dra_inference
+from ..shared.config import TrainingConfig
+from ..shared.inference import run_dra_inference
 from .stats import run_stats
 
 
 def run_trajectories(cfg: TrainingConfig, dataset: str, split: str, policy_models: List[str],
                      limit: Optional[int]) -> None:
-    from indexing_corpus_dataset.layout import BUILT_DATASETS, TRAINING_SPLITS
+    from indexing_corpus_dataset.shared.layout import BUILT_DATASETS, TRAINING_SPLITS
 
     if dataset not in BUILT_DATASETS:
         raise SystemExit(f"--dataset {dataset}: stage generate runs on a training dataset ({sorted(BUILT_DATASETS)})")

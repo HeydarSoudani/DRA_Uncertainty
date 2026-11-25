@@ -19,9 +19,9 @@ import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from ..chain import CallRecord, ChainClient, ChainResult, run_chain
-from ..runs import DocumentStore, Episode
-from ..student import chat_prompt
+from ..shared.chain import CallRecord, ChainClient, ChainResult, run_chain
+from ..shared.runs import DocumentStore, Episode
+from ..shared.student import chat_prompt
 
 
 @dataclass
@@ -193,7 +193,7 @@ def run_chains(jobs: List[Tuple[Episode, str]], engine, store: DocumentStore, te
 def extra_score_replies(chains: List[ChainResult], engine, n: int, temperature: float) -> List[List[CallRecord]]:
     """*n* more replies to each chain's final-score call (its first attempt's
     messages and budget), sampled together; none for a chain without that call."""
-    from ..chain import SCORE
+    from ..shared.chain import SCORE
 
     firsts = [next((c for c in r.calls if c.kind == SCORE and c.attempt == 1), None) for r in chains]
     asked = [k for k, c in enumerate(firsts) if c is not None]

@@ -191,7 +191,6 @@ class VLLMServer:
     def __init__(self, spec: ServerSpec, gpus: Sequence[int | str]):
         self.spec = spec
         self.gpus = [str(g) for g in gpus]
-        self.reused = False
         self._proc: Optional[subprocess.Popen] = None
         self._log = None
 
@@ -206,7 +205,6 @@ class VLLMServer:
             if spec.name not in names:
                 raise VLLMServerError(f"port {spec.port} for {spec.label} is taken by another process "
                                       f"(serving {names or 'no vLLM model'}); free it first")
-            self.reused = True
             print(f"[vLLM] {spec.label} already served on port {spec.port}: using that server")
             return
         if not self.gpus:

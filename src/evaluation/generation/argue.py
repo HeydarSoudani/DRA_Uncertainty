@@ -38,7 +38,7 @@ The package runs unmodified; this module supplies its inputs and its judge:
   each answer with its own supporting documents when given, else its
   question's.  The package drops answers without documents and questions
   without answers; a request with no nugget left is not scored.
-* Cited document texts: from the corpus (``indexing_corpus_dataset.doc_lookup``).
+* Cited document texts: from the corpus (``indexing_corpus_dataset.shared.doc_lookup``).
 * Judge: ``shared.judge.DEFAULT_JUDGE_MODEL`` (Qwen3-32B) instead of the
   package's Llama-3.3-70B, as ``shared.judge.YesNoJudge``: temperature 0
   with the model's reasoning off (the package reads YES/NO from at most 10
@@ -76,10 +76,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from indexing_corpus_dataset.doc_lookup import CorpusLookup
+from indexing_corpus_dataset.shared.doc_lookup import CorpusLookup
 from utils.progress import step_iter
 
-from indexing_corpus_dataset.dataset_loaders import load_nuggets
+from indexing_corpus_dataset.shared.dataset_loaders import load_nuggets
 
 from ..shared.context import GENERATION, EvalContext, EvalSetup
 from ..shared.files import GENERATION_EVAL_DIR

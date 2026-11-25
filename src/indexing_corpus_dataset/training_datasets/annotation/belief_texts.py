@@ -62,8 +62,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
-from utils.io_utils import drop_partial_line, iter_jsonl
-from utils.text_utils import parse_json_object
+from utils.io import drop_partial_line, iter_jsonl
+from utils.json_parse import parse_json_object
 
 from ..config import DatasetPaths, GoldBeliefsConfig
 from .names import mentions, normalize

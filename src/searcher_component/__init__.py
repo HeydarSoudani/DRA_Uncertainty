@@ -5,15 +5,8 @@ torch, FAISS and sentence-transformers, which the belief and eval stages,
 importing only ``normalize_retrieval_response``, do not need (they run on CPU).
 """
 
-from .fusion import (
-    interleaving_fusion,
-    reciprocal_rank_fusion,
-    simple_concatenation,
-    fuse_results,
-    fuse_retrieval_results,
-    FUSION_METHODS,
-)
-from .normalize import normalize_retrieval_response
+from .fusion_methods import fuse_results
+from .shared.normalize import normalize_retrieval_response
 
 from .searcher import RetrievalSearchTool
 
@@ -35,12 +28,7 @@ __all__ = [
     "RerankRetriever",
     "DenseRetriever",
     "Encoder",
-    "interleaving_fusion",
-    "reciprocal_rank_fusion",
-    "simple_concatenation",
     "fuse_results",
-    "fuse_retrieval_results",
-    "FUSION_METHODS",
     "normalize_retrieval_response",
     "RetrievalSearchTool",
 ]

@@ -12,9 +12,8 @@ import threading
 from concurrent.futures.process import BrokenProcessPool
 from typing import Dict, List, Optional, Tuple
 
-from utils.io_utils import setup_output_dirs
 from utils.progress import WorkerBars
-from utils.run_files import QUERY_OUTPUT_DIRS, scan_queries
+from utils.run_files import QUERY_OUTPUT_DIRS, scan_queries, setup_output_dirs
 
 from .factories import build_agent, build_search_tool
 from .resources import offload_encoder, release_gpus
@@ -27,7 +26,7 @@ def run_generate_stage(plan: RunPlan, policy_model: str, llm_model: str, verbose
     """Run the agent on ``plan.queries`` and save each query's files under
     ``plan.run_dir``, then release every GPU the run held.
 
-    ``worker_config`` (``utils.cli_setup.assemble_pipeline_kwargs``) is
+    ``worker_config`` (``pipeline.cli.assemble_pipeline_kwargs``) is
     required with several workers: each rebuilds its agent from it."""
     if workers > 1 and worker_config is None:
         raise ValueError(f"{workers} workers need a worker_config to rebuild the agent in each worker")

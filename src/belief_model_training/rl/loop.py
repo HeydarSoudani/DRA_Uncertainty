@@ -48,11 +48,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..chain import SCORE, CallRecord, ChainResult
-from ..config import RL_RUNS, RunPaths, TrainingConfig
-from ..reward import chain_gate, mean, score_probability, score_reward
+from ..shared.chain import SCORE, CallRecord, ChainResult
+from ..shared.config import RL_RUNS, RunPaths, TrainingConfig
+from ..shared.reward import chain_gate, mean, score_probability, score_reward
 from ..filtering.run import load_selected_episodes, read_filter_stats
-from ..runs import DocumentStore, Episode
+from ..shared.runs import DocumentStore, Episode
 from .rollout import VLLMRolloutEngine, extra_score_replies, run_chains
 from .trainer import BeliefPPOTrainer, Sample
 
@@ -187,8 +187,8 @@ class EpisodeSampler:
 
 def _check_prompt_tokens(engine, processor, episode: Episode, store: DocumentStore) -> None:
     """The trainer's (SFT) tokenization of a prompt equals the engine's."""
-    from ..chain import ReplayClient, run_chain
-    from ..student import chat_prompt, text_tokenizer
+    from ..shared.chain import ReplayClient, run_chain
+    from ..shared.student import chat_prompt, text_tokenizer
 
     client = ReplayClient({})
     run_chain(episode, client, store)
@@ -202,7 +202,7 @@ def _check_prompt_tokens(engine, processor, episode: Episode, store: DocumentSto
 
 
 def run_rl(cfg: TrainingConfig) -> None:
-    from ..student import load_processor, quiet_libraries
+    from ..shared.student import load_processor, quiet_libraries
 
     rc, sh = cfg.rl, cfg.shared
     paths = RunPaths(sh.student)

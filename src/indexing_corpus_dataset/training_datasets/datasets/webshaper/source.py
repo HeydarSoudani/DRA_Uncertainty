@@ -4,7 +4,7 @@ variable (``skeleton``)."""
 
 from typing import Dict, Iterator, List
 
-from utils.io_utils import iter_jsonl
+from utils.io import iter_jsonl
 
 from ...annotation.rows import CLOSED
 from ...corpus.pages import dedup_gold, url_gold

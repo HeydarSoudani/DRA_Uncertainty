@@ -9,15 +9,10 @@ place.
 import os
 from typing import Optional, Tuple
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, query_max_length
-from utils.config import (
-    OPENROUTER_BASE_URL,
-    RetrieverConfig,
-    effective_max_output_tokens,
-    get_reranker_configs,
-    resolve_agent_backend,
-)
-from utils.text_utils import MAX_PASSAGE_TOKENS
+from indexing_corpus_dataset.shared.layout import DATASET_SPECS, query_max_length
+from utils.models import OPENROUTER_BASE_URL, effective_max_output_tokens, resolve_agent_backend
+from searcher_component.shared.config import RetrieverConfig, get_reranker_configs
+from utils.documents import MAX_PASSAGE_TOKENS
 
 
 # ===========================================================================
@@ -175,7 +170,7 @@ def build_agent(
 
     model_class = AGENT_MAP[policy_model]
     cli_name = policy_model_cli or policy_model
-    # The capped value (utils.config.OUTPUT_TOKEN_CAPS); run_config.json records the same.
+    # The capped value (utils.models.OUTPUT_TOKEN_CAPS); run_config.json records the same.
     max_output_tokens = effective_max_output_tokens(policy_model, max_output_tokens_total)
     agent_kwargs: dict = {}
     if use_plan and policy_model == "react":
@@ -197,7 +192,7 @@ def build_agent(
         agent_kwargs["max_tokens_per_step"] = max_output_tokens
     elif policy_model == "cpm_explore":
         agent_kwargs["max_output_tokens"] = max_output_tokens
-        # The run's resolved temperature (utils.config.resolve_temperature),
+        # The run's resolved temperature (utils.models.resolve_temperature),
         # not a falsy-guarded default: 0.0 is a temperature a user can ask for.
         agent_kwargs["temperature"] = temperature
     elif policy_model == "cpm_report":

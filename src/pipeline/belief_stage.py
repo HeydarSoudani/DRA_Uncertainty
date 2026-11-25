@@ -3,11 +3,11 @@
 The generate stage runs the agent and saves each query's trajectory
 (``trajectory/{qid}.jsonl``) and generation (``generation/{qid}.md``); the
 belief model is not part of that run and never changes what the agent does.
-This stage reads the saved files back (``utils.run_files.read_saved_query``:
+This stage reads the saved files back (``belief_model_component.read_saved_query``:
 per search iteration its queries, the documents it showed and the agent's
 turn, then the answer turn) and gives them to the belief model, the
 documents' text read from the corpus by id (``CorpusLookup``) and shaped as
-the run's retriever returns a document (``utils.run_files.corpus_doc``;
+the run's retriever returns a document (``belief_model_component.corpus_doc``;
 nothing is retrieved again).
 
 :func:`run_belief` is the stage of one belief model (``--belief-model``):
@@ -33,16 +33,19 @@ import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-from utils.io_utils import atomic_write_text
+from utils.io import atomic_write_text
 from utils.progress import WorkerBars
-from utils.run_files import (SavedQuery, belief_dir, believed_queries, corpus_doc, read_saved_query, save_belief,
-                             scan_queries)
-from utils.run_files.run_config import belief_config_diffs, build_belief_config, read_run_config, set_belief_config
+from utils.run_files import belief_dir, believed_queries, save_belief, scan_queries
+from utils.run_files.run_config import read_run_config
 
 from .factories import build_belief_model
+from .run_config import belief_config_diffs, build_belief_config, set_belief_config
 from .run_plan import RunPlan
+
+if TYPE_CHECKING:
+    from belief_model_component import SavedQuery
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +172,7 @@ def _call_failed(record: Optional[Dict[str, Any]]) -> bool:
     return bool(record) and bool(record.get("called")) and record.get("reply") is None
 
 
-def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[str]], List[Dict[str, Any]]],
+def _belief_of_query(belief_model, saved: "SavedQuery", docs_of: Callable[[List[str]], List[Dict[str, Any]]],
                      verbose: bool, progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     """Run *belief_model* over one saved query: reset, one observe per search
     iteration, finish on the answer turn (short-answer queries: the final
@@ -180,8 +183,7 @@ def _belief_of_query(belief_model, saved: SavedQuery, docs_of: Callable[[List[st
     saved, and the next belief stage runs it again.  *progress* gets the
     step being run: ``beliefs``, ``step k/N`` (N: the search iterations
     plus the final step), ``final``."""
-    from belief_model_component import beliefs_call_failed
-    from utils.text_utils import verbose_print_belief, verbose_print_init
+    from belief_model_component import beliefs_call_failed, verbose_print_belief, verbose_print_init
 
     qid = saved.qid
     summary: Dict[str, Any] = {"beliefs": []}
@@ -264,11 +266,12 @@ def run_belief_stage(
             before the workers start (only the first prints its settings).
         corpus_path: The run's corpus JSONL (the documents' text).
         retriever_name: The run's retriever (``corpus_doc``).
-        policy_model: The run's agent (``utils.run_files.NO_TURN_AGENTS``).
+        policy_model: The run's agent (``belief_model_component.NO_TURN_AGENTS``).
         workers: Belief threads (queries run at once), one bar each.
         verbose: Print each query's belief.
     """
-    from indexing_corpus_dataset.doc_lookup import CorpusLookup
+    from belief_model_component import corpus_doc, read_saved_query
+    from indexing_corpus_dataset.shared.doc_lookup import CorpusLookup
 
     run_dir = Path(run_dir)
     model_dir = belief_dir(run_dir, model_name)

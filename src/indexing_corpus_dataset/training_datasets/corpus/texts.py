@@ -2,7 +2,7 @@
 
 from typing import Dict, Iterable
 
-from ...doc_lookup import CorpusLookup
+from ...shared.doc_lookup import CorpusLookup
 from .web import WEB_ID_PREFIX, web_corpus_path
 from .wiki import wiki_corpus_path
 

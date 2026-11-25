@@ -2,7 +2,7 @@
 
   registry  reasoner_component/vllm_server/registry.py   how each model is served
   server    reasoner_component/vllm_server/process.py    starting / stopping it
-  client    reasoner_component/vllm.py                   VLLMGenerator
+  client    reasoner_component/providers/vllm.py         VLLMGenerator
 
 Run on a GPU node:  python experiments/inference/vllm_example.py
 """

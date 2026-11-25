@@ -17,8 +17,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from ..config import RunPaths, TrainingConfig
-from ..runs import find_run, load_run_episodes, read_gold_rows
+from ..shared.config import RunPaths, TrainingConfig
+from ..shared.runs import find_run, load_run_episodes, read_gold_rows
 
 
 def _quantiles(values: List[int]) -> Dict[str, Any]:
