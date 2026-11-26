@@ -13,13 +13,14 @@ dataset of dra_inference, built in two stages
         features; the dropped ones with their filter and reasons to
         data/training_datasets_raw/D/dropped.jsonl
     --stage data_relevance --dataset D --limit N   (``build_relevance``, LLM calls)
-        the gold annotation, qrels and split of the prepared questions,
-        incremental: the next N not processed yet
+        the gold passages (qrels), rows and split of the prepared questions,
+        incremental: the next N not processed yet; the fact LLM
+        (``--fact-model``) and the judge (``--judge-model``)
 
 The training datasets share one folder, data/training_datasets, laid out
 like an inference dataset: every training dataset has one row per query in
-queries/D.jsonl (the question, answer, source, split and gold annotation,
-``annotation/rows.py``), its qrels in qrels/D.txt and its silver beliefs
+queries/D.jsonl (the question, answer, source, split and gold passages,
+``annotation/rows.py``; no beliefs), its qrels in qrels/D.txt and its silver beliefs
 in belief_bank/silver/D.jsonl.  The splits ``sft``, ``rl`` and ``val``
 (``pipeline/splits.py``) are views of those files, read by
 ``dataset_loaders``.  Every build file (the LLM memories, the dropped
@@ -33,32 +34,39 @@ user merges the two for the index).  trqa_val searches TRQA's corpus.
 
 Gold passages (``gold_passages/``): a gold page is found by its title;
 the gold passages (chunks) of a page are found by an LLM judge, one call
-per (fact, passage) pair, TRQA's property check.
+per (fact, passage) pair, TRQA's property check.  The gold pages are
+given; the facts only help locate their gold passages, and every gold
+page ends with at least one gold passage.  Beliefs are not part of the
+build: the belief model makes its gold beliefs when it first needs them
+(stage teacher; ``belief_model_component/init``).
 
 infoseek_hard: InfoSeek-Hard questions of the hardness cells; the facts are
 the claims of the research tree, each judged on chunk 2 of its page
 (InfoSeek writes claims from the first 1024 tokens: chunk 2 when the judge
-finds it there, else chunk 1); binary qrels, one belief per hop.
+finds it there, else chunk 1); binary qrels.
 
 frames: FRAMES questions; one fact per gold page written by an LLM, judged
-on every chunk of the page; graded qrels; no beliefs.
+on every chunk of the page; a chunk is relevant when the judge finds the
+fact in it; a page without a judged relevant chunk gets its first chunk;
+binary qrels.
 
 webshaper: WebShaper questions; one fact per triple of its formalization
-(the variables named by an LLM), judged on every passage of the pages
-assigned to it; graded qrels; one belief per variable.
+(the variables named by an LLM), judged on every passage of the pages an
+LLM assigns it (a triple without a page is not judged); relevant passages
+and first-passage fallback as frames; binary qrels.
 
-trqa_val: the TRQA wiki1 + wiki2 validation questions with their gold
-annotation from the intermediate info, TRQA's qrels, the belief texts and
-the split sft / rl / val; it searches TRQA's corpus.
+trqa_val: the TRQA wiki1 + wiki2 validation questions with their members
+from the intermediate info, TRQA's qrels and the split sft /
+rl / val (no LLM call); it searches TRQA's corpus.
 
 ``stats.json`` holds one section per stage (``prepare`` with the funnel of
 the checks, ``corpus``, ``web``; ``relevance``, ``gold_passages``,
-``annotations``, ``split``).
+``split``).
 
 Layout (each layer imports only the ones above it; nothing imports
 ``datasets/`` but ``registry``):
 
-    config          settings (web, split, gold_beliefs, gold_passages) and
+    config          settings (web, split, facts, gold_passages) and
                     the paths of a dataset (raw folder, dataset files)
     registry        the datasets and their stage modules
     pipeline/       the shared steps: the source record format and
@@ -68,16 +76,17 @@ Layout (each layer imports only the ones above it; nothing imports
     corpus/         corpus_wiki (wiki, wiki_pages), corpus_web (web, the
                     fetchers in fetch/), passage texts (texts), gold page
                     entries (pages)
-    annotation/     the query rows (rows), name matching (names), the
-                    belief texts by an LLM (belief_texts, prompts/), the
-                    ``annotations`` stats section (stats)
-    gold_passages/  the fact writer (facts), the judge (judge), the gold
+    annotation/     the query rows (rows), name matching (names)
+    llm             the JSON writer client, the reply-failure cap, the
+                    API key check (also used by TRQA's gold beliefs)
+    gold_passages/  the fact LLM (facts), the judge (judge), the gold
                     passages of frames and webshaper (select); prompts/
     datasets/       one package per dataset: source, prepare, relevance
                     (+ its facts, tree or formalization, fact prompts)
 
 The TRQA gold beliefs of the belief model (made from TRQA's intermediate
-info at inference) are in ``belief_model_component/init/trqa_gold.py``.
+info at inference, from trqa_val's rows in training) are in
+``belief_model_component/init/trqa_gold.py``.
 """
 
 from typing import Optional

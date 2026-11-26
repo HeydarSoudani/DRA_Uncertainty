@@ -16,15 +16,16 @@ Per query:
    added to the bank and used (``BankedBeliefSource``):
 
    - the extractor's beliefs (``LLMBeliefSource``): gold where they are
-     the question's own (BrowseComp-Plus, NeuCLIR, RAGTIME), silver
+     the question's own (BrowseComp-Plus, NeuCLIR, RAGTIME, and the
+     training datasets infoseek_hard and webshaper), silver
      elsewhere (``layout.extraction_kind``); bank
      ``layout.belief_bank_path``;
-   - TRQA's gold beliefs, made from the intermediate info
-     (``trqa_gold.py``); bank
-     ``layout.belief_bank_path(..., "gold")``;
-   - a training dataset's gold beliefs (``GoldBeliefSource``): the dataset's
-     queries file is their bank, written by the dataset build only
-     (``train_belief_model.py --stage data``); a query without them gets silver ones.
+   - TRQA's gold beliefs, made from the intermediate info, and those of
+     a training dataset whose gold beliefs are its annotation, made from
+     the dataset's rows (trqa_val; frames' rows have none), with texts by
+     the belief model (``trqa_gold.py``); bank
+     ``layout.belief_bank_path(..., "gold")``; a query without them gets
+     silver ones.
 
 Functions:
 
@@ -52,10 +53,7 @@ from indexing_corpus_dataset.layout import (
 from reasoner_component import create_generator, disable_native_thinking
 from utils.progress import step_iter
 
-from .sources import (
-    GOLD_BELIEF_MODEL, BankedBeliefSource, BeliefSource, FallbackBeliefSource, GoldBeliefSource,
-    LLMBeliefSource,
-)
+from .sources import BankedBeliefSource, BeliefSource, FallbackBeliefSource, LLMBeliefSource
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +119,10 @@ def bank_model_id(model: str) -> str:
 
 def check_max_beliefs(dataset: str, max_beliefs: Optional[int]) -> None:
     """*max_beliefs* (after the dataset's default) caps silver beliefs
-    only: TRQA's and trqa_val's members.  Stops
+    only: TRQA's and trqa_val's members, FRAMES' hops.  Stops
     when it is set on a dataset whose beliefs are all gold (BrowseComp-Plus,
-    NeuCLIR, RAGTIME: the question's own, never capped)."""
+    NeuCLIR, RAGTIME, infoseek_hard, webshaper: the question's own, never
+    capped)."""
     if max_beliefs is not None and extraction_kind(dataset) != SILVER_BELIEFS:
         raise SystemExit(f"max_beliefs {max_beliefs}: the cap is for silver beliefs only (TRQA, "
                          f"trqa_val); the beliefs of {dataset} are gold, never capped. "
@@ -151,9 +150,10 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
         path = gold_beliefs_path(dataset)
         if not path.exists():
             raise SystemExit(f"belief_source gold: {path} not found; build the dataset with "
-                             f"experiments/training/train_belief_model.py --stage data --dataset {dataset}"
+                             f"experiments/training/train_belief_model.py --stage data_relevance --dataset {dataset}"
                              + (", or run with --belief-source silver" if spec.belief_choice else ""))
-        print(f"[INFO] beliefs: gold from {path}, silver for a query without them (extracted by {belief_model})")
+        print(f"[INFO] beliefs: gold, made from the rows of {path} (texts by {belief_model}), silver for a "
+              f"query without them")
     else:
         print(f"[INFO] beliefs: gold, made from the intermediate info (texts by {belief_model}), silver for a "
               f"query without them")
@@ -191,17 +191,18 @@ def build_belief_source(
     if effective_belief_source(belief_source, dataset) != GOLD_BELIEFS or spec.gold_beliefs != ANNOTATION_GOLD:
         return source
 
+    from .trqa_gold import DatasetGoldBeliefs, TRQAGoldBeliefs
+
+    gold_bank = belief_bank_path(dataset, split, GOLD_BELIEFS)
     if dataset in BUILT_DATASETS:
         path = gold_beliefs_path(dataset)
-        gold: BeliefSource = GoldBeliefSource(path, spec.query_shape)
-        print(f"Belief model: gold beliefs from {path}")
+        gold: BeliefSource = BankedBeliefSource(DatasetGoldBeliefs(path, writer=model_id, llm_client=llm), gold_bank)
+        made_from = f"the rows of {path}"
     else:
-        from .trqa_gold import TRQAGoldBeliefs
-
-        gold_bank = belief_bank_path(dataset, split, GOLD_BELIEFS)
         gold = BankedBeliefSource(TRQAGoldBeliefs(split, writer=model_id, llm_client=llm), gold_bank)
-        print(f"Belief model: gold beliefs from the bank {gold_bank}, missing ones made from the "
-              f"intermediate info (texts by {model_id})")
+        made_from = "the intermediate info"
+    print(f"Belief model: gold beliefs from the bank {gold_bank}, missing ones made from {made_from} "
+          f"(texts by {model_id})")
     if not fallback:
         return gold
     print(f"Belief model: a query without gold beliefs gets the {kind} ones above")
@@ -213,8 +214,8 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str], workers: int 
     *source*, so the missing ones are made and banked here, before the
     workers start (they then read them from the bank; a query still
     missing is made by its worker).  Prints and returns the counts: per
-    kind, per origin (``bank_hit``, ``bank_added``, ``dataset``: a
-    training dataset's gold) and the queries ``failed`` (no beliefs).
+    kind, per origin (``bank_hit``, ``bank_added``) and the queries
+    ``failed`` (no beliefs).
     *workers*: queries made at once (a locally served model takes more)."""
     source.prepare()
 
@@ -236,11 +237,10 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str], workers: int 
                 continue
             counts[info.get("belief_source") or "unknown"] += 1
             origin = info.get("bank")
-            counts["dataset" if origin is None and info.get("model") == GOLD_BELIEF_MODEL else f"bank_{origin}"] += 1
+            counts[f"bank_{origin}"] += 1
             counts["gold_missing"] += "gold_missing" in info
     result = {**counts, "failed": failed}
     print(f"[INFO] beliefs of {len(queries)} queries: {counts['gold']} gold, {counts['silver']} silver "
           f"({counts['gold_missing']} without gold), {len(failed)} without beliefs; "
-          f"{counts['bank_hit']} from the bank, {counts['bank_added']} made and added, "
-          f"{counts['dataset']} from the dataset's gold")
+          f"{counts['bank_hit']} from the bank, {counts['bank_added']} made and added")
     return result

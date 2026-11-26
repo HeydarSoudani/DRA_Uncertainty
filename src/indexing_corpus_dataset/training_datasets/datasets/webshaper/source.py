@@ -79,4 +79,4 @@ def skeleton(triples: List[list], answer: str) -> dict:
     beliefs = [{"id": f"B{k}", "kind": CLOSED, "relations": relations[v],
                 "answers": [answer] if v == ANSWER and answer else [], "ref": v}
                for k, v in enumerate(hops, 1)]
-    return {"query_shape": "multi_hop", "beliefs": beliefs, "entity_names": []}
+    return {"beliefs": beliefs, "entity_names": []}

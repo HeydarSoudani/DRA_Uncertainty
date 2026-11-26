@@ -1,35 +1,29 @@
-You are a fact writer. Given a question, its answer, its formalization as triples and the pages it was written from, your task is to name the entity of each variable of the triples and to assign each triple the pages likely to state it. A triple is subject | predicate | object; a variable (V@...) stands for an unnamed entity of the question, a constant (C@...) is a value the question states, and ? is the answer.
+You are a page mapper. Given a question, its answer, the facts it is built from and the pages it was written from, your task is to assign each fact the pages likely to state it. A fact is a statement about an entity, by its name or by a description; a blank (___) stands for a value the fact does not give.
 
 == Rules ==
-1. Name a variable only when the question, the answer, the triples, a page title or a page URL shows which entity it is (a page titled "Sportforum Hohenschönhausen" for "the sports complex in Berlin"); otherwise its name is null. Never name an entity from your own knowledge alone.
-2. Describe every variable in a short phrase from the triples ("the team that won 10 consecutive DDR-Oberliga titles"), named or not.
-3. Assign each triple the pages whose title or URL makes it likely that the page states the triple; a triple no page fits gets no page.
+1. Assign a fact every page whose title makes it likely that the page states the fact: a page about the fact's entity, about its value, or about an event, work or list the fact belongs to. When in doubt, assign the page: a page assigned in vain costs little, a missed page loses the fact.
+2. Decide from the titles only, without filling in any name or value; a fact no page fits gets no page.
 
 == Output Format ==
-Respond with ONLY a raw JSON object, no markdown, no code blocks, with two keys:
-- "variables": One object per variable: {"variable": "V@X", "name": "..." or null, "description": "..."}.
-- "triples": One object per triple, in triple order: {"triple": <triple number>, "pages": [<page numbers>]}.
+Respond with ONLY a raw JSON object, no markdown, no code blocks, with one key:
+- "facts": One object per fact, in fact order: {"fact": <fact number>, "pages": [<page numbers>]}.
 
 Example question: Which painter, who taught Vincent van Gogh in The Hague, married a cousin of Van Gogh's mother?
 Example answer: Anton Mauve
-Example triples:
-1. ? | taught | C@Vincent van Gogh
-2. ? | taught in | C@The Hague
-3. ? | married | V@W
-4. V@W | was cousin of | V@M
-5. V@M | was mother of | C@Vincent van Gogh
+Example facts:
+1. Anton Mauve taught Vincent van Gogh
+2. Anton Mauve taught in The Hague
+3. Anton Mauve married ___
+4. the entity that Anton Mauve married was cousin of ___
+5. an entity was mother of Vincent van Gogh
 Example pages:
 1. Wikipedia: Anton Mauve
-2. Web: https://www.vangoghmuseum.nl/en/art-and-stories/anna-cornelia-carbentus
+2. Web: Anna Cornelia Carbentus - Van Gogh Museum
 Example output:
-{"variables": [
-  {"variable": "V@W", "name": null, "description": "the wife of the painter, a cousin of Van Gogh's mother"},
-  {"variable": "V@M", "name": "Anna Cornelia Carbentus", "description": "the mother of Vincent van Gogh"}
-],
-"triples": [
-  {"triple": 1, "pages": [1]},
-  {"triple": 2, "pages": [1]},
-  {"triple": 3, "pages": [1]},
-  {"triple": 4, "pages": [1, 2]},
-  {"triple": 5, "pages": [2]}
+{"facts": [
+  {"fact": 1, "pages": [1]},
+  {"fact": 2, "pages": [1]},
+  {"fact": 3, "pages": [1]},
+  {"fact": 4, "pages": [1, 2]},
+  {"fact": 5, "pages": [2]}
 ]}

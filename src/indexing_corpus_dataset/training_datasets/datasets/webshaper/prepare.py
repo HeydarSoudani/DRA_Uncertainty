@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 from urllib.parse import quote
 
 from ...config import BuildConfig, require_contact
-from ...corpus.web import PageStore, fetch_pages, is_final, web_corpus_path, write_web_corpus
+from ...corpus.web import PageStore, fetch_pages, is_final, to_fetch, web_corpus_path, write_web_corpus
 from ...corpus.wiki import corpus_stats
 from ...corpus.wiki_pages import WikiPages
 from ...pipeline.checks import answer_check, duplicate_check, no_gold_check
@@ -37,7 +37,7 @@ def _wiki_pages(record: dict) -> List[dict]:
 
 
 def pages(record: dict) -> List[dict]:
-    """The gold pages of a question as the fact writer sees them: an
+    """The gold pages of a question as the fact LLM sees them: an
     English Wikipedia page by its title, any other page by its URL
     (fetched into corpus_web)."""
     out = []
@@ -59,7 +59,7 @@ def run(cfg: BuildConfig, paths, funnel: Funnel) -> dict:
 
     store = PageStore(paths)
     urls = list(dict.fromkeys(p["url"] for r in funnel.kept for p in pages(r) if p["kind"] == "web"))
-    if any(not is_final(store.rows.get(u)) for u in urls):
+    if to_fetch(cfg.web, store, urls):
         require_contact(cfg, "fetching the web gold pages")
     fetch_pages(cfg.web, store, urls)
     web_chunks = write_web_corpus(store)

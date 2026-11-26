@@ -58,4 +58,4 @@ def skeleton(question: str, root: dict) -> dict:
                 "answers": entity_names(n["entity"]), "ref": n["id"]}
                for k, n in enumerate(hops, 1)]
     names = [name for n in nodes.values() if is_entity(n) for name in entity_names(n["entity"])]
-    return {"query_shape": "multi_hop", "beliefs": beliefs, "entity_names": names}
+    return {"beliefs": beliefs, "entity_names": names}

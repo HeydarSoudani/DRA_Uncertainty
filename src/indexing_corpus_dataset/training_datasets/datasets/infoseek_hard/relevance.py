@@ -13,11 +13,11 @@ corpus_wiki, InfoSeek's wiki-25-512, ``features.page_chunks``).
                call).  A page's gold chunks are those of its claims, chunk 1
                for a page without claims.  A claim without a label leaves
                its question for the next run
-    rows       the qrels (binary) are the gold chunks of every gold page;
-               a hop's documents (``annotation/rows.row``) those of its own
-               page and of the claims it is an end of
+    rows       the qrels (binary) are the gold chunks of every gold page,
+               the row's ``doc_ids`` the same (``annotation/rows.row``)
 
-The belief texts and the split: ``pipeline/relevance.finish``.
+The split: ``pipeline/relevance.finish`` (no belief texts: the belief
+model's beliefs come from the question, multi-clue).
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -25,10 +25,9 @@ from typing import Dict, List, Optional, Tuple
 from ...annotation import rows as annotation_rows
 from ...config import BuildConfig, DatasetPaths
 from ...corpus.pages import wiki_gold
-from ...gold_passages.judge import fact_key, grade, judge_pairs, label_counts
+from ...gold_passages.judge import fact_key, judge_pairs, relevant, label_counts
 from ...pipeline.relevance import Built
 from .facts import claim_facts
-from .tree import tree_nodes
 
 FACTS = None
 JUDGE = True
@@ -45,8 +44,8 @@ def _gold(record: dict) -> Tuple[List[dict], Dict[str, List[str]]]:
 
 def _resolve(record: dict, facts: List[dict], chunks: Dict[str, List[str]],
              labels: Dict[Tuple[str, str], Optional[str]]):
-    """The gold chunks of a question: (qrels in page order, ref -> gold
-    chunks, per fact the chunk chosen); None when a claim has no label yet."""
+    """The gold chunks of a question: (qrels in page order, per fact the
+    chunk chosen); None when a claim has no label yet."""
     chosen: Dict[str, str] = {}
     for f in facts:
         if len(f["chunks"]) < 2:
@@ -55,21 +54,13 @@ def _resolve(record: dict, facts: List[dict], chunks: Dict[str, List[str]],
         label = labels.get((fact_key(f), f["chunks"][1]))
         if label is None:
             return None
-        chosen[f["id"]] = f["chunks"][1] if grade(label) == 2 else f["chunks"][0]
+        chosen[f["id"]] = f["chunks"][1] if relevant(label) else f["chunks"][0]
     page_gold: Dict[str, List[str]] = {}
     for f in facts:
         page_gold.setdefault(f["pages"][0], []).append(chosen[f["id"]])
     page_gold = {key: list(dict.fromkeys(page_gold.get(key) or ids[:1])) for key, ids in chunks.items()}
-    ref_docs: Dict[str, List[str]] = {}
-    root = record["meta"]["root"]
-    for node in tree_nodes(root):
-        if node.get("href"):
-            ref_docs.setdefault(node["id"], []).extend(page_gold[wiki_gold(node["href"])["key"]])
-    for f in facts:
-        for ref in f["refs"]:
-            ref_docs.setdefault(ref, []).append(chosen[f["id"]])
     doc_ids = [d for key in dict.fromkeys(g["key"] for g in record["gold"]) for d in page_gold[key]]
-    return doc_ids, ref_docs, chosen
+    return doc_ids, chosen
 
 
 def build(cfg: BuildConfig, paths: DatasetPaths, processed: List[dict]) -> Built:
@@ -84,10 +75,10 @@ def build(cfg: BuildConfig, paths: DatasetPaths, processed: List[dict]) -> Built
         if resolved is None:
             pending.append(record["id"])
             continue
-        doc_ids, ref_docs, chosen = resolved
+        doc_ids, chosen = resolved
         kept.append(record)
         chosen_of[record["id"]] = [(f, chosen[f["id"]]) for f in facts]
-        rows.append(annotation_rows.row(record, doc_ids, ref_docs))
+        rows.append(annotation_rows.row(record, doc_ids))
 
     claims = [(f, c) for pairs_of in chosen_of.values() for f, c in pairs_of]
     section = {

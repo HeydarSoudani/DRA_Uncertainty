@@ -12,8 +12,12 @@ one finished query of a run with a judged answer and gold beliefs:
 * the correctness y of the agent's final answer
   (``eval/generation/accuracy.jsonl``; a query without a verdict, or whose
   judge failed, is not an episode);
-* its gold beliefs (the dataset's rows, ``texts_ok`` and at least one
-  belief);
+* its gold beliefs (``read_gold_rows``), banked by stage teacher
+  (``teacher.run.bank_teacher_beliefs``): the teacher's init beliefs
+  where they come from the question (infoseek_hard, webshaper:
+  multi-clue, as BrowseComp-Plus), the gold beliefs made from the
+  dataset's rows with the teacher's texts where they are the annotation's
+  (trqa_val, as TRQA's at inference);
 * the run's settings the belief model needs: corpus, retriever (the
   document shape), the passage cut.
 
@@ -28,7 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from indexing_corpus_dataset.layout import DATASET_SPECS, gold_beliefs_path
+from indexing_corpus_dataset.layout import (
+    ALL_SPLIT, DATASET_SPECS, GOLD_BELIEFS, QUESTION_GOLD, belief_bank_path, extraction_kind, gold_beliefs_path,
+)
+from utils.io_utils import iter_jsonl
 from utils.run_files import scan_queries
 from utils.run_files.run_config import build_dataset_dir_name, read_run_config
 
@@ -50,7 +57,7 @@ class Episode:
     saved: Any
     # Correctness of the agent's final answer.
     y: bool
-    # Gold beliefs of the dataset row: [{id, text, answers, doc_ids, kind}].
+    # Gold beliefs: [{id, text, kind, ...}] (the dataset row's or the teacher's banked ones).
     gold_beliefs: List[Dict[str, Any]]
     corpus_path: str
     retriever_name: str
@@ -94,16 +101,43 @@ def read_accuracy(run_dir: Path) -> Dict[str, Optional[bool]]:
     return out
 
 
-def read_gold_rows(dataset: str) -> Dict[str, Dict[str, Any]]:
-    """``{qid: row}`` of the dataset's rows with usable gold beliefs
-    (``texts_ok`` and at least one belief)."""
+def teacher_bank(dataset: str, teacher: str):
+    """The bank of *dataset*'s gold beliefs as the belief stage of
+    ``--belief-model {teacher}`` banks them (``build_belief_source``), read
+    only: the teacher's init beliefs of a dataset whose beliefs come from
+    the question (model, shape, cap and prompt in the key); else the gold
+    beliefs made from the dataset's rows with the teacher's texts
+    (``init.trqa_gold.DatasetGoldBeliefs``: writer and prompt in the key)."""
+    from belief_model_component import BankedBeliefSource, LLMBeliefSource, bank_model_id
+    from belief_model_component.init.trqa_gold import DatasetGoldBeliefs
+    from utils.config import BELIEF_MODEL_TO_LLM
+
+    spec = DATASET_SPECS[dataset]
+    model_id = bank_model_id(BELIEF_MODEL_TO_LLM[teacher])
+    if spec.gold_beliefs == QUESTION_GOLD:
+        extractor = LLMBeliefSource(llm_client=None, max_beliefs=spec.max_beliefs, model_name=model_id,
+                                    query_shape=spec.query_shape, kind=extraction_kind(dataset))
+        return BankedBeliefSource(extractor, belief_bank_path(dataset, ALL_SPLIT))
+    return BankedBeliefSource(DatasetGoldBeliefs(gold_beliefs_path(dataset), writer=model_id),
+                              belief_bank_path(dataset, ALL_SPLIT, GOLD_BELIEFS))
+
+
+def read_gold_rows(dataset: str, teacher: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """``{qid: row}`` of the dataset's rows (the queries file) with usable
+    gold beliefs in ``beliefs`` (id, text, kind): the *teacher*'s banked
+    ones (``teacher_bank``); a query not banked yet, or without gold
+    beliefs (FRAMES), is left out.  *teacher* None (stage generate's
+    statistics, before stage teacher): every row, its ``beliefs`` empty."""
+    bank = teacher_bank(dataset, teacher) if teacher is not None else None
     rows = {}
-    path = gold_beliefs_path(dataset)
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            row = json.loads(line)
-            if row.get("texts_ok") and row.get("beliefs"):
-                rows[str(row["id"])] = row
+    for row in iter_jsonl(gold_beliefs_path(dataset)):
+        qid = str(row["id"])
+        if bank is None:
+            rows[qid] = {**row, "beliefs": []}
+        else:
+            beliefs = bank.lookup(qid, row["text"])
+            if beliefs:
+                rows[qid] = {**row, "beliefs": [b.to_dict() for b in beliefs]}
     return rows
 
 
@@ -155,12 +189,13 @@ def load_run_episodes(run_dir: Path, dataset: str, split: str, policy_model: str
 
 
 def load_episodes(output_root: Path, datasets: List[str], split: str, policy_models: List[str], retriever: str,
-                  tag: str = "") -> List[Episode]:
+                  teacher: str, tag: str = "") -> List[Episode]:
     """The episodes of *split* over every dataset and agent (missing runs
-    are reported and skipped)."""
+    are reported and skipped); *teacher*: whose banked beliefs are the gold
+    of a dataset whose beliefs come from the question (``read_gold_rows``)."""
     out: List[Episode] = []
     for dataset in datasets:
-        gold_rows = read_gold_rows(dataset)
+        gold_rows = read_gold_rows(dataset, teacher)
         for policy in policy_models:
             run_dir = find_run(output_root, dataset, split, retriever, policy)
             if run_dir is None:

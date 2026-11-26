@@ -72,7 +72,7 @@ def run_filter(cfg: TrainingConfig) -> None:
     print(f"[stage filter] teacher {sh.teacher}; settings {json.dumps(settings)}")
     splits = sorted(set(SETS.values()) | set(RL_SETS.values()))
     episodes = {split: load_episodes(cfg.inference_output, sh.training_datasets, split, sh.policy_models,
-                                     sh.retriever, tag="[stage filter]")
+                                     sh.retriever, sh.teacher, tag="[stage filter]")
                 for split in splits}
     sft_counts = build_samples(cfg, paths, episodes)
     rl_counts = select_rl_episodes(cfg, paths, episodes)
@@ -103,7 +103,7 @@ def load_selected_episodes(cfg: TrainingConfig, paths: RunPaths, set_name: str, 
               for r in read_jsonl(paths.rl_episodes) if r["set"] == set_name}
     sh = cfg.shared
     loaded = [ep for ep in load_episodes(cfg.inference_output, sh.training_datasets, RL_SETS[set_name],
-                                         sh.policy_models, sh.retriever, tag=tag)
+                                         sh.policy_models, sh.retriever, sh.teacher, tag=tag)
               if ep.key in wanted]
     episodes = [ep for ep in loaded if ep.y == wanted[ep.key]]
     missing, rejudged = len(wanted) - len(loaded), len(loaded) - len(episodes)

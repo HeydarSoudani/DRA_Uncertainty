@@ -12,7 +12,8 @@ its Wayback Machine snapshot closest to ``web.wayback_timestamp``
 ``web_pages/text.jsonl``; the latest row of a URL wins.  A page whose fetch
 failed transiently (transport error, HTTP 429 / 5xx, the archive not
 reachable) is fetched again by the next builds, ``MAX_ATTEMPTS`` fetches in
-all; then its failure is final.
+all; then its failure is final.  ``web.refetch_failed`` fetches every failed
+page once more (e.g. after a block was lifted); its new row wins.
 
 corpus_web: every fetched page cut into passages of at most
 ``MAX_PASSAGE_TOKENS`` tokens (``utils.text_utils.PASSAGE_TOKENIZER``),
@@ -112,11 +113,21 @@ class PageStore:
         return {r["url"]: r["text"] for r in iter_jsonl(self.paths.web_text)}
 
 
+def to_fetch(cfg: WebConfig, store: PageStore, urls: List[str]) -> List[str]:
+    """The pages of *urls* to fetch: those without a final row and, with
+    ``cfg.refetch_failed``, every one whose last fetch failed."""
+    def due(url: str) -> bool:
+        row = store.rows.get(url)
+        return not is_final(row) or (cfg.refetch_failed and row["status"] != "ok")
+
+    return [u for u in dict.fromkeys(urls) if due(u)]
+
+
 def fetch_pages(cfg: WebConfig, store: PageStore, urls: List[str]) -> None:
-    """Fetch the pages of *urls* without a final row into *store*."""
-    todo = [u for u in dict.fromkeys(urls) if not is_final(store.rows.get(u))]
+    """Fetch the pages of *urls* that are due (``to_fetch``) into *store*."""
+    todo = to_fetch(cfg, store, urls)
     print(f"[web] {len(set(urls))} web gold pages: {len(set(urls)) - len(todo)} with a final outcome, "
-          f"{len(todo)} to fetch")
+          f"{len(todo)} to fetch" + (" (refetch_failed: the failed ones again)" if cfg.refetch_failed else ""))
     if not todo:
         return
     # Trafilatura and pypdf only when pages are fetched.

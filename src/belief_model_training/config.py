@@ -92,8 +92,8 @@ class FilterConfig:
     (sft, val) and the RL episodes (rl, val).  The SFT sample rule is
     ``filtering.rules.keep_sample``."""
     # Datasets whose gold beliefs are init samples (question -> gold beliefs).
-    # Multi-hop only by default: the beliefs of a multi-hop question are in
-    # its words; TRQA's members are not in the question.
+    # infoseek_hard by default: its beliefs (the teacher's multi-clue init)
+    # are in the question's words; TRQA's members are not in the question.
     sft_init_datasets: List[str] = field(default_factory=lambda: ["infoseek_hard"])
     # RL episodes with more search iterations (with a document) than this
     # are left out (null = none): set from the generate stage statistics.

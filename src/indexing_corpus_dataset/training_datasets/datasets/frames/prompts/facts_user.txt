@@ -5,4 +5,4 @@ Answer: {answer}
 Pages:
 {pages}
 
-Write one fact per page.{retry}
+Write one property per page.{retry}

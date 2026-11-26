@@ -15,8 +15,10 @@ filter rule (``filtering.rules.keep_sample``).
 
 **Init.**  On the datasets of ``filter.sft_init_datasets``, one sample per query
 of the split: the init prompt of the dataset (its shape and cap) and the
-gold beliefs as the reply, in the prompt example's layout.  A query with
-more gold beliefs than the prompt's cap gives none.
+gold beliefs as the reply, in the prompt example's layout (a dataset
+whose beliefs come from the question: the teacher's banked init beliefs,
+``runs.read_gold_rows``).  A query with more gold beliefs than the
+prompt's cap gives none.
 
 Each sample: ``{set, task, dataset, split, policy_model, qid, step,
 messages, completion, y}`` (``set``: train or val; ``task``: init, update
@@ -96,13 +98,13 @@ def init_completion(beliefs: List[Dict[str, Any]]) -> str:
     return "{\n  \"beliefs\": [\n" + items + "\n  ]\n}"
 
 
-def init_samples(dataset: str, split: str, counts: Counter) -> List[Dict[str, Any]]:
+def init_samples(dataset: str, split: str, teacher: str, counts: Counter) -> List[Dict[str, Any]]:
     from indexing_corpus_dataset.layout import DATASET_SPECS
 
     cap = DATASET_SPECS[dataset].max_beliefs
     source = init_source(dataset, None)
     out = []
-    for qid, row in read_gold_rows(dataset).items():
+    for qid, row in read_gold_rows(dataset, teacher).items():
         if row.get("split") != split:
             continue
         if cap is not None and len(row["beliefs"]) > cap:
@@ -136,7 +138,7 @@ def build_samples(cfg: TrainingConfig, paths: RunPaths,
                 else:
                     candidates.append(s)
         for dataset in cfg.filter.sft_init_datasets:
-            candidates += init_samples(dataset, split, counts)
+            candidates += init_samples(dataset, split, teacher, counts)
         for s in candidates:
             if keep_sample(s):
                 counts[f"{s['task']}_samples"] += 1

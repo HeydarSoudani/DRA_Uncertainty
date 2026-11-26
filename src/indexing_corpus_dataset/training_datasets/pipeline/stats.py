@@ -1,8 +1,7 @@
 """``stats.json`` of a training dataset, one section per stage (``prepare``,
 ``relevance``, ...), and the counts of the build: questions per source,
-gold pages per question, drop reasons; ``dropped.jsonl``.  The
-``annotations`` section is written by ``annotation/stats.py``, the
-``split`` section by ``splits.py``."""
+gold pages per question, drop reasons; ``dropped.jsonl``.  The ``split``
+section is written by ``splits.py``."""
 
 import json
 import statistics

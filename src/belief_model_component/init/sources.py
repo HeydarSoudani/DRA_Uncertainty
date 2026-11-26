@@ -3,11 +3,9 @@ list C = {c_1, ..., c_K}, produced once at the start of each sample.
 
 ``LLMBeliefSource`` derives the beliefs from the query;
 ``BankedBeliefSource`` reads them from a bank file and has its producer
-(the extractor, or TRQA's gold beliefs built from the intermediate info,
-``trqa_gold.py``) make and add only the
+(the extractor, or TRQA's gold beliefs built from the intermediate info or
+from trqa_val's annotation rows, ``trqa_gold.py``) make and add only the
 missing ones, so runs and analyses share one list per query;
-``GoldBeliefSource`` reads a training dataset's gold beliefs (the dataset's
-queries file is their bank, written by the dataset build only);
 ``FallbackBeliefSource`` gives a query without gold beliefs silver
 ones.  Which source a dataset and ``belief_source`` get is decided in
 ``init.factory``.
@@ -44,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.layout import BELIEF_SOURCES, GOLD_BELIEFS, SILVER_BELIEFS
+from indexing_corpus_dataset.layout import BELIEF_SOURCES, SILVER_BELIEFS
 from utils.text_utils import parse_json_object
 
 from ..core.types import BELIEF_KINDS, MULTI_ASPECT, MULTI_CLUE, MULTI_MEMBER, QUERY_SHAPES, Belief
@@ -367,74 +365,8 @@ class BankedBeliefSource(BeliefSource):
         return beliefs, {**info, "bank": "added" if beliefs else "failed"}
 
 
-# Model name in the belief info of gold beliefs (``GoldBeliefSource``).
+# Model name in the belief info of gold beliefs (``trqa_gold.py``).
 GOLD_BELIEF_MODEL = "gold"
-
-
-class GoldBeliefSource(BeliefSource):
-    """Reads each query's gold beliefs from a training dataset's queries file
-    (``layout.gold_beliefs_path``, one row per query in the format of
-    ``training_datasets/annotation/rows.py``, written by the dataset build): per query,
-    its beliefs with their gold answers and documents.  Only the beliefs
-    (id, text, kind; the kind as ``parsing.belief_kinds`` gives it for
-    the shape) reach the belief model, of a query whose row has
-    beliefs with their texts (``texts_ok``), at any annotation ``level``
-    (WebShaper's ``partial`` rows included); the info records the row's
-    ``level`` as ``gold_level``.
-
-    Any other query (no row, no beliefs such as FRAMES', failed texts, or
-    another query text: ``missing``) gets no beliefs, the reason in its
-    ``errors``; ``FallbackBeliefSource`` gives it silver ones."""
-
-    def __init__(self, path: Path | str, query_shape: str) -> None:
-        self.path = Path(path)
-        self._shape = query_shape
-        # Per query, only what the belief model reads of its row (the rows
-        # also hold the gold answers and documents).
-        self._rows: Dict[str, Dict[str, Any]] = {}
-        if self.path.exists():
-            with open(self.path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        row = json.loads(line)
-                        beliefs = row.get("beliefs") or []
-                        if any(c.get("kind") == "rest" for c in beliefs):
-                            raise ValueError(f"{self.path}: query {row['id']} has a rest belief "
-                                             "(\"any other member\"), which the belief no longer takes; "
-                                             "rebuild the dataset's gold beliefs")
-                        kinds = belief_kinds(query_shape, [c["text"] for c in beliefs])
-                        self._rows[str(row["id"])] = {
-                            "text": row.get("text"), "texts_ok": row.get("texts_ok"), "level": row.get("level"),
-                            "beliefs": [Belief(id=c["id"], text=c["text"], kind=kind)
-                                         for c, kind in zip(beliefs, kinds)],
-                        }
-
-    def missing(self, query_id: Optional[str], query: str) -> Optional[str]:
-        """Why the query has no gold beliefs to use, or None when it has."""
-        row = self._rows.get(str(query_id))
-        if row is None:
-            return f"no row for query {query_id} in {self.path}"
-        if not row.get("beliefs"):
-            return "no gold beliefs (the source states no structure)"
-        if not row.get("texts_ok"):
-            return "no belief texts"
-        if row.get("text") is not None and row["text"] != query:
-            return f"the query of {query_id} in {self.path} differs"
-        return None
-
-    def lookup(self, query_id: Optional[str], query: str) -> Optional[List[Belief]]:
-        if self.missing(query_id, query) is not None:
-            return None
-        return list(self._rows[str(query_id)]["beliefs"])
-
-    def get(self, query_id: Optional[str], query: str) -> Tuple[List[Belief], Dict[str, Any]]:
-        info: Dict[str, Any] = {"model": GOLD_BELIEF_MODEL, "query_shape": self._shape, "belief_source": GOLD_BELIEFS,
-                                "errors": []}
-        reason = self.missing(query_id, query)
-        if reason is not None:
-            return [], {**info, "errors": [f"gold beliefs: {reason}"]}
-        row = self._rows[str(query_id)]
-        return list(row["beliefs"]), {**info, "gold_level": row.get("level")}
 
 
 class FallbackBeliefSource(BeliefSource):

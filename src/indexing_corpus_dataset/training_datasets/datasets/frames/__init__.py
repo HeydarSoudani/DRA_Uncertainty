@@ -1,1 +1,1 @@
-"""frames: FRAMES questions over corpus_wiki; graded qrels, no beliefs."""
+"""frames: FRAMES questions over corpus_wiki; binary qrels, no beliefs."""

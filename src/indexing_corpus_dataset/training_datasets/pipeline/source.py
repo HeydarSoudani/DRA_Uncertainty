@@ -12,7 +12,7 @@ Record (one JSON line per question)::
      "gold": [{"key": str, "kind": "wiki", "lang": str, "title": str}
               | {"key": str, "kind": "web", "url": str}
               | {"key": str, "kind": "doc", "id": str}],
-     "annotation": {"query_shape": str, "beliefs": [...], "entity_names": [...]},
+     "annotation": {"beliefs": [...], "entity_names": [...]},
      "meta": {"ignored_urls": int, "reasoning_types": [...],
               "root": {...}, "formalization": [...],
               "info": {...}, "qrels": [str]}}   (what the source has)

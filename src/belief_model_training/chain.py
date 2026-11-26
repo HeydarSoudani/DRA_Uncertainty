@@ -17,9 +17,11 @@ score a score call of the same step.
 * ``rl.rollout.SampledClient`` samples the student's reply (RL and
   validation).
 
-The beliefs are the dataset's gold beliefs (``GoldBeliefs``, as the
-belief stage gives a training dataset's query), or the student's own init
-call (``LLMBeliefSource`` on the chain's client).  The client's sampling
+The beliefs are the episode's gold beliefs (``GoldBeliefs``, as the
+belief stage gives a training dataset's query: the dataset row's, or the
+teacher's banked init beliefs of a dataset whose beliefs come from the
+question, ``runs.read_gold_rows``), or the student's own init call
+(``LLMBeliefSource`` on the chain's client).  The client's sampling
 settings are its own: the temperature the belief model passes is ignored.
 """
 
@@ -116,7 +118,8 @@ class ReplayClient(ChainClient):
 
 def gold_belief_source(episode: Episode):
     """The episode's gold beliefs as the belief stage gives them
-    (``init.sources.GoldBeliefSource``: id, text, the kind of the shape)."""
+    (id, text, the kind of the shape; from the teacher's bank,
+    ``runs.read_gold_rows``)."""
     from belief_model_component import Belief, BeliefSource, belief_kinds
 
     rows = episode.gold_beliefs

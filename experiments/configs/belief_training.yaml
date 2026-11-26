@@ -38,38 +38,44 @@ shared:
 # source as loaded and every build file are kept in
 # data/training_datasets_raw/{dataset}, the dataset in data/training_datasets
 # (queries/{dataset}.jsonl, qrels/{dataset}.txt) of the repo.  data_prepare uses `web` only
-# (webshaper); data_relevance uses `split`, `gold_beliefs`, `gold_passages`.
+# (webshaper); data_relevance uses `split`, `facts`, `gold_passages`.  The models of
+# the fact writer and the judge are the flags --fact-model and --judge-model
+# (defaults: openrouter/qwen/qwen3.6-27b, openrouter/openai/gpt-4o-mini), not keys here.
+# No beliefs in the build: it finds the gold passages of each question; the belief
+# model makes its gold beliefs when it first needs them (stage teacher).
 data:
-  # Split: shares of the queries with the full gold annotation (level full);
-  # every other query goes to val as its out-of-domain part (all of frames:
-  # no beliefs).  A query keeps its split as the dataset grows; the new ones
+  # Split: shares of every query of every dataset.  A query keeps its split as the dataset grows; the new ones
   # fill the split furthest below its share.  Recorded in stats.json; other
   # shares are refused; to change them, remove the 'split' section of
   # stats.json (the next build re-splits every query).
   split:
     sft: 0.3                          # SFT samples (stage teacher: teacher beliefs)
     rl: 0.6                           # RL episodes (trajectories only, no teacher)
-    val: 0.1                          # validation of SFT and RL (stage teacher: teacher beliefs); plus the out-of-domain queries
+    val: 0.1                          # validation of SFT and RL (stage teacher: teacher beliefs)
 
-  # Belief texts of the gold annotation (end of every data_relevance run), and the facts
-  # of frames and webshaper (what their gold passages must state).  An LLM
-  # writes them; earlier ones are kept (belief_texts.jsonl, facts.jsonl of the
-  # dataset); writing new ones needs OPENROUTER_API_KEY.  model (and the
-  # prompts) must stay those of the kept ones; to change them, remove those files.
-  gold_beliefs:
-    model: openrouter/qwen/qwen3.6-27b  # the writer (the teacher belief model)
+  # Fact LLM of frames and webshaper (--fact-model): one call per question; frames:
+  # the property the question needs from each gold page; webshaper: the gold pages
+  # of each fact (its facts are the formalization's triples, written by code).
+  # Earlier replies are kept (facts.jsonl of the dataset); new calls need
+  # OPENROUTER_API_KEY.  The model (and the prompts) must stay those of the kept
+  # ones; to change them, remove that file.
+  facts:
     workers: 8                        # concurrent LLM calls
     max_tokens: 4096
 
-  # Judge of the gold passages (infoseek_hard, frames, webshaper): one call per
-  # (fact, passage) pair, TRQA's property check (YES-SAME / YES-DIFFERENT /
-  # NO-RELATED / NO-UNRELATED).  Earlier judgments are kept
-  # (gold_passages.jsonl of the dataset); model (and the prompts) must stay
-  # theirs; to change them, remove that file.
+  # Judge of the gold passages (infoseek_hard, frames, webshaper; --judge-model): one
+  # call per (fact, passage) pair.  A fact with a known value: TRQA's property check
+  # (YES-SAME / YES-DIFFERENT / NO-RELATED / NO-UNRELATED); a fact with an unknown
+  # value: the judge extracts it (<value>-RELATED / NONE-RELATED / NONE-UNRELATED).
+  # Relevant: YES-SAME or an extracted value.  Earlier judgments are kept
+  # (gold_passages.jsonl of the dataset); the model (and the prompts) must stay
+  # theirs; to change them, remove that file.  frames, webshaper: a fact is judged on
+  # every passage of its pages (a fact without a page: of every page; a page no fact
+  # maps to: on every fact); a page without a judged relevant passage gets its first
+  # passage.
   gold_passages:
-    model: openrouter/openai/gpt-4o-mini  # TRQA's judge
-    workers: 16                       # concurrent LLM calls
-    max_tokens: 16                    # the reply is one label
+    workers: 32                       # concurrent LLM calls
+    max_tokens: 128                   # a label, or an extracted value and its label
 
   # webshaper: its web gold pages, fetched live, else from the Wayback Machine.
   web:
@@ -81,6 +87,7 @@ data:
     wayback_rate_per_min: 15.0        # the archive refuses faster clients
     wayback_timestamp: "20250601"     # the snapshot closest to this date (WebShaper's)
     min_words: 50                     # fewer extracted words: a dead page
+    refetch_failed: false             # true: fetch every failed page once more (one data_prepare run, then false)
 
 # ── Stage generate: dra_inference --stage generate on a split (the agents' trajectories) ─
 generate:
@@ -96,7 +103,7 @@ belief_stage:
 # SFT samples: every gated teacher reply is kept for now (the sample rule is
 # filtering/rules.py keep_sample).
 filter:
-  sft_init_datasets: [infoseek_hard]  # gold beliefs as init samples (multi-hop: in the question's words; not TRQA's members)
+  sft_init_datasets: [infoseek_hard]  # gold beliefs as init samples (infoseek_hard: the teacher's multi-clue init, in the question's words; not TRQA's members)
   rl_max_chain_steps: null            # rl split: leave out episodes with more search iterations (with a document); set from stage generate stats
   workers: 8                          # threads replaying the teacher's beliefs
 

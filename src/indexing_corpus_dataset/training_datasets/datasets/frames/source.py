@@ -41,7 +41,7 @@ def load() -> Iterator[dict]:
                 "id": f"frames_{i:04d}", "source": "frames",
                 "question": row["Prompt"].strip(), "answer": row["Answer"].strip(),
                 "gold": dedup_gold(entries),
-                "annotation": {"query_shape": "multi_hop", "beliefs": [], "entity_names": []},
+                "annotation": {"beliefs": [], "entity_names": []},
                 "meta": {"ignored_urls": entries.count(None),
                          "reasoning_types": [t.strip() for t in (row.get("reasoning_types") or "").split("|")
                                              if t.strip()]},

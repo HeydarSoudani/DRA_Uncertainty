@@ -1,13 +1,16 @@
 """Belief model training, one stage per call (``src/belief_model_training``).
 
     data_prepare    the questions of a training dataset worth its gold
-              annotation, no LLM call: --dataset (infoseek_hard | frames |
+              passages, no LLM call: --dataset (infoseek_hard | frames |
               webshaper | trqa_val); source as loaded in
               data/training_datasets_raw/{dataset}, the questions that pass
               the checks in its prepared.jsonl
-    data_relevance  the gold annotation, qrels and sft / rl / val split of
-              the prepared questions (LLM calls): --dataset, --limit (the
-              next N prepared questions; 0 = rewrite the files only)
+    data_relevance  the gold passages (qrels), rows and sft / rl / val split
+              of the prepared questions (LLM calls: the fact LLM
+              --fact-model, frames and webshaper; the judge of the gold
+              passages --judge-model; none for trqa_val): --dataset,
+              --limit (the next N prepared questions; 0 = rewrite the
+              files only)
     generate  dra_inference --stage generate on --dataset / --subset (sft | rl |
               val) for each agent (--policy-model, default shared.policy_models);
               then the statistics
@@ -43,6 +46,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from belief_model_training.config import RL_BELIEFS, load_config
+from indexing_corpus_dataset.training_datasets.config import DEFAULT_FACT_MODEL, DEFAULT_JUDGE_MODEL
 
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "belief_training.yaml")
 
@@ -51,7 +55,7 @@ STAGES = ("data_prepare", "data_relevance", "generate", "teacher", "filter", "sf
 #: The flags each stage takes (besides --stage, --config).
 STAGE_FLAGS = {
     "data_prepare":   {"dataset"},
-    "data_relevance": {"dataset", "limit"},
+    "data_relevance": {"dataset", "limit", "judge_model", "fact_model"},
     "generate": {"dataset", "subset", "policy_model", "limit"},
     "teacher":  {"dataset", "subset", "policy_model", "limit", "teacher"},
     "filter":   {"teacher"},
@@ -94,6 +98,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--subset", type=str, default=None, help="generate (required): sft | rl | val; teacher (required): sft | val; evaluate: any dra_inference --subset.")
     parser.add_argument("--policy-model", type=str, default=None, help="generate, teacher, evaluate: one agent (default: every agent of shared.policy_models).")
     parser.add_argument("--limit", type=_non_negative_int, default=None, help="data_relevance: process the next N prepared questions (0 = rewrite the files only); generate, teacher, evaluate: run N queries.")
+    # ── Stage data_relevance ────────────────────────────────────────────────
+    parser.add_argument("--judge-model", type=str, default=DEFAULT_JUDGE_MODEL, help=f"data_relevance: the judge of the gold passages, one call per (fact, passage) pair (default: {DEFAULT_JUDGE_MODEL}, TRQA's judge).")
+    parser.add_argument("--fact-model", type=str, default=DEFAULT_FACT_MODEL, help=f"data_relevance: the fact LLM of frames (the property of each gold page) and webshaper (the gold pages of each fact), one call per question (default: {DEFAULT_FACT_MODEL}).")
     # ── Stages teacher, filter ──────────────────────────────────────────────
     parser.add_argument("--teacher", type=str, default=None, help="teacher, filter: the teacher --belief-model (default: shared.teacher).")
     # ── Stages sft, rl ──────────────────────────────────────────────────────
@@ -102,7 +109,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--beliefs", type=str, default=None, choices=RL_BELIEFS, help="rl: starting beliefs, gold (run rl) or own, the student's init call (run rl_own_init) (default: rl.beliefs).")
     # ── Stage evaluate ──────────────────────────────────────────────────────
     parser.add_argument("--belief-model", type=str, default=None, help="evaluate (required): a trained or baseline --belief-model of dra_inference.")
-    return parser.parse_args()
+    return parser.parse_args(), parser
 
 
 def _flag(name: str) -> str:
@@ -111,9 +118,11 @@ def _flag(name: str) -> str:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    args = _parse_args()
+    args, parser = _parse_args()
     stage = args.stage
-    given = {k for k in set().union(*STAGE_FLAGS.values()) if getattr(args, k) is not None}
+    # A flag with a default counts as given when set to another value.
+    given = {k for k in set().union(*STAGE_FLAGS.values())
+             if getattr(args, k) is not None and getattr(args, k) != parser.get_default(k)}
     extra = given - STAGE_FLAGS[stage]
     if extra:
         raise SystemExit(f"--stage {stage} takes no {', '.join(_flag(k) for k in sorted(extra))}")
@@ -133,7 +142,7 @@ def main() -> None:
         prepare_dataset(cfg, args.dataset)
     elif stage == "data_relevance":
         from belief_model_training.data.build import relevance_dataset
-        relevance_dataset(cfg, args.dataset, args.limit)
+        relevance_dataset(cfg, args.dataset, args.limit, args.judge_model, args.fact_model)
     elif stage == "generate":
         from belief_model_training.trajectories.run import run_trajectories
         run_trajectories(cfg, args.dataset, args.subset, agents, args.limit)
@@ -161,10 +170,12 @@ if __name__ == "__main__":
 # python experiments/training/train_belief_model.py --stage data_prepare --dataset trqa_val
 # python experiments/training/train_belief_model.py --stage data_prepare --dataset frames
 # python experiments/training/train_belief_model.py --stage data_prepare --dataset webshaper
+
 # python experiments/training/train_belief_model.py --stage data_relevance --dataset infoseek_hard --limit 50
 # python experiments/training/train_belief_model.py --stage data_relevance --dataset trqa_val
 # python experiments/training/train_belief_model.py --stage data_relevance --dataset frames --limit 30
 # python experiments/training/train_belief_model.py --stage data_relevance --dataset webshaper --limit 30
+
 # python experiments/training/train_belief_model.py --stage generate --dataset infoseek_hard --subset sft --limit 50
 # python experiments/training/train_belief_model.py --stage generate --dataset infoseek_hard --subset rl
 # python experiments/training/train_belief_model.py --stage teacher --dataset infoseek_hard --subset sft

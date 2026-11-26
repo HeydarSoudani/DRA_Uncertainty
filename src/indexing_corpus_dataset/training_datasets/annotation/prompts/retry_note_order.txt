@@ -1,1 +1,0 @@
-Your earlier beliefs were not in a valid order ({problems}); order them so that each refers only to beliefs before it and the answer is last.

@@ -95,7 +95,7 @@ REPO_DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 
 # The training datasets (``BUILT_DATASETS``), all in one folder like an
 # inference dataset's: ``TRAINING_DATASETS_ROOT/queries/{dataset}.jsonl``,
-# ``qrels/{dataset}.txt``, ``belief_bank/silver/{dataset}.jsonl`` and the
+# ``qrels/{dataset}.txt``, ``belief_bank/{gold,silver}/{dataset}.jsonl`` and the
 # shared ``corpus/`` (corpus_web).  Each is built in its own folder of
 # ``TRAINING_RAW_ROOT/{dataset}``: the source as loaded, the caches, the
 # prepared questions (stage data_prepare), the LLM memories (stage
@@ -153,11 +153,12 @@ class DatasetSpec:
         gold_beliefs:        Where the dataset's gold beliefs come from:
                              ``"question"`` (the beliefs the extractor
                              takes from the question are the gold: every
-                             clue of a BrowseComp-Plus question, every
-                             requirement of a report request; they are
-                             banked as gold) or ``"annotation"`` (from the
-                             dataset's annotation: a training dataset's rows,
-                             ``gold_beliefs_path``; TRQA's intermediate
+                             clue of a BrowseComp-Plus, infoseek_hard or
+                             webshaper question, every requirement of a
+                             report request; they are banked as gold) or
+                             ``"annotation"`` (from the dataset's
+                             annotation: the members of trqa_val's rows,
+                             none for frames, ``gold_beliefs_path``; TRQA's intermediate
                              info, made on demand into its gold bank,
                              ``belief_model_component/init/trqa_gold.py``).  A query of
                              an annotation dataset without gold beliefs
@@ -249,11 +250,11 @@ DATASET_SPECS = {
     # DATA_ROOT/infoseek with its indices, ``_CORPUS_IN_DATA_ROOT``); binary
     # qrels: per gold page the chunk its claims are stated in (InfoSeek
     # writes them from the first 1024 tokens of a page: chunk 1 or 2, an LLM
-    # judges chunk 2; chunk 1 for a page without claims).  Multi-hop gold beliefs,
-    # one per hop of the research tree.
+    # judges chunk 2; chunk 1 for a page without claims).  Multi-clue, as
+    # BrowseComp-Plus: the beliefs are the extractor's, from the question.
     "infoseek_hard": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
-        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_clue", max_beliefs=None, gold_beliefs="question", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
     ),
     # trqa_val: the TRQA wiki1 + wiki2 validation queries, qrels and
     # intermediate info merged; TRQA's settings, corpus and indices.
@@ -263,18 +264,19 @@ DATASET_SPECS = {
     ),
     # frames and webshaper: FRAMES and WebShaper questions over the corpus of
     # infoseek_hard (corpus_wiki, plus corpus_web: WebShaper's web gold pages
-    # in chunks of 512 tokens, merged by the user for the index).  Graded
-    # qrels from an LLM judge of each (fact, passage) pair: 2 the passage
-    # states a fact of the question (the gold), 1 it is on the fact's topic
-    # without stating it.  frames has no beliefs (query level); webshaper
-    # one per variable of its formalization.
+    # in chunks of 512 tokens, merged by the user for the index).  Binary
+    # qrels from an LLM judge of each (fact, passage) pair: a passage is
+    # relevant when it states a fact of the question; a gold page without a
+    # judged relevant passage gets its first passage.
+    # frames has no gold beliefs (silver multi-hop ones from the
+    # extractor); webshaper is multi-clue, as infoseek_hard.
     "frames": DatasetSpec(
-        dataset_year=None, subset="sft", query_key="text", min_relevance_score=2,
-        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
     ),
     "webshaper": DatasetSpec(
-        dataset_year=None, subset="sft", query_key="text", min_relevance_score=2,
-        relevance_gains={1: 1, 2: 2}, task="qa", query_shape="multi_hop", max_beliefs=8, gold_beliefs="annotation", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
+        dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
+        relevance_gains={1: 1}, task="qa", query_shape="multi_clue", max_beliefs=None, gold_beliefs="question", belief_choice=False, reachability=None, answer_eval="llm_judge", doc_max_length=512, query_max_length=8192,
     ),
 }
 
@@ -420,8 +422,9 @@ def belief_bank_path(dataset: str, split: str, kind: str | None = None) -> Path:
     ``BELIEF_ROOT/ragtime/belief_bank/gold/beliefs_2025.jsonl`` or
     ``BELIEF_ROOT/trqa/belief_bank/silver/beliefs_wiki2_test.jsonl``.
     A training dataset has one bank for all its splits, in the folder of
-    the training datasets:
-    ``BELIEF_ROOT/training_datasets/belief_bank/silver/{dataset}.jsonl``.
+    the training datasets, e.g.
+    ``BELIEF_ROOT/training_datasets/belief_bank/gold/infoseek_hard.jsonl``
+    or ``BELIEF_ROOT/training_datasets/belief_bank/silver/trqa_val.jsonl``.
     The belief model reads and adds to them (``belief_model_component.init.factory``)."""
     kind = kind or extraction_kind(dataset)
     if kind not in BELIEF_SOURCES:
@@ -440,10 +443,13 @@ def is_split_view(dataset: str | None, split: str) -> bool:
 
 
 def gold_beliefs_path(dataset: str) -> Path:
-    """Return the gold beliefs of a training dataset: its queries file,
-    one row per query (every split) with its gold annotation, e.g.
-    ``TRAINING_DATASETS_ROOT/queries/infoseek_hard.jsonl``
-    (``training_datasets/annotation/rows.py``).  TRQA's gold beliefs are made
+    """Return the rows of a training dataset: its queries file, one row
+    per query (every split), e.g.
+    ``TRAINING_DATASETS_ROOT/queries/trqa_val.jsonl``
+    (``training_datasets/annotation/rows.py``); the gold beliefs of a
+    dataset with ``gold_beliefs == "annotation"`` are made from its
+    members (those of a
+    ``"question"`` one are the extractor's, ``belief_bank_path``).  TRQA's gold beliefs are made
     on demand into its gold bank (``belief_bank_path(..., "gold")``,
     ``belief_model_component/init/trqa_gold.py``); the other datasets' are the extractor's."""
     if dataset not in BUILT_DATASETS:

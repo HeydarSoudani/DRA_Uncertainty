@@ -1,4 +1,3 @@
-"""The gold annotation of the training datasets: the query rows
-(``rows.py``), name matching (``names.py``), the belief texts by an LLM
-(``belief_texts.py``, the prompts in ``prompts/``) and the ``annotations``
-section of ``stats.json`` (``stats.py``)."""
+"""The rows of the training datasets (``rows.py``) and name matching
+(``names.py``).  The rows hold no beliefs: the belief model makes its gold
+beliefs when it first needs them (``belief_model_component/init``)."""

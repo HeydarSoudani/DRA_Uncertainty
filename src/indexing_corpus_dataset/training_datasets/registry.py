@@ -8,7 +8,7 @@ module per stage, imported when the stage runs:
                 dataset's own counts of the ``prepare`` stats section
     relevance   ``build(cfg, paths, processed)`` the rows and qrels of stage
                 data_relevance (``pipeline/relevance.py``, a ``Built``);
-                ``FACTS`` the dataset's fact writer (a ``FactSpec``, None
+                ``FACTS`` the dataset's fact LLM (a ``FactSpec``, None
                 without one) and ``JUDGE`` whether it calls the judge of
                 the gold passages
 

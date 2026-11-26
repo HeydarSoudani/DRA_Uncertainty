@@ -2,10 +2,10 @@ Question: {question}
 
 Answer: {answer}
 
-Triples:
-{triples}
+Facts:
+{facts}
 
 Pages:
 {pages}
 
-Name the variables and assign each triple its pages.{retry}
+Assign each fact its pages.{retry}

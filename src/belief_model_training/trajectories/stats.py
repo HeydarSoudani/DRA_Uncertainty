@@ -2,7 +2,9 @@
 settings left open (``filter.rl_max_chain_steps``, ``rl.group_size``, the
 data size):
 
-* episodes (finished, judged, with gold beliefs) and the agent's accuracy;
+* episodes (finished, judged, with gold beliefs where they are the
+  annotation's: a dataset whose beliefs come from the question gets them
+  at stage teacher) and the agent's accuracy;
 * the search iterations with a document per episode (an upper bound on a
   chain's update calls): mean, median, 90th percentile, max.
 
@@ -34,7 +36,7 @@ def run_stats(cfg: TrainingConfig, datasets: List[str], split: str, policy_model
     paths.stats_dir.mkdir(parents=True, exist_ok=True)
     output = cfg.inference_output
     for dataset in datasets:
-        gold_rows = read_gold_rows(dataset)
+        gold_rows = read_gold_rows(dataset, teacher=None)
         for policy in policy_models:
             run_dir = find_run(output, dataset, split, cfg.shared.retriever, policy)
             if run_dir is None:

@@ -16,7 +16,7 @@ the PPO clip.
 | Teacher | `qwen3.6_27b` (`shared.teacher` or `--teacher`, a `--belief-model` of dra_inference) |
 | Calls trained | belief update and final score; belief init in the own-init RL run (and from gold beliefs in SFT) |
 | Prompts | the inference prompts, built by the inference belief model itself |
-| Training data | `infoseek_hard` (multi_hop) and `trqa_val` (multi_member), pooled |
+| Training data | `infoseek_hard` (multi_clue, as BrowseComp-Plus) and `trqa_val` (multi_member), pooled |
 | Agents | `oss_20b` and `glm` (`shared.policy_models`) |
 | RL reward | gate x Brier of the final score against the correctness of the agent's answer; no reward on belief transitions |
 
@@ -40,7 +40,7 @@ overwrite their YAML keys. Launcher: `scripts/run_train_belief_model.sh` (one jo
 | Stage | Does | Flags | Output |
 |---|---|---|---|
 | `data_prepare` | the questions of a training dataset worth its gold annotation: the source as loaded, then the checks (no LLM) | `--dataset` (required) | `data/training_datasets_raw/{dataset}/` |
-| `data_relevance` | the gold annotation, qrels and sft / rl / val split of the prepared questions (LLM calls) | `--dataset` (required), `--limit` | `data/training_datasets/` (`queries/{dataset}.jsonl`, `qrels/{dataset}.txt`), build files in `data/training_datasets_raw/{dataset}/` |
+| `data_relevance` | the qrels, gold annotation and sft / rl / val split of the prepared questions (LLM calls: the fact LLM and the judge of the gold passages; none for trqa_val) | `--dataset` (required), `--limit`, `--judge-model`, `--fact-model` | `data/training_datasets/` (`queries/{dataset}.jsonl`, `qrels/{dataset}.txt`), build files in `data/training_datasets_raw/{dataset}/` |
 | `generate` | dra_inference `--stage generate` on a split for each agent; then the run statistics | `--dataset`, `--subset` (required; sft, rl, val), `--policy-model`, `--limit` | the runs (dra_inference layout), `stats/` |
 | `teacher` | dra_inference `--stage belief --belief-model {teacher}` on the sft or val split for each agent | `--dataset`, `--subset` (required; sft, val), `--policy-model`, `--limit`, `--teacher` | the runs' `belief/{teacher}/`, `eval/metrics.md` |
 | `filter` | what is trained on: SFT samples from the teacher's replies, RL episodes (CPU) | `--teacher` | `filter/` |
@@ -82,34 +82,41 @@ A training dataset is built in two stages, so the LLM calls are spent only on qu
 `data_prepare` makes no LLM call: it writes the source as loaded to `data/training_datasets_raw/{dataset}` (again only when the code that makes the
 records changes: its hash is in `source.json`), then
 runs the dataset's checks and writes the questions that pass to `data/training_datasets_raw/{dataset}/prepared.jsonl`.
-`data_relevance` makes the gold annotation, qrels and split of the prepared questions with the LLM calls (the judge of
-the gold passages, the fact writer, the writer of the belief texts). A rerun of `data_prepare` costs nothing but the
-corpus reads.
+`data_relevance` finds the gold passages (qrels), writes the rows and splits the prepared questions, with the LLM calls that locate
+the gold passages: the fact LLM (frames: the property of each gold page; webshaper: the gold pages of each fact;
+`--fact-model`, default `openrouter/qwen/qwen3.6-27b`) and the
+judge of the gold passages (infoseek_hard, frames, webshaper; `--judge-model`, default `openrouter/openai/gpt-4o-mini`).
+trqa_val makes no call (TRQA's qrels). The stage has no beliefs: the belief model makes its gold beliefs when it
+first needs them, as at inference (see [Stage teacher](#stage-teacher-teacher-beliefs)). A rerun of `data_prepare`
+costs nothing but the corpus reads. Each LLM phase shows a progress bar (on a terminal; off one, a line every 30 s)
+with its outcomes and tokens, and the run ends with a summary: kept, dropped by reason, pending, the qrels count,
+where the relevant passages of the gold pages come from (judged or chunk 1).
 
 | Folder | File | Contents |
 |---|---|---|
 | `data/training_datasets_raw/{dataset}` (build folder, one per dataset) | `questions.jsonl`, `source.json` | every question of the source in one record format (`training_datasets/pipeline/source.py`, loaded by `datasets/{dataset}/source.py`), nothing removed; where it comes from and the hash of the code that made the records (a change rebuilds them) |
 | | `corpus_titles.jsonl`, `web_pages/` | caches: the chunk ids of each gold page title looked up in corpus_wiki; webshaper's fetched web pages (and `web_pages/corpus_web.json`: what corpus_web was last written from, so an unchanged build keeps it) |
 | | `prepared.jsonl` | data_prepare: the questions that pass the checks, each record with its `features` (the chunk ids of its gold pages; infoseek_hard: depth, branching, nodes) |
-| | `belief_texts.jsonl`, `facts.jsonl`, `gold_passages.jsonl` | data_relevance caches: the writer's saved belief texts and facts, the judge's saved labels; a reply that cannot be read (not JSON, no label) is saved too and is final the second time (the LLMs answer at temperature 0): failed texts or facts, judge label `NO-LABEL` (grade 0); an API error is not saved |
-| | `stats.json`, `dropped.jsonl` | one section per stage (`prepare`: the funnel of the checks, `corpus`, `web`; `relevance`, `gold_passages`, `annotations`, `split`); the dropped questions with their stage, filter and reasons |
-| `data/training_datasets` (shared by every training dataset, laid out like an inference dataset) | `queries/{dataset}.jsonl` | data_relevance: one row per query: the question and answer, its source, its split, its gold annotation (see [Gold annotation](#gold-annotation)) |
-| | `qrels/{dataset}.txt` | data_relevance: the gold documents of each query (TREC qrels; infoseek_hard, trqa_val binary; frames, webshaper graded: 2 gold, 1 related) |
+| | `facts.jsonl`, `gold_passages.jsonl` | data_relevance memories: the fact LLM's saved facts (frames, webshaper: per question its facts with their pages), the judge's saved labels (and extracted values); a reply that cannot be read (not JSON, no label) is saved too and is final the second time (the LLMs answer at temperature 0): failed facts, judge label `NO-LABEL` (not relevant); an API error is not saved |
+| | `gold_passages_report.jsonl` | data_relevance (frames, webshaper), rewritten each run: per kept question its facts, their routed pages, relevant passages (label, extracted value) and YES-DIFFERENT passages, and the source of each gold page's relevant passages |
+| | `stats.json`, `dropped.jsonl` | one section per stage (`prepare`: the funnel of the checks, `corpus`, `web`; `relevance`, `gold_passages`, `split`); the dropped questions with their stage, filter and reasons |
+| `data/training_datasets` (shared by every training dataset, laid out like an inference dataset) | `queries/{dataset}.jsonl` | data_relevance: one row per query: the question and answer, its source, its split, its gold passages (see [Rows](#rows)) |
+| | `qrels/{dataset}.txt` | data_relevance: the gold documents of each query (TREC qrels, binary for every dataset) |
 | | `belief_bank/silver/{dataset}.jsonl` | the extractor's silver beliefs (dra_inference) |
 | | `corpus/corpus_web.jsonl` | data_prepare (webshaper): WebShaper's web gold pages, until the user merges them with corpus_wiki under `DATA_ROOT` |
 
 | Dataset | Questions | Corpus | Splits |
 |---|---|---|---|
 | `infoseek_hard` | InfoSeek-Hard | corpus_wiki: the original release's `wiki-25-512.jsonl` (Wikipedia 2025 in chunks of 512 tokens), under `DATA_ROOT/infoseek/corpus` with its indices | sft / rl / val |
-| `frames` | FRAMES (no tabular or post-processing questions) | corpus_wiki | val (no beliefs: out of domain) |
+| `frames` | FRAMES (no tabular or post-processing questions) | corpus_wiki | sft / rl / val |
 | `webshaper` | WebShaper | corpus_wiki + corpus_web (`data/training_datasets/corpus/corpus_web.jsonl`: its web gold pages, cut the same way; merged by the user for the index) | sft / rl / val |
 | `trqa_val` | TRQA wiki1 + wiki2 validation | TRQA's `wiki_partial` | sft / rl / val |
 
 `data_relevance` is incremental, like dra_inference: `--limit N` processes the next N prepared questions not processed
 yet, `--limit 0` processes none and rewrites the dataset files, no `--limit` processes all. It refuses a dataset whose
 queries file holds a question the prepared file no longer has (data_prepare rerun with other checks): remove
-`queries/{dataset}.jsonl`, `qrels/{dataset}.txt` and the `relevance`, `annotations` and `split` sections of `stats.json` first (the
-LLM caches are reused).
+`queries/{dataset}.jsonl`, `qrels/{dataset}.txt` and the `relevance` and `split` sections of `stats.json` first (the
+LLM memories are reused).
 
 ```bash
 python experiments/training/train_belief_model.py --stage data_prepare --dataset infoseek_hard
@@ -135,22 +142,19 @@ Checks of `data_prepare`, in order; a question is dropped at its first failed ch
 
 The splits `sft`, `rl` and `val` are views of split `all`: the queries loader reads `--subset sft` as the rows with
 `split` `sft` and their qrels (`layout.is_split_view`), so dra_inference runs a split as on any dataset and its run
-folders are named by the split. Every data_relevance run sets each row's `split`. Training uses the queries with the full gold annotation
-(`level` `full`: every belief with gold answers and gold documents), so the full queries of a dataset are split with the shares of the
-`data.split` section of `experiments/configs/belief_training.yaml`, and every other query goes to `val` as its
-out-of-domain (OOD) part:
+folders are named by the split. Every data_relevance run sets each row's `split`: every query of every dataset is
+split with the shares of the `data.split` section of `experiments/configs/belief_training.yaml`:
 
 | Split | Queries | Stages | Used by |
 |---|---|---|---|
-| `sft` | 30% of the full ones | generate, teacher | sft: SFT samples |
-| `rl` | 60% of the full ones | generate | rl: RL episodes |
-| `val` | in domain: 10% of the full ones | generate, teacher | sft: validation loss; rl: validation; evaluate |
+| `sft` | 30% | generate, teacher | sft: SFT samples |
+| `rl` | 60% | generate | rl: RL episodes |
+| `val` | 10% | generate, teacher | sft: validation loss; rl: validation; evaluate |
 
-A full query without belief texts (`texts_ok` not true: not written yet, or failed) has `split` null and is in no
-split until a later run writes its texts. A query keeps the split it has in the queries file, so no query moves
-when the dataset grows, and `--limit` on one split never reaches the queries of another. The new full queries of a
+Training leaves out a query whose gold beliefs the teacher did not make. A query keeps the split it has in the queries file, so no query moves
+when the dataset grows, and `--limit` on one split never reaches the queries of another. The new queries of a
 run are taken in the order of a hash of their id (not the source order), and each goes to the split furthest below
-its share, so the shares hold at every dataset size (20 full queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3). The
+its share, so the shares hold at every dataset size (20 queries: 6 sft, 12 rl, 2 val; 30: 9, 18, 3). The
 shares and per-split counts are recorded in the `split` section of `stats.json`; other shares are refused (remove
 the `split` section to re-split every query). One stage of a dataset runs at a time (`.build.lock` in its folder).
 
@@ -193,8 +197,7 @@ sits in chunk 1 or chunk 2 of that page, with no rule for which. One fact per cl
 written as entities, its value the target entity) is judged on chunk 2 (see [Gold passages](#gold-passages)): the
 claim's gold chunk is chunk 2 when the judge finds it there (YES-SAME), else chunk 1; a page of one chunk needs no
 call. A page's gold chunks are those of its claims, chunk 1 for a page without claims. The query's qrels (binary) are
-the gold chunks of every gold page; a hop's gold documents are those of its own page and of the claims it is an end
-of. A question with a gold page that is not in the corpus (renamed, redirected or missing in the 2025 dump) is
+the gold chunks of every gold page, so every gold page has at least one. A question with a gold page that is not in the corpus (renamed, redirected or missing in the 2025 dump) is
 dropped by data_prepare (`page_not_in_corpus`). The titles looked up are kept in the raw folder's
 `corpus_titles.jsonl`, so data_prepare reads the corpus once, and only when it has new titles. The `corpus` section of `stats.json` records the
 corpus revision (another revision is refused) and the titles found; the `gold_passages` section the claims, the
@@ -205,11 +208,13 @@ judge's labels and how many gold chunks are chunk 1 or chunk 2.
 The FRAMES questions (`google/frames-benchmark`, `test.tsv`, pinned) without the tabular and post-processing ones
 (tables are stripped from corpus_wiki; post-processing failures are not research failures), over corpus_wiki. A
 question is kept when every gold page is an English Wikipedia page found in the corpus by its title, as in
-infoseek_hard. An LLM (`data.gold_beliefs.model`) writes one fact per gold page from the question, the answer and the
-page titles: the entity is the page title, the property is what the question needs from the page, its value only when
-the question or the answer states it. Each fact is judged on every chunk of its page; a question is kept when every
-fact has a gold chunk (`fact_without_gold` otherwise). The rows have no beliefs (`level` `query`), so every query is
-in `val`.
+infoseek_hard. An LLM (`--fact-model`) writes one fact per gold page from the question, the answer and the
+page titles: the entity is the page title, the property is what the question needs from the page. FRAMES does not say
+which page states which value (its answers are often computed), so the value is unknown and the judge extracts it.
+Each fact is judged on every chunk of its page; see
+[Gold passages](#gold-passages) for the relevant passages and the chunk-1 fallback. The queries are split like every dataset's;
+frames has no gold beliefs (`gold_beliefs` `annotation` without members), so the teacher makes none and training
+leaves its queries out until frames takes its beliefs from the question.
 
 ### webshaper
 
@@ -222,20 +227,37 @@ only WebShaper's gold pages (no web filler, no hard negatives): a web passage is
 Merge corpus_wiki and corpus_web for the index. The fetches are data_prepare's (kept in the raw folder's
 `web_pages/`). A page not found or not fetched has no passages; a question without any page in the corpus is dropped
 (`page_not_in_corpus`); a page whose fetch failed transiently is fetched again by the next data_prepare runs (3
-fetches in all), its question pending until then. One LLM call per question names each variable of the formalization (when the question,
-answer, triples, page titles or URLs show its entity) and assigns each triple the pages likely to state it; each
-triple is one fact, judged on every passage of its pages (of every page of the question when none of its own is in
-the corpus). A question is kept when every fact has a gold passage. A belief's answers are its variable's name, its
-documents the gold passages of the triples it occurs in.
+fetches in all), its question pending until then. `data.web.refetch_failed: true` fetches every failed page once
+more in the next data_prepare run (then set it back to false); a page fetched since keeps its passages. Each triple
+of the formalization is one fact, written by code with nothing the dataset does not state: a constant or the answer is
+written out (a known value, checked by the judge); a variable object is an unknown value (extracted by the judge); a
+variable subject is described by its other triples whose other term is known ("the entity that took place on 16 August
+1986"), else "an entity". An identity triple (a variable, a copula such as "has name" or "is", the answer) makes the
+variable the answer everywhere and is no fact; a repeated triple counts once; a triple that is not three terms is
+skipped, and so is one with no known term (an unnamed subject and an unknown value, which any passage on the property
+would fit). A question left without any fact is dropped (`no_facts`, no LLM call). One LLM call per question
+only maps each fact to the gold pages likely to state it, from the pages' titles (a web page by its fetched title);
+this routing never names an entity or a value. See [Gold passages](#gold-passages) for the routing safeguards, the
+relevant passages and the chunk-1 fallback.
 
 ### Gold passages
 
-The gold passages of infoseek_hard, frames and webshaper come from an LLM judge (`data.gold_passages.model`,
-gpt-4o-mini at temperature 0, as TRQA), TRQA's property check (mahta-r/total-recall-qa): one call per (fact, passage)
-pair, the fact as an entity, a property, a statement and a value, labelled YES-SAME (the passage states the fact's
-value for the entity), YES-DIFFERENT (another value), NO-RELATED (no value, on the fact's topic) or NO-UNRELATED. A
-fact without a value (its statement has a blank) is labelled YES, NO-RELATED or NO-UNRELATED. Grades: 2 for YES-SAME
-or YES (gold), 1 for NO-RELATED. The judged pairs are kept in `gold_passages.jsonl` (another judge or prompts are
+The gold passages of infoseek_hard, frames and webshaper come from an LLM judge (`--judge-model`, default
+gpt-4o-mini at temperature 0, as TRQA): one call per (fact, passage) pair, the fact as an entity (a name, or a
+description), a property, a statement and a value. A fact holds only what the dataset states. A fact with a known value
+gets TRQA's property check (mahta-r/total-recall-qa): YES-SAME (the passage states the fact's value for the entity),
+YES-DIFFERENT (another value), NO-RELATED (no value, on the fact's topic) or NO-UNRELATED. A fact with an unknown value
+(its statement has a blank) gets the extract prompt: the judge writes the value the passage states, `<value>-RELATED`
+(label `VALUE`, the value saved), else NONE-RELATED or NONE-UNRELATED. A passage is relevant for YES-SAME or VALUE;
+every other label is not. The qrels are binary for every dataset. The gold pages are given by the dataset; the facts
+only help locate their relevant passages, and every gold page ends with at least one relevant passage. On frames and
+webshaper a fact is judged on every passage of its pages; a fact without a page is judged on every page, and a page no
+fact maps to is judged on every fact; a gold page without a judged relevant passage gets its first passage. No question
+is dropped for a lack of judged relevant passages; the `gold_passages` section of `stats.json` counts the pages per
+source (`pages`: `judged`, `chunk_1`) and the questions whose every page is on chunk 1 (`questions_all_chunk_1`: a
+sign of wrong facts or page assignments), the facts with a known or unknown value, the routing safeguards used,
+the distinct values extracted per fact (`extracted`) and per webshaper variable (`variables`), and the facts with a
+YES-DIFFERENT passage; `gold_passages_report.jsonl` holds the details per question. The judged pairs are kept in `gold_passages.jsonl` (another judge or prompts are
 refused); a pair without a label is judged again by the next data_relevance run, its question left unprocessed until then. The
 prompts are `training_datasets/gold_passages/prompts/judge_*.txt`; the facts' prompts `datasets/{frames,webshaper}/prompts/facts_*.txt`
 (the retry note `gold_passages/prompts/facts_retry_note.txt`).
@@ -246,83 +268,32 @@ The trqa_val dataset merges the TRQA wiki1 and wiki2 validation files (queries, 
 into `queries/trqa_val.jsonl` and `qrels/trqa_val.txt`: a query and its intermediate info become one row, the
 members with their values and documents in `members`, with `property` (the label) and `aggregation`. It searches
 TRQA's `wiki_partial` corpus. The gold loaders (`load_query_intermediate_info`) read the intermediate info of a
-training dataset from its rows, in TRQA's record format.
+training dataset from its rows, in TRQA's record format; the gold beliefs are made from the members
+(`trqa_gold.with_member_beliefs`).
 
 Left out by data_prepare: the one query whose text is also a TRQA test query, and the 14 wiki2 ids that each name two
-different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels and all full, so `val`
-has no OOD part: 343 sft, 687 rl and 115 val. `--limit N` adds the next N prepared queries not yet in the dataset
+different questions (28 queries). 1,145 queries remain (91 wiki1, 1,054 wiki2), all with qrels: 343 sft, 687 rl
+and 115 val. `--limit N` adds the next N prepared queries not yet in the dataset
 (file order, wiki1 then wiki2). The `relevance` section of `stats.json` records the queries processed and remaining.
 Its rows have the keys of the other training datasets' (source `trqa_wiki1` / `trqa_wiki2`).
 
-### Gold annotation
+### Rows
 
-Each training dataset has a gold annotation per query: its beliefs, each with its gold answers and gold documents,
-as far as the source states them (`training_datasets/annotation/rows.py`). Every row has the same keys whatever the
+Each training dataset has one row per query (`training_datasets/annotation/rows.py`): the question, its answer, its
+split and its gold passages. The rows hold no beliefs: the belief model's gold beliefs are made by stage teacher, as
+at inference: on infoseek_hard and webshaper (multi-clue) the teacher's init beliefs from the question; on trqa_val
+one belief per member of the row, then the aggregate, with the teacher's texts
+(`belief_model_component/init/trqa_gold.py`, as TRQA's); frames has none. Every row has the same keys whatever the
 source; what the source does not state is an empty value (`[]` or `null`), never a missing key.
 
-| Source | Beliefs | `answers` | `doc_ids` |
-|---|---|---|---|
-| InfoSeek | one per entity of the research tree that the question does not name, children before parents, the answer last (`multi_hop`) | the entity, and its title without a parenthetical | the gold chunks of its own Wikipedia page and of the claims it is an end of |
-| WebShaper | one per variable of the formalization, the farthest from the answer first, then the answer (`multi_hop`) | the variable's name, when the fact writer could name it; the answer: the final answer | the gold passages of the triples it occurs in |
-| FRAMES | none | | |
-| TRQA wiki2 | one per member, "<member>: <property>", the member named by the Wikipedia title of its first document ("San Fernando, La Union", not TRQA's label "San Fernando") (`closed`); then the aggregation, how the answer follows from the values (`aggregate`) (`multi_member`) | the member's value (`entity_values`); aggregate: the final answer | the member's documents (`entity_values[].passage_ids`); aggregate: none |
-| TRQA wiki1 | the same | the same | the same |
+Query row: `id`, `source`, `split`, `text` (the question), `answer`, `doc_ids` (the qrels, binary), `members`
+(multi-member queries: `entity`, `value`, `doc_ids`; a member named by the Wikipedia title of its first document,
+"San Fernando, La Union", not TRQA's label "San Fernando"), `entity_names` (InfoSeek: every entity of the tree;
+TRQA: the members and their labels), `property` and `aggregation` (multi-member queries). The query shape is the
+dataset's (`layout.DATASET_SPECS`), not the row's. The prepared records keep their source structure (InfoSeek's
+tree, WebShaper's formalization, data_prepare's `annotation`); data_relevance uses it only to find the facts.
 
-Every TRQA member has its own belief. The aggregate belief has no documents since no document states the
-computed value; a member the extractor did not list reaches the belief as a passage observation on the aggregate.
-
-`level` follows from the row and selects a group of queries:
-
-| `level` | The row has | Training can use |
-|---|---|---|
-| `full` | beliefs, each with its gold: gold answers and gold documents (an `aggregate` one answers only) | per belief: its answers and its documents; the final answer and the qrels |
-| `partial` | beliefs, some without answers or without documents | the beliefs that have them; the final answer and the qrels |
-| `query` | no beliefs | the final answer and the qrels only |
-
-An InfoSeek query is `partial` when an entity of its beliefs has no Wikipedia page in the tree (a question with a
-page missing from the corpus is dropped). A WebShaper query is `partial` when a variable has no name. The `annotations` section of `stats.json`, the same in every dataset, counts the rows per source and level,
-the beliefs per kind and with their answers, documents and gold, the texts per source (ok, failed, retry), and
-records the writer of the texts. The loaders build the beliefs from the source (each with its
-source id: InfoSeek's node, WebShaper's variable); the build gives each its documents and writes the rows to
-`queries/{dataset}.jsonl`. The trqa_val build
-writes the same rows from the intermediate info. Query row: `id`, `source`, `split`, `text` (the question),
-`answer`, `query_shape`, `level`, `doc_ids` (the qrels), `beliefs`, `members` (multi-member queries: `entity`,
-`value`, `doc_ids`), `entity_names` (InfoSeek: every entity of the tree; TRQA: the members), `property` and
-`aggregation` (multi-member queries); belief: `id`, `text`, `answers`, `doc_ids`, `kind` (`closed`,
-`aggregate`), `relations` (the source structure the writer reads); then `texts_ok`, `errors` of the texts (the writer
-and its prompt hash are in `stats.json` and `belief_texts.jsonl`, not per row).
-
-### Belief texts (end of every data_relevance run)
-
-An LLM (`gold_beliefs.model`, the teacher) writes the belief texts in the question's words, one call per query;
-answers, documents and level come from the source (`training_datasets/annotation/belief_texts.py`). The prompts are the files
-of `training_datasets/annotation/prompts/`, one system and one user prompt per query shape:
-
-- multi-hop (InfoSeek, WebShaper): one text per belief, from its relations, with only the details the question
-  states (a relation may hold more, such as a year). The writer orders the beliefs so that each refers only to
-  beliefs before it ("the town of B1"), the answer last; the row's beliefs are reordered and renumbered in that
-  order (saved as `order` in `belief_texts.jsonl`). An invalid order is asked once more with the problem named.
-- set (TRQA): the property phrase (what is looked up per member, with its year and unit, no condition) and the
-  aggregation (what the answer computes over "the members": the property, the conditions on its values and how many
-  members it takes, not what selects the members, which the member beliefs carry), from the question, TRQA's property label
-  and its computation code. The member beliefs "<member>: <phrase>" are built from the phrase; the aggregate
-  belief is the aggregation.
-
-The writer runs before the split, so the rows are written with their texts; a build with texts to write needs
-`OPENROUTER_API_KEY`. `texts_ok` is true when every text names none of the gold answers (a name inside a longer
-entity name, such as Groningen in "University of Groningen", does not count; multi-member queries: neither the phrase
-nor the aggregation names a member, a value or the final answer that the question does not name; multi-hop queries:
-no number or capitalized word the question does not state), or when the query has no beliefs (FRAMES, no LLM
-call); false when the texts failed for good (a leak, an unstated word or an invalid order after one retry with them
-given, no text for a belief); null when the writer call failed (an error, a reply that is not JSON), and the next
-build asks again. The number of beliefs is the source's (no cap). Final texts are appended to
-`belief_texts.jsonl` as they are written, so a stopped build keeps them; a build reuses them for unchanged
-beliefs (the texts do not depend on the documents) and writes only the new queries' texts. Another
-`gold_beliefs.model` or other prompts than those of `belief_texts.jsonl` are refused (remove the file to write
-every text again). The prompts are hashed per query shape, so editing the set prompts leaves the multi-hop texts
-valid. The queries of a split (its generate run) are the full ones with `texts_ok` and at least one belief, and in
-`val` also the OOD ones. The `split` section of `stats.json` counts the queries per split, source and level, and the
-full ones in no split (`no_split`).
+The `split` section of `stats.json` counts the queries per split and source.
 
 
 ## Stage generate: Trajectories
@@ -338,12 +309,13 @@ so the documents and agent turns of every step are fixed, and the student's chai
 trajectories in the later stages.
 
 **Episodes** (`runs.py`). An episode is a finished query of a run with a judged answer (a query whose judge failed is
-left out), a final answer and gold beliefs (`texts_ok`, at least one belief): its search iterations and the
+left out), a final answer and gold beliefs (`runs.read_gold_rows`: the teacher's banked ones, see stage teacher): its search
+iterations and the
 answer turn's reasoning and answer as the belief stage reads them (`orchestration.belief_stage.read_saved_query`), y, its gold beliefs, and the run's corpus,
 retriever and passage cut. Documents are read from the corpus by id, as in the belief stage.
 
 **Statistics** (`trajectories/stats.py`), printed and written to `stats/{dataset}_{split}_{agent}.json`: episodes
-and the queries left out, the agent's accuracy, the search iterations with a document per episode (mean, median,
+and the queries left out (gold beliefs not counted: they are banked by stage teacher), the agent's accuracy, the search iterations with a document per episode (mean, median,
 90th percentile, max; they set `filter.rl_max_chain_steps`).
 
 ## Stage teacher: Teacher beliefs
@@ -355,6 +327,16 @@ s_T against y, the baseline of the trained model). Only finished trajectories ge
 queries of the split have none yet. The stage resumes, and `--limit N` caps the queries it runs. Settings:
 `belief_stage.belief_workers`, `quiet` (shared with stage evaluate). The stage needs no GPU: the documents are read
 from the corpus by id.
+
+Before its runs, the stage banks the gold beliefs of every query of the dataset, every split (`teacher/run.py`
+`bank_teacher_beliefs`), in `data/training_datasets/belief_bank/gold/{dataset}.jsonl`, as the belief stage makes
+them: on infoseek_hard and webshaper the teacher's init beliefs from the question (multi-clue, as BrowseComp-Plus;
+`gold_beliefs: question` in `layout.DATASET_SPECS`); on trqa_val the beliefs of each row with the property phrase and
+aggregation written by the teacher (`belief_model_component/init/trqa_gold.py` `DatasetGoldBeliefs`, the prompts in
+`belief_model_component/prompts/trqa_gold/`, as TRQA's gold beliefs at inference). They are the gold beliefs of
+training (SFT replay, init samples, RL from gold beliefs), the `rl` split's included. Banked ones are kept; a query
+whose beliefs failed (a writer error) is asked again by the next run and left out of training until then; texts that
+failed for good (an answer leaked after the retry) are banked as failed.
 
 ## Stage filter: What is trained on
 
@@ -377,7 +359,7 @@ same s_T); an episode that differs gives no sample. A call is a sample when it p
 |---|---|---|
 | update | each update call (first attempt; the final update too) and the teacher's reply | the reply parsed, no issue of `GATE_ISSUES` |
 | score | the final score call and the teacher's reply | the reply parsed (`parse_final_score`) |
-| init | on `filter.sft_init_datasets` (infoseek_hard), each query of the split: the init prompt and the gold beliefs, in the layout of the prompt's example | at most the prompt's cap of beliefs |
+| init | on `filter.sft_init_datasets` (infoseek_hard), each query of the split: the init prompt and the gold beliefs (infoseek_hard: the teacher's banked multi-clue init), in the layout of the prompt's example | at most the prompt's cap of beliefs |
 
 Then the sample rule (`filtering/rules.py`, `keep_sample`): every gated sample is kept for now (TODO: the rule is
 open; Agent-BRACE does not filter). TRQA's gold beliefs are not init samples: its members are not in the question.
