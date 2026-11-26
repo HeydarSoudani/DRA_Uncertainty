@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 from .base_agent import BasicAgent
 from deep_research_agents.agent_tools.react_tools import PlanTool
 from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, REACT_FORMAT
-from utils.text_utils import passages2string
-from utils.config import InferenceConfig
-from utils.text_utils import get_action, parse_action_call, extract_think_and_clean
+from deep_research_agents.shared.formatting import passages2string
+from deep_research_agents.shared.config import InferenceConfig
+from deep_research_agents.shared.parsing import get_action, parse_action_call, extract_think_and_clean
 
 
 class ReActAgent(BasicAgent):

@@ -25,7 +25,7 @@ _generate_with_tools_commercial_api):
     6. Repeat
   Extract final prediction from <answer>...</answer>
 
-LLM calls  : pipeline LiteLLMClient  (generator.complete)
+LLM calls  : the pipeline generator  (generator.complete)
 Retrieval  : pipeline local retriever  (retriever.retrieve)
 """
 
@@ -89,11 +89,11 @@ class UnifiedToolCallParserV20250824(ToolCallParser):
         return None
 
 # ── Pipeline imports (LLM + retriever) ───────────────────────────────────────
-from utils.llm_client import LiteLLMClient              # noqa: E402
+from reasoner_component import BaseGenerator              # noqa: E402
 
 from .base_agent import BasicAgent                                                           # noqa: E402
 from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, DRTULU_FORMAT
-from utils.text_utils import format_as_snippets                                          # noqa: E402
+from deep_research_agents.shared.formatting import format_as_snippets  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +122,7 @@ class DrTulu_Agent(BasicAgent):
         )
     """
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, max_tokens_per_step: int = 1024, verbose: bool = True) -> None:
+    def __init__(self, llm_client: BaseGenerator, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, max_tokens_per_step: int = 1024, verbose: bool = True) -> None:
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
 
         # DR-Tulu action prompts (think / tool / answer / cite)
@@ -217,7 +217,7 @@ class DrTulu_Agent(BasicAgent):
 
         Implements the algorithm from dr-tulu client.py
         ``_generate_with_tools_commercial_api``, adapted to the pipeline's
-        synchronous LiteLLMClient.
+        synchronous generator.
 
         Conversation structure (chat-API style):
           system : DR-Tulu system prompt  (think/tool/answer/cite instructions)

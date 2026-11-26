@@ -15,7 +15,6 @@ Reference: https://huggingface.co/Qwen/Qwen3-Reranker-4B
 Public API
 ----------
 score_pairs(pairs)                                  -> List[float]
-rerank_batch(requests, rank_start, rank_end, ...)   -> List[Result]
 rerank(request, rank_start, rank_end, ...)          -> Result
 rerank(query_str, documents, top_k)                 -> List[Dict]   (convenience)
 """
@@ -206,28 +205,6 @@ class Qwen3Reranker:
     # ------------------------------------------------------------------
     # rank_llm-compatible core API
     # ------------------------------------------------------------------
-
-    def rerank_batch(
-        self,
-        requests: List[Request],
-        rank_start: int = 0,
-        rank_end: int = 100,
-        shuffle_candidates: bool = False,
-        logging: bool = False,
-        **kwargs: Any,
-    ) -> List[Result]:
-        results = []
-        for request in requests:
-            result = self.rerank(
-                request,
-                rank_start=rank_start,
-                rank_end=rank_end,
-                shuffle_candidates=shuffle_candidates,
-                logging=logging,
-                **kwargs,
-            )
-            results.append(result)
-        return results
 
     def rerank(
         self,

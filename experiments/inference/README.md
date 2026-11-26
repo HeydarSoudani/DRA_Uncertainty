@@ -39,9 +39,9 @@ python experiments/inference/dra_inference.py \
 |---|---|
 | `--dataset`, `--subset` | `trqa` (`wiki1` / `wiki2` / `ecommerce`), `neuclir` (`news` / `technical`), `browsecomp_plus`, `ragtime`; unset subset = the dataset's default |
 | `--retriever` | must have an index built for the dataset |
-| `--policy-model` | the agent; its LLM is picked automatically (`utils/config.py`) |
+| `--policy-model` | the agent; its LLM is picked automatically (`src/utils/models.py`) |
 | `--stage` | `generate`, `belief`, `eval`, `all` (default); see below |
-| `--belief-model` | the belief model, one of `BELIEF_MODEL_TO_LLM` (`utils/config.py`): `qwen3.5_4b`, `qwen3.5_9b`, `qwen3.6_27b` (default); see [Belief model](#belief-model) |
+| `--belief-model` | the belief model, one of `BELIEF_MODEL_TO_LLM` (`src/utils/models.py`): `qwen3.5_4b`, `qwen3.5_9b`, `qwen3.6_27b` (default); see [Belief model](#belief-model) |
 | `--belief-source` | `gold` or `silver` beliefs of the belief model (TRQA, trqa_val) |
 | `--workers` | query-level worker processes of the generate stage: one per GPU on a GPU machine, CPU processes otherwise; `0` = auto (GPU count, 1 without GPU) |
 | `--belief-workers` | queries the belief stage runs at once (threads; `belief_workers` in the YAML) |
@@ -64,7 +64,7 @@ needs no agent, retriever or GPU: it reads each search iteration's queries, the 
 shown and the agent's turn from `trajectory/{qid}.jsonl`, reads the documents' text from the corpus by id
 (this call's corpus of the run's dataset and split; `CorpusLookup`, shaped as the run's retriever returns a
 document), and the answer as the agent returned it (`agent_generation` in the trajectory's meta
-line; `src/orchestration/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
+line; read by `src/belief_model_component/text/saved_query.py`, run by `src/pipeline/belief_stage.py`). The belief model therefore reads what it read inside the agent loop.
 
 ```bash
 python experiments/inference/dra_inference.py --dataset trqa --subset wiki2 --stage generate --limit 3
@@ -110,12 +110,12 @@ passage cut, reasoning off), for the model size study:
 | `qwen3.5_9b` | `openrouter/qwen/qwen3.5-9b` | OpenRouter, bf16 hosts only | bf16 | either script (`run_dra_inference_cpu.sh` needs no GPU) |
 | `qwen3.6_27b` (default) | `openrouter/qwen/qwen3.6-27b` | OpenRouter, fp8 hosts only | fp8 | either script |
 
-The OpenRouter models are pinned to the hosts of one precision (`BELIEF_OPENROUTER_PROVIDER` in `utils/config.py`,
+The OpenRouter models are pinned to the hosts of one precision (`BELIEF_OPENROUTER_PROVIDER` in `src/utils/models.py`,
 OpenRouter's `provider.quantizations`), so every call of a model runs the same weights; qwen3.6-27b has no bf16 host.
 The pin is recorded in the model's `belief_models` entry (`openrouter_provider`); a changed pin makes that model's
 beliefs again.
 
-The local model's server (`utils/vllm_manager.py`, `_BELIEF_SERVER_SPECS` and `belief_server`) runs on GPU 0, port 7010
+The local model's server (its spec in `src/reasoner_component/vllm_server/registry.py`, started by `serve` in `vllm_server/process.py`) runs on the first visible GPU, port 7010
 (`$BELIEF_VLLM_API_BASE` is set to it), text only (`--language-model-only`), bf16, prefix caching on, up to 128
 sequences at once; a server already on port 7010 that serves the model is reused and left running (anything else on the port stops the stage). Weights come from
 `$DRA_MODELS_DIR/Qwen--Qwen3.5-4B/` when pre-staged there, else from the Hugging Face cache. The belief stage sends
@@ -181,8 +181,7 @@ each query's list once, at the start of the query (`BeliefModel.reset`). The run
 1. The kind: the requested `belief_source` on TRQA and trqa_val, gold elsewhere; a query without gold
    beliefs gets silver ones.
 2. The beliefs of that kind: read from the bank when there, else made, added to the bank and used. Every kind is
-   made the first time a query needs it, in the belief stage and in `analysis/criteria_reachability.py`; no build
-   step.
+   made the first time a query needs it, in the belief stage; no build step.
 
 Before the workers start (after the vLLM servers are up), the run makes and banks the missing beliefs of its
 queries in parallel (`prepare_beliefs`, with counts per kind and origin); the workers share that belief source
@@ -217,8 +216,7 @@ Rules of a bank line:
   belief list a run uses is banked.
 - A query extracted by two processes at once keeps the line banked first. Each process reads only the lines added
   since its last read.
-- Runs and `analysis/criteria_reachability.py` share the bank, so the analysis assesses the beliefs the runs use.
-  The beliefs are never scored against gold during a run.
+- The beliefs are never scored against gold during a run.
 
 ### Belief update
 
@@ -236,7 +234,7 @@ makes none (the turns still waiting are not read).
 
 **Passage length.** The agent and the belief update read the same text of each document: its first
 `max_passage_tokens` tokens (one shared setting, default 512 as in BrowseComp-Plus, counted with the `Qwen/Qwen3.5-4B`
-tokenizer whatever the agent's model, no marker at the cut; `utils.text_utils.cut_passage`), report documents
+tokenizer whatever the agent's model, no marker at the cut; `utils.documents.cut_passage`), report documents
 included. A passage's title is its metadata title, else its front matter's (`title:`), else its first line.
 
 The call reads every belief (id `B<k>`) with its statement, its passages and its
@@ -341,7 +339,7 @@ not told which candidate the answer is. The fixed function of the final statuses
 (`certainty_formula`). A report has no final update and no scorer: s_T is the fixed function of the belief after
 the last search step (with no passage the final update could only change proposals, never s_T).
 
-Saved in `belief/{model}/{qid}.jsonl` (schema in `utils/run_files/belief.py`): a meta line, one line per iteration, the
+Saved in `belief/{model}/{qid}.jsonl` (schema in `src/utils/run_files/belief.py`): a meta line, one line per iteration, the
 final update's line (short-answer queries) and one `final` line for the score. A step line has the retrieval measures, `certainty`, `called`, the documents
 (`{doc_id, new, label}`), every belief's state after the step (`beliefs`: `{id, status, most_probable, selected,
 candidates, proposals}`, each candidate with its `support` and the agent's `claim`), the belief `updates` of the
@@ -359,9 +357,11 @@ end-of-run Recall@N.
 A run is evaluated from its saved files at the end of every stage. Each stage scores its own scope and keeps the
 rest of `eval/metrics.md` and `eval/per_query.csv`: `generate` the generation, `belief` its belief model, `eval` and
 `all` everything. The belief stage scores the generation too when the saved generation rows cannot be kept (no
-`metrics.md`, no generation row in it, or another number of queries than the run's, e.g. after an interrupted
-generate stage). Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
-makes no LLM call and needs no GPU; the belief models' evaluation makes no LLM call at all. The belief score and
+`metrics.md`, no generation row in it, another number of queries than the run's, e.g. after an interrupted
+generate stage, or a query of the run missing from `per_query.csv`), and when a judge verdict of the generation is
+missing (a judge failure, judged again then), so the belief rows always use the verdicts of the generation rows.
+A belief model with no belief file to read keeps its saved rows. Judge verdicts are reused for queries whose input is unchanged, so `--stage eval` on an unchanged run
+makes no LLM call and needs no GPU; the belief models' evaluation makes no LLM call of its own. The belief score and
 belief rows score the queries with a belief file. A belief file of an older schema from 54 on (`EVAL_MIN_SCHEMA`) is scored as it is (the evaluation reads only
 fields these schemas share); an older file is left out with a warning; the `metrics.md` header then gives the model's files per schema, and the next belief stage
 makes them again.
@@ -383,14 +383,14 @@ column of `metrics.md` ("-" on the generation's rows), with their per-query colu
 | belief | evidence uptake [CI], false uptake [CI]; update calls, format gate failed; update issue table (below) | QA datasets (qrels), belief on |
 | trajectory | searches, agent tokens, belief model tokens (per query, means), forced answers, max iterations reached | all |
 
-CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.measures`). Nothing else is
+CIs are 95% percentile bootstrap intervals over queries (1000 resamples, `evaluation.shared.measures`). Nothing else is
 computed: no @k tables, NDCG, MAP, GradedRecall, cited-doc or fusion metrics, soft match or length statistics (the
-raw outputs stay in the run, for `analysis/`).
+raw outputs stay in the run).
 
 **Uncertainty** (`src/evaluation/uncertainty/`). y is the correctness of the final answer (a judge error leaves the
 query out). The baseline `verbal` (`uncertainty/verbal.py`) is a measure of the generation, scored once per run: the
 agent's own `Confidence: X%` (glm and oss; read from `generation/{qid}.md` by a regex,
-`evaluation/generation/confidence.py`: "~85 %", a fraction such as "0.85", the value on the line after the label and
+`evaluation/generation/confidence.py`: "~85 %", a value of at most 1 without "%" such as "0.85" or "1" read as a fraction, the value on the line after the label and
 text after a "%" value accepted), on every judged query; a query without a stated confidence (no confidence line, a
 tool call or narration as the final text) is scored 0.5 (unknown) and counted in the `missing` row, its
 per_query.csv cell left blank. Per belief model (`uncertainty/qa.py`): `belief rule-based` (the fixed function of the final statuses,
@@ -435,34 +435,29 @@ uncertainty  rule-based AUROC 0.720 [0.64,0.80] Brier 0.340 | LLM score AUROC 0.
 belief       evidence uptake 0.750 [0.66,0.82] (n 180) | false uptake 0.210 [0.16,0.27] (n 190) | update calls 1840 | format gate failed 0.010 | belief tok 23102
 ```
 
-Every run can be compared in one table with `analysis/collect_results.py --root run_outputs` (one row per run, the
-headline measures as columns; `--all` for every measure, `--group` to keep some groups, `--ci` for the CIs):
-`results.md` and `results.csv`.
-
-`utils/run_files/` writes and reads every file of the run directory; `src/evaluation/` only scores, one module or
-subpackage per group:
+`src/utils/run_files/` writes and reads every per-query file of the run directory and reads `run_config.json`
+(`src/pipeline/run_config.py` builds, checks and updates it); `src/evaluation/` only scores, one directory
+per group of `metrics.md` (details and how to add an evaluator: `src/evaluation/README.md`):
 
 ```
-utils/run_files/
-├── __init__.py      QUERY_OUTPUT_DIRS, save_query_outputs, load_result_from_saved_files
+src/utils/run_files/
+├── __init__.py      QUERY_OUTPUT_DIRS, setup_output_dirs, save_query_outputs, load_result_from_saved_files
 ├── retrieval.py     surfaced / seen / cited doc levels and their TREC files
 ├── generation.py    generation/{qid}.md
 ├── trajectory.py    trajectory/{qid}.jsonl, scan_queries (finished queries)
-├── trajectory_logger.py  streamed trajectory lines and the step shaping both writers share
+├── trajectory_logger.py  streamed trajectory lines, AGENT_META_KEYS and the step shaping both writers share
 ├── belief.py        belief/{model}/{qid}.jsonl (schema, SCHEMA_VERSION), save/read/load, believed_queries
-└── run_config.py    run directory name, run_config.json, passage cut of a run
+└── run_config.py    run_config.json as the stages read it
 
 src/evaluation/
-├── runner.py        build_evaluators, load_run_results, evaluate_and_save
-├── metrics_file.py  metrics.md, per_query.csv and the log block
-├── measures.py      AUROC, Brier, ECE, tau-b, bootstrap CIs (shared with the analyses)
-├── judge.py         LLM-judge client and DEFAULT_JUDGE_MODEL
-├── retrieval.py     seen-doc Recall@N, Precision@N
+├── runner.py        EVALUATORS (the registry), build_evaluators, load_run_results, evaluate_and_save
+├── shared/          GroupResult, EvalSetup/EvalContext, eval/ files, log block, measures, LLM judge
+├── retrieval/       SeenDocEvaluator: seen-doc Recall@N, Precision@N
 ├── generation/      AccuracyEvaluator (LLM judge), NumericMatchEvaluator (TRQA), ArgueReportEvaluator (reports),
 │                    verbal_confidence
-├── uncertainty/     UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
-├── belief/          evidence_uptake (uptake.py), issue_summary (issues.py)
-└── trajectory.py    TrajectoryEvaluator (per query)
+├── uncertainty/     VerbalConfidenceEvaluator, UncertaintyEvaluator (qa.py), ReportUncertaintyEvaluator (report.py)
+├── belief/          EvidenceUptakeEvaluator (uptake.py), IssueEvaluator (issues.py)
+└── trajectory/      TrajectoryEvaluator (agent.py), BeliefTokenEvaluator (belief_tokens.py)
 ```
 
 ### Report evaluation (Auto-ARGUE)
@@ -477,7 +472,7 @@ Llama-3.3-70B.
   the References block), read whole: a report has no length limit (the tracks' 2000-character cut is not applied, so
   scores are comparable across our runs, not to the official track numbers). Agents that cite by docid (oss, glm on a
   report task) have their `[docid]` / `[[docid]]` citations, unique id prefixes included, numbered `[N]` when the run
-  ends (`utils.text_utils.number_docid_citations`). `metrics.md` counts the reports without any parsed citation and
+  ends (`deep_research_agents.shared.formatting.number_docid_citations`). `metrics.md` counts the reports without any parsed citation and
   those with markers that map to no reference: their citation and nugget scores are not meaningful.
 - Nuggets: the dataset's nuggets as v3 banks. NeuCLIR uses the NIST QC'd bank with importance (vital counts 2, okay 1),
   the AND/OR aggregation and each answer's supporting documents; only its 22 requests with supporting documents can be

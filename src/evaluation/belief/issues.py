@@ -4,26 +4,29 @@ every belief file of a run (every query, gold beliefs or not).
 An update call is a step record with a call made (``called``), the final
 update's included (the final record is the scorer's, never an update); it
 parsed when its ``observations`` are not null.
-Rows (the ``belief`` group of ``metrics.md``):
 
-    update calls         how many update calls
-    format gate failed   the share of them whose reply did not parse, or
-                         has a ``gate`` code (training's format gate,
-                         without the cut-off check: the finish reason is
-                         not saved)
+Rows (``belief`` group):
+    update calls                       how many update calls
+    update calls: format gate failed   the share whose reply did not parse,
+                                       or has a ``gate`` code (training's
+                                       format gate, without the cut-off
+                                       check: the finish reason is not saved)
 
-The table below ``metrics.md`` gives every code that occurs (notes too):
-its effect, its training role, how many times it occurs and in how many
-update calls."""
+Section: the issue table (:data:`ISSUE_COLUMNS`), every code that occurs
+(notes too) with its effect, training role, count and the update calls it
+occurs in.  No LLM call.
+"""
 
 from collections import Counter
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from belief_model_component import GATE_ISSUES, ISSUES, issue_effect
 
-from ..metrics_file import GroupResult
+from ..shared.context import BELIEF_MODEL, EvalContext, EvalSetup
+from ..shared.result import GroupResult
+from .metrics import GATE_FAILED, GROUP, ISSUES_SECTION, UPDATE_CALLS
 
-#: Columns of the issue table below the main table.
+#: Columns of the issue table.
 ISSUE_COLUMNS = ("code", "effect", "role", "count", "calls", "share of calls")
 
 
@@ -35,8 +38,8 @@ def _role(code: str) -> str:
 
 
 def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
-    """The ``belief`` rows of the belief files *files* (``load_belief_files``)
-    and the issue table (``ISSUE_COLUMNS``); empty without an update call."""
+    """The rows and the issue table of the belief *files* (``load_belief_files``);
+    empty without an update call."""
     calls = gate = 0
     count: Counter = Counter()
     in_calls: Counter = Counter()
@@ -52,12 +55,27 @@ def issue_summary(files: Dict[str, Tuple[Any, List[Dict], Any]]) -> GroupResult:
     if not calls:
         return GroupResult()
     res = GroupResult()
-    res.add("belief", "update calls", calls, n=calls)
-    res.add("belief", "update calls: format gate failed", gate / calls, n=calls)
+    res.add(GROUP, UPDATE_CALLS, calls, n=calls)
+    res.add(GROUP, GATE_FAILED, gate / calls, n=calls)
     table = []
-    for code, n in sorted(count.items(), key=lambda x: (-x[1], x[0])):
-        table.append([code, issue_effect(code), _role(code), str(n), str(in_calls[code]),
+    for code, k in sorted(count.items(), key=lambda x: (-x[1], x[0])):
+        table.append([code, issue_effect(code), _role(code), str(k), str(in_calls[code]),
                       f"{in_calls[code] / calls:.2f}"])
     if table:
-        res.sections.append(("Belief update issues (every call)", list(ISSUE_COLUMNS), table))
+        res.sections.append((ISSUES_SECTION, list(ISSUE_COLUMNS), table))
     return res
+
+
+class IssueEvaluator:
+    """:func:`issue_summary` of each belief model; every dataset."""
+
+    name = "belief issues"
+    scope = BELIEF_MODEL
+    provides = None
+
+    @classmethod
+    def from_setup(cls, setup: EvalSetup) -> Optional["IssueEvaluator"]:
+        return cls()
+
+    def evaluate(self, ctx: EvalContext) -> GroupResult:
+        return issue_summary(ctx.belief_files)

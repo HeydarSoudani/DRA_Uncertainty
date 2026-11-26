@@ -45,7 +45,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from belief_model_training.config import RL_BELIEFS, load_config
+from belief_model_training.shared.config import RL_BELIEFS, load_config
 from indexing_corpus_dataset.training_datasets.config import DEFAULT_FACT_MODEL, DEFAULT_JUDGE_MODEL
 
 _CONFIG_DEFAULT = str(Path(__file__).resolve().parents[1] / "configs" / "belief_training.yaml")

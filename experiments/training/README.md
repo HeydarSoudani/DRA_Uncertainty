@@ -1,6 +1,6 @@
 # Belief Model Training
 
-This file describes how the belief model is trained: the setup, the seven stages with their commands, then each
+This file describes how the belief model is trained: the setup, the eight stages with their commands, then each
 stage in turn (training datasets, trajectories, teacher beliefs, filter, SFT, RL, evaluation). The belief model itself (its calls, prompts and
 belief state) is described in `src/belief_model_component/README.md`.
 
@@ -21,7 +21,7 @@ the PPO clip.
 | RL reward | gate x Brier of the final score against the correctness of the agent's answer; no reward on belief transitions |
 
 Every training call runs the inference `BeliefModel` (`belief_model_component`) over a saved trajectory
-(`src/belief_model_training/chain.py`), driven as the belief stage drives it (reset, one `observe` per search
+(`src/belief_model_training/shared/chain.py`), driven as the belief stage drives it (reset, one `observe` per search
 iteration, `finish_answer` on the saved reasoning and answer); only its LLM client is swapped. A replay client returns
 the teacher's saved replies (SFT), a sampling client the student's replies (RL). The init source, the updater and the
 final scorer each get their own view of that client, so every call is recorded with the kind of the component that
@@ -52,10 +52,10 @@ A stage refuses the flags it does not take. `--limit` means the next N prepared 
 dra_inference stage runs in `generate`, `teacher` and `evaluate`. `sft` and `rl` take no dataset flag: they pool every
 training dataset and agent of `shared`, on fixed splits.
 
-The stages generate, filter, sft and rl write under `BELIEF_TRAINING_ROOT` (`utils/config.py`:
+The stages generate, filter, sft and rl write under `BELIEF_TRAINING_ROOT` (`src/utils/models.py`:
 `OUTPUT_ROOT/belief_training`). The `final/` of each training run is served by dra_inference on local vLLM as a
 `--belief-model` named `{student}_{run}`: `qwen3.5_4b_sft`, `qwen3.5_4b_rl`, `qwen3.5_4b_rl_own_init`
-(`utils.config.TRAINED_BELIEF_RUNS`, the students in `STUDENT_BELIEF_MODELS`).
+(`utils.models.TRAINED_BELIEF_RUNS`, the students in `STUDENT_BELIEF_MODELS`).
 
 ```bash
 T=experiments/training/train_belief_model.py
@@ -308,10 +308,10 @@ The stage resumes, and `--limit N` caps the queries it runs. The runs are dra_in
 so the documents and agent turns of every step are fixed, and the student's chains are run over the saved
 trajectories in the later stages.
 
-**Episodes** (`runs.py`). An episode is a finished query of a run with a judged answer (a query whose judge failed is
+**Episodes** (`shared/runs.py`). An episode is a finished query of a run with a judged answer (a query whose judge failed is
 left out), a final answer and gold beliefs (`runs.read_gold_rows`: the teacher's banked ones, see stage teacher): its search
 iterations and the
-answer turn's reasoning and answer as the belief stage reads them (`orchestration.belief_stage.read_saved_query`), y, its gold beliefs, and the run's corpus,
+answer turn's reasoning and answer as the belief stage reads them (`belief_model_component.read_saved_query`), y, its gold beliefs, and the run's corpus,
 retriever and passage cut. Documents are read from the corpus by id, as in the belief stage.
 
 **Statistics** (`trajectories/stats.py`), printed and written to `stats/{dataset}_{split}_{agent}.json`: episodes
@@ -387,7 +387,7 @@ episode (the GRPO group), all on the same fixed trajectory, at temperature 0.7. 
 thread; their pending calls are generated together, one vLLM batch per round. Each chain's final-score call gets
 `scorer_samples - 1` more replies on the same prompt. The episodes are stage filter's (`filter/rl_episodes.jsonl`).
 
-**Reward** (`reward.py`). Per final-score reply $j$, with $p_j$ the probability of its WEP and $y$ the correctness of
+**Reward** (`shared/reward.py`). Per final-score reply $j$, with $p_j$ the probability of its WEP and $y$ the correctness of
 the agent's answer:
 
 $$

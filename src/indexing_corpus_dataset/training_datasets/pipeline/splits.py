@@ -14,7 +14,7 @@ in the order of a hash of their id (not the source order) and each goes to
 the split furthest below its share, so the shares hold at every dataset
 size (20 queries: 6 sft, 12 rl, 2 val).  Training leaves out a query whose
 gold beliefs the teacher did not make
-(``belief_model_training.runs.read_gold_rows``).  The splits are views of
+(``belief_model_training.shared.runs.read_gold_rows``).  The splits are views of
 the one queries file: ``dataset_loaders`` reads split ``sft`` of a dataset
 as the rows with that ``split`` (and their qrels), so dra_inference runs
 ``--subset sft`` as on any dataset.
@@ -29,8 +29,8 @@ import hashlib
 from collections import Counter
 from typing import Dict, List, Optional
 
-from indexing_corpus_dataset.layout import TRAINING_SPLITS
-from utils.io_utils import iter_jsonl
+from indexing_corpus_dataset.shared.layout import TRAINING_SPLITS
+from utils.io import iter_jsonl
 
 from ..config import DatasetPaths, SplitConfig
 from .stats import read_stats, write_stats

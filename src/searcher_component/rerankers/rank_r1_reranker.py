@@ -15,7 +15,6 @@ Original implementation: https://github.com/ielab/llm-rankers
 
 Public API
 ----------
-rerank_batch(requests, rank_start, rank_end, ...)  ->  List[Result]
 rerank(request, rank_start, rank_end, ...)         ->  Result
 rerank(query_str, documents, top_k)               ->  List[Dict]   (convenience)
 """
@@ -245,22 +244,6 @@ class RankR1SetwiseReranker:
     # ------------------------------------------------------------------
     # Public API  (matches Rank1Reranker / RankLLaMAReranker interface)
     # ------------------------------------------------------------------
-
-    def rerank_batch(
-        self,
-        requests: List[Request],
-        rank_start: int = 0,
-        rank_end: int = 100,
-        shuffle_candidates: bool = False,
-        logging: bool = False,
-        **kwargs: Any,
-    ) -> List[Result]:
-        """Rerank a batch of requests."""
-        return [
-            self.rerank(req, rank_start=rank_start, rank_end=rank_end,
-                        shuffle_candidates=shuffle_candidates, logging=logging, **kwargs)
-            for req in requests
-        ]
 
     def rerank(
         self,

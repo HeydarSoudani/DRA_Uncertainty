@@ -39,12 +39,12 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from indexing_corpus_dataset.doc_lookup import CorpusLookup
-from indexing_corpus_dataset.layout import GOLD_BELIEFS, dataset_root, default_corpus_path, qrels_base, queries_base
+from indexing_corpus_dataset.shared.doc_lookup import CorpusLookup
+from indexing_corpus_dataset.shared.layout import GOLD_BELIEFS, dataset_root, default_corpus_path, qrels_base, queries_base
 from indexing_corpus_dataset.training_datasets.annotation.rows import AGGREGATE, CLOSED, member_row, value_texts
 from indexing_corpus_dataset.training_datasets.datasets.trqa_val.trqa import docs_of, member_titles
 from indexing_corpus_dataset.training_datasets.llm import JsonWriter
-from utils.io_utils import iter_jsonl
+from utils.io import iter_jsonl
 
 from ..core.types import Belief
 from .member_texts import PROMPT_HASH, member_texts
@@ -151,7 +151,7 @@ class MemberGoldBeliefs(BeliefSource):
         try:
             texts, errors = member_texts(row, self._writer_client())
         except Exception as e:  # noqa: BLE001 - not banked; asked again next run
-            return [], {**base, "errors": [f"gold beliefs: writer: {e}"]}
+            return [], {**base, "errors": [f"gold beliefs: writer: {e}"]}   # sources.INIT_CALL_ERRORS
         if texts is None:
             return [], {**base, "errors": [f"gold beliefs: {err}" for err in errors], FINAL: True,
                         BANK_ONLY: {"row": row}}

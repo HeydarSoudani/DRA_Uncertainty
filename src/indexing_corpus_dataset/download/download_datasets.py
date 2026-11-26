@@ -1,6 +1,6 @@
 """Download and prepare datasets into the canonical on-disk layout.
 
-Canonical layout (consumed by ``dataset_loaders.py``, the inference pipeline,
+Canonical layout (consumed by ``shared/dataset_loaders.py``, the inference pipeline,
 and the index builder)::
 
     {out_dir}/
@@ -43,10 +43,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 # Canonical-layout vocabulary (single source of truth, shared with the loaders).
-from indexing_corpus_dataset.layout import (  # noqa: E402
-    DATA_ROOT, queries_base, qrels_base, nuggets_base, corpus_path,
-    corpus_name, trqa_corpus_name, resolve_split_id, RAGTIME_CORPUS_NAME,
+from indexing_corpus_dataset.shared.layout import (  # noqa: E402
+    queries_base, qrels_base, nuggets_base, corpus_path, corpus_name, trqa_corpus_name, resolve_split_id,
+    RAGTIME_CORPUS_NAME,
 )
+from utils.paths import DATA_ROOT  # noqa: E402
 
 
 # ===========================================================================
@@ -156,7 +157,7 @@ def hf_dataset_file(repo_id: str, filename: str) -> Path:
     return Path(hf_hub_download(repo_id, filename, repo_type="dataset"))
 
 
-def iter_jsonl(path: Path):
+def iter_jsonl_lenient(path: Path):
     """Yield parsed rows of a (optionally gzipped) JSONL file, skipping bad lines."""
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "rt", encoding="utf-8", errors="replace") as f:
@@ -520,7 +521,7 @@ class NeuCLIRDownloader(DatasetDownloader):
             return
         print(f"Downloading NeuCLIR 2024 report nuggets from {self._NUGGETS_HF_REPO}...")
         judgments = self._nugget_judgments()
-        bank = iter_jsonl(hf_dataset_file(self._NUGGETS_HF_REPO, self._NUGGET_BANK))
+        bank = iter_jsonl_lenient(hf_dataset_file(self._NUGGETS_HF_REPO, self._NUGGET_BANK))
 
         records = []
         n_answers = n_answer_docs = 0
@@ -576,7 +577,7 @@ class NeuCLIRDownloader(DatasetDownloader):
 
         def _records():
             for filename in filenames:
-                for row in iter_jsonl(hf_dataset_file(hf_repo, filename)):
+                for row in iter_jsonl_lenient(hf_dataset_file(hf_repo, filename)):
                     rec = self._corpus_record(row)
                     if rec is not None:
                         yield rec
@@ -736,7 +737,7 @@ class RAGTIMEDownloader(DatasetDownloader):
 
         def _records():
             for filename in self._CORPUS_FILES:
-                for row in iter_jsonl(hf_dataset_file(self._CORPUS_HF_REPO, filename)):
+                for row in iter_jsonl_lenient(hf_dataset_file(self._CORPUS_HF_REPO, filename)):
                     if row.get("text"):
                         yield {"id": str(row["id"]), "contents": row["text"]}
 

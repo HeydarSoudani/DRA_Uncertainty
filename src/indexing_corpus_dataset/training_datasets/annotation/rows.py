@@ -42,7 +42,7 @@ beyond its entity names.
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from utils.io_utils import write_jsonl
+from utils.io import write_jsonl
 
 from .names import entity_names
 

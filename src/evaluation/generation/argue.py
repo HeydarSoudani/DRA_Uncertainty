@@ -11,49 +11,58 @@ answers and, per answer, the documents that support it:
 * a sentence without citations: does it need one, and is it the first
   instance of its claim.
 
-Per report it scores:
+Per report (:data:`METRICS`):
+    nugget_coverage       nuggets answered / nuggets; ``_weighted`` counts vital
+                          nuggets 2 and okay ones 1 (equal to the plain one
+                          without importance labels: RAGTIME)
+    sentence_support      fully supported sentences / sentences that cite or
+                          need a citation (first instances only)
+    citation_support      citations that attest their sentence / all citations
+    citation_relevance    citations to a nugget-supporting document / all citations
+    f1, f1_weighted       of ``sentence_support`` and the (weighted) coverage
 
-* ``nugget_coverage``: nuggets answered / nuggets; ``_weighted`` counts vital
-  nuggets 2 and okay ones 1, and equals the plain one without importance
-  labels (RAGTIME).
-* ``sentence_support``: fully supported sentences / sentences that cite or
-  need a citation (first instances only).
-* ``citation_support`` / ``citation_relevance``: citations that attest their
-  sentence / that point to a nugget-supporting document, over all citations.
-* ``f1`` / ``f1_weighted``: of ``sentence_support`` and the (weighted) coverage.
+Rows (``generation`` group): ``nugget coverage``, ``nugget F1`` (and the
+weighted ones when the nuggets have an importance: NeuCLIR), then the counts
+``evaluated``, ``without nuggets``, ``empty reports``, ``reports without
+citations``, ``reports with unmapped citations`` (their citation and nugget
+scores are not meaningful), ``judge failures``, ``judge malformed replies``.
+Per query: ``nugget_coverage``, ``f1`` (and the weighted ones).
 
-The package runs unmodified; this module supplies its inputs and its judge.
+The package runs unmodified; this module supplies its inputs and its judge:
 
 * Reports: ``generation/{qid}.md`` split into cited sentences
-  (:mod:`.report_sentences`), read whole: a report has no length limit
+  (``report_sentences.py``), read whole: a report has no length limit
   (the tracks' 2000-character cut is not applied).
 * Nuggets: the dataset's nuggets file as one v3 nugget bank per request:
   questions grouped, ``vital`` when any copy is, AND/OR when given (else OR),
   each answer with its own supporting documents when given, else its
   question's.  The package drops answers without documents and questions
   without answers; a request with no nugget left is not scored.
-* Cited document texts: from the corpus (``indexing_corpus_dataset.doc_lookup``).
-* Judge: :data:`evaluation.judge.DEFAULT_JUDGE_MODEL` (Qwen3-32B) instead of
-  the package's Llama-3.3-70B, as :class:`evaluation.judge.YesNoJudge`:
-  temperature 0 with the model's reasoning off (the package reads YES/NO
-  from at most 10 tokens, and a reasoning model spends them before
-  answering), a reply without YES/NO asked again twice.  The package takes
-  the check's default answer for one that still has none; each report's
-  count of them is kept with its judgments (``judge_malformed``).
+* Cited document texts: from the corpus (``indexing_corpus_dataset.shared.doc_lookup``).
+* Judge: ``shared.judge.DEFAULT_JUDGE_MODEL`` (Qwen3-32B) instead of the
+  package's Llama-3.3-70B, as ``shared.judge.YesNoJudge``: temperature 0
+  with the model's reasoning off (the package reads YES/NO from at most 10
+  tokens, and a reasoning model spends them before answering), a reply
+  without YES/NO asked again twice.  The package takes the check's default
+  answer for one that still has none; each report's count of them is kept
+  with its judgments (``judge_malformed``).
 
-Everything is cached under ``{run_dir}/eval/generation/`` (``GENERATION_EVAL_DIR``): the cited documents and
-each report's judgments, keyed by a hash of what was judged, so evaluating an
-unchanged run again makes no LLM call.  Scores are always recomputed from the
-judgments by the package's ``score``.  A request whose report has no sentence
-scores 0 on every metric; a report whose judging fails is left out, counted in
-``num_judge_failures``, and judged again on the next evaluation.
+Cache: everything under ``{run_dir}/eval/generation/``: the cited documents
+(and the cited ids the corpus lacks) and each report's judgments, keyed by a
+hash of what was judged, so evaluating an unchanged run again makes no LLM
+call (``pending`` counts the reports that would be judged).  Scores are always
+recomputed from the judgments by the package's ``score``.  A request whose
+report has no sentence scores 0 on every metric; a report whose judging
+fails is left out, counted in ``judge failures``, and judged again on the
+next evaluation.
+
+Datasets: ``report_eval == "argue"`` (NeuCLIR, RAGTIME).
 """
 
 import asyncio
 import contextvars
 import csv
 import functools
-import hashlib
 import importlib
 import json
 import logging
@@ -63,16 +72,23 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from indexing_corpus_dataset.doc_lookup import CorpusLookup
+from indexing_corpus_dataset.shared.doc_lookup import CorpusLookup
 from utils.progress import step_iter
 
-from ..measures import mean_or_none
-from ..metrics_file import GENERATION_EVAL_DIR, GroupResult
-from ..judge import DEFAULT_JUDGE_MODEL, YesNoJudge, has_yes_no
+from indexing_corpus_dataset.shared.dataset_loaders import load_nuggets
+
+from ..shared.context import GENERATION, EvalContext, EvalSetup
+from ..shared.files import GENERATION_EVAL_DIR
+from ..shared.judge import DEFAULT_JUDGE_MODEL, YesNoJudge, has_yes_no, run_sync, verdict_key
+from ..shared.measures import mean_or_none
+from ..shared.result import GroupResult
+from .metrics import (EMPTY_REPORTS, EVALUATED, GROUP, JUDGE_FAILURES, JUDGE_MALFORMED, NUGGET_COVERAGE,
+                      NUGGET_COVERAGE_WEIGHTED, NUGGET_F1, NUGGET_F1_WEIGHTED, UNCITED_REPORTS, UNMAPPED_REPORTS,
+                      WITHOUT_NUGGETS)
 from .report_sentences import report_sentences
 
 logger = logging.getLogger(__name__)
@@ -90,6 +106,9 @@ COUNTS = ("sentences", "character_count", "citations", "nuggets", "correct_nugge
 # Collection name of the cited-document lookup handed to the package.
 _DOC_COLLECTION = "dra_cited_docs"
 _RUN_ID = "run"
+# The cited ids the corpus does not have (``_cited_docs``), under the cache folder.
+_NOT_IN_CORPUS = "docs_not_in_corpus.json"
+_BANK_PREFIX, _BANK_SUFFIX = "nuggets_", ".v3.json"
 _IMPORTANCE_RANK = {"vital": 2, "okay": 1}
 
 
@@ -226,7 +245,7 @@ def _report_key(report, bank_json: str, docs: Dict[str, Dict[str, str]], judge_m
         "judge": judge_model,
         "auto_argue": AUTO_ARGUE_COMMIT,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return verdict_key(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -239,15 +258,20 @@ class ArgueReportEvaluator:
     Usage::
 
         evaluator = ArgueReportEvaluator(nuggets, questions, corpus_path)
-        group = evaluator.evaluate(results, run_dir)   # GroupResult; raw: score()
+        raw = evaluator.score(results, run_dir)        # per-report scores and counts
+        group = evaluator.evaluate(EvalContext(results, run_dir))
 
     Args:
         nuggets: ``query_id -> [nugget record]`` (``dataset_loaders.load_nuggets``).
         questions: ``query_id -> request text``.
         corpus_path: The corpus JSONL the cited document ids come from.
-        judge_model: Judge model, resolved by ``reasoner_component.api``.
+        judge_model: Judge model, resolved by ``reasoner_component.providers.routing``.
         max_concurrent_judges: Max in-flight judge requests.
     """
+
+    name = "report"
+    scope = GENERATION
+    provides = "report"
 
     def __init__(
         self,
@@ -263,22 +287,36 @@ class ArgueReportEvaluator:
         self.judge_model = judge_model
         self.max_concurrent_judges = max_concurrent_judges
 
+    @classmethod
+    def from_setup(cls, setup: EvalSetup) -> Optional["ArgueReportEvaluator"]:
+        if not setup.has_report_eval:
+            return None
+        return cls(nuggets=load_nuggets(setup.data_path, setup.split), questions=setup.questions or {},
+                   corpus_path=setup.corpus_path, **setup.judge_kwargs)
+
     # -- cited documents ------------------------------------------------
 
-    def _cited_docs(self, reports: Dict[str, Any], out_dir: Path) -> None:
+    def _cited_docs(self, reports: Dict[str, Any], out_dir: Path) -> Dict[str, Dict[str, str]]:
         """Write ``doc_mapping_{collection}.pkl`` (the package's lookup) with
-        the text of every cited document, fetching only the ones not cached."""
+        the text of every cited document, fetching only the ones not cached;
+        the cited ids the corpus does not have are kept in
+        ``docs_not_in_corpus.json`` so they are not looked up again."""
         path = out_dir / f"doc_mapping_{_DOC_COLLECTION}.pkl"
+        absent_path = out_dir / _NOT_IN_CORPUS
         docs: Dict[str, Dict[str, str]] = {}
         if path.exists():
             with open(path, "rb") as f:
                 docs = pickle.load(f)
-        missing = {d for r in reports.values() for d in r.references} - set(docs)
+        absent = set(json.loads(absent_path.read_text(encoding="utf-8"))) if absent_path.exists() else set()
+        missing = {d for r in reports.values() for d in r.references} - set(docs) - absent
         if missing:
-            docs.update(CorpusLookup(self.corpus_path).get(missing))
+            found = CorpusLookup(self.corpus_path).get(missing)
+            docs.update(found)
             with open(path, "wb") as f:
                 pickle.dump(docs, f, protocol=pickle.HIGHEST_PROTOCOL)
-        self._docs = docs
+            if missing - set(found):
+                absent_path.write_text(json.dumps(sorted(absent | (missing - set(found)))), encoding="utf-8")
+        return docs
 
     # -- judging --------------------------------------------------------
 
@@ -344,30 +382,82 @@ class ArgueReportEvaluator:
         importance-weighted scores are reported too."""
         return any(item.get("importance") for items in self.nuggets.values() for item in items)
 
-    def evaluate(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> GroupResult:
-        """The ``generation`` rows and per-query values of :meth:`score`
-        (*raw*); empty when no request has nuggets."""
-        report = self.score(results, run_dir)
+    def evaluate(self, ctx: EvalContext) -> GroupResult:
+        """The rows and per-query values of :meth:`score` (module docstring;
+        *raw*: the score); empty when no request has nuggets."""
+        report = self.score(ctx.results, ctx.run_dir)
         if not report:
             return GroupResult(raw=report)
         keys = ["nugget_coverage", "f1"] + (["nugget_coverage_weighted", "f1_weighted"] if self.weighted else [])
         res = GroupResult(raw=report, per_query={r["query_id"]: {k: r.get(k) for k in keys}
                                                  for r in report["per_query"]})
-        names = {"nugget_coverage": "nugget coverage", "f1": "nugget F1",
-                 "nugget_coverage_weighted": "nugget coverage (weighted)", "f1_weighted": "nugget F1 (weighted)"}
+        names = {"nugget_coverage": NUGGET_COVERAGE, "f1": NUGGET_F1,
+                 "nugget_coverage_weighted": NUGGET_COVERAGE_WEIGHTED, "f1_weighted": NUGGET_F1_WEIGHTED}
         for key in keys:
-            res.add("generation", names[key], report["metrics"].get(key), n=report["num_evaluated"])
-        for metric, key in (("evaluated", "num_evaluated"), ("without nuggets", "num_without_nuggets"),
-                            ("empty reports", "num_empty_reports"),
-                            ("reports without citations", "num_uncited_reports"),
-                            ("reports with unmapped citations", "num_unmapped_reports"),
-                            ("judge failures", "num_judge_failures")):
-            res.add("generation", metric, report[key])
+            res.add(GROUP, names[key], report["metrics"].get(key), n=report["num_evaluated"])
+        for metric, key in ((EVALUATED, "num_evaluated"), (WITHOUT_NUGGETS, "num_without_nuggets"),
+                            (EMPTY_REPORTS, "num_empty_reports"),
+                            (UNCITED_REPORTS, "num_uncited_reports"),
+                            (UNMAPPED_REPORTS, "num_unmapped_reports"),
+                            (JUDGE_FAILURES, "num_judge_failures")):
+            res.add(GROUP, metric, report[key])
         # The package's default answer stood in for these replies (n: the
         # reports judged since the count is kept).
-        res.add("generation", "judge malformed replies", report["judge_malformed"],
-                n=report["num_malformed_counted"])
+        res.add(GROUP, JUDGE_MALFORMED, report["judge_malformed"], n=report["num_malformed_counted"])
         return res
+
+    def pending(self, ctx: EvalContext) -> int:
+        """The reports :meth:`score` would judge now (no cached judgments for
+        their current input, or a failed judging); no LLM call."""
+        prep = self._prepare(ctx.results, ctx.run_dir)
+        return len(prep.todo) if prep else 0
+
+    def _prepare(self, results: Dict[str, Dict[str, Any]], run_dir) -> Optional[SimpleNamespace]:
+        """Everything :meth:`score` needs before a judge call: the nugget
+        banks (written under ``nuggets/``), the reports, the cited documents
+        and the cached judgments; ``todo`` holds the ``(query_id, report,
+        bank path, key)`` of the reports left to judge.  None when no
+        request has nuggets."""
+        out_dir = Path(run_dir) / GENERATION_EVAL_DIR if run_dir else Path(tempfile.mkdtemp(prefix="generation_eval_"))
+        banks_dir, cache_dir = out_dir / "nuggets", out_dir / "judgments"
+        banks_dir.mkdir(parents=True, exist_ok=True)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        banks = build_nugget_banks({q: n for q, n in self.nuggets.items() if q in results}, self.questions)
+        if not banks:
+            return None
+        bank_json: Dict[str, str] = {}
+        for qid, bank in banks.items():
+            bank_json[qid] = bank.model_dump_json(exclude_none=True, indent=1)
+            (banks_dir / f"{_BANK_PREFIX}{qid}{_BANK_SUFFIX}").write_text(bank_json[qid], encoding="utf-8")
+        for stale in banks_dir.glob(f"{_BANK_PREFIX}*{_BANK_SUFFIX}"):
+            if stale.name[len(_BANK_PREFIX):-len(_BANK_SUFFIX)] not in banks:
+                stale.unlink()
+
+        reports, unmapped = {}, {}
+        for qid in banks:
+            reports[qid], unmapped[qid] = build_report(qid, results[qid].get("generation", ""))
+        empty = {qid for qid, r in reports.items() if not r.responses}
+        to_score = {qid: r for qid, r in reports.items() if qid not in empty}
+        docs = self._cited_docs(to_score, out_dir)
+
+        judged: Dict[str, Dict] = {}
+        malformed: Dict[str, int] = {}   # reports judged before the count was kept have none
+        todo = []
+        for qid, report in to_score.items():
+            key = _report_key(report, bank_json[qid], docs, self.judge_model)
+            cache = cache_dir / f"{qid}.json"
+            if cache.exists():
+                cached = json.loads(cache.read_text(encoding="utf-8"))
+                if cached.get("key") == key:
+                    judged[qid] = cached["judged"]
+                    if cached.get("malformed") is not None:
+                        malformed[qid] = cached["malformed"]
+                    continue
+            todo.append((qid, report, banks_dir / f"{_BANK_PREFIX}{qid}{_BANK_SUFFIX}", key))
+        return SimpleNamespace(out_dir=out_dir, banks_dir=banks_dir, cache_dir=cache_dir, banks=banks,
+                               reports=reports, unmapped=unmapped, empty=empty, judged=judged,
+                               malformed=malformed, todo=todo)
 
     def score(self, results: Dict[str, Dict[str, Any]], run_dir=None) -> Dict[str, Any]:
         """Judge (or reuse the cached judgments of) every report with nuggets
@@ -381,44 +471,12 @@ class ArgueReportEvaluator:
         and ``per_query``; ``{}`` when no request has nuggets.
         """
         judge, score_module, utils = _import_auto_argue()
-        out_dir = Path(run_dir) / GENERATION_EVAL_DIR if run_dir else Path(tempfile.mkdtemp(prefix="generation_eval_"))
-        banks_dir, cache_dir = out_dir / "nuggets", out_dir / "judgments"
-        banks_dir.mkdir(parents=True, exist_ok=True)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        banks = build_nugget_banks({q: n for q, n in self.nuggets.items() if q in results}, self.questions)
-        if not banks:
+        prep = self._prepare(results, run_dir)
+        if prep is None:
             logger.warning("No report with nuggets to evaluate")
             return {}
-        bank_json: Dict[str, str] = {}
-        for qid, bank in banks.items():
-            bank_json[qid] = bank.model_dump_json(exclude_none=True, indent=1)
-            (banks_dir / f"nuggets_{qid}.v3.json").write_text(bank_json[qid], encoding="utf-8")
-        for stale in banks_dir.glob("nuggets_*.v3.json"):
-            if stale.name.split("_", 1)[1].split(".")[0] not in banks:
-                stale.unlink()
-
-        reports, unmapped = {}, {}
-        for qid in banks:
-            reports[qid], unmapped[qid] = build_report(qid, results[qid].get("generation", ""))
-        empty = {qid for qid, r in reports.items() if not r.responses}
-        to_score = {qid: r for qid, r in reports.items() if qid not in empty}
-        self._cited_docs(to_score, out_dir)
-
-        judged: Dict[str, Dict] = {}
-        malformed: Dict[str, int] = {}   # reports judged before the count was kept have none
-        todo = []
-        for qid, report in to_score.items():
-            key = _report_key(report, bank_json[qid], self._docs, self.judge_model)
-            cache = cache_dir / f"{qid}.json"
-            if cache.exists():
-                cached = json.loads(cache.read_text(encoding="utf-8"))
-                if cached.get("key") == key:
-                    judged[qid] = cached["judged"]
-                    if cached.get("malformed") is not None:
-                        malformed[qid] = cached["malformed"]
-                    continue
-            todo.append((qid, report, banks_dir / f"nuggets_{qid}.v3.json", key))
+        banks, reports, unmapped, empty = prep.banks, prep.reports, prep.unmapped, prep.empty
+        judged, malformed, todo = prep.judged, prep.malformed, prep.todo
 
         chat = _JudgeChat(self.judge_model)
         failures: Dict[str, str] = {}
@@ -427,7 +485,7 @@ class ArgueReportEvaluator:
             utils.get_text_from_id_fast.__dict__.get("cache", {}).pop(_DOC_COLLECTION, None)
             keys = {qid: key for qid, _, _, key in todo}
             with _patched(utils, judge, chat):
-                fresh = asyncio.run(self._judge(judge, utils, [t[:3] for t in todo], out_dir))
+                fresh = run_sync(self._judge(judge, utils, [t[:3] for t in todo], prep.out_dir))
             for qid, (outcome, n_malformed) in fresh.items():
                 if isinstance(outcome, Exception):
                     failures[qid] = str(outcome)
@@ -435,11 +493,11 @@ class ArgueReportEvaluator:
                     continue
                 judged[qid] = outcome.model_dump(mode="json")
                 malformed[qid] = n_malformed
-                (cache_dir / f"{qid}.json").write_text(
+                (prep.cache_dir / f"{qid}.json").write_text(
                     json.dumps({"key": keys[qid], "judged": judged[qid], "malformed": n_malformed},
                                ensure_ascii=False), encoding="utf-8")
 
-        per_topic = self._score(score_module, judged, banks_dir, out_dir) if judged else {}
+        per_topic = self._score(score_module, judged, prep.banks_dir, prep.out_dir) if judged else {}
 
         per_query: List[Dict[str, Any]] = []
         for qid in sorted(banks):

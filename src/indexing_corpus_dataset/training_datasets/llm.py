@@ -12,7 +12,7 @@ label, not a JSON object; it shares ``MAX_REPLY_FAILURES`` and
 import os
 from typing import Any, Dict
 
-from utils.text_utils import parse_json_object
+from utils.json_parse import parse_json_object
 
 # Replies without a usable answer (not a JSON object, no label; one per run)
 # after which a call's failure is final: the writers and the judge answer at
@@ -33,7 +33,7 @@ class JsonWriter:
         *model* (None: an API client, reasoning off)."""
         self.model = model
         if llm is None:
-            from reasoner_component.factory import create_generator, disable_native_thinking
+            from reasoner_component import create_generator, disable_native_thinking
             llm = disable_native_thinking(create_generator(model, backend="api"))
         self._llm = llm
         self._max_tokens = max_tokens

@@ -4,8 +4,6 @@ text shown, passage titles, and the labels a reply writes ("d4", "t2")."""
 import re
 from typing import Any, List, NamedTuple, Optional, Tuple
 
-from utils.text_utils import cut_chars
-
 from .matching import alnum, alnum_index
 
 
@@ -28,25 +26,6 @@ def span_in_passage(text: str, span: str, index: Optional[Tuple[str, List[int]]]
 def split_span(span: str) -> List[str]:
     """The pieces of a cited span that joins sentences with an ellipsis."""
     return [p.strip() for p in re.split(r"\.\.\.|…", span) if alnum(p)]
-
-
-# A document's front matter (``---\ntitle: ...\n---``, BrowseComp-Plus).
-_FRONT_MATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.S)
-_FRONT_TITLE = re.compile(r"^title:\s*(.+)$", re.M)
-
-
-def passage_title(text: str, title: str = "", max_chars: int = 120) -> str:
-    """A document's *title* (its metadata), else the title of its front
-    matter, else the first line of *text* with a letter or digit (a wiki
-    page's title or a headline); cut at *max_chars* with ``...``."""
-    line = " ".join(str(title or "").split())
-    if not line:
-        front = _FRONT_MATTER.match(text)
-        found = _FRONT_TITLE.search(front.group(1)) if front else None
-        body = text[front.end():] if front else text
-        line = (found.group(1).strip().strip("'\"") if found else
-                next((ln.strip() for ln in body.splitlines() if alnum(ln)), ""))
-    return cut_chars(line, max_chars)
 
 
 def _label(value: Any, prefix: str) -> str:

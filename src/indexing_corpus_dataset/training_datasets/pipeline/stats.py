@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List
 
-from utils.io_utils import atomic_write_text, iter_jsonl, read_jsonl, write_jsonl
+from utils.io import atomic_write_text, iter_jsonl, read_jsonl, write_jsonl
 
 
 def distribution(values: List[float]) -> dict:

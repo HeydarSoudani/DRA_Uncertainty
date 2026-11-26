@@ -23,7 +23,6 @@ BELIEF_STATUSES = (
 )
 # The status of a belief no passage supports a candidate of (b_0).
 UNKNOWN = "unknown"
-UNLIKELY = "unlikely"
 ALMOST_NO_CHANCE = "almost no chance"
 # Signed level of each status, "unknown" 0, for ordering and analysis.
 STATUS_LEVEL: Dict[str, int] = {

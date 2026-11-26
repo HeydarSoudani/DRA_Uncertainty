@@ -34,7 +34,7 @@ import re
 from collections import defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-from utils.io_utils import atomic_write_text
+from utils.io import atomic_write_text
 
 from ..config import BuildConfig, DatasetPaths, GoldPassagesConfig
 from .facts import FactSpec, fill_facts

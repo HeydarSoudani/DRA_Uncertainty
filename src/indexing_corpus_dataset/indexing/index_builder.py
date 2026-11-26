@@ -26,6 +26,8 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM
 from transformers import DPRContextEncoder, DPRContextEncoderTokenizerFast
 
+from searcher_component.shared.pooling import pooling
+
 
 # =============================
 MODEL2POOLING = {
@@ -61,8 +63,8 @@ MODEL2PATH = {
 # prebuilt SPLADE indexes. Must match retriever._SPLADEQueryEncoderForImpact.
 SPLADE_WEIGHT_SCALE = 100
 
-# Canonical dataset root + path derivation (single source of truth in layout.py).
-from indexing_corpus_dataset.layout import (
+# Canonical dataset root + path derivation (single source of truth in shared/layout.py).
+from indexing_corpus_dataset.shared.layout import (
     DATASETS,
     default_corpus_path,
     default_index_dir,
@@ -109,28 +111,6 @@ def load_model(retriever, model_path: str, use_fp16: bool = False, device=None):
 
     print(f"Model loaded on device: {device}")
     return model, tokenizer
-
-def pooling(pooler_output, last_hidden_state, attention_mask=None, pooling_method="mean"):
-    if pooling_method == "mean":
-        last_hidden = last_hidden_state.masked_fill(~attention_mask[..., None].bool(), 0.0)
-        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-    elif pooling_method == "cls":
-        return last_hidden_state[:, 0]
-    elif pooling_method == "pooler":
-        return pooler_output
-    elif pooling_method == "last_token":
-        left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
-        if left_padding:
-            return last_hidden_state[:, -1]
-        else:
-            sequence_lengths = attention_mask.sum(dim=1) - 1
-            batch_size = last_hidden_state.shape[0]
-            return last_hidden_state[
-                torch.arange(batch_size, device=last_hidden_state.device),
-                sequence_lengths,
-            ]
-    else:
-        raise NotImplementedError("Pooling method not implemented!")
 
 def resolve_corpus_files(corpus_path: str) -> list[str]:
     """Resolve corpus_path to a sorted list of .jsonl file paths.
@@ -234,7 +214,7 @@ def _encode_batch_core(encoder, tokenizer, batch_texts, retriever, pooling_metho
 SORT_CHUNK_BATCHES = 256
 
 
-def doc_text(doc: dict, corpus_has_title: bool, retriever: str) -> str:
+def record_text(doc: dict, corpus_has_title: bool, retriever: str) -> str:
     """Return the text encoded for one corpus record."""
     if corpus_has_title:
         text = '"' + doc.get('title', '') + '"\n' + doc.get('contents', '')
@@ -331,7 +311,7 @@ def _encode_shard_worker(rank, world_size, corpus_files, corpus_size, corpus_has
                 if not line_s:
                     continue
                 if doc_idx >= start_idx:
-                    chunk_texts.append(doc_text(json.loads(line_s), corpus_has_title, retriever))
+                    chunk_texts.append(record_text(json.loads(line_s), corpus_has_title, retriever))
                     if len(chunk_texts) >= chunk_size:
                         _flush_chunk()
                 doc_idx += 1
@@ -667,7 +647,7 @@ class Index_Builder:
         chunk_size = self.batch_size * SORT_CHUNK_BATCHES
         with tqdm(total=self.corpus_size, desc='Inference Embeddings:', unit='doc') as pbar:
             for chunk_docs in iter_corpus_batches(self.corpus_files, chunk_size):
-                texts = [doc_text(doc, self.corpus_has_title, self.retriever) for doc in chunk_docs]
+                texts = [record_text(doc, self.corpus_has_title, self.retriever) for doc in chunk_docs]
                 all_embeddings.append(encode_texts(
                     self.encoder, self.tokenizer, texts,
                     self.retriever, self.pooling_method,

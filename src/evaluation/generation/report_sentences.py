@@ -1,35 +1,27 @@
-"""The References block of a generation, and a report split into sentences,
-each with the documents it cites.
-
-Two cuts of the References block, kept apart because the answer judges'
-cached verdicts are keyed on their input text:
-
-* :func:`strip_references`: the text before the first appended
-  ``## References`` block (the answer judges, verbal confidence);
-* :func:`split_references`: the report before its last References heading
-  of any level, and that block's ``[N] doc_id`` lines (Auto-ARGUE).
+"""A report split into sentences, each with the documents it cites.
 
 Auto-ARGUE judges a report sentence by sentence, every sentence carrying the
-ids of the documents it cites (the NeuCLIR / RAGTIME run format).  Our reports
-are markdown with ``[N]`` markers and a ``## References`` block of
-``[N] doc_id`` lines (written by CPM-Report itself, by
-``utils.text_utils.build_references_section`` for the other agents), so
-:func:`report_sentences` rebuilds that format from ``generation/{qid}.md``
-alone:
+ids of the documents it cites (the NeuCLIR / RAGTIME run format).  Our
+reports are markdown with ``[N]`` markers and a References block of
+``[N] doc_id`` lines, so :func:`report_sentences` rebuilds that format from
+``generation/{qid}.md`` alone:
 
-* the References block gives ``N -> doc_id``; markers without a reference
-  line are dropped (counted in ``unmapped_markers``);
+* the References block gives ``N -> doc_id`` (``references.split_references``);
+  markers without a reference line are dropped (counted in ``unmapped_markers``);
 * headings, rules and empty lines are dropped, list markers and emphasis
-  are removed, and every list item or paragraph is split into sentences;
+  are removed, and every list item, table row or paragraph is split into
+  sentences;
 * a sentence keeps the markers inside it and those right after its final
-  punctuation (``claim.[1][2] Next``); the markers are removed from its text.
+  punctuation (``claim.[1][2] Next``); the markers are removed from its text;
+* a bracketed number of :data:`MIN_NON_MARKER` or more that is not a
+  reference (a year: ``in [2019]``) is text, not a marker.
 """
 
 import re
 from typing import Dict, List, Tuple
 
-_REFERENCES_HEADING_RE = re.compile(r"^#{1,6}\s*References\s*$", re.MULTILINE)
-_REFERENCE_LINE_RE = re.compile(r"^\[(\d+)\]\s+([^\s*][^\s]*)\s*$")
+from .references import split_references
+
 # [1], [1, 2], [1; 2]
 _MARKER_RE = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
 _MARKERS_RE = r"(?:\s*\[\d+(?:\s*[,;]\s*\d+)*\])*"
@@ -46,33 +38,9 @@ _HEADING_RE = re.compile(r"^\s*#{1,6}\s")
 _RULE_RE = re.compile(r"^\s*(?:[-*_]\s*){3,}$|^\s*\|?\s*:?-{3,}")
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _EMPHASIS_RE = re.compile(r"\*\*|__|`")
-
-
-#: Header of the references block appended to every generation.
-REFERENCES_MARKER = "\n\n## References\n"
-
-
-def strip_references(text: str) -> str:
-    """*text* without the appended ``## References`` block."""
-    idx = text.find(REFERENCES_MARKER)
-    if idx != -1:
-        text = text[:idx].rstrip()
-    return text.strip()
-
-
-def split_references(generation: str) -> Tuple[str, Dict[int, str]]:
-    """``(body, {N: doc_id})``: the report without its last References block,
-    and the block's ``[N] doc_id`` lines."""
-    headings = list(_REFERENCES_HEADING_RE.finditer(generation))
-    if not headings:
-        return generation, {}
-    start = headings[-1].start()
-    refs: Dict[int, str] = {}
-    for line in generation[headings[-1].end():].splitlines():
-        m = _REFERENCE_LINE_RE.match(line.strip())
-        if m:
-            refs.setdefault(int(m.group(1)), m.group(2))
-    return generation[:start], refs
+_TABLE_ROW_RE = re.compile(r"^\s*\|")
+#: A bracketed number from this on is text (a year) unless it is a reference.
+MIN_NON_MARKER = 1000
 
 
 def _units(body: str) -> List[str]:
@@ -89,8 +57,9 @@ def _units(body: str) -> List[str]:
         if not line.strip() or _HEADING_RE.match(line) or _RULE_RE.match(line):
             flush()
             continue
+        row = bool(_TABLE_ROW_RE.match(line))
         line = _EMPHASIS_RE.sub("", line).replace("|", " ").strip()
-        if _LIST_ITEM_RE.match(line):
+        if row or _LIST_ITEM_RE.match(line):
             flush()
             units.append(_LIST_ITEM_RE.sub("", line))
         else:
@@ -110,8 +79,14 @@ def _split_sentences(unit: str) -> List[str]:
     return [s.strip() for s in sentences if s.strip()]
 
 
-def _clean(sentence: str) -> str:
-    text = _MARKER_RE.sub("", sentence)
+def _is_marker(group: str, refs: Dict[int, str]) -> bool:
+    """Whether a bracketed group (``1, 2``) is a citation marker."""
+    numbers = [int(n) for n in re.split(r"\s*[,;]\s*", group)]
+    return any(n in refs or n < MIN_NON_MARKER for n in numbers)
+
+
+def _clean(sentence: str, refs: Dict[int, str]) -> str:
+    text = _MARKER_RE.sub(lambda m: "" if _is_marker(m.group(1), refs) else m.group(0), sentence)
     text = re.sub(r"\s+([.,;:!?])", r"\1", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
@@ -129,13 +104,15 @@ def report_sentences(generation: str) -> Tuple[List[Tuple[str, List[str]]], int]
         for raw in _split_sentences(unit):
             cited: List[str] = []
             for group in _MARKER_RE.findall(raw):
+                if not _is_marker(group, refs):
+                    continue
                 for n in re.split(r"\s*[,;]\s*", group):
                     doc = refs.get(int(n))
                     if doc is None:
                         unmapped += 1
                     elif doc not in cited:
                         cited.append(doc)
-            text = _clean(raw)
+            text = _clean(raw, refs)
             if re.search(r"\w", text):
                 sentences.append((text, cited))
     return sentences, unmapped

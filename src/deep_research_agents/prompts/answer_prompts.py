@@ -1,9 +1,8 @@
 """Answer prompts: instructions, format strings, and extraction utilities.
 
-- FINAL_ANSWER_INSTRUCTION  -- force answer at the context limit.
-- MAX_TURNS_ANSWER_INSTRUCTION -- force answer at the turn cap.
-- REPORT_FINAL_INSTRUCTION / REPORT_MAX_TURNS_INSTRUCTION -- the same for
-  report tasks, which ask for the report instead of an answer.
+- FINAL_ANSWER_INSTRUCTION  -- force answer (context limit and turn cap alike).
+- REPORT_FINAL_INSTRUCTION  -- the same for report tasks, which ask for the
+  report instead of an answer.
 - force_answer_prompt       -- a force-answer instruction plus an answer format.
 - Per-agent format instructions (TAG, OSS, REACT, BOXED, DRTULU, SELFASK, ...).
 - AnswerCandidateOutput dataclass + extraction helpers, used by the final
@@ -30,24 +29,12 @@ FINAL_ANSWER_INSTRUCTION = (
     "above, think again and provide what you consider the most likely answer."
 )
 
-MAX_TURNS_ANSWER_INSTRUCTION = (
-    "You have now reached the maximum number of turns you can take. "
-    "You should stop searching and, based on all the information above, "
-    "think again and provide what you consider the most likely answer."
-)
-
 # Report tasks (layout.DATASET_SPECS task == "report"): the forced final turn
 # asks for the report instead of the most likely answer.
 REPORT_FINAL_INSTRUCTION = (
     "You have now reached the maximum context length you can handle. "
     "You should stop making tool calls and, based on all the information "
     "above, write the report."
-)
-
-REPORT_MAX_TURNS_INSTRUCTION = (
-    "You have now reached the maximum number of turns you can take. "
-    "You should stop searching and, based on all the information above, "
-    "write the report."
 )
 
 # ======================================================================
@@ -76,13 +63,6 @@ REACT_FORMAT = (
     "Provide your answer in the following format:\n"
     "<think>your final thinking</think>\n"
     '<action>finish(answer="your answer")</action>'
-)
-
-WEBWEAVER_FORMAT = (
-    "Based on the evidence gathered so far, provide a concise answer.\n"
-    "IMPORTANT: The <answer> tag must contain ONLY the short factual answer,no explanations, no reasoning, no bullet points. Put all reasoning inside <think>.\n\n"
-    "<think>your reasoning over the collected evidence</think>\n"
-    "<answer>your short answer</answer>"
 )
 
 CPM_EXPLORE_FORMAT = (
@@ -315,22 +295,3 @@ def extract_answer_candidates(
         ))
 
     return candidates, format_matched
-
-
-# A bare reply longer than this is prose, not an answer.
-_BARE_ANSWER_MAX_CHARS = 100
-
-
-def extract_bare_answer(raw: str) -> Optional[List[AnswerCandidateOutput]]:
-    """Candidates from a reply that is only the answer field's value.
-
-    Models sometimes drop the answer format and reply with the value alone
-    (``no candidate``, ``Paris``, ``[a, b]``).  Accepted only when the reply
-    is one short line with no tags; returns None otherwise.  ``no candidate``
-    gives the same single placeholder as :func:`extract_answer_candidates`.
-    """
-    text = (raw or "").strip()
-    if not text or "\n" in text or "<" in text or len(text) > _BARE_ANSWER_MAX_CHARS:
-        return None
-    values = _parse_candidate_list(text) or ["no candidate"]
-    return [AnswerCandidateOutput(candidate=v) for v in values]

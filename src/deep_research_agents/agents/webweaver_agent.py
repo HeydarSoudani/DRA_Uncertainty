@@ -5,9 +5,9 @@ Algorithm (WebWeaver ICLR 2026 – Section 2-3):
   Writer loop  : [retrieve | write | terminate]*
 
 Both loops use ReAct-style thought-action-observation turns with the pipeline's
-LiteLLMClient for generation and local retriever for retrieval.
+the pipeline generator for generation and local retriever for retrieval.
 
-LLM calls  : pipeline LiteLLMClient  (generator.complete)
+LLM calls  : the pipeline generator  (generator.complete)
 Retrieval  : pipeline local retriever  (retriever.retrieve)
 """
 
@@ -20,16 +20,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 # ── Pipeline imports ──────────────────────────────────────────────────────────
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 
 from .base_agent import BasicAgent
-from utils.config import InferenceConfig
-from utils.text_utils import (
-    doc_text,
-    extract_tag_content as _extract_tag,
-    number_citations,
-    parse_tool_call_xml,
-)
+from deep_research_agents.shared.config import InferenceConfig
+from utils.documents import doc_text
+from deep_research_agents.shared.parsing import extract_tag_content as _extract_tag, parse_tool_call_xml
+from deep_research_agents.shared.formatting import number_citations
 from deep_research_agents.prompts.webweaver.user_prompts import (
     PLANNER_USER_TEMPLATE,
     WRITER_USER_TEMPLATE,
@@ -139,7 +136,7 @@ class WebWeaver_Agent(BasicAgent):
     default (planner_max_steps = max_iteration, writer_max_steps = max_iteration * 2).
     """
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, planner_max_steps: Optional[int] = None, writer_max_steps: Optional[int] = None, verbose: bool = True) -> None:
+    def __init__(self, llm_client: BaseGenerator, retriever: Optional[Any] = None, max_iteration: int = 100, seen_top_k: int = 5, planner_max_steps: Optional[int] = None, writer_max_steps: Optional[int] = None, verbose: bool = True) -> None:
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.planner_max_steps: int = planner_max_steps if planner_max_steps is not None else max_iteration
         self.writer_max_steps: int = writer_max_steps if writer_max_steps is not None else max_iteration * 2

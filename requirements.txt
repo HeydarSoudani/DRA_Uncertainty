@@ -76,5 +76,5 @@ pypdf==6.21.0
 packaging==26.2
 
 # --- Optional ---
-# orjson is a faster JSON loader with a stdlib `json` fallback (utils/io_utils.py).
+# orjson is a faster JSON loader with a stdlib `json` fallback (src/utils/io.py).
 # orjson

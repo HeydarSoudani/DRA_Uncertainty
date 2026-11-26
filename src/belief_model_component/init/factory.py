@@ -3,8 +3,7 @@
 The belief model makes its belief list once per sample
 (``BeliefModel.reset`` calls ``BeliefSource.get``).  This module decides
 which source that is, from the dataset and the run's ``belief_source``;
-the callers (the belief stage of dra_inference,
-``analysis/criteria_reachability.py``) only pass these settings.
+the caller (the belief stage of dra_inference) only passes these settings.
 
 Per query:
 
@@ -46,7 +45,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-from indexing_corpus_dataset.layout import (
+from indexing_corpus_dataset.shared.layout import (
     ANNOTATION_GOLD, BUILT_DATASETS, DATASET_SPECS, GOLD_BELIEFS, SILVER_BELIEFS, belief_bank_path,
     effective_belief_source, extraction_kind, gold_beliefs_path,
 )
@@ -64,35 +63,33 @@ PREPARE_WORKERS = 16
 def belief_llm(model: str):
     """LLM client of a belief model call, native reasoning off.  A ``vllm/``
     model is served locally at ``$BELIEF_VLLM_API_BASE`` (set by the belief
-    stage to the server it starts, ``utils.vllm_manager.belief_server``);
+    stage to the server it starts, ``reasoner_component.vllm_server.serve``);
     any other model goes through the API, routed to the hosts of its
     provider pin (:func:`belief_provider_pin`)."""
     if model.startswith("vllm/"):
-        return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base()))
+        return disable_native_thinking(create_generator(model, api_base=belief_vllm_api_base(model)))
     generator = create_generator(model, backend="api")
-    pin = belief_provider_pin(model)
-    client = getattr(generator, "_client", generator)
-    if pin and isinstance(getattr(client, "config", None), dict):
-        # Before the reasoning switch, which copies this body.
-        client.config["extra_body"] = {**(client.config.get("extra_body") or {}), "provider": pin}
+    if pin := belief_provider_pin(model):
+        generator.set_extra_body(provider=pin)
     return disable_native_thinking(generator)
 
 
 def belief_provider_pin(model: str):
     """The OpenRouter ``provider`` routing of the belief model LLM *model*
-    (``utils.config.BELIEF_OPENROUTER_PROVIDER``), None when it has none."""
-    from utils.config import BELIEF_OPENROUTER_PROVIDER
+    (``utils.models.BELIEF_OPENROUTER_PROVIDER``), None when it has none."""
+    from utils.models import BELIEF_OPENROUTER_PROVIDER
 
     pin = BELIEF_OPENROUTER_PROVIDER.get(model)
     return dict(pin) if pin else None
 
 
-def belief_vllm_api_base() -> str:
-    """The endpoint of a ``vllm/`` belief model: ``$BELIEF_VLLM_API_BASE``,
-    else ``$VLLM_API_BASE``, else the default local server."""
-    from reasoner_component.vllm import DEFAULT_VLLM_API_BASE
+def belief_vllm_api_base(model: str) -> str:
+    """The endpoint of the ``vllm/`` belief model *model*:
+    ``$BELIEF_VLLM_API_BASE``, else its registered server
+    (``reasoner_component.vllm_server.SERVERS``)."""
+    from reasoner_component.vllm_server import require_spec
 
-    return (os.getenv("BELIEF_VLLM_API_BASE") or os.getenv("VLLM_API_BASE") or DEFAULT_VLLM_API_BASE).rstrip("/")
+    return (os.getenv("BELIEF_VLLM_API_BASE") or require_spec(model).api_base).rstrip("/")
 
 
 def bank_model_id(model: str) -> str:
@@ -102,7 +99,7 @@ def bank_model_id(model: str) -> str:
     served under the same name, and must not read another's beliefs."""
     if not model.startswith("vllm/"):
         return model
-    base = belief_vllm_api_base()
+    base = belief_vllm_api_base(model)
     bare = model.removeprefix("vllm/")
     try:
         with urllib.request.urlopen(f"{base}/models", timeout=30) as reply:
@@ -150,7 +147,8 @@ def check_belief_inputs(dataset: str, belief_source: str, belief_model: Optional
         path = gold_beliefs_path(dataset)
         if not path.exists():
             raise SystemExit(f"belief_source gold: {path} not found; build the dataset with "
-                             f"experiments/training/train_belief_model.py --stage data_relevance --dataset {dataset}"
+                             f"experiments/training/train_belief_model.py --stage data_prepare, then "
+                             f"--stage data_relevance, --dataset {dataset}"
                              + (", or run with --belief-source silver" if spec.belief_choice else ""))
         print(f"[INFO] beliefs: gold, made from the rows of {path} (texts by {belief_model}), silver for a "
               f"query without them")
@@ -174,7 +172,7 @@ def build_belief_source(
     *belief_model* extracts the beliefs from the question and writes
     TRQA's gold belief texts; *max_beliefs* caps the extraction (None:
     uncapped).  *fallback* false: a query without gold beliefs gets none
-    (``analysis/criteria_reachability.py``)."""
+    (stage teacher, ``belief_model_training.teacher.run``)."""
     if not belief_model:
         raise ValueError("the belief source needs a belief model")
     spec = DATASET_SPECS[dataset]
@@ -225,7 +223,7 @@ def prepare_beliefs(source: BeliefSource, queries: Dict[str, str], workers: int 
             return qid, source.get(qid, query)
         except Exception as e:  # noqa: BLE001 - its worker tries again
             logger.warning("Belief init of %s failed", qid, exc_info=True)
-            return qid, ([], {"errors": [f"belief_source: {e}"]})
+            return qid, ([], {"errors": [f"belief_source: {e}"]})   # sources.INIT_CALL_ERRORS
 
     counts: Counter = Counter()
     failed = []

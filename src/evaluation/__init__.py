@@ -1,28 +1,18 @@
 """Evaluation of deep-research agent runs: scoring only.
 
-The run's files are written and read by ``utils.run_files``; the evaluation reads
-them back and writes its own under ``eval/`` (``metrics_file``).  One
-module or subpackage per group of the run's ``metrics.md``, in order:
+The run's files are written and read by ``utils.run_files``; the evaluation
+reads them back and writes its own under ``eval/``.  One package per group
+of the run's ``metrics.md``, in order:
 
-retrieval
-    Recall@N, Precision@N of the seen docs (``SeenDocEvaluator``).
-generation
-    Answer correctness (``AccuracyEvaluator`` by LLM judge,
-    ``NumericMatchEvaluator`` by numeric match) and the report evaluation
-    against nuggets (``ArgueReportEvaluator``, Auto-ARGUE).
-uncertainty
-    The agent's verbal confidence against correctness
-    (``VerbalConfidenceEvaluator``, once per run); the belief rule-based
-    score and the belief LLM score against correctness
-    (``UncertaintyEvaluator``), or s_T against nugget coverage
-    (``ReportUncertaintyEvaluator``), once per belief model.
-belief
-    Evidence uptake and false uptake of the belief's certainty against the
-    qrels (``evidence_uptake``), and the update's issues (``issue_summary``).
-trajectory
-    Per-query searches, tokens and forced answers (``TrajectoryEvaluator``).
+    retrieval     Recall@N, Precision@N of the seen documents
+    generation    answer accuracy (LLM judge, numeric match) or report nugget
+                  coverage (Auto-ARGUE)
+    uncertainty   the agent's verbal confidence and the belief scores against
+                  correctness, or s_T against nugget coverage
+    belief        evidence uptake, false uptake and update issues of a belief model
+    trajectory    searches, tokens, forced answers
 
-Beside them: ``runner`` (evaluation of a run), ``metrics_file`` (its files
-and log), ``measures`` (AUROC, Brier, ECE, tau-b, bootstrap CIs) and
-``judge`` (the LLM-judge client).
+Beside them: ``shared`` (what every group uses) and ``runner`` (the
+evaluation of a run: which evaluators, in which order).  The overview, the
+evaluator interface and how to add one: ``README.md`` in this directory.
 """

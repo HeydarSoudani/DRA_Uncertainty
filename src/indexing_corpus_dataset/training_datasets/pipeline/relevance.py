@@ -30,7 +30,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from utils.io_utils import atomic_write_text, iter_jsonl, read_jsonl
+from utils.io import atomic_write_text, iter_jsonl, read_jsonl
 
 from .. import registry
 from ..annotation import rows as annotation_rows

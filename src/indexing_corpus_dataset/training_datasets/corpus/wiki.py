@@ -23,8 +23,8 @@ from typing import Dict, List, Optional, Set, Tuple
 from huggingface_hub import hf_hub_download
 from tqdm import tqdm
 
-from indexing_corpus_dataset.layout import default_corpus_path
-from utils.io_utils import drop_partial_line, iter_jsonl, write_jsonl
+from indexing_corpus_dataset.shared.layout import default_corpus_path
+from utils.io import drop_partial_line, iter_jsonl, write_jsonl
 
 from ..config import DatasetPaths
 from ..pipeline.stats import read_stats

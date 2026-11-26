@@ -9,7 +9,7 @@ step and final records are described in ``README.md``."""
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from utils.text_utils import doc_id as _doc_id, unique_docs
+from utils.documents import doc_id as _doc_id, unique_docs
 
 from .core.types import Belief
 from .init.sources import BeliefSource
@@ -95,7 +95,7 @@ class BeliefModel:
                 self._beliefs, self._belief_info = self._belief_source.get(query_id, query)
             except Exception as e:
                 logger.warning("BeliefModel: belief source failed", exc_info=True)
-                self._belief_info = {"errors": [f"belief_source: {e}"]}
+                self._belief_info = {"errors": [f"belief_source: {e}"]}   # init.sources.INIT_CALL_ERRORS
             logger.info("BeliefModel: %d beliefs: %s",
                         len(self._beliefs), [c.text for c in self._beliefs])
         if self._belief is not None:

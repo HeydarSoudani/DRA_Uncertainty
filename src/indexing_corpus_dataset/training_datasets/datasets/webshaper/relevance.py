@@ -29,7 +29,7 @@ taken first by the next run.
 from collections import Counter
 from typing import Dict, List
 
-from utils.io_utils import iter_jsonl
+from utils.io import iter_jsonl
 
 from ...annotation import rows as annotation_rows
 from ...config import BuildConfig, DatasetPaths

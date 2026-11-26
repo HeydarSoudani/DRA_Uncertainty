@@ -6,7 +6,6 @@ reranker classes with a single vLLM-backed implementation.
 
 Public API (preserved from existing rerankers)::
 
-    rerank_batch(requests, rank_start, rank_end, ...)  -> List[Result]
     rerank(request, rank_start, rank_end, ...)         -> Result
     rerank(query_str, documents, top_k)                -> List[Dict]
 """
@@ -179,21 +178,6 @@ class ListwiseVLLMReranker:
     # ------------------------------------------------------------------
     # Public API (preserved interface)
     # ------------------------------------------------------------------
-
-    def rerank_batch( self, requests: List[Request], rank_start: int = 0, rank_end: int = 100, shuffle_candidates: bool = False, logging: bool = False, **kwargs: Any, ) -> List[Result]:
-        """Rerank a batch of requests sequentially."""
-        results: List[Result] = []
-        for request in requests:
-            result = self.rerank(
-                request,
-                rank_start=rank_start,
-                rank_end=rank_end,
-                shuffle_candidates=shuffle_candidates,
-                logging=logging,
-                **kwargs,
-            )
-            results.append(result)
-        return results
 
     def rerank( self, request_or_query: Union[Request, str], documents: Optional[List[Dict[str, Any]]] = None, top_k: Optional[int] = None, rank_start: int = 0, rank_end: int = 100, shuffle_candidates: bool = False, logging: bool = False, **kwargs: Any, ) -> Union[Result, List[Dict[str, Any]]]:
         """Rerank candidates.

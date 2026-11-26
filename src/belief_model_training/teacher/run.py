@@ -22,9 +22,9 @@ them from the bank.
 
 from typing import List, Optional
 
-from ..config import TrainingConfig
-from ..inference import run_dra_inference
-from ..runs import find_run
+from ..shared.config import TrainingConfig
+from ..shared.inference import run_dra_inference
+from ..shared.runs import find_run
 
 #: The splits whose trajectories get the teacher's beliefs.
 TEACHER_SPLITS = ("sft", "val")
@@ -38,10 +38,10 @@ def bank_teacher_beliefs(dataset: str, teacher: str) -> None:
     beliefs; FRAMES' have none).  The ones banked already are kept
     (``prepare_beliefs``)."""
     from belief_model_component import build_belief_source, prepare_beliefs
-    from indexing_corpus_dataset.dataset_loaders import load_queries
-    from indexing_corpus_dataset.layout import ALL_SPLIT, DATASET_SPECS, QUESTION_GOLD, dataset_root, gold_beliefs_path
-    from utils.config import BELIEF_MODEL_TO_LLM
-    from utils.io_utils import iter_jsonl
+    from indexing_corpus_dataset.shared.dataset_loaders import load_queries
+    from indexing_corpus_dataset.shared.layout import ALL_SPLIT, DATASET_SPECS, QUESTION_GOLD, dataset_root, gold_beliefs_path
+    from utils.models import BELIEF_MODEL_TO_LLM
+    from utils.io import iter_jsonl
 
     spec = DATASET_SPECS[dataset]
     from_question = spec.gold_beliefs == QUESTION_GOLD
@@ -63,10 +63,10 @@ def bank_teacher_beliefs(dataset: str, teacher: str) -> None:
 
 def run_teacher(cfg: TrainingConfig, dataset: str, split: str, policy_models: List[str],
                 limit: Optional[int]) -> None:
-    from indexing_corpus_dataset.dataset_loaders import load_queries
-    from indexing_corpus_dataset.layout import BUILT_DATASETS, DATASET_SPECS, dataset_root
+    from indexing_corpus_dataset.shared.dataset_loaders import load_queries
+    from indexing_corpus_dataset.shared.layout import BUILT_DATASETS, DATASET_SPECS, dataset_root
     from utils.run_files import scan_queries
-    from evaluation.metrics_file import METRICS_FILE
+    from evaluation.shared.files import METRICS_FILE
 
     if dataset not in BUILT_DATASETS:
         raise SystemExit(f"--dataset {dataset}: stage teacher runs on a training dataset ({sorted(BUILT_DATASETS)})")

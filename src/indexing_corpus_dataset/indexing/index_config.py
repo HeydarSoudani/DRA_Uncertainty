@@ -3,7 +3,7 @@
 The frequently-varied knobs (``--retriever`` and ``--dataset``) stay on
 the CLI; everything else lives in a YAML config file and is merged onto the
 parsed args.  This mirrors the inference pipeline's config pattern
-(:mod:`utils.cli_setup` + ``experiments/configs/dra_inference.yaml``) but is scoped to
+(:mod:`pipeline.cli` + ``experiments/configs/dra_inference.yaml``) but is scoped to
 the index-building entry points so it stays import-light.
 
 Two entry points share this module:
@@ -14,19 +14,25 @@ Precedence (lowest -> highest):
     *_DEFAULTS  <  YAML config file  <  explicit CLI override (--key value)
 
 Any config key can be overridden ad-hoc on the command line without being a
-declared argparse flag, via :func:`utils.cli_setup.parse_cli_overrides`.
+declared argparse flag, via :func:`utils.yaml_config.parse_cli_overrides`.
 """
 
 from pathlib import Path
 
 import yaml
 
-# Reuse the generic (config-dict-driven) merge helpers from the inference CLI.
-from utils.cli_setup import parse_cli_overrides, apply_config_to_args
-from indexing_corpus_dataset.layout import apply_dataset_defaults, doc_max_length
+from utils.yaml_config import apply_config_to_args, parse_cli_overrides
+from indexing_corpus_dataset.shared.layout import apply_dataset_defaults, doc_max_length
 
 # experiments/configs/ of the repo, next to the other entry points' configs.
 _CONFIG_DIR = Path(__file__).resolve().parents[3] / "experiments" / "configs"
+
+# The type of a CLI override of a key whose default is None (otherwise the
+# override is coerced to the type of its default).
+_OVERRIDE_TYPES = {
+    "max_length": int,
+    "min_relevance_score": int,
+}
 
 # Default config file paths for each entry point.
 BUILD_CONFIG_DEFAULT = str(_CONFIG_DIR / "index_build.yaml")
@@ -103,7 +109,7 @@ def resolve_index_config(args, defaults: dict, extras: list) -> None:
     """
     config = load_index_config(args.config, defaults)
     overrides = parse_cli_overrides(extras)
-    apply_config_to_args(args, config, overrides)
+    apply_config_to_args(args, config, overrides, types=_OVERRIDE_TYPES)
 
 
 def resolve_max_length(args) -> None:

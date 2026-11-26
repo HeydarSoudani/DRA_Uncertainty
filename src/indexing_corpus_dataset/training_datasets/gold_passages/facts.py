@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from utils.io_utils import drop_partial_line, iter_jsonl
+from utils.io import drop_partial_line, iter_jsonl
 
 from ..config import DatasetPaths, FactsConfig
 from ..llm import MAX_REPLY_FAILURES, JsonWriter, ReplyError, require_api_key

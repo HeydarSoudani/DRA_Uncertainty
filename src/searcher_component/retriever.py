@@ -2,6 +2,7 @@
 # === Src: https://github.com/PeterGriffinJin/Search-R1/blob/main/search_r1/search/retrieval_server.py
 # ===========================
 import os
+import shutil
 
 # Disable safetensors auto-conversion (avoids background thread errors when
 # HuggingFace Hub is unreachable or returns empty responses).
@@ -28,11 +29,20 @@ from tqdm import tqdm
 from typing import List
 from sentence_transformers import CrossEncoder
 
+from searcher_component.shared.pooling import pooling
+
 # pyserini boots the JVM at import time, so this import is the single point
-# where the VM is created -- cap its heap here, before it starts.  It has to be
-# here rather than in worker setup code: multiprocessing "spawn" re-imports
-# __main__ in every GPU worker, which reaches this module and starts the VM
-# long before the worker gets a chance to configure it (orchestration._init_worker).
+# where the VM is created -- point pyjnius at the JDK of the `java` on PATH and
+# cap its heap here, before it starts.  Every process (the main one and each
+# generate-stage worker) loads this module on its first retriever
+# (searcher_component.__getattr__), so this is the one place to configure it.
+_java_bin = shutil.which("java")
+if _java_bin:
+    _java_home = os.path.dirname(os.path.dirname(os.path.realpath(_java_bin)))
+    _jvm_so = os.path.join(_java_home, "lib", "server", "libjvm.so")
+    if os.path.isfile(_jvm_so):
+        os.environ["JAVA_HOME"] = _java_home
+        os.environ["JVM_PATH"] = _jvm_so
 try:
     import jnius_config
     if not jnius_config.vm_running:
@@ -129,34 +139,6 @@ def load_model(retriever, model_path: str, use_fp16: bool = False, device=None):
 
     model.eval()
     return model, tokenizer
-
-def pooling(
-    pooler_output,
-    last_hidden_state,
-    attention_mask = None,
-    pooling_method = "mean"
-):
-    if pooling_method == "mean":
-        last_hidden = last_hidden_state.masked_fill(~attention_mask[..., None].bool(), 0.0)
-        return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
-    elif pooling_method == "cls":
-        return last_hidden_state[:, 0]
-    elif pooling_method == "pooler":
-        return pooler_output
-    elif pooling_method == "last_token":
-        # Qwen3-style: use hidden state at the last real (EOS) token position.
-        left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
-        if left_padding:
-            return last_hidden_state[:, -1]
-        else:
-            sequence_lengths = attention_mask.sum(dim=1) - 1
-            batch_size = last_hidden_state.shape[0]
-            return last_hidden_state[
-                torch.arange(batch_size, device=last_hidden_state.device),
-                sequence_lengths,
-            ]
-    else:
-        raise NotImplementedError("Pooling method not implemented!")
 
 def load_corpus(corpus_path: str):
     """Load corpus from local filesystem or S3.
@@ -287,11 +269,6 @@ def load_or_build_id2idx(corpus, corpus_path, desc="Building id2idx mapping"):
         print(f"Warning: Failed to save cache ({e})")
 
     return id2idx
-
-# def load_docs(corpus, doc_idxs):
-#     results = [corpus[str(idx)] for idx in doc_idxs]
-#     # results = [corpus[idx] for idx in doc_idxs]
-#     return results
 
 def load_docs(corpus, doc_idxs, id2idx=None):
     """Load documents from corpus by indices or IDs.
@@ -496,14 +473,8 @@ class BaseRetriever:
     def _search(self, query: str, num: int, return_score: bool):
         raise NotImplementedError
 
-    def _batch_search(self, query_list: List[str], num: int, return_score: bool):
-        raise NotImplementedError
-
     def search(self, query: str, num: int = None, return_score: bool = False):
         return self._search(query, num, return_score)
-
-    def batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
-        return self._batch_search(query_list, num, return_score)
 
     def retrieve(self, query: str, num: int = None, return_score: bool = False):
         """Alias for search method to unify interface with endpoint retrievers."""
@@ -518,7 +489,6 @@ class BM25Retriever(BaseRetriever):
         self.contain_doc = self._check_contain_doc()
         if not self.contain_doc:
             self.corpus = load_corpus(self.corpus_path)
-        self.max_process_num = 8
     
     def _check_contain_doc(self):
         return self.searcher.doc(0).raw() is not None
@@ -558,18 +528,6 @@ class BM25Retriever(BaseRetriever):
                 doc["score"] = score
                 doc["rank"] = rank
 
-        if return_score:
-            return results, scores
-        else:
-            return results
-
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
-        results = []
-        scores = []
-        for query in query_list:
-            item_result, item_score = self._search(query, num, True)
-            results.append(item_result)
-            scores.append(item_score)
         if return_score:
             return results, scores
         else:
@@ -648,7 +606,6 @@ class SPLADERetriever(BaseRetriever):
         self._corpus_id2idx = None
         self.corpus = load_corpus(self.corpus_path)
         self._build_corpus_id2idx()
-        self.max_process_num = 8
 
     def _build_corpus_id2idx(self):
         """Build or load mapping from doc id to corpus position (cached in corpus dir)."""
@@ -707,17 +664,6 @@ class SPLADERetriever(BaseRetriever):
             return results, scores
         return results
 
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
-        results = []
-        scores = []
-        for query in query_list:
-            item_result, item_score = self._search(query, num, True)
-            results.append(item_result)
-            scores.append(item_score)
-        if return_score:
-            return results, scores
-        return results
-
 class RerankRetriever(BaseRetriever):
     def __init__(self, config):
         super().__init__(config)
@@ -727,7 +673,6 @@ class RerankRetriever(BaseRetriever):
         self.contain_doc = self._check_contain_doc()
         if not self.contain_doc:
             self.corpus = load_corpus(self.corpus_path)
-        self.max_process_num = 8
 
         # Second-stage (with GPU support)
         self.device = get_device()
@@ -809,9 +754,6 @@ class RerankRetriever(BaseRetriever):
 
         return (results, scores) if return_score else results
 
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
-        pass
-
 def _attach_embeddings(index, idxs: list, results: list) -> None:
     """Reconstruct doc embeddings from a FAISS Flat index and attach to result dicts.
 
@@ -879,8 +821,7 @@ class DenseRetriever(BaseRetriever):
             use_fp16 = config.retrieval_use_fp16,
             device = self.device
         )
-        self.topk = config. retrieval_topk
-        self.batch_size = config.retrieval_batch_size
+        self.topk = config.retrieval_topk
 
     def _search(self, query: str, num: int = None, return_score: bool = False):
         if num is None:
@@ -904,41 +845,3 @@ class DenseRetriever(BaseRetriever):
         #     return results, scores.tolist()
         # else:
         #     return results
-
-    def _batch_search(self, query_list: List[str], num: int = None, return_score: bool = False):
-        if isinstance(query_list, str):
-            query_list = [query_list]
-        if num is None:
-            num = self.topk
-        
-        results = []
-        scores = []
-        for start_idx in tqdm(range(0, len(query_list), self.batch_size), desc='Retrieval process: '):
-            query_batch = query_list[start_idx:start_idx + self.batch_size]
-            batch_emb = self.encoder.encode(query_batch)
-            batch_scores, batch_idxs = self.index.search(batch_emb, k=num)
-            batch_scores = batch_scores.tolist()
-            batch_idxs = batch_idxs.tolist()
-
-            # load_docs is not vectorized, but is a python list approach
-            flat_idxs = sum(batch_idxs, [])
-            flat_results = load_docs(self.corpus, flat_idxs)
-            _attach_embeddings(self.index, flat_idxs, flat_results)
-            # Attach retriever score and rank to each doc
-            flat_scores = sum(batch_scores, [])
-            for rank_in_flat, (doc, sc) in enumerate(zip(flat_results, flat_scores)):
-                if isinstance(doc, dict):
-                    doc["score"] = sc
-                    doc["rank"] = (rank_in_flat % num) + 1
-            # chunk them back
-            batch_results = [flat_results[i*num : (i+1)*num] for i in range(len(batch_idxs))]
-
-            results.extend(batch_results)
-            scores.extend(batch_scores)
-
-            del batch_emb, batch_scores, batch_idxs, query_batch, flat_idxs, batch_results
-            
-        if return_score:
-            return results, scores
-        else:
-            return results

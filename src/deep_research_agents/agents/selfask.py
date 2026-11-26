@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 
 _PROMPT_DIR = Path(__file__).parent.parent / "prompts" / "selfask"
 SELF_ASK_PROMPT_MULTI_HOP = (_PROMPT_DIR / "system.txt").read_text()
@@ -15,7 +15,7 @@ from deep_research_agents.prompts.selfask.user_prompt import USER_PROMPT as _SEL
 
 from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import SELFASK_FORMAT
-from utils.text_utils import doc_text, unique_docs
+from utils.documents import doc_text, unique_docs
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class SelfAsk_Agent(BasicAgent):
 
     AGENT_NAME = "SelfAsk"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
         self.system_prompt = SELF_ASK_PROMPT_MULTI_HOP

@@ -3,7 +3,7 @@
 A prompted belief state over each query's beliefs, plus per-step signals,
 for deep research agents. It runs in the belief stage of
 `experiments/inference/dra_inference.py` (`--stage belief`,
-`src/orchestration/belief_stage.py`), over the saved trajectories of any
+`src/pipeline/belief_stage.py`), over the saved trajectories of any
 agent, and never changes what the agent does.
 
 ## Layout
@@ -119,6 +119,9 @@ every belief with a new passage observation. Otherwise b_t = b_{t-1} and the tur
 waits for the next call.
 
 ## Saved records
+
+The changes of each earlier `schema_version` are in
+[SCHEMA_CHANGELOG.md](SCHEMA_CHANGELOG.md).
 
 ### Step record
 

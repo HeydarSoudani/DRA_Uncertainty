@@ -8,14 +8,14 @@
 #
 # Routing also requires the OPENROUTER_API_KEY env var to be set; if it is
 # missing, the agent falls back to vLLM even when listed here
-# (see utils.config.resolve_agent_backend).
+# (see utils.models.resolve_agent_backend).
 #
 # Agents with no local vLLM alternative still belong here: the slug
 # is what resolve_agent_backend reports as the run's backend, and that answer is
 # written into the output directory name, run_config.json and the GPU plan.
 # Omitting one does not make it fall back -- it makes the run record itself as
 # "vllm" when it is really hitting the hosted API.  For such an agent the entry
-# must agree with utils.config.POLICY_MODEL_TO_LLM, which carries the same slug
+# must agree with utils.models.POLICY_MODEL_TO_LLM, which carries the same slug
 # with the "openrouter/" prefix that selects the API generator.
 #
 # Fill in the exact slugs as you confirm them at https://openrouter.ai/models

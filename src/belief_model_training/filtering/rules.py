@@ -13,7 +13,7 @@ the final score always reads a complete belief).
 
 from typing import Any, Dict, Optional
 
-from ..runs import Episode
+from ..shared.runs import Episode
 
 
 def keep_sample(sample: Dict[str, Any]) -> bool:

@@ -5,7 +5,7 @@ belief model (``belief_model_component/init/trqa_gold.py``)."""
 
 from typing import Dict, Iterable, List
 
-from ....doc_lookup import CorpusLookup
+from ....shared.doc_lookup import CorpusLookup
 
 
 def docs_of(lines: Iterable[str]) -> Dict[str, List[str]]:

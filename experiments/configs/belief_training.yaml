@@ -3,7 +3,7 @@
 # training, agent frozen; src/belief_model_training).  One section per stage
 # (belief_stage: the stages teacher and evaluate) plus `shared`; `data` holds
 # the dataset build settings (stages data_prepare and data_relevance).  The keys are the dataclass fields
-# of src/belief_model_training/config.py, and for `data` those of
+# of src/belief_model_training/shared/config.py, and for `data` those of
 # src/indexing_corpus_dataset/training_datasets/config.py.
 #
 # Precedence (lowest -> highest):
@@ -11,7 +11,7 @@
 #   --student (shared.student), --init-model (rl.init_model), --beliefs (rl.beliefs)
 #
 # Hyperparameters follow Agent-BRACE (arXiv 2605.11436).  Every training run
-# writes under BELIEF_TRAINING_ROOT (utils/config.py: OUTPUT_ROOT/belief_training):
+# writes under BELIEF_TRAINING_ROOT (src/utils/models.py: OUTPUT_ROOT/belief_training):
 # stats/ (stage generate), filter/ (stage filter), and per student
 # {student}/sft/ (stage sft), {student}/rl/ and {student}/rl_own_init/ (stage
 # rl); each run's final/ is served by dra_inference as {student}_sft,
@@ -24,7 +24,7 @@ shared:
   policy_models: [oss_20b, glm]       # frozen agents whose trajectories are the episodes
   retriever: qwen3_emb_4b
   teacher: qwen3.6_27b                # --belief-model of the teacher (its sft / val replies are the SFT samples)
-  student: qwen3.5_4b                 # SFT start: a local base --belief-model (utils.config.STUDENT_BELIEF_MODELS)
+  student: qwen3.5_4b                 # SFT start: a local base --belief-model (utils.models.STUDENT_BELIEF_MODELS)
   inference_config: experiments/configs/dra_inference.yaml  # the generate / teacher / evaluate inference settings; its `output` holds the runs
   seed: 0
   max_seq_len: 32768                  # longest student sequence (prompt + reply): longer SFT samples dropped, longer RL prompts get no reply

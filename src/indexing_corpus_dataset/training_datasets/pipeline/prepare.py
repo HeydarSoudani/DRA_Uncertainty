@@ -29,7 +29,7 @@ import json
 from pathlib import Path
 from typing import List
 
-from utils.io_utils import atomic_write_text, read_jsonl, write_jsonl
+from utils.io import atomic_write_text, read_jsonl, write_jsonl
 
 from .. import registry
 from ..config import BuildConfig, DatasetPaths

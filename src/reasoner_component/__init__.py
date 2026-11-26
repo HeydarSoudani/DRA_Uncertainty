@@ -1,52 +1,37 @@
-"""LLM reasoner component: the single home for all LLM/generation logic.
+"""LLM reasoner component: every LLM call of the project goes through here.
 
-Generators (all behind ``BaseGenerator``):
-  * ``APIGenerator``  — hosted APIs: Claude / OpenAI / OpenRouter
-  * ``VLLMGenerator`` — self-hosted OpenAI-compatible vLLM server
-  * ``HFGenerator``   — weights loaded in-process via transformers
+Every generator implements ``BaseGenerator`` (base.py); there are two kinds,
+both in ``providers/``:
 
-Use ``create_generator(model_name, backend=...)`` to pick automatically.
+  providers/api.py   ``APIGenerator``   hosted APIs: Claude / OpenAI / OpenRouter
+  providers/vllm.py  ``VLLMGenerator``  a self-hosted vLLM server (every local model)
 
-Low-level transports (``LiteLLMClient``, ``VLLMClient``), provider routing
-(``get_litellm_client``, ``resolve_provider_config``) and the CLI setup helper
-(``setup_llm``) also live here.
+``create_generator(model_name)`` (factory.py) picks the right one; ``setup_llm``
+builds the pipeline's from its CLI args.
+
+  providers/    the generators and how a call reaches its provider: model-name
+                routing and the ``LiteLLMClient`` transport
+  vllm_server/  the vLLM servers: their registry (``SERVERS``), starting and
+                stopping them, and ``python -m reasoner_component.vllm_server``
 """
 
-from .base import BaseGenerator, LiteLLMBackedGenerator
-from .litellm_client import REASONING_FALLBACK_PREFIX, LiteLLMClient, is_context_window_error
-from .api import APIGenerator, get_litellm_client, resolve_provider_config
-from .vllm import VLLMGenerator, VLLMClient, get_openai_client
-from .factory import create_generator, disable_native_thinking, no_thinking_extra_body
-from .setup import setup_llm
+from .base import REASONING_FALLBACK_PREFIX, BaseGenerator
+from .factory import create_generator, disable_native_thinking, run_servers, setup_llm
+from .providers import APIGenerator, LiteLLMClient, VLLMGenerator, get_litellm_client, get_openai_client
 
 __all__ = [
     # Generators
     "BaseGenerator",
-    "LiteLLMBackedGenerator",
     "APIGenerator",
     "VLLMGenerator",
-    "HFGenerator",
+    # Building one
     "create_generator",
     "disable_native_thinking",
-    "no_thinking_extra_body",
-    # Transports
-    "LiteLLMClient",
-    "REASONING_FALLBACK_PREFIX",
-    "is_context_window_error",
-    "VLLMClient",
-    "get_openai_client",
-    # Provider routing
-    "get_litellm_client",
-    "resolve_provider_config",
-    # CLI setup
     "setup_llm",
+    "run_servers",
+    # Raw clients
+    "LiteLLMClient",
+    "get_litellm_client",
+    "get_openai_client",
+    "REASONING_FALLBACK_PREFIX",
 ]
-
-
-def __getattr__(name):
-    # Lazy import so callers that only need API/vLLM don't pull in torch.
-    if name == "HFGenerator":
-        from .hf import HFGenerator
-
-        return HFGenerator
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

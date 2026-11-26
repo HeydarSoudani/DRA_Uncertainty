@@ -22,9 +22,9 @@ Configurable inputs (retrieval_input / post_fusion_reranker_input):
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from searcher_component.fusion import fuse_results
-from searcher_component.normalize import normalize_retrieval_response
-from utils.text_utils import unique_docs
+from searcher_component.fusion_methods import fuse_results
+from searcher_component.shared.normalize import normalize_retrieval_response
+from utils.documents import unique_docs
 
 logger = logging.getLogger(__name__)
 

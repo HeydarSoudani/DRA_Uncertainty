@@ -13,18 +13,17 @@ dynamic = ["dependencies"]
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 
-# Two source roots: project root (utils) and src/ (component packages).
-# Package names are kept stable so import strings remain `utils.*`,
-# `deep_research_agents.*`, etc.
+# One source root: src/ (utils and the component packages).
 [tool.setuptools.packages.find]
-where = [".", "src"]
+where = ["src"]
 include = [
     "utils*",
-    "orchestration*",
+    "pipeline*",
     "deep_research_agents*",
     "evaluation*",
     "searcher_component*",
     "reasoner_component*",
     "belief_model_component*",
+    "belief_model_training*",
     "indexing_corpus_dataset*",
 ]

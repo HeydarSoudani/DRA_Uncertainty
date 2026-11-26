@@ -5,14 +5,16 @@ import re
 from typing import Any, Dict, List, Optional
 
 
-from utils.llm_client import LiteLLMClient
+from reasoner_component import BaseGenerator
 from deep_research_agents.prompts.searcho1.prompts import (
     get_multiqa_search_o1_instruction,
     get_task_instruction_openqa,
     get_webpage_to_reasonchain_instruction,
 )
 
-from .base_agent import BasicAgent, passages2string
+from deep_research_agents.shared.formatting import passages2string
+
+from .base_agent import BasicAgent
 from deep_research_agents.prompts.answer_prompts import FINAL_ANSWER_INSTRUCTION, BOXED_FORMAT
 
 logger = logging.getLogger(__name__)
@@ -23,13 +25,11 @@ class SearchO1_Agent(BasicAgent):
 
     AGENT_NAME = "SearchO1"
 
-    def __init__(self, llm_client: LiteLLMClient, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
+    def __init__(self, llm_client: BaseGenerator, retriever: Any, max_iteration: int = 100, seen_top_k: int = 5, verbose: bool = True):
         super().__init__(llm_client, retriever, max_iteration, seen_top_k)
         self.verbose = verbose
         self.BEGIN_SEARCH_QUERY = "<|begin_search_query|>"
         self.END_SEARCH_QUERY = "<|end_search_query|>"
-        self.BEGIN_SEARCH_RESULT = "<|begin_search_result|>"
-        self.END_SEARCH_RESULT = "<|end_search_result|>"
         self.MAX_SEARCH_LIMIT = max_iteration
         self.with_reason_in_documents = True
         self.instruction = get_multiqa_search_o1_instruction(self.MAX_SEARCH_LIMIT)

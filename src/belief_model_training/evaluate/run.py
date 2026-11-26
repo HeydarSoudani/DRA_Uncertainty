@@ -13,10 +13,10 @@ datasets' val split; the test sets' own runs otherwise).
 
 from typing import List, Optional
 
-from utils.config import BELIEF_MODEL_TO_LLM, TRAINED_BELIEF_RUNS, trained_belief_checkpoint
+from utils.models import BELIEF_MODEL_TO_LLM, TRAINED_BELIEF_RUNS, trained_belief_checkpoint
 
-from ..config import TrainingConfig
-from ..inference import run_dra_inference
+from ..shared.config import TrainingConfig
+from ..shared.inference import run_dra_inference
 
 
 def run_evaluation(cfg: TrainingConfig, belief_model: str, dataset: str, subset: Optional[str],

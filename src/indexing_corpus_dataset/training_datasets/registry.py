@@ -18,7 +18,7 @@ in ``layout.BUILT_DATASETS`` (its folders and corpus)."""
 import importlib
 from types import ModuleType
 
-from indexing_corpus_dataset.layout import BUILT_DATASETS
+from indexing_corpus_dataset.shared.layout import BUILT_DATASETS
 
 DATASETS = ("infoseek_hard", "frames", "webshaper", "trqa_val")
 

@@ -31,7 +31,8 @@ training sample is one call.  ``BeliefState.apply`` keeps the valid parts.
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, parse_json_object
+from utils.documents import MAX_PASSAGE_TOKENS, cut_passage
+from utils.json_parse import parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import (

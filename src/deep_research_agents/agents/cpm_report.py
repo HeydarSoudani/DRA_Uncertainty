@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from jinja2 import Template
 
-from searcher_component.fusion import interleaving_fusion
+from searcher_component.fusion_methods import InterleavingFusion
 from deep_research_agents.agents.base_agent import BasicAgent
-from utils.text_utils import MAX_PASSAGE_TOKENS, cut_passage, doc_text
-from utils.config import InferenceConfig
+from utils.documents import MAX_PASSAGE_TOKENS, cut_passage, doc_text
+from deep_research_agents.shared.config import InferenceConfig
+from reasoner_component.vllm_server.registry import AGENT_API_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +81,10 @@ class CPMReport(BasicAgent):
         # --- Dual API routing ---------------------------------------------------
         # When model_name looks like a vLLM-served model (e.g. "openbmb/..."),
         # we bypass self.generator and talk directly to the vLLM OpenAI endpoint.
-        # Otherwise we delegate to self.generator (LiteLLMClient from the pipeline).
+        # Otherwise we delegate to self.generator (the pipeline generator).
         self._use_vllm = bool(model_name and _is_vllm_model(model_name))
         self.model_name = model_name
-        self.model_url = model_url or os.environ.get("CPM_REPORT_API_BASE", "http://localhost:6008/v1")
+        self.model_url = model_url or os.environ.get("CPM_REPORT_API_BASE", AGENT_API_BASE)
         self._api_key = os.environ.get("CPM_REPORT_API_KEY", "EMPTY")
         self._default_temperature = 0.7
 
@@ -406,7 +407,7 @@ class CPMReport(BasicAgent):
             elif len(per_keyword_docs) == 1:
                 fused_docs = per_keyword_docs[0]
             else:
-                fused_docs = interleaving_fusion(per_keyword_docs, window=1)
+                fused_docs = InterleavingFusion(window=1).fuse(per_keyword_docs)
 
         # Extract passages from fused docs
         fused_passages = []

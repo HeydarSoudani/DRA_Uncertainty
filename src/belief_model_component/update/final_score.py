@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.text_utils import parse_json_object
+from utils.json_parse import parse_json_object
 
 from ..core.state import BeliefState
 from ..core.types import BELIEF_STATUSES, MULTI_CLUE, parse_status, status_probability
