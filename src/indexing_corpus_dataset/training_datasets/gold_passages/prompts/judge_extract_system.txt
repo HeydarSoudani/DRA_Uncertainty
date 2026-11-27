@@ -20,8 +20,9 @@ text: Harju County is one of the fifteen counties of Estonia. It is situated in 
 
 Answer: Lääne-Viru County, Järva County, Rapla County, Lääne County-RELATED
 
-ENTITY: [the city that is home to the University of Groningen]
-STATEMENT: the city that is home to the University of Groningen is the capital of ___
+ENTITY: [the city whose [home to] is [University of Groningen]]
+PROPERTY: [capital of]
+STATEMENT: the [capital of] of [the city whose [home to] is [University of Groningen]] is [___]
 
 PASSAGE:
 title: Groningen

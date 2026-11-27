@@ -168,9 +168,10 @@ DATASET_SPECS = {
     # infoseek_hard: InfoSeek-Hard questions over the original release's
     # corpus, wiki-25-512 (Wikipedia 2025 in chunks of 512 tokens, kept under
     # DATA_ROOT/infoseek with its indices, ``_CORPUS_IN_DATA_ROOT``); binary
-    # qrels: per gold page the chunk its claims are stated in (InfoSeek
-    # writes them from the first 1024 tokens of a page: chunk 1 or 2, an LLM
-    # judges chunk 2; chunk 1 for a page without claims).  Multi-clue, as
+    # qrels: per gold page the chunks its claims are stated in (InfoSeek
+    # writes them from the first 1024 tokens of a page: an LLM judges each
+    # claim on chunks 1 and 2; chunk 1 for a page without a judged one).
+    # Multi-clue, as
     # BrowseComp-Plus: the beliefs are the extractor's, from the question.
     "infoseek_hard": DatasetSpec(
         dataset_year=None, subset="sft", query_key="text", min_relevance_score=1,
@@ -185,9 +186,11 @@ DATASET_SPECS = {
     # frames and webshaper: FRAMES and WebShaper questions over the corpus of
     # infoseek_hard (corpus_wiki, plus corpus_web: WebShaper's web gold pages
     # in chunks of 512 tokens, merged by the user for the index).  Binary
-    # qrels from an LLM judge of each (fact, passage) pair: a passage is
-    # relevant when it states a fact of the question; a gold page without a
-    # judged relevant passage gets its first passage.
+    # qrels from an LLM judge of each (fact, passage) pair on the first 10
+    # passages of a page: a passage is relevant when it states a fact of
+    # the question; a gold page without a judged relevant passage gets its
+    # first passage, except a web page whose every pair is unrelated
+    # (``empty_web``, no gold passage).
     # frames has no gold beliefs (silver multi-hop ones from the
     # extractor); webshaper is multi-clue, as infoseek_hard.
     "frames": DatasetSpec(

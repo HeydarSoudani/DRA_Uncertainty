@@ -35,6 +35,7 @@ from .trqa import docs_of, member_titles
 
 FACTS = None
 JUDGE = False
+CHUNK_WINDOW = None
 
 
 def build(cfg: BuildConfig, paths: DatasetPaths, processed: List[dict]) -> Built:

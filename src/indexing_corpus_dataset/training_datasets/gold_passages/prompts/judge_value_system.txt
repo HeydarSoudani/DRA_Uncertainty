@@ -43,6 +43,17 @@ text: Groningen is the capital city and main municipality of Groningen province 
 
 Answer: YES-SAME
 
+ENTITY: [the entity that is the [written by] of [Pride and Prejudice]]
+PROPERTY: [born in]
+STATEMENT: the [born in] of [the entity that is the [written by] of [Pride and Prejudice]] is [Steventon]
+VALUE: [Steventon]
+
+PASSAGE:
+title: Jane Austen
+text: Jane Austen (16 December 1775 – 18 July 1817) was an English novelist known primarily for her six novels, including Pride and Prejudice (1813). She was born in Steventon rectory, Hampshire, the seventh child of George Austen and Cassandra Leigh.
+
+Answer: YES-SAME
+
 ENTITY: [Simmering]
 PROPERTY: [elevation above sea level]
 STATEMENT: the [elevation above sea level] of [Simmering] is [156 metres]

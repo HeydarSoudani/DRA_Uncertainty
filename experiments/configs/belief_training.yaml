@@ -69,10 +69,11 @@ data:
   # value: the judge extracts it (<value>-RELATED / NONE-RELATED / NONE-UNRELATED).
   # Relevant: YES-SAME or an extracted value.  Earlier judgments are kept
   # (gold_passages.jsonl of the dataset); the model (and the prompts) must stay
-  # theirs; to change them, remove that file.  frames, webshaper: a fact is judged on
-  # every passage of its pages (a fact without a page: of every page; a page no fact
-  # maps to: on every fact); a page without a judged relevant passage gets its first
-  # passage.
+  # theirs; to change them, remove that file.  A fact is judged on the first passages
+  # of its pages (CHUNK_WINDOW: infoseek_hard 2, frames and webshaper 10; none on a
+  # Wikipedia page of one passage); webshaper: a fact without a page on every page, a
+  # page no fact maps to on every fact.  A page without a judged relevant passage gets
+  # its first passage, except a web page whose every pair is unrelated (empty_web).
   gold_passages:
     workers: 32                       # concurrent LLM calls
     max_tokens: 128                   # a label, or an extracted value and its label

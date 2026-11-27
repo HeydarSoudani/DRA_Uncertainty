@@ -149,8 +149,8 @@ def _phases(cfg: BuildConfig, dataset, name: str, n_todo: int) -> None:
     steps = []
     if dataset.FACTS is not None:
         steps.append(f"facts ({cfg.facts.model})")
-    steps.append(f"judge ({cfg.gold_passages.model}, {cfg.gold_passages.workers} workers"
-                 + (", every passage of a fact's pages" if dataset.FACTS is not None else "") + ")")
+    steps.append(f"judge ({cfg.gold_passages.model}, {cfg.gold_passages.workers} workers, "
+                 f"first {dataset.CHUNK_WINDOW} passages of each page)")
     steps.append("rows, split and files")
     print(f"[relevance] {name}: {n_todo} new questions; phases: " + " -> ".join(steps))
 

@@ -61,13 +61,6 @@ def unique_ids(root: dict) -> dict:
     return root
 
 
-def post_order(node: dict) -> Iterator[dict]:
-    """The nodes of a research tree, children before parents."""
-    for child in node.get("children") or []:
-        yield from post_order(child)
-    yield node
-
-
 def is_entity(node: dict) -> bool:
     """A tree node that stands for an entity (an attribute node, such as a
     population figure, has none)."""

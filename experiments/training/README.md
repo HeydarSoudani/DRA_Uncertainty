@@ -194,14 +194,14 @@ position in the page. data_prepare matches each title exactly against the first 
 decoded, Unicode NFC, underscores as spaces, first letter upper case on both sides). InfoSeek's construction code
 (`ConstructTreeData.py`) writes every claim from the first 1024 tokens of the page of the node it expands, so a claim
 sits in chunk 1 or chunk 2 of that page, with no rule for which. One fact per claim (the claim with its node ids
-written as entities, its value the target entity) is judged on chunk 2 (see [Gold passages](#gold-passages)): the
-claim's gold chunk is chunk 2 when the judge finds it there (YES-SAME), else chunk 1; a page of one chunk needs no
-call. A page's gold chunks are those of its claims, chunk 1 for a page without claims. The query's qrels (binary) are
-the gold chunks of every gold page, so every gold page has at least one. A question with a gold page that is not in the corpus (renamed, redirected or missing in the 2025 dump) is
+written as entities, its value the target entity) is judged on chunks 1 and 2 of its page (`CHUNK_WINDOW` 2; see
+[Gold passages](#gold-passages)): every chunk that states the claim (YES-SAME) is gold, and a page without one (a
+page without claims too) gets chunk 1. A claim is judged only on its own page. The query's qrels (binary) are the
+gold chunks of every gold page, so every gold page has at least one. A question with a gold page that is not in the corpus (renamed, redirected or missing in the 2025 dump) is
 dropped by data_prepare (`page_not_in_corpus`). The titles looked up are kept in the raw folder's
 `corpus_titles.jsonl`, so data_prepare reads the corpus once, and only when it has new titles. The `corpus` section of `stats.json` records the
-corpus revision (another revision is refused) and the titles found; the `gold_passages` section the claims, the
-judge's labels and how many gold chunks are chunk 1 or chunk 2.
+corpus revision (another revision is refused) and the titles found; the `gold_passages` section the judge's
+counts, as for frames and webshaper (see [Gold passages](#gold-passages)).
 
 ### frames
 
@@ -211,7 +211,7 @@ question is kept when every gold page is an English Wikipedia page found in the 
 infoseek_hard. An LLM (`--fact-model`) writes one fact per gold page from the question, the answer and the
 page titles: the entity is the page title, the property is what the question needs from the page. FRAMES does not say
 which page states which value (its answers are often computed), so the value is unknown and the judge extracts it.
-Each fact is judged on every chunk of its page; see
+Each fact is judged on the first 10 chunks of its page (`CHUNK_WINDOW`); see
 [Gold passages](#gold-passages) for the relevant passages and the chunk-1 fallback. The queries are split like every dataset's;
 frames has no gold beliefs (`gold_beliefs` `annotation` without members), so the teacher makes none and training
 leaves its queries out until frames takes its beliefs from the question.
@@ -229,13 +229,18 @@ Merge corpus_wiki and corpus_web for the index. The fetches are data_prepare's (
 (`page_not_in_corpus`); a page whose fetch failed transiently is fetched again by the next data_prepare runs (3
 fetches in all), its question pending until then. `data.web.refetch_failed: true` fetches every failed page once
 more in the next data_prepare run (then set it back to false); a page fetched since keeps its passages. Each triple
-of the formalization is one fact, written by code with nothing the dataset does not state: a constant or the answer is
-written out (a known value, checked by the judge); a variable object is an unknown value (extracted by the judge); a
-variable subject is described by its other triples whose other term is known ("the entity that took place on 16 August
-1986"), else "an entity". An identity triple (a variable, a copula such as "has name" or "is", the answer) makes the
-variable the answer everywhere and is no fact; a repeated triple counts once; a triple that is not three terms is
-skipped, and so is one with no known term (an unnamed subject and an unknown value, which any passage on the property
-would fit). A question left without any fact is dropped (`no_facts`, no LLM call). One LLM call per question
+of the formalization is one fact, written by code in TRQA's form `the [p] of [e] is [v]` with nothing the dataset
+does not state: a constant or the answer is written out (a known value, checked by the judge); a variable object is an
+unknown value (extracted by the judge), and so is a constant holding a variable, its known part written out and the
+variable a blank (`[German school and ___]`, `partial_value`; a plain blank when the known part has no content word);
+a variable subject is described by its one most specific other triple whose
+other term is known ("the entity whose [took place on] is [16 August 1986]", "the entity that is the [written by] of
+[Carolina Sonnet]"; its type in place of "entity" when a type triple gives one: "the book whose ..."), else "an
+entity". An identity triple (a variable, a copula such as "has name" or "is", the answer) makes the variable the answer
+everywhere and is no fact; a type triple ("is a book") is no fact either, only a part of descriptions; a repeated
+triple counts once; a triple that is not three terms is skipped, and so is one with a variable or a constant inside its
+predicate (`term_in_predicate`) and one with no known term (an unnamed subject and an unknown value, which any passage
+on the property would fit). A question left without any fact is dropped (`no_facts`, no LLM call). One LLM call per question
 only maps each fact to the gold pages likely to state it, from the pages' titles (a web page by its fetched title);
 this routing never names an entity or a value. See [Gold passages](#gold-passages) for the routing safeguards, the
 relevant passages and the chunk-1 fallback.
@@ -250,11 +255,17 @@ YES-DIFFERENT (another value), NO-RELATED (no value, on the fact's topic) or NO-
 (its statement has a blank) gets the extract prompt: the judge writes the value the passage states, `<value>-RELATED`
 (label `VALUE`, the value saved), else NONE-RELATED or NONE-UNRELATED. A passage is relevant for YES-SAME or VALUE;
 every other label is not. The qrels are binary for every dataset. The gold pages are given by the dataset; the facts
-only help locate their relevant passages, and every gold page ends with at least one relevant passage. On frames and
-webshaper a fact is judged on every passage of its pages; a fact without a page is judged on every page, and a page no
-fact maps to is judged on every fact; a gold page without a judged relevant passage gets its first passage. No question
-is dropped for a lack of judged relevant passages; the `gold_passages` section of `stats.json` counts the pages per
-source (`pages`: `judged`, `chunk_1`) and the questions whose every page is on chunk 1 (`questions_all_chunk_1`: a
+only help locate their relevant passages, and every gold page ends with at least one relevant passage. A fact is
+judged on the first passages of its pages, the dataset's `CHUNK_WINDOW` (infoseek_hard 2, frames and webshaper 10:
+most pages state a fact early, and the long web pages are books or reports); a Wikipedia page whose window holds one
+passage is not judged, as that passage is its gold one either way (`facts_not_judged` counts the facts left without a
+judged pair). On webshaper a fact without a page is
+judged on every page, and a page no fact maps to is judged on every fact. A gold page without a judged relevant
+passage gets its first passage, except a web page whose every judged pair is unrelated (NO-UNRELATED or
+NONE-UNRELATED: a blocked, login or error page, or one about nothing the facts state): it gets none and is no gold
+page (`empty_web`). A question left with no gold page is dropped (`no_gold_page`); no other question is dropped for a
+lack of judged relevant passages. The `gold_passages` section of `stats.json` counts the pages per
+source (`pages`: `judged`, `chunk_1`, `empty_web`) and the questions whose every page is on chunk 1 (`questions_all_chunk_1`: a
 sign of wrong facts or page assignments), the facts with a known or unknown value, the routing safeguards used,
 the distinct values extracted per fact (`extracted`) and per webshaper variable (`variables`), and the facts with a
 YES-DIFFERENT passage; `gold_passages_report.jsonl` holds the details per question. The judged pairs are kept in `gold_passages.jsonl` (another judge or prompts are

@@ -54,7 +54,7 @@ def file_hash(path) -> str:
 def source_code_hash(dataset: str) -> str:
     """The hash of the code that turns the source into records: the
     dataset's package and the shared modules it builds them with.  A
-    change of any of them (a change of the skeleton, the gold entries)
+    change of any of them (a change of the annotation, the gold entries)
     rebuilds the raw file (``load_raw``); one of the package's other
     modules rebuilds it too, at no cost but the source read."""
     files = sorted((_PACKAGE / "datasets" / dataset).glob("*.py")) + [_PACKAGE / p for p in _SHARED_SOURCE_CODE]

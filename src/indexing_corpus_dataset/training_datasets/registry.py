@@ -9,8 +9,10 @@ module per stage, imported when the stage runs:
     relevance   ``build(cfg, paths, processed)`` the rows and qrels of stage
                 data_relevance (``pipeline/relevance.py``, a ``Built``);
                 ``FACTS`` the dataset's fact LLM (a ``FactSpec``, None
-                without one) and ``JUDGE`` whether it calls the judge of
-                the gold passages
+                without one), ``JUDGE`` whether it calls the judge of
+                the gold passages and ``CHUNK_WINDOW`` the passages of a
+                page the judge reads (its first ones; None without a
+                judge)
 
 A new dataset is a package with these modules, listed in ``DATASETS`` and
 in ``layout.BUILT_DATASETS`` (its folders and corpus)."""

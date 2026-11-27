@@ -12,7 +12,7 @@ Record (one JSON line per question)::
      "gold": [{"key": str, "kind": "wiki", "lang": str, "title": str}
               | {"key": str, "kind": "web", "url": str}
               | {"key": str, "kind": "doc", "id": str}],
-     "annotation": {"beliefs": [...], "entity_names": [...]},
+     "annotation": {"entity_names": [...]} | None,
      "meta": {"ignored_urls": int, "reasoning_types": [...],
               "root": {...}, "formalization": [...],
               "info": {...}, "qrels": [str]}}   (what the source has)
@@ -20,11 +20,11 @@ Record (one JSON line per question)::
 ``gold`` holds the source's gold pages (``corpus/pages.py``; InfoSeek: the
 Wikipedia page of every tree node; WebShaper: its URLs; FRAMES: its
 Wikipedia links; TRQA: the documents of its qrels, by corpus id).
-``annotation`` is the skeleton of the gold annotation
-(``annotation/rows.py``): the beliefs the source states (InfoSeek: the hops
-of its research tree; WebShaper: the variables of its formalization;
-FRAMES: none) with their relations, answers and source id (``ref``); the
-build gives each ref its documents.  ``meta`` keeps what the facts of the
+``annotation`` holds the entity names the source states (InfoSeek: those
+of its research tree; WebShaper, FRAMES: none), the row's
+``entity_names`` (``annotation/rows.py``); TRQA has none (its row takes
+them from its members).  No beliefs: the belief model makes them (stage
+teacher).  ``meta`` keeps what the facts of the
 gold passages are made from (``datasets/{dataset}/facts.py``): InfoSeek's
 research tree (``root``), WebShaper's triples (``formalization``).
 """

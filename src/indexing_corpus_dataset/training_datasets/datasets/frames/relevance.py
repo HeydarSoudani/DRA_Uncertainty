@@ -6,11 +6,12 @@ record holds the chunk ids of its gold pages in corpus_wiki,
     facts      one fact per gold page, written by an LLM from the question,
                the answer and the page titles (``facts.py``): the property
                the question needs from the page; its value is unknown
-    gold       each fact judged against every chunk of its page, one call
-               per (fact, chunk) pair (``gold_passages/select.facts_and_gold``),
-               the judge extracting the value; a chunk is relevant when
-               the judge finds the value in it; a page without a judged
-               relevant chunk gets its first chunk
+    gold       each fact judged on the first ``CHUNK_WINDOW`` chunks of
+               its page, one call per (fact, chunk) pair
+               (``gold_passages/select.facts_and_gold``), the judge
+               extracting the value; a chunk is relevant when the judge
+               finds the value in it; a page without a judged relevant
+               chunk gets its first chunk
     rows       binary qrels (the relevant chunks); the row holds the
                question, the answer and the same chunks (split like every
                dataset, ``pipeline/splits.py``)
@@ -29,11 +30,14 @@ from .facts import SPEC
 
 FACTS = SPEC
 JUDGE = True
+# The passages of a page each fact is judged on (its first ones: most
+# pages state a fact early; a long web page is a book or a report).
+CHUNK_WINDOW = 10
 
 
 def build(cfg: BuildConfig, paths: DatasetPaths, processed: List[dict]) -> Built:
     found = [(record, [dict(g) for g in record["gold"]]) for record in processed]
-    kept, dropped, pending, section = facts_and_gold(cfg, paths, SPEC, found)
+    kept, dropped, pending, section = facts_and_gold(cfg, paths, SPEC, found, CHUNK_WINDOW)
     return Built(rows=[annotation_rows.row(item["record"], gold_docs(item)) for item in kept],
                  qrels=qrels_of(kept), kept=[item["record"] for item in kept], dropped=dropped, pending=pending,
                  pending_reason="with a failed call (facts or judge)", sections={"gold_passages": section})

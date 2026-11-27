@@ -34,9 +34,8 @@ A multi-member row (trqa_val, ``member_row``) has TRQA's
 among ``entity_names``).  The split sets ``split``
 (``pipeline/relevance.finish``).
 
-The prepared records keep their source skeleton (``annotation``: InfoSeek's
-tree, WebShaper's variables, data_prepare); this stage does not use it
-beyond its entity names.
+The prepared records keep the source's entity names
+(``annotation.entity_names``, data_prepare) for the row's ``entity_names``.
 """
 
 from pathlib import Path
@@ -50,11 +49,6 @@ from .names import entity_names
 QUERY_KEYS = ("id", "source", "split", "text", "answer", "doc_ids", "members", "entity_names", "property",
               "aggregation")
 MEMBER_KEYS = ("entity", "value", "doc_ids")
-# The kinds of a source skeleton's beliefs (data_prepare, ``annotation``)
-# and of the beliefs made from a multi-member row
-# (belief_model_component.core.types): an aggregate one has no documents
-# (it is computed).
-CLOSED, AGGREGATE = "closed", "aggregate"
 
 
 def problems(row: dict) -> List[str]:

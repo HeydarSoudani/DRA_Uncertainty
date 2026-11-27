@@ -18,7 +18,9 @@ gets the extract prompt: the judge writes the value the passage states,
 ``prompts/judge_{value,extract}_system.txt`` and ``prompts/judge_user.txt``.
 
 A pair is relevant (``relevant``) for YES-SAME or VALUE: the passage states
-the fact.  Every other label (``NO_LABEL`` included) is not relevant.
+the fact.  Every other label (``NO_LABEL`` included) is not relevant;
+NO-UNRELATED and NONE-UNRELATED (``UNRELATED_LABELS``) also say the
+passage's topic does not fit the fact.
 
 Memory: ``gold_passages.jsonl`` gets one row per judged pair (``{"fact":
 fact_key, "doc_id", "label", "model", "prompt"}``, plus ``"value"`` for a
@@ -67,6 +69,9 @@ DIFFERENT = "YES-DIFFERENT"
 VALUE = "VALUE"
 EXTRACT_LABELS = (VALUE, "NONE-RELATED", "NONE-UNRELATED")
 RELEVANT_LABELS = ("YES-SAME", VALUE)
+# The labels of a passage whose topic does not fit the fact (a web page
+# whose every pair has one of them is empty, ``select.page_sources``).
+UNRELATED_LABELS = ("NO-UNRELATED", "NONE-UNRELATED")
 # The final label of a pair whose replies held no label MAX_REPLY_FAILURES
 # times (not relevant).
 NO_LABEL = "NO-LABEL"

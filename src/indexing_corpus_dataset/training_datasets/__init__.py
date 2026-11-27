@@ -34,26 +34,28 @@ user merges the two for the index).  trqa_val searches TRQA's corpus.
 
 Gold passages (``gold_passages/``): a gold page is found by its title;
 the gold passages (chunks) of a page are found by an LLM judge, one call
-per (fact, passage) pair, TRQA's property check.  The gold pages are
-given; the facts only help locate their gold passages, and every gold
-page ends with at least one gold passage.  Beliefs are not part of the
-build: the belief model makes its gold beliefs when it first needs them
-(stage teacher; ``belief_model_component/init``).
+per (fact, passage) pair, TRQA's property check, on the first passages
+of the page (the dataset's ``CHUNK_WINDOW``).  The gold pages are given;
+the facts only help locate their gold passages: a passage is gold when
+the judge finds a fact in it, and every gold page ends with at least one
+gold passage (its first one when the judge finds none), except a web page
+whose every pair is unrelated (``empty_web``: a blocked or error page, not
+a gold page).  Beliefs are not part of the build: the belief model makes
+its gold beliefs when it first needs them (stage teacher;
+``belief_model_component/init``).
 
 infoseek_hard: InfoSeek-Hard questions of the hardness cells; the facts are
-the claims of the research tree, each judged on chunk 2 of its page
-(InfoSeek writes claims from the first 1024 tokens: chunk 2 when the judge
-finds it there, else chunk 1); binary qrels.
+the claims of the research tree, each judged on chunks 1 and 2 of its page
+(InfoSeek writes claims from the first 1024 tokens); binary qrels.
 
-frames: FRAMES questions; one fact per gold page written by an LLM, judged
-on every chunk of the page; a chunk is relevant when the judge finds the
-fact in it; a page without a judged relevant chunk gets its first chunk;
-binary qrels.
+frames: FRAMES questions; one fact per gold page written by an LLM (the
+property the question needs, the value extracted by the judge), judged on
+the first 10 chunks of the page; binary qrels.
 
-webshaper: WebShaper questions; one fact per triple of its formalization
-(the variables named by an LLM), judged on every passage of the pages an
-LLM assigns it (a triple without a page is not judged); relevant passages
-and first-passage fallback as frames; binary qrels.
+webshaper: WebShaper questions; one fact per triple of its formalization,
+written by code, judged on the first 10 passages of the pages an LLM maps
+it to (by title; a fact without a page on every page, a page without a
+fact on every fact); binary qrels.
 
 trqa_val: the TRQA wiki1 + wiki2 validation questions with their members
 from the intermediate info, TRQA's qrels and the split sft /
@@ -80,7 +82,7 @@ Layout (each layer imports only the ones above it; nothing imports
     llm             the JSON writer client, the reply-failure cap, the
                     API key check (also used by TRQA's gold beliefs)
     gold_passages/  the fact LLM (facts), the judge (judge), the gold
-                    passages of frames and webshaper (select); prompts/
+                    passages of every judged dataset (select); prompts/
     datasets/       one package per dataset: source, prepare, relevance
                     (+ its facts, tree or formalization, fact prompts)
 

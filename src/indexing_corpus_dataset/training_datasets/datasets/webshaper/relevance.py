@@ -5,20 +5,24 @@ qrels of the prepared WebShaper questions (stage data_prepare:
 ``features.page_chunks``).
 
     facts      one fact per triple of the formalization, written by code
-               (``facts.py``: no name or value the dataset does not state);
+               (``facts.py``: TRQA's ``the [p] of [e] is [v]``, no name or
+               value the dataset does not state; no identity, type or
+               malformed triple);
                a question without any fact is dropped (``no_facts``, no
                call);
                one LLM call per question maps each fact to the gold pages
                likely to state it, from the pages' titles (a web page by
                its fetched title)
-    gold       each fact judged against every passage of its pages, one
-               call per (fact, passage) pair
+    gold       each fact judged on the first ``CHUNK_WINDOW`` passages of
+               its pages, one call per (fact, passage) pair
                (``gold_passages/select.facts_and_gold``): a known value
                checked, an unknown one extracted; a fact without a page is
                judged on every page, a page no fact maps to on every fact;
                a passage is relevant when the judge finds the fact in it; a
                page without a judged relevant passage gets its first
-               passage
+               passage, except a web page whose every pair is unrelated
+               (``empty_web``: no gold passage); a question left with no
+               gold page is dropped (``no_gold_page``)
     rows       binary qrels (the relevant passages); the row holds the
                question, the answer and the same passages
 
@@ -35,10 +39,13 @@ from ...annotation import rows as annotation_rows
 from ...config import BuildConfig, DatasetPaths
 from ...gold_passages.select import facts_and_gold, gold_docs, qrels_of
 from ...pipeline.relevance import Built
-from .facts import SPEC, build_facts
+from .facts import SPEC, TRIPLE_COUNTS, build_facts
 
 FACTS = SPEC
 JUDGE = True
+# The passages of a page each fact is judged on (its first ones: most
+# pages state a fact early; a long web page is a book or a report).
+CHUNK_WINDOW = 10
 # Why a question is dropped when none of its triples makes a fact.
 NO_FACTS = "no_facts"
 
@@ -61,11 +68,11 @@ def build(cfg: BuildConfig, paths: DatasetPaths, processed: List[dict]) -> Built
                 for r in processed if not built[r["id"]][0]]
     found = [(record, [{**p, "title": titles.get(p["url"])} if p["kind"] == "web" else p
                        for p in record["features"]["pages"]]) for record in processed if built[record["id"]][0]]
-    kept, dropped, pending, section = facts_and_gold(cfg, paths, SPEC, found)
+    kept, dropped, pending, section = facts_and_gold(cfg, paths, SPEC, found, CHUNK_WINDOW)
     triples = Counter()
     for item in kept:
         triples.update(built[item["record"]["id"]][1])
-    section["triples"] = {k: triples[k] for k in ("triples", "duplicate", "identity", "skipped", "no_known_term")}
+    section["triples"] = {k: triples[k] for k in TRIPLE_COUNTS}
     section["web_pages_without_title"] = len({p["url"] for item in kept for p in item["record"]["features"]["pages"]
                                               if p["kind"] == "web" and not titles.get(p["url"])})
     rows = [annotation_rows.row(item["record"], gold_docs(item)) for item in kept]

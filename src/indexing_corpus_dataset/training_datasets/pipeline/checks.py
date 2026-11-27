@@ -1,5 +1,5 @@
 """The checks of stage data_prepare every dataset runs: a repeated question
-(``duplicate``), an empty answer or one the question states
+(``duplicate``), an empty answer, a non-answer or one the question states
 (``answer_invalid``), no gold page (``no_gold``); and the text matching the
 datasets' own checks use."""
 
@@ -72,13 +72,25 @@ def duplicate_check() -> Check:
     return check
 
 
+# An answer that says the source holds no answer ("The contributors are
+# not specified in the given text"), written by a dataset's generator.
+_NON_ANSWER = re.compile(
+    r"\b(?:(?:is|are|was|were) not (?:specified|mentioned|provided|given|stated|known|available|identified|found)"
+    r"|(?:not|cannot|can ?not|could not) be (?:determined|found|identified|answered)"
+    r"|no (?:information|answer|data) (?:is |was )?(?:available|provided|given|found)"
+    r"|(?:in|from) the (?:given|provided) (?:text|context|information|passages?))\b", re.IGNORECASE)
+
+
 def answer_check(record: dict) -> Optional[List[dict]]:
-    """An empty answer, or one the question states as whole words.  Short
-    and numeric answers ("2", "1915") are not looked for in the question:
-    a number or a short word in a question is rarely its answer."""
+    """An empty answer, a non-answer (``_NON_ANSWER``: it says the source
+    gives none), or one the question states as whole words.  Short and
+    numeric answers ("2", "1915") are not looked for in the question: a
+    number or a short word in a question is rarely its answer."""
     answer = match_text(record["answer"])
     if not answer:
         return [{"status": "answer_invalid", "why": "empty"}]
+    if _NON_ANSWER.search(record["answer"]):
+        return [{"status": "answer_invalid", "why": "non_answer"}]
     compact = answer.replace(" ", "")
     if len(compact) >= 4 and not compact.isdigit() and has_phrase(match_text(record["question"]), record["answer"]):
         return [{"status": "answer_invalid", "why": "in_question"}]
